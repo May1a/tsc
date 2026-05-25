@@ -1,4 +1,5 @@
 import { Console, Effect } from "effect";
+import { formatDiagnostic } from "../compiler/diagnostics.js";
 import { compile } from "../compiler/pipeline.js";
 
 type CliOptions = {
@@ -56,7 +57,7 @@ export const runCli = (args: ReadonlyArray<string>) =>
     const result = yield* compile(options);
 
     for (const diagnostic of result.diagnostics) {
-      yield* Console.error(diagnostic.message);
+      yield* Console.error(formatDiagnostic(diagnostic));
     }
 
     if (result.diagnostics.some((diagnostic) => diagnostic.category === "error")) {
@@ -65,6 +66,9 @@ export const runCli = (args: ReadonlyArray<string>) =>
 
     yield* Console.log(`Wrote ${result.artifacts.llvmIr}`);
     yield* Console.log(`Wrote ${result.artifacts.traceMap}`);
+    if (result.artifacts.executable) {
+      yield* Console.log(`Wrote ${result.artifacts.executable}`);
+    }
   }).pipe(
     Effect.catchAll((error) => Console.error(error.message).pipe(Effect.zipRight(Effect.fail(error))))
   );

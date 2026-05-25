@@ -8,6 +8,7 @@ export type CompileOptions = {
 export type BuildArtifacts = {
   readonly llvmIr: string;
   readonly traceMap: string;
+  readonly executable?: string;
 };
 
 export type CompileResult = {
