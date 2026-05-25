@@ -1,0 +1,28 @@
+{
+  "name": "tscn",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "tscn": "./dist/cli/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@effect/platform": "^0.96.1",
+    "@effect/platform-node": "^0.106.0",
+    "effect": "^3.21.2",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.22",
+    "@types/node": "^22.19.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "bun@1.2.22"
+}
