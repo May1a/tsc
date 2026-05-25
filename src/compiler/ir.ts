@@ -24,6 +24,11 @@ export type JsIrOperation =
       readonly value: string;
     }
   | {
+      readonly kind: "constBoolean";
+      readonly name: string;
+      readonly value: boolean;
+    }
+  | {
       readonly kind: "printString";
       readonly value: string;
     }
@@ -34,6 +39,10 @@ export type JsIrOperation =
   | {
       readonly kind: "printNumber";
       readonly value: number;
+    }
+  | {
+      readonly kind: "printBoolean";
+      readonly value: boolean;
     };
 
 export type JsIrResult = {
@@ -56,22 +65,26 @@ function lowerStatements(
   diagnostics: CompilerDiagnostic[]
 ): readonly JsIrOperation[] {
   const operations: JsIrOperation[] = [];
-  const stringBindings = new Set<string>();
-  const numberBindings = new Set<string>();
+  const stringBindings = new Map<string, string>();
+  const numberBindings = new Map<string, number>();
+  const booleanBindings = new Set<string>();
 
   for (const statement of sourceFile.statements) {
     if (isNonExecutableDeclaration(statement)) {
       continue;
     }
 
-    const operation = lowerStatement(statement, stringBindings, numberBindings);
+    const operation = lowerStatement(statement, stringBindings, numberBindings, booleanBindings);
     if (operation) {
       operations.push(operation);
       if (operation.kind === "constString") {
-        stringBindings.add(operation.name);
+        stringBindings.set(operation.name, operation.value);
       }
       if (operation.kind === "constNumber") {
-        numberBindings.add(operation.name);
+        numberBindings.set(operation.name, operation.value);
+      }
+      if (operation.kind === "constBoolean") {
+        booleanBindings.add(operation.name);
       }
       continue;
     }
@@ -79,7 +92,7 @@ function lowerStatements(
     diagnostics.push({
       code: "TSCN1002",
       category: "error",
-      message: "Only top-level const string or number bindings and print calls are supported by the current lowering slice",
+      message: "Only top-level const string, number, or boolean bindings and print calls are supported by the current lowering slice",
       span: sourceSpan(sourceFile, statement.getStart(sourceFile))
     });
   }
@@ -107,11 +120,12 @@ function isNonExecutableDeclaration(statement: ts.Statement): boolean {
 
 function lowerStatement(
   statement: ts.Statement,
-  stringBindings: ReadonlySet<string>,
-  numberBindings: ReadonlySet<string>
+  stringBindings: ReadonlyMap<string, string>,
+  numberBindings: ReadonlyMap<string, number>,
+  booleanBindings: ReadonlySet<string>
 ): JsIrOperation | undefined {
   if (ts.isVariableStatement(statement)) {
-    return lowerConstBinding(statement);
+    return lowerConstBinding(statement, stringBindings, numberBindings);
   }
 
   if (!ts.isExpressionStatement(statement)) {
@@ -135,14 +149,33 @@ function lowerStatement(
     };
   }
 
-  if (ts.isNumericLiteral(argument)) {
+  const stringArgument = lowerStringExpression(argument, stringBindings);
+  if (stringArgument !== undefined) {
     return {
-      kind: "printNumber",
-      value: Number(argument.text)
+      kind: "printString",
+      value: stringArgument
     };
   }
 
-  if (ts.isIdentifier(argument) && (stringBindings.has(argument.text) || numberBindings.has(argument.text))) {
+  const numberArgument = lowerNumberExpression(argument, numberBindings);
+  if (numberArgument !== undefined) {
+    return {
+      kind: "printNumber",
+      value: numberArgument
+    };
+  }
+
+  if (argument.kind === ts.SyntaxKind.TrueKeyword || argument.kind === ts.SyntaxKind.FalseKeyword) {
+    return {
+      kind: "printBoolean",
+      value: argument.kind === ts.SyntaxKind.TrueKeyword
+    };
+  }
+
+  if (
+    ts.isIdentifier(argument) &&
+    (stringBindings.has(argument.text) || numberBindings.has(argument.text) || booleanBindings.has(argument.text))
+  ) {
     return {
       kind: "printIdentifier",
       name: argument.text
@@ -152,7 +185,11 @@ function lowerStatement(
   return undefined;
 }
 
-function lowerConstBinding(statement: ts.VariableStatement): JsIrOperation | undefined {
+function lowerConstBinding(
+  statement: ts.VariableStatement,
+  stringBindings: ReadonlyMap<string, string>,
+  numberBindings: ReadonlyMap<string, number>
+): JsIrOperation | undefined {
   if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0 || statement.declarationList.declarations.length !== 1) {
     return undefined;
   }
@@ -162,23 +199,93 @@ function lowerConstBinding(statement: ts.VariableStatement): JsIrOperation | und
     return undefined;
   }
 
-  if (ts.isStringLiteral(declaration.initializer) || ts.isNoSubstitutionTemplateLiteral(declaration.initializer)) {
+  const stringValue = lowerStringExpression(declaration.initializer, stringBindings);
+  if (stringValue !== undefined) {
     return {
       kind: "constString",
       name: declaration.name.text,
-      value: declaration.initializer.text
+      value: stringValue
     };
   }
 
-  if (ts.isNumericLiteral(declaration.initializer)) {
+  const numberValue = lowerNumberExpression(declaration.initializer, numberBindings);
+  if (numberValue !== undefined) {
     return {
       kind: "constNumber",
       name: declaration.name.text,
-      value: Number(declaration.initializer.text)
+      value: numberValue
+    };
+  }
+
+  if (declaration.initializer.kind === ts.SyntaxKind.TrueKeyword || declaration.initializer.kind === ts.SyntaxKind.FalseKeyword) {
+    return {
+      kind: "constBoolean",
+      name: declaration.name.text,
+      value: declaration.initializer.kind === ts.SyntaxKind.TrueKeyword
     };
   }
 
   return undefined;
+}
+
+function lowerStringExpression(expression: ts.Expression, stringBindings: ReadonlyMap<string, string>): string | undefined {
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+    return expression.text;
+  }
+
+  if (ts.isIdentifier(expression)) {
+    return stringBindings.get(expression.text);
+  }
+
+  if (!ts.isBinaryExpression(expression) || expression.operatorToken.kind !== ts.SyntaxKind.PlusToken) {
+    return undefined;
+  }
+
+  const left = lowerStringExpression(expression.left, stringBindings);
+  const right = lowerStringExpression(expression.right, stringBindings);
+  if (left === undefined || right === undefined) {
+    return undefined;
+  }
+
+  return left + right;
+}
+
+function lowerNumberExpression(expression: ts.Expression, numberBindings: ReadonlyMap<string, number>): number | undefined {
+  if (ts.isNumericLiteral(expression)) {
+    return Number(expression.text);
+  }
+
+  if (ts.isIdentifier(expression)) {
+    return numberBindings.get(expression.text);
+  }
+
+  if (!ts.isBinaryExpression(expression)) {
+    return undefined;
+  }
+
+  const left = lowerNumberExpression(expression.left, numberBindings);
+  const right = lowerNumberExpression(expression.right, numberBindings);
+  if (left === undefined || right === undefined) {
+    return undefined;
+  }
+
+  switch (expression.operatorToken.kind) {
+    case ts.SyntaxKind.PlusToken: {
+      return left + right;
+    }
+    case ts.SyntaxKind.MinusToken: {
+      return left - right;
+    }
+    case ts.SyntaxKind.AsteriskToken: {
+      return left * right;
+    }
+    case ts.SyntaxKind.SlashToken: {
+      return left / right;
+    }
+    default: {
+      return undefined;
+    }
+  }
 }
 
 export const lowerToJsIr = (entry: string, sourceFiles: readonly ts.SourceFile[]): JsIrResult => {

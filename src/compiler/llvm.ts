@@ -56,6 +56,11 @@ export const emitLlvmIr = (module: JsIrModule): string => {
         continue;
       }
 
+      if (operation.kind === "constBoolean") {
+        bindings.set(operation.name, { kind: "string", value: String(operation.value) });
+        continue;
+      }
+
       if (operation.kind === "constString") {
         bindings.set(operation.name, { kind: "string", value: operation.value });
         continue;
@@ -68,6 +73,11 @@ export const emitLlvmIr = (module: JsIrModule): string => {
 
       if (operation.kind === "printNumber") {
         operations.push({ kind: "number", value: operation.value });
+        continue;
+      }
+
+      if (operation.kind === "printBoolean") {
+        operations.push({ kind: "string", value: String(operation.value) });
         continue;
       }
 

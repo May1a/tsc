@@ -135,6 +135,53 @@ describe("tscn CLI", () => {
     }
   });
 
+  test("lowers numeric addition in top-level const bindings used by print", async () => {
+    const result = await expectSuccessfulCompile("const-number-addition.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers boolean literals used by print", async () => {
+    const result = await expectSuccessfulCompile("boolean-literal.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain(String.raw`c"true\00"`);
+      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers top-level const boolean bindings used by print", async () => {
+    const result = await expectSuccessfulCompile("const-boolean.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain(String.raw`c"false\00"`);
+      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers string concatenation in top-level const bindings used by print", async () => {
+    const result = await expectSuccessfulCompile("const-string-concat.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain(String.raw`c"hello, world\00"`);
+      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("preserves print order for literals and const bindings", async () => {
     const result = await expectSuccessfulCompile("multiple-prints.ts");
 
@@ -166,7 +213,7 @@ describe("tscn CLI", () => {
       expect(result.stderr).toContain("error TSCN1002");
 
       const diagnostics = await result.readArtifact("diagnostics.txt");
-      expect(diagnostics).toContain("Only top-level const string or number bindings and print calls are supported");
+      expect(diagnostics).toContain("Only top-level const string, number, or boolean bindings and print calls are supported");
     } finally {
       await result.cleanup();
     }
