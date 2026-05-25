@@ -9,14 +9,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test",
-    "test:node": "node --test test/node/*.test.mjs"
+    "test": "npm run build && bun test --timeout 30000",
+    "lint": "npx oxlint --type-aware"
   },
   "dependencies": {
     "@effect/platform": "^0.96.1",
     "@effect/platform-node": "^0.106.0",
     "effect": "^3.21.2",
     "oxlint": "^1.66.0",
+    "oxlint-tsgolint": "^0.23.0",
     "typescript": "^5.9.3"
   },
   "devDependencies": {

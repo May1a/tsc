@@ -4,12 +4,12 @@ import path from "node:path";
 import { formatDiagnostic } from "./diagnostics.js";
 import { loadProgram } from "./frontend.js";
 import { lowerToJsIr } from "./ir.js";
-import { linkWithClang } from "./linker.js";
+import { linkWithClang, type LinkResult } from "./linker.js";
 import { emitLlvmIr, emitTraceMap } from "./llvm.js";
 import type { CompileOptions, CompileResult } from "./types.js";
 
 export const compile = (options: CompileOptions): Effect.Effect<CompileResult, Error, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
+  Effect.gen(function* compileProgram() {
     const fs = yield* FileSystem.FileSystem;
     const frontend = loadProgram(options.entry);
     const jsIr = lowerToJsIr(path.resolve(options.entry), frontend.sourceFiles);
@@ -25,9 +25,10 @@ export const compile = (options: CompileOptions): Effect.Effect<CompileResult, E
     yield* fs.writeFileString(traceMap, emitTraceMap(jsIr.module));
 
     const frontendAndIrDiagnostics = [...frontend.diagnostics, ...jsIr.diagnostics];
-    const link = frontendAndIrDiagnostics.some((diagnostic) => diagnostic.category === "error")
-      ? { diagnostics: [] }
-      : yield* linkWithClang(llvmIr, executable);
+    let link: LinkResult = { diagnostics: [] };
+    if (!frontendAndIrDiagnostics.some((diagnostic) => diagnostic.category === "error")) {
+      link = yield* linkWithClang(llvmIr, executable);
+    }
     const diagnostics = [...frontendAndIrDiagnostics, ...link.diagnostics];
 
     yield* fs.writeFileString(diagnosticsPath, diagnostics.map(formatDiagnostic).join("\n"));

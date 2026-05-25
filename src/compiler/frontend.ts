@@ -4,39 +4,18 @@ import type { CompilerDiagnostic } from "./diagnostics.js";
 
 export type FrontendResult = {
   readonly program: ts.Program;
-  readonly sourceFiles: ReadonlyArray<ts.SourceFile>;
-  readonly diagnostics: ReadonlyArray<CompilerDiagnostic>;
+  readonly sourceFiles: readonly ts.SourceFile[];
+  readonly diagnostics: readonly CompilerDiagnostic[];
 };
 
-export const loadProgram = (entry: string): FrontendResult => {
-  const config = findTsConfig(entry);
-  const parsed = config ? readTsConfig(config) : defaultCompilerOptions();
-  const program = ts.createProgram([path.resolve(entry)], parsed.options);
-  const sourceFiles = program
-    .getSourceFiles()
-    .filter((sourceFile) => !sourceFile.isDeclarationFile && !sourceFile.fileName.includes("/node_modules/"));
+const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
+  const lineAndCharacter = sourceFile.getLineAndCharacterOfPosition(position);
 
   return {
-    program,
-    sourceFiles,
-    diagnostics: [
-      ...tsDiagnosticsToCompiler(program.getSyntacticDiagnostics()),
-      ...tsDiagnosticsToCompiler(program.getSemanticDiagnostics()),
-      ...rejectPackageImports(sourceFiles)
-    ]
+    fileName: sourceFile.fileName,
+    line: lineAndCharacter.line + 1,
+    column: lineAndCharacter.character + 1
   };
-};
-
-const findTsConfig = (entry: string): string | undefined =>
-  ts.findConfigFile(path.dirname(path.resolve(entry)), ts.sys.fileExists, "tsconfig.json");
-
-const readTsConfig = (configFileName: string): ts.ParsedCommandLine => {
-  const config = ts.readConfigFile(configFileName, ts.sys.readFile);
-  if (config.error) {
-    return defaultCompilerOptions();
-  }
-
-  return ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(configFileName));
 };
 
 const defaultCompilerOptions = (): ts.ParsedCommandLine => ({
@@ -50,11 +29,24 @@ const defaultCompilerOptions = (): ts.ParsedCommandLine => ({
   errors: []
 });
 
-const tsDiagnosticsToCompiler = (diagnostics: ReadonlyArray<ts.Diagnostic>): ReadonlyArray<CompilerDiagnostic> =>
+const findTsConfig = (entry: string): string | undefined =>
+  ts.findConfigFile(path.dirname(path.resolve(entry)), (fileName) => ts.sys.fileExists(fileName), "tsconfig.json");
+
+const readTsConfig = (configFileName: string): ts.ParsedCommandLine => {
+  const config = ts.readConfigFile(configFileName, (fileName) => ts.sys.readFile(fileName));
+  if (config.error) {
+    return defaultCompilerOptions();
+  }
+
+  return ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(configFileName));
+};
+
+const tsDiagnosticsToCompiler = (diagnostics: readonly ts.Diagnostic[]): readonly CompilerDiagnostic[] =>
   diagnostics.map((diagnostic) => {
-    const span = diagnostic.file && diagnostic.start !== undefined
-      ? sourceSpan(diagnostic.file, diagnostic.start)
-      : undefined;
+    let span;
+    if (diagnostic.file && diagnostic.start !== undefined) {
+      span = sourceSpan(diagnostic.file, diagnostic.start);
+    }
 
     return {
       code: `TS${diagnostic.code}`,
@@ -64,7 +56,7 @@ const tsDiagnosticsToCompiler = (diagnostics: ReadonlyArray<ts.Diagnostic>): Rea
     };
   });
 
-const rejectPackageImports = (sourceFiles: ReadonlyArray<ts.SourceFile>): ReadonlyArray<CompilerDiagnostic> => {
+const rejectPackageImports = (sourceFiles: readonly ts.SourceFile[]): readonly CompilerDiagnostic[] => {
   const diagnostics: CompilerDiagnostic[] = [];
 
   for (const sourceFile of sourceFiles) {
@@ -90,12 +82,24 @@ const rejectPackageImports = (sourceFiles: ReadonlyArray<ts.SourceFile>): Readon
   return diagnostics;
 };
 
-const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
-  const lineAndCharacter = sourceFile.getLineAndCharacterOfPosition(position);
+export const loadProgram = (entry: string): FrontendResult => {
+  const config = findTsConfig(entry);
+  let parsed = defaultCompilerOptions();
+  if (config) {
+    parsed = readTsConfig(config);
+  }
+  const program = ts.createProgram([path.resolve(entry)], parsed.options);
+  const sourceFiles = program
+    .getSourceFiles()
+    .filter((sourceFile) => !sourceFile.isDeclarationFile && !sourceFile.fileName.includes("/node_modules/"));
 
   return {
-    fileName: sourceFile.fileName,
-    line: lineAndCharacter.line + 1,
-    column: lineAndCharacter.character + 1
+    program,
+    sourceFiles,
+    diagnostics: [
+      ...tsDiagnosticsToCompiler(program.getSyntacticDiagnostics()),
+      ...tsDiagnosticsToCompiler(program.getSemanticDiagnostics()),
+      ...rejectPackageImports(sourceFiles)
+    ]
   };
 };

@@ -2,5 +2,5 @@ declare function print(value: unknown): void;
 
 
 
-const message = "from const string";
+const message = `from template literal`;
 print(message);

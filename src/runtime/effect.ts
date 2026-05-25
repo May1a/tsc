@@ -16,5 +16,9 @@ export const flatMap = <A, E, B, E2>(
 ): RuntimeEffect<B, E | E2> =>
   () => {
     const result = effect();
-    return result.tag === "failure" ? result : next(result.value)();
+    if (result.tag === "failure") {
+      return result;
+    }
+
+    return next(result.value)();
   };

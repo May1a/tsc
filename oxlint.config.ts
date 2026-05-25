@@ -88,6 +88,7 @@ export default defineConfig({
         "docs/**",
         "examples/**",
         "out/**",
+        "test/fixtures/**",
     ],
     overrides: [
         {
@@ -116,6 +117,15 @@ export default defineConfig({
                         variables: true,
                     },
                 ],
+            },
+        },
+        {
+            files: ["test/**/*.ts"],
+            rules: {
+                "typescript/no-unsafe-assignment": "off",
+                "typescript/no-unsafe-member-access": "off",
+                "typescript/no-unsafe-return": "off",
+                "typescript/no-unsafe-type-assertion": "off",
             },
         },
     ],

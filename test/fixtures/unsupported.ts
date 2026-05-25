@@ -1,4 +1,7 @@
 declare function print(value: unknown): void;
 
-let message = "not lowered yet";
-print(message);
+
+
+if (Date.now()) {
+  print("not lowered yet");
+}

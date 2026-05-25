@@ -1,3 +1,4 @@
+import type { FileSystem } from "@effect/platform";
 import { Console, Effect } from "effect";
 import { formatDiagnostic } from "../compiler/diagnostics.js";
 import { compile } from "../compiler/pipeline.js";
@@ -11,7 +12,7 @@ const usage = `Usage: tscn <entry.ts> [--out-dir <dir>]
 
 Compiles a project-local TypeScript ES module graph to native build artifacts.`;
 
-const parseArgs = (args: ReadonlyArray<string>): Effect.Effect<CliOptions, Error> =>
+const parseArgs = (args: readonly string[]): Effect.Effect<CliOptions, Error> =>
   Effect.sync(() => {
     let entry: string | undefined;
     let outDir = "build";
@@ -51,8 +52,8 @@ const parseArgs = (args: ReadonlyArray<string>): Effect.Effect<CliOptions, Error
     return { entry, outDir };
   });
 
-export const runCli = (args: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
+export const runCli = (args: readonly string[]): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* runCliEffect() {
     const options = yield* parseArgs(args);
     const result = yield* compile(options);
 
@@ -61,7 +62,7 @@ export const runCli = (args: ReadonlyArray<string>) =>
     }
 
     if (result.diagnostics.some((diagnostic) => diagnostic.category === "error")) {
-      return yield* Effect.fail(new Error("Compilation failed"));
+      yield* Effect.fail(new Error("Compilation failed"));
     }
 
     yield* Console.log(`Wrote ${result.artifacts.llvmIr}`);
@@ -69,6 +70,8 @@ export const runCli = (args: ReadonlyArray<string>) =>
     if (result.artifacts.executable) {
       yield* Console.log(`Wrote ${result.artifacts.executable}`);
     }
+
+    yield* Effect.void;
   }).pipe(
     Effect.catchAll((error) => Console.error(error.message).pipe(Effect.zipRight(Effect.fail(error))))
   );

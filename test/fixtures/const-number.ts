@@ -2,4 +2,5 @@ declare function print(value: unknown): void;
 
 
 
-print("from imported module");
+const answer = 42;
+print(answer);

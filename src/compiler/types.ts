@@ -12,6 +12,6 @@ export type BuildArtifacts = {
 };
 
 export type CompileResult = {
-  readonly diagnostics: ReadonlyArray<CompilerDiagnostic>;
+  readonly diagnostics: readonly CompilerDiagnostic[];
   readonly artifacts: BuildArtifacts;
 };
