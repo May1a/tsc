@@ -1,4 +1,4 @@
-import type { JsIrModule } from "./ir.js";
+import type { JsIrModule, JsIrOperation } from "./ir.js";
 
 type PrintOperation =
   | {
@@ -9,6 +9,16 @@ type PrintOperation =
       readonly kind: "string";
       readonly value: string;
     };
+
+type EmitContext = {
+  readonly bindings: Map<string, PrintOperation>;
+  readonly stringConstants: string[];
+  hasNumberPrint: boolean;
+  printIndex: number;
+  ifIndex: number;
+};
+
+type IfOperation = Extract<JsIrOperation, { readonly kind: "if" }>;
 
 const doubleQuoteByte = 34;
 const backslashByte = 92;
@@ -46,70 +56,17 @@ export const emitLlvmIr = (module: JsIrModule): string => {
   const moduleComments = module.modules
     .map((sourceModule) => `; source ${sourceModule.fileName} statements=${sourceModule.statementCount}`)
     .join("\n");
-  const printOperations = module.modules.flatMap((sourceModule) => {
-    const bindings = new Map<string, PrintOperation>();
-    const operations: PrintOperation[] = [];
-
-    for (const operation of sourceModule.operations) {
-      if (operation.kind === "constNumber") {
-        bindings.set(operation.name, { kind: "number", value: operation.value });
-        continue;
-      }
-
-      if (operation.kind === "constBoolean") {
-        bindings.set(operation.name, { kind: "string", value: String(operation.value) });
-        continue;
-      }
-
-      if (operation.kind === "constString") {
-        bindings.set(operation.name, { kind: "string", value: operation.value });
-        continue;
-      }
-
-      if (operation.kind === "printString") {
-        operations.push({ kind: "string", value: operation.value });
-        continue;
-      }
-
-      if (operation.kind === "printNumber") {
-        operations.push({ kind: "number", value: operation.value });
-        continue;
-      }
-
-      if (operation.kind === "printBoolean") {
-        operations.push({ kind: "string", value: String(operation.value) });
-        continue;
-      }
-
-      const binding = bindings.get(operation.name);
-      if (binding !== undefined) {
-        operations.push(binding);
-      }
-    }
-
-    return operations;
-  });
-  const stringConstants = printOperations
-    .flatMap((operation, index) => {
-      if (operation.kind === "number") {
-        return [];
-      }
-
-      const encoded = encodeCString(operation.value);
-      return [`@.str.${index} = private unnamed_addr constant [${encoded.length} x i8] c"${encoded.value}"`];
-    })
-    .join("\n");
-  const printCalls = printOperations
-    .map((operation, index) => {
-      if (operation.kind === "number") {
-        return `  %print.${index} = call i32 (ptr, ...) @printf(ptr @.fmt.number, double ${operation.value})`;
-      }
-
-      return `  %print.${index} = call i32 @puts(ptr @.str.${index})`;
-    })
-    .join("\n");
+  const context: EmitContext = {
+    bindings: new Map(),
+    stringConstants: [],
+    hasNumberPrint: false,
+    printIndex: 0,
+    ifIndex: 0
+  };
+  const printCalls = module.modules.flatMap((sourceModule) => emitOperations(sourceModule.operations, context)).join("\n");
+  const stringConstants = context.stringConstants.join("\n");
   let numberFormat = "";
-  if (printOperations.some((operation) => operation.kind === "number")) {
+  if (context.hasNumberPrint) {
     numberFormat = String.raw`@.fmt.number = private unnamed_addr constant [4 x i8] c"%g\0A\00"`;
   }
 
@@ -136,6 +93,107 @@ ${printCallLines}  ret i32 0
 }
 `;
 };
+
+function emitOperations(operations: readonly JsIrOperation[], context: EmitContext): string[] {
+  const lines: string[] = [];
+
+  for (const operation of operations) {
+    const emitted = emitOperation(operation, context);
+    lines.push(...emitted);
+  }
+
+  return lines;
+}
+
+function emitOperation(operation: JsIrOperation, context: EmitContext): string[] {
+  if (operation.kind === "constNumber") {
+    context.bindings.set(operation.name, { kind: "number", value: operation.value });
+    return [];
+  }
+
+  if (operation.kind === "constBoolean") {
+    context.bindings.set(operation.name, { kind: "string", value: String(operation.value) });
+    return [];
+  }
+
+  if (operation.kind === "constString") {
+    context.bindings.set(operation.name, { kind: "string", value: operation.value });
+    return [];
+  }
+
+  if (operation.kind === "printString") {
+    return [emitPrintOperation({ kind: "string", value: operation.value }, context)];
+  }
+
+  if (operation.kind === "printNumber") {
+    return [emitPrintOperation({ kind: "number", value: operation.value }, context)];
+  }
+
+  if (operation.kind === "printBoolean") {
+    return [emitPrintOperation({ kind: "string", value: String(operation.value) }, context)];
+  }
+
+  if (operation.kind === "printIdentifier") {
+    const binding = context.bindings.get(operation.name);
+    if (binding === undefined) {
+      return [];
+    }
+
+    return [emitPrintOperation(binding, context)];
+  }
+
+  return emitIfOperation(operation, context);
+}
+
+function emitIfOperation(operation: IfOperation, context: EmitContext): string[] {
+  const { condition, thenOperations, elseOperations } = operation;
+  const { ifIndex } = context;
+  context.ifIndex += 1;
+  const thenLabel = `if.then.${ifIndex}`;
+  const elseLabel = `if.else.${ifIndex}`;
+  const endLabel = `if.end.${ifIndex}`;
+  let falseLabel = endLabel;
+  if (elseOperations.length > 0) {
+    falseLabel = elseLabel;
+  }
+  const lines = [`  br i1 ${String(condition)}, label %${thenLabel}, label %${falseLabel}`, `${thenLabel}:`];
+
+  lines.push(...emitOperationsWithScopedBindings(thenOperations, context));
+  lines.push(`  br label %${endLabel}`);
+
+  if (elseOperations.length > 0) {
+    lines.push(`${elseLabel}:`);
+    lines.push(...emitOperationsWithScopedBindings(elseOperations, context));
+    lines.push(`  br label %${endLabel}`);
+  }
+
+  lines.push(`${endLabel}:`);
+  return lines;
+}
+
+function emitOperationsWithScopedBindings(operations: readonly JsIrOperation[], context: EmitContext): string[] {
+  const previousBindings = new Map(context.bindings);
+  const lines = emitOperations(operations, context);
+  context.bindings.clear();
+  for (const [name, value] of previousBindings) {
+    context.bindings.set(name, value);
+  }
+  return lines;
+}
+
+function emitPrintOperation(operation: PrintOperation, context: EmitContext): string {
+  const index = context.printIndex;
+  context.printIndex += 1;
+
+  if (operation.kind === "number") {
+    context.hasNumberPrint = true;
+    return `  %print.${index} = call i32 (ptr, ...) @printf(ptr @.fmt.number, double ${operation.value})`;
+  }
+
+  const encoded = encodeCString(operation.value);
+  context.stringConstants.push(`@.str.${index} = private unnamed_addr constant [${encoded.length} x i8] c"${encoded.value}"`);
+  return `  %print.${index} = call i32 @puts(ptr @.str.${index})`;
+}
 
 export const emitTraceMap = (module: JsIrModule): string =>
   JSON.stringify(

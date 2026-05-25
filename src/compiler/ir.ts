@@ -43,6 +43,12 @@ export type JsIrOperation =
   | {
       readonly kind: "printBoolean";
       readonly value: boolean;
+    }
+  | {
+      readonly kind: "if";
+      readonly condition: boolean;
+      readonly thenOperations: readonly JsIrOperation[];
+      readonly elseOperations: readonly JsIrOperation[];
     };
 
 export type JsIrResult = {
@@ -67,7 +73,7 @@ function lowerStatements(
   const operations: JsIrOperation[] = [];
   const stringBindings = new Map<string, string>();
   const numberBindings = new Map<string, number>();
-  const booleanBindings = new Set<string>();
+  const booleanBindings = new Map<string, boolean>();
 
   for (const statement of sourceFile.statements) {
     if (isNonExecutableDeclaration(statement)) {
@@ -77,27 +83,36 @@ function lowerStatements(
     const operation = lowerStatement(statement, stringBindings, numberBindings, booleanBindings);
     if (operation) {
       operations.push(operation);
-      if (operation.kind === "constString") {
-        stringBindings.set(operation.name, operation.value);
-      }
-      if (operation.kind === "constNumber") {
-        numberBindings.set(operation.name, operation.value);
-      }
-      if (operation.kind === "constBoolean") {
-        booleanBindings.add(operation.name);
-      }
+      updateBindings(operation, stringBindings, numberBindings, booleanBindings);
       continue;
     }
 
     diagnostics.push({
       code: "TSCN1002",
       category: "error",
-      message: "Only top-level const string, number, or boolean bindings and print calls are supported by the current lowering slice",
+      message: "Only top-level const string, number, or boolean bindings, print calls, and if statements are supported by the current lowering slice",
       span: sourceSpan(sourceFile, statement.getStart(sourceFile))
     });
   }
 
   return operations;
+}
+
+function updateBindings(
+  operation: JsIrOperation,
+  stringBindings: Map<string, string>,
+  numberBindings: Map<string, number>,
+  booleanBindings: Map<string, boolean>
+): void {
+  if (operation.kind === "constString") {
+    stringBindings.set(operation.name, operation.value);
+  }
+  if (operation.kind === "constNumber") {
+    numberBindings.set(operation.name, operation.value);
+  }
+  if (operation.kind === "constBoolean") {
+    booleanBindings.set(operation.name, operation.value);
+  }
 }
 
 function isNonExecutableDeclaration(statement: ts.Statement): boolean {
@@ -122,10 +137,14 @@ function lowerStatement(
   statement: ts.Statement,
   stringBindings: ReadonlyMap<string, string>,
   numberBindings: ReadonlyMap<string, number>,
-  booleanBindings: ReadonlySet<string>
+  booleanBindings: ReadonlyMap<string, boolean>
 ): JsIrOperation | undefined {
   if (ts.isVariableStatement(statement)) {
-    return lowerConstBinding(statement, stringBindings, numberBindings);
+    return lowerConstBinding(statement, stringBindings, numberBindings, booleanBindings);
+  }
+
+  if (ts.isIfStatement(statement)) {
+    return lowerIfStatement(statement, stringBindings, numberBindings, booleanBindings);
   }
 
   if (!ts.isExpressionStatement(statement)) {
@@ -185,10 +204,81 @@ function lowerStatement(
   return undefined;
 }
 
+function lowerIfStatement(
+  statement: ts.IfStatement,
+  stringBindings: ReadonlyMap<string, string>,
+  numberBindings: ReadonlyMap<string, number>,
+  booleanBindings: ReadonlyMap<string, boolean>
+): JsIrOperation | undefined {
+  const condition = lowerBooleanExpression(statement.expression, booleanBindings);
+  if (condition === undefined || !ts.isBlock(statement.thenStatement)) {
+    return undefined;
+  }
+
+  const thenOperations = lowerBlockStatements(statement.thenStatement, stringBindings, numberBindings, booleanBindings);
+  if (thenOperations === undefined) {
+    return undefined;
+  }
+
+  if (!statement.elseStatement) {
+    return {
+      kind: "if",
+      condition,
+      thenOperations,
+      elseOperations: []
+    };
+  }
+
+  if (!ts.isBlock(statement.elseStatement)) {
+    return undefined;
+  }
+
+  const elseOperations = lowerBlockStatements(statement.elseStatement, stringBindings, numberBindings, booleanBindings);
+  if (elseOperations === undefined) {
+    return undefined;
+  }
+
+  return {
+    kind: "if",
+    condition,
+    thenOperations,
+    elseOperations
+  };
+}
+
+function lowerBlockStatements(
+  block: ts.Block,
+  stringBindings: ReadonlyMap<string, string>,
+  numberBindings: ReadonlyMap<string, number>,
+  booleanBindings: ReadonlyMap<string, boolean>
+): readonly JsIrOperation[] | undefined {
+  const operations: JsIrOperation[] = [];
+  const blockStringBindings = new Map(stringBindings);
+  const blockNumberBindings = new Map(numberBindings);
+  const blockBooleanBindings = new Map(booleanBindings);
+
+  for (const statement of block.statements) {
+    if (isNonExecutableDeclaration(statement)) {
+      continue;
+    }
+
+    const operation = lowerStatement(statement, blockStringBindings, blockNumberBindings, blockBooleanBindings);
+    if (!operation) {
+      return undefined;
+    }
+
+    operations.push(operation);
+    updateBindings(operation, blockStringBindings, blockNumberBindings, blockBooleanBindings);
+  }
+
+  return operations;
+}
+
 function lowerConstBinding(
   statement: ts.VariableStatement,
   stringBindings: ReadonlyMap<string, string>,
-  numberBindings: ReadonlyMap<string, number>
+  numberBindings: ReadonlyMap<string, number>,
+  booleanBindings: ReadonlyMap<string, boolean>
 ): JsIrOperation | undefined {
   if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0 || statement.declarationList.declarations.length !== 1) {
     return undefined;
@@ -217,11 +307,12 @@ function lowerConstBinding(
     };
   }
 
-  if (declaration.initializer.kind === ts.SyntaxKind.TrueKeyword || declaration.initializer.kind === ts.SyntaxKind.FalseKeyword) {
+  const booleanValue = lowerBooleanExpression(declaration.initializer, booleanBindings);
+  if (booleanValue !== undefined) {
     return {
       kind: "constBoolean",
       name: declaration.name.text,
-      value: declaration.initializer.kind === ts.SyntaxKind.TrueKeyword
+      value: booleanValue
     };
   }
 
@@ -248,6 +339,18 @@ function lowerStringExpression(expression: ts.Expression, stringBindings: Readon
   }
 
   return left + right;
+}
+
+function lowerBooleanExpression(expression: ts.Expression, booleanBindings: ReadonlyMap<string, boolean>): boolean | undefined {
+  if (expression.kind === ts.SyntaxKind.TrueKeyword || expression.kind === ts.SyntaxKind.FalseKeyword) {
+    return expression.kind === ts.SyntaxKind.TrueKeyword;
+  }
+
+  if (ts.isIdentifier(expression)) {
+    return booleanBindings.get(expression.text);
+  }
+
+  return undefined;
 }
 
 function lowerNumberExpression(expression: ts.Expression, numberBindings: ReadonlyMap<string, number>): number | undefined {

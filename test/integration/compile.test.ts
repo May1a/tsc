@@ -182,6 +182,72 @@ describe("tscn CLI", () => {
     }
   });
 
+  test("lowers top-level if statements with const boolean conditions", async () => {
+    const result = await expectSuccessfulCompile("if-const-true.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br i1 true, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain("if.then.0:");
+      expect(llvmIr).toContain(String.raw`c"enabled\00"`);
+      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers top-level if else statements with const boolean conditions", async () => {
+    const result = await expectSuccessfulCompile("if-const-false-else.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br i1 false, label %if.then.0, label %if.else.0");
+      expect(llvmIr).toContain("if.then.0:");
+      expect(llvmIr).toContain("if.else.0:");
+      expect(llvmIr).toContain(String.raw`c"enabled\00"`);
+      expect(llvmIr).toContain(String.raw`c"disabled\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("preserves statement order inside supported if blocks", async () => {
+    const result = await expectSuccessfulCompile("if-multiple-prints.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br i1 true, label %if.then.0, label %if.end.0");
+      expect(llvmIr.indexOf("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 3)")).toBeLessThan(
+        llvmIr.indexOf("call i32 @puts(ptr @.str.1)")
+      );
+      expect(llvmIr).toContain(String.raw`c"done\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("rejects unsupported if conditions with a slice diagnostic", async () => {
+    const result = await compileFixture("if-unsupported-condition.ts");
+
+    try {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("error TSCN1002");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("rejects unsupported statements inside supported if blocks", async () => {
+    const result = await compileFixture("if-unsupported-body.ts");
+
+    try {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("error TSCN1002");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("preserves print order for literals and const bindings", async () => {
     const result = await expectSuccessfulCompile("multiple-prints.ts");
 
@@ -213,7 +279,7 @@ describe("tscn CLI", () => {
       expect(result.stderr).toContain("error TSCN1002");
 
       const diagnostics = await result.readArtifact("diagnostics.txt");
-      expect(diagnostics).toContain("Only top-level const string, number, or boolean bindings and print calls are supported");
+      expect(diagnostics).toContain("Only top-level const string, number, or boolean bindings, print calls, and if statements are supported");
     } finally {
       await result.cleanup();
     }
