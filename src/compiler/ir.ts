@@ -14,8 +14,17 @@ export type JsIrSourceModule = {
 
 export type JsIrOperation =
   | {
+      readonly kind: "constString";
+      readonly name: string;
+      readonly value: string;
+    }
+  | {
       readonly kind: "printString";
       readonly value: string;
+    }
+  | {
+      readonly kind: "printIdentifier";
+      readonly name: string;
     };
 
 export type JsIrResult = {
@@ -44,22 +53,26 @@ const lowerStatements = (
   diagnostics: CompilerDiagnostic[]
 ): ReadonlyArray<JsIrOperation> => {
   const operations: JsIrOperation[] = [];
+  const stringBindings = new Set<string>();
 
   for (const statement of sourceFile.statements) {
-    if (isAmbientDeclaration(statement)) {
+    if (isNonExecutableDeclaration(statement)) {
       continue;
     }
 
-    const operation = lowerStatement(statement);
+    const operation = lowerStatement(statement, stringBindings);
     if (operation) {
       operations.push(operation);
+      if (operation.kind === "constString") {
+        stringBindings.add(operation.name);
+      }
       continue;
     }
 
     diagnostics.push({
       code: "TSCN1002",
       category: "error",
-      message: "Only top-level print(\"literal\") statements are supported by the current lowering slice",
+      message: "Only top-level const string bindings and print calls are supported by the current lowering slice",
       span: sourceSpan(sourceFile, statement.getStart(sourceFile))
     });
   }
@@ -67,10 +80,25 @@ const lowerStatements = (
   return operations;
 };
 
-const isAmbientDeclaration = (statement: ts.Statement): boolean =>
-  Boolean(ts.getCombinedModifierFlags(statement as unknown as ts.Declaration) & ts.ModifierFlags.Ambient);
+const isNonExecutableDeclaration = (statement: ts.Statement): boolean => {
+  if (
+    ts.isImportDeclaration(statement) ||
+    ts.isImportEqualsDeclaration(statement) ||
+    ts.isExportDeclaration(statement) ||
+    ts.isInterfaceDeclaration(statement) ||
+    ts.isTypeAliasDeclaration(statement)
+  ) {
+    return true;
+  }
 
-const lowerStatement = (statement: ts.Statement): JsIrOperation | undefined => {
+  return Boolean(ts.getCombinedModifierFlags(statement as unknown as ts.Declaration) & ts.ModifierFlags.Ambient);
+};
+
+const lowerStatement = (statement: ts.Statement, stringBindings: ReadonlySet<string>): JsIrOperation | undefined => {
+  if (ts.isVariableStatement(statement)) {
+    return lowerConstStringBinding(statement);
+  }
+
   if (!ts.isExpressionStatement(statement)) {
     return undefined;
   }
@@ -85,13 +113,45 @@ const lowerStatement = (statement: ts.Statement): JsIrOperation | undefined => {
   }
 
   const [argument] = expression.arguments;
-  if (!argument || (!ts.isStringLiteral(argument) && !ts.isNoSubstitutionTemplateLiteral(argument))) {
+  if (!argument) {
+    return undefined;
+  }
+
+  if (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument)) {
+    return {
+      kind: "printString",
+      value: argument.text
+    };
+  }
+
+  if (ts.isIdentifier(argument) && stringBindings.has(argument.text)) {
+    return {
+      kind: "printIdentifier",
+      name: argument.text
+    };
+  }
+
+  return undefined;
+};
+
+const lowerConstStringBinding = (statement: ts.VariableStatement): JsIrOperation | undefined => {
+  if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0 || statement.declarationList.declarations.length !== 1) {
+    return undefined;
+  }
+
+  const [declaration] = statement.declarationList.declarations;
+  if (!declaration || !ts.isIdentifier(declaration.name) || !declaration.initializer) {
+    return undefined;
+  }
+
+  if (!ts.isStringLiteral(declaration.initializer) && !ts.isNoSubstitutionTemplateLiteral(declaration.initializer)) {
     return undefined;
   }
 
   return {
-    kind: "printString",
-    value: argument.text
+    kind: "constString",
+    name: declaration.name.text,
+    value: declaration.initializer.text
   };
 };
 

@@ -4,9 +4,29 @@ export const emitLlvmIr = (module: JsIrModule): string => {
   const moduleComments = module.modules
     .map((sourceModule) => `; source ${sourceModule.fileName} statements=${sourceModule.statementCount}`)
     .join("\n");
-  const printOperations = module.modules.flatMap((sourceModule) =>
-    sourceModule.operations.filter((operation) => operation.kind === "printString")
-  );
+  const printOperations = module.modules.flatMap((sourceModule) => {
+    const stringBindings = new Map<string, string>();
+    const operations: Array<{ readonly value: string }> = [];
+
+    for (const operation of sourceModule.operations) {
+      if (operation.kind === "constString") {
+        stringBindings.set(operation.name, operation.value);
+        continue;
+      }
+
+      if (operation.kind === "printString") {
+        operations.push(operation);
+        continue;
+      }
+
+      const value = stringBindings.get(operation.name);
+      if (value !== undefined) {
+        operations.push({ value });
+      }
+    }
+
+    return operations;
+  });
   const stringConstants = printOperations
     .map((operation, index) => {
       const encoded = encodeCString(operation.value);
