@@ -211,6 +211,34 @@ describe("tscn CLI", () => {
     }
   });
 
+  test("lowers numeric strict equality in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-number-strict-equality.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double 3, 3");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"yes\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("preserves numeric expression shape in strict equality conditions", async () => {
+    const result = await expectSuccessfulCompile("if-number-expression-strict-equality.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%num.0 = fadd double 1, 2");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double %num.0, 3");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.else.0");
+      expect(llvmIr).toContain(String.raw`c"yes\00"`);
+      expect(llvmIr).toContain(String.raw`c"no\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("preserves statement order inside supported if blocks", async () => {
     const result = await expectSuccessfulCompile("if-multiple-prints.ts");
 

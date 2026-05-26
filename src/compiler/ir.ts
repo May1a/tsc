@@ -12,6 +12,31 @@ export type JsIrSourceModule = {
   readonly operations: readonly JsIrOperation[];
 };
 
+export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide";
+
+export type JsIrNumberExpression =
+  | {
+      readonly kind: "literal";
+      readonly value: number;
+    }
+  | {
+      readonly kind: "binary";
+      readonly operator: JsIrNumberOperator;
+      readonly left: JsIrNumberExpression;
+      readonly right: JsIrNumberExpression;
+    };
+
+export type JsIrCondition =
+  | {
+      readonly kind: "boolean";
+      readonly value: boolean;
+    }
+  | {
+      readonly kind: "numberStrictEquals";
+      readonly left: JsIrNumberExpression;
+      readonly right: JsIrNumberExpression;
+    };
+
 export type JsIrOperation =
   | {
       readonly kind: "constNumber";
@@ -46,7 +71,7 @@ export type JsIrOperation =
     }
   | {
       readonly kind: "if";
-      readonly condition: boolean;
+      readonly condition: JsIrCondition;
       readonly thenOperations: readonly JsIrOperation[];
       readonly elseOperations: readonly JsIrOperation[];
     };
@@ -210,7 +235,7 @@ function lowerIfStatement(
   numberBindings: ReadonlyMap<string, number>,
   booleanBindings: ReadonlyMap<string, boolean>
 ): JsIrOperation | undefined {
-  const condition = lowerBooleanExpression(statement.expression, booleanBindings);
+  const condition = lowerConditionExpression(statement.expression, numberBindings, booleanBindings);
   if (condition === undefined || !ts.isBlock(statement.thenStatement)) {
     return undefined;
   }
@@ -351,6 +376,102 @@ function lowerBooleanExpression(expression: ts.Expression, booleanBindings: Read
   }
 
   return undefined;
+}
+
+function lowerConditionExpression(
+  expression: ts.Expression,
+  numberBindings: ReadonlyMap<string, number>,
+  booleanBindings: ReadonlyMap<string, boolean>
+): JsIrCondition | undefined {
+  const booleanValue = lowerBooleanExpression(expression, booleanBindings);
+  if (booleanValue !== undefined) {
+    return {
+      kind: "boolean",
+      value: booleanValue
+    };
+  }
+
+  if (!ts.isBinaryExpression(expression) || expression.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) {
+    return undefined;
+  }
+
+  const left = lowerNumberConditionExpression(expression.left, numberBindings);
+  const right = lowerNumberConditionExpression(expression.right, numberBindings);
+  if (left === undefined || right === undefined) {
+    return undefined;
+  }
+
+  return {
+    kind: "numberStrictEquals",
+    left,
+    right
+  };
+}
+
+function lowerNumberConditionExpression(
+  expression: ts.Expression,
+  numberBindings: ReadonlyMap<string, number>
+): JsIrNumberExpression | undefined {
+  if (ts.isNumericLiteral(expression)) {
+    return {
+      kind: "literal",
+      value: Number(expression.text)
+    };
+  }
+
+  if (ts.isIdentifier(expression)) {
+    const value = numberBindings.get(expression.text);
+    if (value === undefined) {
+      return undefined;
+    }
+
+    return {
+      kind: "literal",
+      value
+    };
+  }
+
+  if (!ts.isBinaryExpression(expression)) {
+    return undefined;
+  }
+
+  const left = lowerNumberConditionExpression(expression.left, numberBindings);
+  const right = lowerNumberConditionExpression(expression.right, numberBindings);
+  if (left === undefined || right === undefined) {
+    return undefined;
+  }
+
+  const operator = lowerNumberOperator(expression.operatorToken.kind);
+  if (operator === undefined) {
+    return undefined;
+  }
+
+  return {
+    kind: "binary",
+    operator,
+    left,
+    right
+  };
+}
+
+function lowerNumberOperator(kind: ts.SyntaxKind): JsIrNumberOperator | undefined {
+  switch (kind) {
+    case ts.SyntaxKind.PlusToken: {
+      return "add";
+    }
+    case ts.SyntaxKind.MinusToken: {
+      return "subtract";
+    }
+    case ts.SyntaxKind.AsteriskToken: {
+      return "multiply";
+    }
+    case ts.SyntaxKind.SlashToken: {
+      return "divide";
+    }
+    default: {
+      return undefined;
+    }
+  }
 }
 
 function lowerNumberExpression(expression: ts.Expression, numberBindings: ReadonlyMap<string, number>): number | undefined {

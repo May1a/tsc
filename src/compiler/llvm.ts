@@ -1,4 +1,4 @@
-import type { JsIrModule, JsIrOperation } from "./ir.js";
+import type { JsIrCondition, JsIrModule, JsIrNumberExpression, JsIrNumberOperator, JsIrOperation } from "./ir.js";
 
 type PrintOperation =
   | {
@@ -16,6 +16,8 @@ type EmitContext = {
   hasNumberPrint: boolean;
   printIndex: number;
   ifIndex: number;
+  cmpIndex: number;
+  numIndex: number;
 };
 
 type IfOperation = Extract<JsIrOperation, { readonly kind: "if" }>;
@@ -61,7 +63,9 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     stringConstants: [],
     hasNumberPrint: false,
     printIndex: 0,
-    ifIndex: 0
+    ifIndex: 0,
+    cmpIndex: 0,
+    numIndex: 0
   };
   const printCalls = module.modules.flatMap((sourceModule) => emitOperations(sourceModule.operations, context)).join("\n");
   const stringConstants = context.stringConstants.join("\n");
@@ -156,7 +160,12 @@ function emitIfOperation(operation: IfOperation, context: EmitContext): string[]
   if (elseOperations.length > 0) {
     falseLabel = elseLabel;
   }
-  const lines = [`  br i1 ${String(condition)}, label %${thenLabel}, label %${falseLabel}`, `${thenLabel}:`];
+  const emittedCondition = emitCondition(condition, context);
+  const lines = [
+    ...emittedCondition.lines,
+    `  br i1 ${emittedCondition.value}, label %${thenLabel}, label %${falseLabel}`,
+    `${thenLabel}:`
+  ];
 
   lines.push(...emitOperationsWithScopedBindings(thenOperations, context));
   lines.push(`  br label %${endLabel}`);
@@ -169,6 +178,73 @@ function emitIfOperation(operation: IfOperation, context: EmitContext): string[]
 
   lines.push(`${endLabel}:`);
   return lines;
+}
+
+function emitCondition(
+  condition: JsIrCondition,
+  context: EmitContext
+): { readonly lines: readonly string[]; readonly value: string } {
+  if (condition.kind === "boolean") {
+    return {
+      lines: [],
+      value: String(condition.value)
+    };
+  }
+
+  const index = context.cmpIndex;
+  context.cmpIndex += 1;
+  const name = `%cmp.${index}`;
+  const left = emitNumberExpression(condition.left, context);
+  const right = emitNumberExpression(condition.right, context);
+
+  return {
+    lines: [...left.lines, ...right.lines, `  ${name} = fcmp oeq double ${left.value}, ${right.value}`],
+    value: name
+  };
+}
+
+function emitNumberExpression(
+  expression: JsIrNumberExpression,
+  context: EmitContext
+): { readonly lines: readonly string[]; readonly value: string } {
+  if (expression.kind === "literal") {
+    return {
+      lines: [],
+      value: String(expression.value)
+    };
+  }
+
+  const left = emitNumberExpression(expression.left, context);
+  const right = emitNumberExpression(expression.right, context);
+  const index = context.numIndex;
+  context.numIndex += 1;
+  const name = `%num.${index}`;
+
+  return {
+    lines: [...left.lines, ...right.lines, `  ${name} = ${llvmNumberOperator(expression.operator)} double ${left.value}, ${right.value}`],
+    value: name
+  };
+}
+
+function llvmNumberOperator(operator: JsIrNumberOperator): string {
+  switch (operator) {
+    case "add": {
+      return "fadd";
+    }
+    case "subtract": {
+      return "fsub";
+    }
+    case "multiply": {
+      return "fmul";
+    }
+    case "divide": {
+      return "fdiv";
+    }
+  }
+
+  const unsupported: never = operator;
+  void unsupported;
+  throw new Error("Unsupported number operator");
 }
 
 function emitOperationsWithScopedBindings(operations: readonly JsIrOperation[], context: EmitContext): string[] {
