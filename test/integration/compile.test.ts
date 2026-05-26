@@ -124,6 +124,18 @@ describe("tscn CLI", () => {
     }
   });
 
+  test("preserves numeric expression shape in print calls", async () => {
+    const result = await expectSuccessfulCompile("number-expression-print.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%num.0 = fadd double 1, 2");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("lowers top-level const number bindings used by print", async () => {
     const result = await expectSuccessfulCompile("const-number.ts");
 

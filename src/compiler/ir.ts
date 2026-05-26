@@ -37,6 +37,24 @@ export type JsIrCondition =
       readonly right: JsIrNumberExpression;
     };
 
+export type JsIrExpression =
+  | {
+      readonly kind: "string";
+      readonly value: string;
+    }
+  | {
+      readonly kind: "number";
+      readonly value: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "boolean";
+      readonly value: boolean;
+    }
+  | {
+      readonly kind: "identifier";
+      readonly name: string;
+    };
+
 export type JsIrOperation =
   | {
       readonly kind: "constNumber";
@@ -54,20 +72,8 @@ export type JsIrOperation =
       readonly value: boolean;
     }
   | {
-      readonly kind: "printString";
-      readonly value: string;
-    }
-  | {
-      readonly kind: "printIdentifier";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "printNumber";
-      readonly value: number;
-    }
-  | {
-      readonly kind: "printBoolean";
-      readonly value: boolean;
+      readonly kind: "print";
+      readonly expression: JsIrExpression;
     }
   | {
       readonly kind: "if";
@@ -186,43 +192,60 @@ function lowerStatement(
   }
 
   const [argument] = expression.arguments;
-  if (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument)) {
+  const printExpression = lowerPrintExpression(argument, stringBindings, numberBindings, booleanBindings);
+  if (printExpression !== undefined) {
     return {
-      kind: "printString",
-      value: argument.text
+      kind: "print",
+      expression: printExpression
     };
   }
 
-  const stringArgument = lowerStringExpression(argument, stringBindings);
+  return undefined;
+}
+
+function lowerPrintExpression(
+  expression: ts.Expression,
+  stringBindings: ReadonlyMap<string, string>,
+  numberBindings: ReadonlyMap<string, number>,
+  booleanBindings: ReadonlyMap<string, boolean>
+): JsIrExpression | undefined {
+  if (
+    ts.isIdentifier(expression) &&
+    (stringBindings.has(expression.text) || numberBindings.has(expression.text) || booleanBindings.has(expression.text))
+  ) {
+    return {
+      kind: "identifier",
+      name: expression.text
+    };
+  }
+
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+    return {
+      kind: "string",
+      value: expression.text
+    };
+  }
+
+  const stringArgument = lowerStringExpression(expression, stringBindings);
   if (stringArgument !== undefined) {
     return {
-      kind: "printString",
+      kind: "string",
       value: stringArgument
     };
   }
 
-  const numberArgument = lowerNumberExpression(argument, numberBindings);
+  const numberArgument = lowerNumberConditionExpression(expression, numberBindings);
   if (numberArgument !== undefined) {
     return {
-      kind: "printNumber",
+      kind: "number",
       value: numberArgument
     };
   }
 
-  if (argument.kind === ts.SyntaxKind.TrueKeyword || argument.kind === ts.SyntaxKind.FalseKeyword) {
+  if (expression.kind === ts.SyntaxKind.TrueKeyword || expression.kind === ts.SyntaxKind.FalseKeyword) {
     return {
-      kind: "printBoolean",
-      value: argument.kind === ts.SyntaxKind.TrueKeyword
-    };
-  }
-
-  if (
-    ts.isIdentifier(argument) &&
-    (stringBindings.has(argument.text) || numberBindings.has(argument.text) || booleanBindings.has(argument.text))
-  ) {
-    return {
-      kind: "printIdentifier",
-      name: argument.text
+      kind: "boolean",
+      value: expression.kind === ts.SyntaxKind.TrueKeyword
     };
   }
 

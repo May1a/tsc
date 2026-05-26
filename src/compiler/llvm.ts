@@ -1,4 +1,11 @@
-import type { JsIrCondition, JsIrModule, JsIrNumberExpression, JsIrNumberOperator, JsIrOperation } from "./ir.js";
+import type {
+  JsIrCondition,
+  JsIrExpression,
+  JsIrModule,
+  JsIrNumberExpression,
+  JsIrNumberOperator,
+  JsIrOperation
+} from "./ir.js";
 
 type PrintOperation =
   | {
@@ -125,28 +132,33 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
     return [];
   }
 
-  if (operation.kind === "printString") {
-    return [emitPrintOperation({ kind: "string", value: operation.value }, context)];
-  }
-
-  if (operation.kind === "printNumber") {
-    return [emitPrintOperation({ kind: "number", value: operation.value }, context)];
-  }
-
-  if (operation.kind === "printBoolean") {
-    return [emitPrintOperation({ kind: "string", value: String(operation.value) }, context)];
-  }
-
-  if (operation.kind === "printIdentifier") {
-    const binding = context.bindings.get(operation.name);
-    if (binding === undefined) {
-      return [];
-    }
-
-    return [emitPrintOperation(binding, context)];
+  if (operation.kind === "print") {
+    return emitPrintExpression(operation.expression, context);
   }
 
   return emitIfOperation(operation, context);
+}
+
+function emitPrintExpression(expression: JsIrExpression, context: EmitContext): string[] {
+  if (expression.kind === "string") {
+    return [emitPrintOperation({ kind: "string", value: expression.value }, context)];
+  }
+
+  if (expression.kind === "number") {
+    const value = emitNumberExpression(expression.value, context);
+    return [...value.lines, emitPrintNumber(value.value, context)];
+  }
+
+  if (expression.kind === "boolean") {
+    return [emitPrintOperation({ kind: "string", value: String(expression.value) }, context)];
+  }
+
+  const binding = context.bindings.get(expression.name);
+  if (binding === undefined) {
+    return [];
+  }
+
+  return [emitPrintOperation(binding, context)];
 }
 
 function emitIfOperation(operation: IfOperation, context: EmitContext): string[] {
@@ -269,6 +281,13 @@ function emitPrintOperation(operation: PrintOperation, context: EmitContext): st
   const encoded = encodeCString(operation.value);
   context.stringConstants.push(`@.str.${index} = private unnamed_addr constant [${encoded.length} x i8] c"${encoded.value}"`);
   return `  %print.${index} = call i32 @puts(ptr @.str.${index})`;
+}
+
+function emitPrintNumber(value: string, context: EmitContext): string {
+  const index = context.printIndex;
+  context.printIndex += 1;
+  context.hasNumberPrint = true;
+  return `  %print.${index} = call i32 (ptr, ...) @printf(ptr @.fmt.number, double ${value})`;
 }
 
 export const emitTraceMap = (module: JsIrModule): string =>
