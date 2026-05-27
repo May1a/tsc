@@ -20,6 +20,11 @@ export type JsIrNumberExpression =
       readonly value: number;
     }
   | {
+      readonly kind: "unary";
+      readonly operator: "negate";
+      readonly value: JsIrNumberExpression;
+    }
+  | {
       readonly kind: "binary";
       readonly operator: JsIrNumberOperator;
       readonly left: JsIrNumberExpression;
@@ -483,6 +488,19 @@ function lowerNumberExpression(
       return undefined;
     }
     return binding.value;
+  }
+
+  if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.MinusToken) {
+    const value = lowerNumberExpression(expression.operand, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+
+    return {
+      kind: "unary",
+      operator: "negate",
+      value
+    };
   }
 
   if (!ts.isBinaryExpression(expression)) {

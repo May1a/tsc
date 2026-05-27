@@ -257,6 +257,18 @@ function emitNumberExpression(
     };
   }
 
+  if (expression.kind === "unary") {
+    const value = emitNumberExpression(expression.value, context);
+    const index = context.numIndex;
+    context.numIndex += 1;
+    const name = `%num.${index}`;
+
+    return {
+      lines: [...value.lines, `  ${name} = fneg double ${value.value}`],
+      value: name
+    };
+  }
+
   const left = emitNumberExpression(expression.left, context);
   const right = emitNumberExpression(expression.right, context);
   const index = context.numIndex;

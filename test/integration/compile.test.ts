@@ -433,4 +433,28 @@ describe("tscn numeric conditions and bindings", () => {
       await result.cleanup();
     }
   });
+
+  test("preserves unary negation shape in print calls", async () => {
+    const result = await expectSuccessfulCompile("number-unary-negation-print.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%num.0 = fneg double 42");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("preserves unary negation shape for const number bindings used by print", async () => {
+    const result = await expectSuccessfulCompile("const-number-unary-negation-print.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%num.0 = fneg double 3");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
