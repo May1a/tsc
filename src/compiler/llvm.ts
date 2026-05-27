@@ -1,4 +1,5 @@
 import type {
+  JsIrBindingValue,
   JsIrCondition,
   JsIrExpression,
   JsIrModule,
@@ -7,18 +8,8 @@ import type {
   JsIrOperation
 } from "./ir.js";
 
-type PrintOperation =
-  | {
-      readonly kind: "number";
-      readonly value: number;
-    }
-  | {
-      readonly kind: "string";
-      readonly value: string;
-    };
-
 type EmitContext = {
-  readonly bindings: Map<string, PrintOperation>;
+  readonly bindings: Map<string, JsIrBindingValue>;
   readonly stringConstants: string[];
   hasNumberPrint: boolean;
   printIndex: number;
@@ -123,7 +114,7 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
   }
 
   if (operation.kind === "constBoolean") {
-    context.bindings.set(operation.name, { kind: "string", value: String(operation.value) });
+    context.bindings.set(operation.name, { kind: "boolean", value: operation.value });
     return [];
   }
 
@@ -133,24 +124,24 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
   }
 
   if (operation.kind === "print") {
-    return emitPrintExpression(operation.expression, context);
+    return emitExpressionPrint(operation.expression, context);
   }
 
   return emitIfOperation(operation, context);
 }
 
-function emitPrintExpression(expression: JsIrExpression, context: EmitContext): string[] {
+function emitExpressionPrint(expression: JsIrExpression, context: EmitContext): string[] {
   if (expression.kind === "string") {
-    return [emitPrintOperation({ kind: "string", value: expression.value }, context)];
+    return [emitStringPrint(expression.value, context)];
   }
 
   if (expression.kind === "number") {
-    const value = emitNumberExpression(expression.value, context);
-    return [...value.lines, emitPrintNumber(value.value, context)];
+    const result = emitNumberExpression(expression.value, context);
+    return [...result.lines, emitNumberPrint(result.value, context)];
   }
 
   if (expression.kind === "boolean") {
-    return [emitPrintOperation({ kind: "string", value: String(expression.value) }, context)];
+    return [emitStringPrint(String(expression.value), context)];
   }
 
   const binding = context.bindings.get(expression.name);
@@ -158,12 +149,25 @@ function emitPrintExpression(expression: JsIrExpression, context: EmitContext): 
     return [];
   }
 
-  return [emitPrintOperation(binding, context)];
+  return emitBindingPrint(binding, context);
+}
+
+function emitBindingPrint(binding: JsIrBindingValue, context: EmitContext): string[] {
+  if (binding.kind === "number") {
+    const result = emitNumberExpression(binding.value, context);
+    return [...result.lines, emitNumberPrint(result.value, context)];
+  }
+
+  if (binding.kind === "boolean") {
+    return [emitStringPrint(String(binding.value), context)];
+  }
+
+  return [emitStringPrint(binding.value, context)];
 }
 
 function emitIfOperation(operation: IfOperation, context: EmitContext): string[] {
-  const { condition, thenOperations, elseOperations } = operation;
-  const { ifIndex } = context;
+  const {condition, thenOperations, elseOperations} = operation;
+  const {ifIndex} = context;
   context.ifIndex += 1;
   const thenLabel = `if.then.${ifIndex}`;
   const elseLabel = `if.else.${ifIndex}`;
@@ -210,9 +214,36 @@ function emitCondition(
   const right = emitNumberExpression(condition.right, context);
 
   return {
-    lines: [...left.lines, ...right.lines, `  ${name} = fcmp oeq double ${left.value}, ${right.value}`],
+    lines: [...left.lines, ...right.lines, `  ${name} = ${llvmComparisonInstruction(condition.operator)} double ${left.value}, ${right.value}`],
     value: name
   };
+}
+
+function llvmComparisonInstruction(operator: "===" | "!==" | "<" | "<=" | ">" | ">="): string {
+  switch (operator) {
+    case "===": {
+      return "fcmp oeq";
+    }
+    case "!==": {
+      return "fcmp one";
+    }
+    case "<": {
+      return "fcmp olt";
+    }
+    case "<=": {
+      return "fcmp ole";
+    }
+    case ">": {
+      return "fcmp ogt";
+    }
+    case ">=": {
+      return "fcmp oge";
+    }
+  }
+
+  const unsupported: never = operator;
+  void unsupported;
+  throw new Error("Unsupported comparison operator");
 }
 
 function emitNumberExpression(
@@ -269,21 +300,15 @@ function emitOperationsWithScopedBindings(operations: readonly JsIrOperation[], 
   return lines;
 }
 
-function emitPrintOperation(operation: PrintOperation, context: EmitContext): string {
+function emitStringPrint(value: string, context: EmitContext): string {
   const index = context.printIndex;
   context.printIndex += 1;
-
-  if (operation.kind === "number") {
-    context.hasNumberPrint = true;
-    return `  %print.${index} = call i32 (ptr, ...) @printf(ptr @.fmt.number, double ${operation.value})`;
-  }
-
-  const encoded = encodeCString(operation.value);
+  const encoded = encodeCString(value);
   context.stringConstants.push(`@.str.${index} = private unnamed_addr constant [${encoded.length} x i8] c"${encoded.value}"`);
   return `  %print.${index} = call i32 @puts(ptr @.str.${index})`;
 }
 
-function emitPrintNumber(value: string, context: EmitContext): string {
+function emitNumberPrint(value: string, context: EmitContext): string {
   const index = context.printIndex;
   context.printIndex += 1;
   context.hasNumberPrint = true;

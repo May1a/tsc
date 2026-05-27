@@ -147,12 +147,13 @@ describe("tscn CLI", () => {
     }
   });
 
-  test("lowers numeric addition in top-level const bindings used by print", async () => {
+  test("preserves numeric expression shape in const number bindings used by print", async () => {
     const result = await expectSuccessfulCompile("const-number-addition.ts");
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42)");
+      expect(llvmIr).toContain("%num.0 = fadd double 40, 2");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
     } finally {
       await result.cleanup();
     }
@@ -218,34 +219,6 @@ describe("tscn CLI", () => {
       expect(llvmIr).toContain("if.else.0:");
       expect(llvmIr).toContain(String.raw`c"enabled\00"`);
       expect(llvmIr).toContain(String.raw`c"disabled\00"`);
-    } finally {
-      await result.cleanup();
-    }
-  });
-
-  test("lowers numeric strict equality in if conditions", async () => {
-    const result = await expectSuccessfulCompile("if-number-strict-equality.ts");
-
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double 3, 3");
-      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
-      expect(llvmIr).toContain(String.raw`c"yes\00"`);
-    } finally {
-      await result.cleanup();
-    }
-  });
-
-  test("preserves numeric expression shape in strict equality conditions", async () => {
-    const result = await expectSuccessfulCompile("if-number-expression-strict-equality.ts");
-
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fadd double 1, 2");
-      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double %num.0, 3");
-      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.else.0");
-      expect(llvmIr).toContain(String.raw`c"yes\00"`);
-      expect(llvmIr).toContain(String.raw`c"no\00"`);
     } finally {
       await result.cleanup();
     }
@@ -343,6 +316,119 @@ describe("tscn CLI", () => {
     try {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("error TSCN1002");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn numeric conditions and bindings", () => {
+  test("lowers numeric strict equality in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-number-strict-equality.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double 3, 3");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"yes\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("preserves numeric expression shape in strict equality conditions", async () => {
+    const result = await expectSuccessfulCompile("if-number-expression-strict-equality.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%num.0 = fadd double 1, 2");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double %num.0, 3");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.else.0");
+      expect(llvmIr).toContain(String.raw`c"yes\00"`);
+      expect(llvmIr).toContain(String.raw`c"no\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("crosses unified binding model through const expression, condition, and print", async () => {
+    const result = await expectSuccessfulCompile("const-number-expression-if-print.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%num.0 = fadd double 1, 2");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double %num.0, 3");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.else.0");
+      expect(llvmIr).toContain("if.then.0:");
+      expect(llvmIr).toContain("%num.1 = fadd double 1, 2");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.1)");
+      expect(llvmIr).toContain("if.else.0:");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers numeric strict inequality (!==) in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-number-not-strict-equality.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%cmp.0 = fcmp one double 1, 2");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"different\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers numeric less-than (<) in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-number-less-than.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%cmp.0 = fcmp olt double 1, 2");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"less\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers numeric less-than-or-equal (<=) in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-number-less-than-or-equal.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%cmp.0 = fcmp ole double 2, 2");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"less or equal\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers numeric greater-than (>) in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-number-greater-than.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%cmp.0 = fcmp ogt double 2, 1");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"greater\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers numeric greater-than-or-equal (>=) in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-number-greater-than-or-equal.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oge double 2, 2");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"greater or equal\00"`);
     } finally {
       await result.cleanup();
     }
