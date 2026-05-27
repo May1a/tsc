@@ -511,4 +511,63 @@ describe("tscn function declarations and calls", () => {
       await result.cleanup();
     }
   });
+
+  test("lowers function references to top-level const bindings", async () => {
+    const result = await expectSuccessfulCompile("function-captures-top-level-const.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @getX()");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42)");
+      expect(llvmIr).toContain("call void @getX()");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers calls to exported functions from imported modules", async () => {
+    const result = await expectSuccessfulCompile("import-function-call.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @foo()");
+      expect(llvmIr).toContain(String.raw`c"from exported function\00"`);
+      expect(llvmIr).toContain("call void @foo()");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn loops", () => {
+  test("lowers while loops with mutable numeric bindings", async () => {
+    const result = await expectSuccessfulCompile("while-loop.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br label %while.cond.0");
+      expect(llvmIr).toContain("while.cond.0:");
+      expect(llvmIr).toContain("while.body.0:");
+      expect(llvmIr).toContain("while.end.0:");
+      expect(llvmIr).toContain("store double 0, ptr %i.addr");
+      expect(llvmIr).toContain("store double %num.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn logical operators", () => {
+  test("lowers logical not in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-not-condition.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%cmp.0 = xor i1 false, true");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"false branch\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
 });

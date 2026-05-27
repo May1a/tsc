@@ -35,6 +35,10 @@ export type JsIrNumberExpression =
       readonly name: string;
     }
   | {
+      readonly kind: "variable";
+      readonly name: string;
+    }
+  | {
       readonly kind: "call";
       readonly name: string;
       readonly arguments: readonly JsIrNumberExpression[];
@@ -64,6 +68,10 @@ export type JsIrCondition =
       readonly operator: "===" | "!==" | "<" | "<=" | ">" | ">=";
       readonly left: JsIrNumberExpression;
       readonly right: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "negate";
+      readonly condition: JsIrCondition;
     };
 
 export type JsIrExpression =
@@ -106,6 +114,16 @@ export type JsIrOperation =
       readonly value: boolean;
     }
   | {
+      readonly kind: "letNumber";
+      readonly name: string;
+      readonly value: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "assignNumber";
+      readonly name: string;
+      readonly value: JsIrNumberExpression;
+    }
+  | {
       readonly kind: "print";
       readonly expression: JsIrExpression;
     }
@@ -114,6 +132,11 @@ export type JsIrOperation =
       readonly condition: JsIrCondition;
       readonly thenOperations: readonly JsIrOperation[];
       readonly elseOperations: readonly JsIrOperation[];
+    }
+  | {
+      readonly kind: "while";
+      readonly condition: JsIrCondition;
+      readonly body: readonly JsIrOperation[];
     }
   | {
       readonly kind: "function";
@@ -189,6 +212,9 @@ function updateBindings(
   if (operation.kind === "constBoolean") {
     bindings.set(operation.name, { kind: "boolean", value: operation.value });
   }
+  if (operation.kind === "letNumber") {
+    bindings.set(operation.name, { kind: "number", value: { kind: "variable", name: operation.name } });
+  }
 }
 
 function isNonExecutableDeclaration(statement: ts.Statement): boolean {
@@ -214,11 +240,15 @@ function lowerStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   if (ts.isVariableStatement(statement)) {
-    return lowerConstBinding(statement, bindings);
+    return lowerVariableBinding(statement, bindings);
   }
 
   if (ts.isIfStatement(statement)) {
     return lowerIfStatement(statement, bindings);
+  }
+
+  if (ts.isWhileStatement(statement)) {
+    return lowerWhileStatement(statement, bindings);
   }
 
   if (ts.isFunctionDeclaration(statement)) {
@@ -234,6 +264,11 @@ function lowerStatement(
   }
 
   const {expression} = statement;
+  const assignment = lowerAssignmentStatement(expression, bindings);
+  if (assignment !== undefined) {
+    return assignment;
+  }
+
   if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)) {
     return undefined;
   }
@@ -257,6 +292,27 @@ function lowerStatement(
   }
 
   return undefined;
+}
+
+function lowerWhileStatement(
+  statement: ts.WhileStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const condition = lowerConditionExpression(statement.expression, bindings);
+  if (condition === undefined || !ts.isBlock(statement.statement)) {
+    return undefined;
+  }
+
+  const body = lowerBlockStatements(statement.statement, bindings);
+  if (body === undefined) {
+    return undefined;
+  }
+
+  return {
+    kind: "while",
+    condition,
+    body
+  };
 }
 
 function lowerPrintExpression(
@@ -464,16 +520,36 @@ function lowerReturnStatement(
   };
 }
 
-function lowerConstBinding(
+function lowerVariableBinding(
   statement: ts.VariableStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0 || statement.declarationList.declarations.length !== 1) {
+  if (statement.declarationList.declarations.length !== 1) {
     return undefined;
   }
 
   const [declaration] = statement.declarationList.declarations;
   if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+    return undefined;
+  }
+
+  const isConst = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+  const isLet = (statement.declarationList.flags & ts.NodeFlags.Let) !== 0;
+
+  if (isLet) {
+    const numberValue = lowerNumberExpression(declaration.initializer, bindings);
+    if (numberValue === undefined) {
+      return undefined;
+    }
+
+    return {
+      kind: "letNumber",
+      name: declaration.name.text,
+      value: numberValue
+    };
+  }
+
+  if (!isConst) {
     return undefined;
   }
 
@@ -505,6 +581,35 @@ function lowerConstBinding(
   }
 
   return undefined;
+}
+
+function lowerAssignmentStatement(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isBinaryExpression(expression) || expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+    return undefined;
+  }
+
+  if (!ts.isIdentifier(expression.left)) {
+    return undefined;
+  }
+
+  const binding = bindings.get(expression.left.text);
+  if (binding?.kind !== "number" || binding.value.kind !== "variable") {
+    return undefined;
+  }
+
+  const value = lowerNumberExpression(expression.right, bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return {
+    kind: "assignNumber",
+    name: expression.left.text,
+    value
+  };
 }
 
 function lowerStringExpression(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): string | undefined {
@@ -553,6 +658,18 @@ function lowerConditionExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrCondition | undefined {
+  if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken) {
+    const condition = lowerConditionExpression(expression.operand, bindings);
+    if (condition === undefined) {
+      return undefined;
+    }
+
+    return {
+      kind: "negate",
+      condition
+    };
+  }
+
   const booleanValue = lowerBooleanExpression(expression, bindings);
   if (booleanValue !== undefined) {
     return {
