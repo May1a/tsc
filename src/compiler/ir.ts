@@ -29,6 +29,15 @@ export type JsIrNumberExpression =
       readonly operator: JsIrNumberOperator;
       readonly left: JsIrNumberExpression;
       readonly right: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "parameter";
+      readonly name: string;
+    }
+  | {
+      readonly kind: "call";
+      readonly name: string;
+      readonly arguments: readonly JsIrNumberExpression[];
     };
 
 export type JsIrBindingValue =
@@ -73,6 +82,11 @@ export type JsIrExpression =
   | {
       readonly kind: "identifier";
       readonly name: string;
+    }
+  | {
+      readonly kind: "call";
+      readonly name: string;
+      readonly arguments: readonly JsIrNumberExpression[];
     };
 
 export type JsIrOperation =
@@ -100,6 +114,21 @@ export type JsIrOperation =
       readonly condition: JsIrCondition;
       readonly thenOperations: readonly JsIrOperation[];
       readonly elseOperations: readonly JsIrOperation[];
+    }
+  | {
+      readonly kind: "function";
+      readonly name: string;
+      readonly parameters: readonly string[];
+      readonly body: readonly JsIrOperation[];
+    }
+  | {
+      readonly kind: "call";
+      readonly name: string;
+      readonly arguments: readonly JsIrNumberExpression[];
+    }
+  | {
+      readonly kind: "return";
+      readonly expression: JsIrNumberExpression;
     };
 
 export type JsIrResult = {
@@ -192,6 +221,14 @@ function lowerStatement(
     return lowerIfStatement(statement, bindings);
   }
 
+  if (ts.isFunctionDeclaration(statement)) {
+    return lowerFunctionDeclaration(statement, bindings);
+  }
+
+  if (ts.isReturnStatement(statement)) {
+    return lowerReturnStatement(statement, bindings);
+  }
+
   if (!ts.isExpressionStatement(statement)) {
     return undefined;
   }
@@ -199,6 +236,11 @@ function lowerStatement(
   const {expression} = statement;
   if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)) {
     return undefined;
+  }
+
+  const callOp = lowerCallStatement(expression, bindings);
+  if (callOp !== undefined) {
+    return callOp;
   }
 
   if (expression.expression.text !== "print" || expression.arguments.length !== 1) {
@@ -255,6 +297,22 @@ function lowerPrintExpression(
     return {
       kind: "boolean",
       value: expression.kind === ts.SyntaxKind.TrueKeyword
+    };
+  }
+
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
+    const args: JsIrNumberExpression[] = [];
+    for (const arg of expression.arguments) {
+      const lowered = lowerNumberExpression(arg, bindings);
+      if (lowered === undefined) {
+        return undefined;
+      }
+      args.push(lowered);
+    }
+    return {
+      kind: "call",
+      name: expression.expression.text,
+      arguments: args
     };
   }
 
@@ -323,6 +381,87 @@ function lowerBlockStatements(
   }
 
   return operations;
+}
+
+function lowerFunctionDeclaration(
+  statement: ts.FunctionDeclaration,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
+    return undefined;
+  }
+
+  const parameters: string[] = [];
+  const fnBindings = new Map(bindings);
+  for (const param of statement.parameters) {
+    if (!ts.isIdentifier(param.name)) {
+      return undefined;
+    }
+    parameters.push(param.name.text);
+    fnBindings.set(param.name.text, {
+      kind: "number",
+      value: { kind: "parameter", name: param.name.text }
+    });
+  }
+
+  const body = lowerBlockStatements(statement.body, fnBindings);
+  if (body === undefined) {
+    return undefined;
+  }
+
+  return {
+    kind: "function",
+    name: statement.name.text,
+    parameters,
+    body
+  };
+}
+
+function lowerCallStatement(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isIdentifier(expression.expression)) {
+    return undefined;
+  }
+
+  if (expression.expression.text === "print") {
+    return undefined;
+  }
+
+  const args: JsIrNumberExpression[] = [];
+  for (const arg of expression.arguments) {
+    const lowered = lowerNumberExpression(arg, bindings);
+    if (lowered === undefined) {
+      return undefined;
+    }
+    args.push(lowered);
+  }
+
+  return {
+    kind: "call",
+    name: expression.expression.text,
+    arguments: args
+  };
+}
+
+function lowerReturnStatement(
+  statement: ts.ReturnStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!statement.expression) {
+    return undefined;
+  }
+
+  const expression = lowerNumberExpression(statement.expression, bindings);
+  if (expression === undefined) {
+    return undefined;
+  }
+
+  return {
+    kind: "return",
+    expression
+  };
 }
 
 function lowerConstBinding(
@@ -488,6 +627,22 @@ function lowerNumberExpression(
       return undefined;
     }
     return binding.value;
+  }
+
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
+    const args: JsIrNumberExpression[] = [];
+    for (const arg of expression.arguments) {
+      const lowered = lowerNumberExpression(arg, bindings);
+      if (lowered === undefined) {
+        return undefined;
+      }
+      args.push(lowered);
+    }
+    return {
+      kind: "call",
+      name: expression.expression.text,
+      arguments: args
+    };
   }
 
   if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.MinusToken) {

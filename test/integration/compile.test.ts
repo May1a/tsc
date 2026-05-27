@@ -458,3 +458,57 @@ describe("tscn numeric conditions and bindings", () => {
     }
   });
 });
+
+describe("tscn function declarations and calls", () => {
+  test("lowers function declarations and calls (no params, no return)", async () => {
+    const result = await expectSuccessfulCompile("function-call.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @greet()");
+      expect(llvmIr).toContain("call void @greet()");
+      expect(llvmIr).toContain(String.raw`c"hello from function\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers function parameters and calls with arguments", async () => {
+    const result = await expectSuccessfulCompile("function-params.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @add(double %p0, double %p1)");
+      expect(llvmIr).toContain("%num.0 = fadd double %p0, %p1");
+      expect(llvmIr).toContain("call void @add(double 1, double 2)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers return statements and captures call results in expressions", async () => {
+    const result = await expectSuccessfulCompile("function-return.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define double @double(double %p0)");
+      expect(llvmIr).toContain("call double @double(double 3)");
+      expect(llvmIr).toContain("ret double %");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers recursive functions with forward declarations", async () => {
+    const result = await expectSuccessfulCompile("function-recursive.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("declare double @fib(double)");
+      expect(llvmIr).toContain("define double @fib(double %p0)");
+      expect(llvmIr).toContain("call double @fib(double");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});

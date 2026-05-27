@@ -16,15 +16,23 @@ type EmitContext = {
   ifIndex: number;
   cmpIndex: number;
   numIndex: number;
+  callIndex: number;
 };
 
-type IfOperation = Extract<JsIrOperation, { readonly kind: "if" }>;
+type FunctionDef = {
+  readonly name: string;
+  readonly parameters: readonly string[];
+  readonly body: readonly JsIrOperation[];
+  readonly outerBindings: Map<string, JsIrBindingValue>;
+  returnType: string;
+};
 
 const doubleQuoteByte = 34;
 const backslashByte = 92;
 const firstPrintableAsciiByte = 32;
 const lastPrintableAsciiByte = 126;
 const hexadecimalRadix = 16;
+const noLines = 0;
 
 const encodeCString = (value: string): { readonly value: string; readonly length: number } => {
   const bytes = [...Buffer.from(value, "utf8"), 0];
@@ -63,18 +71,37 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     printIndex: 0,
     ifIndex: 0,
     cmpIndex: 0,
-    numIndex: 0
+    numIndex: 0,
+    callIndex: 0
   };
-  const printCalls = module.modules.flatMap((sourceModule) => emitOperations(sourceModule.operations, context)).join("\n");
+  const functionDefs: FunctionDef[] = [];
+  const mainOps: JsIrOperation[] = [];
+
+  for (const sourceModule of module.modules) {
+    for (const op of sourceModule.operations) {
+      classifyAndProcessOperation(op, context, functionDefs, mainOps);
+    }
+  }
+
+  const fnLines = functionDefs
+    .flatMap((fn) => emitFunctionDefinition(fn, context))
+    .join("\n");
+  const forwardDeclarations = functionDefs
+    .map((fn) => {
+      const params = fn.parameters.map(() => "double").join(", ");
+      return `declare ${fn.returnType} @${fn.name}(${params})`;
+    })
+    .join("\n");
+  const mainLines = emitOperations(mainOps, context);
   const stringConstants = context.stringConstants.join("\n");
   let numberFormat = "";
   if (context.hasNumberPrint) {
     numberFormat = String.raw`@.fmt.number = private unnamed_addr constant [4 x i8] c"%g\0A\00"`;
   }
 
-  let printCallLines = "";
-  if (printCalls) {
-    printCallLines = `${printCalls}\n`;
+  let mainBody = "";
+  if (mainLines.length > noLines) {
+    mainBody = `${mainLines.join("\n")}\n`;
   }
 
   return `; tscn textual LLVM IR placeholder
@@ -88,13 +115,79 @@ declare i32 @printf(ptr, ...)
 
 ${numberFormat}
 ${stringConstants}
-
+${forwardDeclarations}
+${fnLines}
 define i32 @main() {
 entry:
-${printCallLines}  ret i32 0
+${mainBody}  ret i32 0
 }
 `;
 };
+
+function classifyAndProcessOperation(
+  operation: JsIrOperation,
+  context: EmitContext,
+  functionDefs: FunctionDef[],
+  mainOps: JsIrOperation[]
+): void {
+  if (operation.kind === "constNumber") {
+    context.bindings.set(operation.name, { kind: "number", value: operation.value });
+  } else if (operation.kind === "constBoolean") {
+    context.bindings.set(operation.name, { kind: "boolean", value: operation.value });
+  } else if (operation.kind === "constString") {
+    context.bindings.set(operation.name, { kind: "string", value: operation.value });
+  } else if (operation.kind === "function") {
+    const outerBindings = new Map(context.bindings);
+    const hasReturn = operation.body.some((op) => op.kind === "return");
+    let returnType = "void";
+    if (hasReturn) {
+      returnType = "double";
+    }
+    functionDefs.push({
+      name: operation.name,
+      parameters: operation.parameters,
+      body: operation.body,
+      outerBindings,
+      returnType
+    });
+    return;
+  }
+
+  mainOps.push(operation);
+}
+
+function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
+  const paramList = fn.parameters.map((_p, i) => `double %p${i}`).join(", ");
+  const lines: string[] = [`define ${fn.returnType} @${fn.name}(${paramList}) {`];
+  const fnContext: EmitContext = {
+    bindings: new Map(fn.outerBindings),
+    stringConstants: context.stringConstants,
+    hasNumberPrint: context.hasNumberPrint,
+    printIndex: context.printIndex,
+    ifIndex: 0,
+    cmpIndex: 0,
+    numIndex: 0,
+    callIndex: 0
+  };
+  for (let i = 0; i < fn.parameters.length; i++) {
+    fnContext.bindings.set(fn.parameters[i], {
+      kind: "number",
+      value: { kind: "parameter", name: `%p${i}` }
+    });
+  }
+  const bodyLines = emitOperations(fn.body, fnContext);
+  context.printIndex = fnContext.printIndex;
+  if (bodyLines.length > noLines) {
+    lines.push("entry:", ...bodyLines);
+  } else {
+    lines.push("entry:");
+  }
+  if (fn.returnType === "void") {
+    lines.push("  ret void");
+  }
+  lines.push("}", "");
+  return lines;
+}
 
 function emitOperations(operations: readonly JsIrOperation[], context: EmitContext): string[] {
   const lines: string[] = [];
@@ -127,7 +220,54 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
     return emitExpressionPrint(operation.expression, context);
   }
 
-  return emitIfOperation(operation, context);
+  if (operation.kind === "if") {
+    return emitIfOperation(operation, context);
+  }
+
+  if (operation.kind === "call") {
+    return emitCallOperation(operation, context);
+  }
+
+  if (operation.kind === "return") {
+    return emitReturnOperation(operation, context);
+  }
+
+  return [];
+}
+
+function emitCallOperation(operation: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrNumberExpression[] }, context: EmitContext): string[] {
+  const returnType = "void";
+  const lines: string[] = [];
+  const argValues: string[] = [];
+  for (const arg of operation.arguments) {
+    const result = emitNumberExpression(arg, context);
+    lines.push(...result.lines);
+    argValues.push(`double ${result.value}`);
+  }
+  const args = argValues.join(", ");
+  lines.push(`  call ${returnType} @${operation.name}(${args})`);
+  return lines;
+}
+
+function emitCallExpressionResult(expression: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrNumberExpression[] }, context: EmitContext): { readonly lines: string[]; readonly value: string } {
+  const lines: string[] = [];
+  const argValues: string[] = [];
+  for (const arg of expression.arguments) {
+    const result = emitNumberExpression(arg, context);
+    lines.push(...result.lines);
+    argValues.push(`double ${result.value}`);
+  }
+  const args = argValues.join(", ");
+  const index = context.callIndex;
+  context.callIndex += 1;
+  const name = `%call.${index}`;
+  lines.push(`  ${name} = call double @${expression.name}(${args})`);
+  return { lines, value: name };
+}
+
+function emitReturnOperation(operation: { readonly kind: "return"; readonly expression: JsIrNumberExpression }, context: EmitContext): string[] {
+  const result = emitNumberExpression(operation.expression, context);
+  return [...result.lines, `  ret double ${result.value}`];
 }
 
 function emitExpressionPrint(expression: JsIrExpression, context: EmitContext): string[] {
@@ -142,6 +282,11 @@ function emitExpressionPrint(expression: JsIrExpression, context: EmitContext): 
 
   if (expression.kind === "boolean") {
     return [emitStringPrint(String(expression.value), context)];
+  }
+
+  if (expression.kind === "call") {
+    const result = emitCallExpressionResult(expression, context);
+    return [...result.lines, emitNumberPrint(result.value, context)];
   }
 
   const binding = context.bindings.get(expression.name);
@@ -165,7 +310,7 @@ function emitBindingPrint(binding: JsIrBindingValue, context: EmitContext): stri
   return [emitStringPrint(binding.value, context)];
 }
 
-function emitIfOperation(operation: IfOperation, context: EmitContext): string[] {
+function emitIfOperation(operation: Extract<JsIrOperation, { readonly kind: "if" }>, context: EmitContext): string[] {
   const {condition, thenOperations, elseOperations} = operation;
   const {ifIndex} = context;
   context.ifIndex += 1;
@@ -173,7 +318,7 @@ function emitIfOperation(operation: IfOperation, context: EmitContext): string[]
   const elseLabel = `if.else.${ifIndex}`;
   const endLabel = `if.end.${ifIndex}`;
   let falseLabel = endLabel;
-  if (elseOperations.length > 0) {
+  if (elseOperations.length > noLines) {
     falseLabel = elseLabel;
   }
   const emittedCondition = emitCondition(condition, context);
@@ -186,7 +331,7 @@ function emitIfOperation(operation: IfOperation, context: EmitContext): string[]
   lines.push(...emitOperationsWithScopedBindings(thenOperations, context));
   lines.push(`  br label %${endLabel}`);
 
-  if (elseOperations.length > 0) {
+  if (elseOperations.length > noLines) {
     lines.push(`${elseLabel}:`);
     lines.push(...emitOperationsWithScopedBindings(elseOperations, context));
     lines.push(`  br label %${endLabel}`);
@@ -255,6 +400,24 @@ function emitNumberExpression(
       lines: [],
       value: String(expression.value)
     };
+  }
+
+  if (expression.kind === "parameter") {
+    const binding = context.bindings.get(expression.name);
+    if (binding?.kind === "number" && binding.value.kind === "parameter") {
+      return {
+        lines: [],
+        value: binding.value.name
+      };
+    }
+    return {
+      lines: [],
+      value: expression.name
+    };
+  }
+
+  if (expression.kind === "call") {
+    return emitCallExpressionResult(expression, context);
   }
 
   if (expression.kind === "unary") {
