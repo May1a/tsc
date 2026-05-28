@@ -698,3 +698,142 @@ describe("tscn logical operators", () => {
     }
   });
 });
+
+describe("tscn rich expressions", () => {
+  test("lowers numeric ternary expressions to LLVM select", async () => {
+    const result = await expectSuccessfulCompile("numeric-ternary.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%cmp.0 = fcmp ogt double 12, 10");
+      expect(llvmIr).toContain("select i1 %cmp.0, double 12, double 10");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers string ternary expressions through branch-selected pointers", async () => {
+    const result = await expectSuccessfulCompile("string-ternary.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br i1 true, label %str.then.0, label %str.else.0");
+      expect(llvmIr).toContain("%str.0 = phi ptr");
+      expect(llvmIr).toContain(String.raw`c"yes\00"`);
+      expect(llvmIr).toContain(String.raw`c"no\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("folds const string strict equality in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-string-strict-equality.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br i1 true, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"equal\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("folds const string strict inequality in if conditions", async () => {
+    const result = await expectSuccessfulCompile("if-string-not-strict-equality.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br i1 true, label %if.then.0, label %if.end.0");
+      expect(llvmIr).toContain(String.raw`c"different\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn string mutation", () => {
+  test("lowers mutable string bindings and literal reassignment", async () => {
+    const result = await expectSuccessfulCompile("let-string-reassignment.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%msg.addr = alloca ptr");
+      expect(llvmIr).toContain("store ptr @.str.0, ptr %msg.addr");
+      expect(llvmIr).toContain("store ptr @.str.2, ptr %msg.addr");
+      expect(llvmIr).toContain("load ptr, ptr %msg.addr");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("carries mutable string bindings through for-loop assignment", async () => {
+    const result = await expectSuccessfulCompile("let-string-loop.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%s.addr = alloca ptr");
+      expect(llvmIr).toContain("for.body.0:");
+      expect(llvmIr).toContain("store ptr @.str.1, ptr %s.addr");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn nested loop control", () => {
+  test("targets inner for-loop exit for nested break", async () => {
+    const result = await expectSuccessfulCompile("nested-for-inner-break.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("for.end.0:");
+      expect(llvmIr).toContain("for.end.1:");
+      expect(llvmIr).toContain("br label %for.end.1");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("targets inner while-loop condition for nested continue", async () => {
+    const result = await expectSuccessfulCompile("nested-while-inner-continue.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("while.cond.0:");
+      expect(llvmIr).toContain("while.cond.1:");
+      expect(llvmIr).toContain("br label %while.cond.1");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers break inside if inside for to the for-loop exit", async () => {
+    const result = await expectSuccessfulCompile("for-if-break.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("for.end.0:");
+      expect(llvmIr).toContain("br label %for.end.0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn do while loops", () => {
+  test("lowers do-while loops with body before condition", async () => {
+    const result = await expectSuccessfulCompile("do-while-loop.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br label %do.body.0");
+      expect(llvmIr).toContain("do.body.0:");
+      expect(llvmIr).toContain("do.cond.0:");
+      expect(llvmIr).toContain("do.end.0:");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %do.body.0, label %do.end.0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});

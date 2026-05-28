@@ -5,7 +5,8 @@ import type {
   JsIrModule,
   JsIrNumberExpression,
   JsIrNumberOperator,
-  JsIrOperation
+  JsIrOperation,
+  JsIrStringExpression
 } from "./ir.js";
 
 type EmitContext = {
@@ -21,6 +22,7 @@ type EmitContext = {
   loopIndex: number;
   logicIndex: number;
   boolIndex: number;
+  stringIndex: number;
 };
 
 type LoopLabels = {
@@ -85,7 +87,8 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     callIndex: 0,
     loopIndex: 0,
     logicIndex: 0,
-    boolIndex: 0
+    boolIndex: 0,
+    stringIndex: 0
   };
   const functionDefs: FunctionDef[] = [];
   const mainOps: JsIrOperation[] = [];
@@ -153,8 +156,12 @@ function classifyAndProcessOperation(
     context.bindings.set(operation.name, { kind: "closure", value: operation.value });
   } else if (operation.kind === "constString") {
     context.bindings.set(operation.name, { kind: "string", value: operation.value });
+  } else if (operation.kind === "constStringExpression") {
+    context.bindings.set(operation.name, { kind: "stringExpression", value: operation.value });
   } else if (operation.kind === "letNumber") {
     context.bindings.set(operation.name, { kind: "number", value: { kind: "variable", name: operation.name } });
+  } else if (operation.kind === "letString") {
+    context.bindings.set(operation.name, { kind: "stringVariable", name: operation.name });
   } else if (operation.kind === "function") {
     const outerBindings = new Map(context.bindings);
     const returnClosure = operation.body.find((op) => op.kind === "returnClosure");
@@ -203,7 +210,8 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     callIndex: 0,
     loopIndex: 0,
     logicIndex: 0,
-    boolIndex: 0
+    boolIndex: 0,
+    stringIndex: 0
   };
   for (let i = 0; i < fn.parameters.length; i++) {
     fnContext.bindings.set(fn.parameters[i], {
@@ -296,12 +304,25 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
     return [];
   }
 
+  if (operation.kind === "constStringExpression") {
+    context.bindings.set(operation.name, { kind: "stringExpression", value: operation.value });
+    return [];
+  }
+
   if (operation.kind === "letNumber") {
     return emitLetNumberOperation(operation, context);
   }
 
+  if (operation.kind === "letString") {
+    return emitLetStringOperation(operation, context);
+  }
+
   if (operation.kind === "assignNumber") {
     return emitAssignNumberOperation(operation, context);
+  }
+
+  if (operation.kind === "assignString") {
+    return emitAssignStringOperation(operation, context);
   }
 
   return undefined;
@@ -310,6 +331,10 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
 function emitLoopControlOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
   if (operation.kind === "while") {
     return emitWhileOperation(operation, context);
+  }
+
+  if (operation.kind === "doWhile") {
+    return emitDoWhileOperation(operation, context);
   }
 
   if (operation.kind === "for") {
@@ -341,6 +366,16 @@ function emitLetNumberOperation(
   return [...result.lines, `  ${pointer} = alloca double`, `  store double ${result.value}, ptr ${pointer}`];
 }
 
+function emitLetStringOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "letString" }>,
+  context: EmitContext
+): string[] {
+  const result = emitStringExpression(operation.value, context);
+  const pointer = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "stringVariable", name: operation.name });
+  return [...result.lines, `  ${pointer} = alloca ptr`, `  store ptr ${result.value}, ptr ${pointer}`];
+}
+
 function emitAssignNumberOperation(
   operation: Extract<JsIrOperation, { readonly kind: "assignNumber" }>,
   context: EmitContext
@@ -352,6 +387,19 @@ function emitAssignNumberOperation(
 
   const result = emitNumberExpression(operation.value, context);
   return [...result.lines, `  store double ${result.value}, ptr ${binding.value.name}`];
+}
+
+function emitAssignStringOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "assignString" }>,
+  context: EmitContext
+): string[] {
+  const binding = context.bindings.get(operation.name);
+  if (binding?.kind !== "stringVariable") {
+    return [];
+  }
+
+  const result = emitStringExpression(operation.value, context);
+  return [...result.lines, `  store ptr ${result.value}, ptr ${variablePointerName(binding.name)}`];
 }
 
 function emitCallOperation(operation: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrNumberExpression[] }, context: EmitContext): string[] {
@@ -394,6 +442,11 @@ function emitExpressionPrint(expression: JsIrExpression, context: EmitContext): 
     return [emitStringPrint(expression.value, context)];
   }
 
+  if (expression.kind === "stringExpression") {
+    const result = emitStringExpression(expression.value, context);
+    return [...result.lines, emitStringPointerPrint(result.value, context)];
+  }
+
   if (expression.kind === "number") {
     const result = emitNumberExpression(expression.value, context);
     return [...result.lines, emitNumberPrint(result.value, context)];
@@ -431,11 +484,21 @@ function emitBindingPrint(binding: JsIrBindingValue, context: EmitContext): stri
     return [...result.lines, ...emitBooleanValuePrint(result.value, context)];
   }
 
-  if (binding.kind !== "string") {
-    return [];
+  if (binding.kind === "string") {
+    return [emitStringPrint(binding.value, context)];
   }
 
-  return [emitStringPrint(binding.value, context)];
+  if (binding.kind === "stringExpression") {
+    const result = emitStringExpression(binding.value, context);
+    return [...result.lines, emitStringPointerPrint(result.value, context)];
+  }
+
+  if (binding.kind === "stringVariable") {
+    const result = emitStringExpression({ kind: "variable", name: binding.name }, context);
+    return [...result.lines, emitStringPointerPrint(result.value, context)];
+  }
+
+  return [];
 }
 
 function emitIfOperation(operation: Extract<JsIrOperation, { readonly kind: "if" }>, context: EmitContext): string[] {
@@ -488,6 +551,29 @@ function emitWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "
     `${bodyLabel}:`,
     ...bodyLines,
     `  br label %${condLabel}`,
+    `${endLabel}:`
+  ];
+}
+
+function emitDoWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "doWhile" }>, context: EmitContext): string[] {
+  const { loopIndex } = context;
+  context.loopIndex += 1;
+  const bodyLabel = `do.body.${loopIndex}`;
+  const condLabel = `do.cond.${loopIndex}`;
+  const endLabel = `do.end.${loopIndex}`;
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel });
+  const bodyLines = emitOperations(operation.body, context);
+  context.loopLabels.pop();
+  const emittedCondition = emitCondition(operation.condition, context);
+
+  return [
+    `  br label %${bodyLabel}`,
+    `${bodyLabel}:`,
+    ...bodyLines,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    ...emittedCondition.lines,
+    `  br i1 ${emittedCondition.value}, label %${bodyLabel}, label %${endLabel}`,
     `${endLabel}:`
   ];
 }
@@ -646,6 +732,51 @@ function emitNumberExpression(
   expression: JsIrNumberExpression,
   context: EmitContext
 ): { readonly lines: readonly string[]; readonly value: string } {
+  const simple = emitSimpleNumberExpression(expression, context);
+  if (simple !== undefined) {
+    return simple;
+  }
+
+  if (expression.kind === "call") {
+    return emitCallExpressionResult(expression, context);
+  }
+
+  if (expression.kind === "ternary") {
+    return emitTernaryNumberExpression(expression, context);
+  }
+
+  if (expression.kind === "unary") {
+    const value = emitNumberExpression(expression.value, context);
+    const index = context.numIndex;
+    context.numIndex += 1;
+    const name = `%num.${index}`;
+
+    return {
+      lines: [...value.lines, `  ${name} = fneg double ${value.value}`],
+      value: name
+    };
+  }
+
+  if (expression.kind !== "binary") {
+    throw new Error("Unsupported number expression");
+  }
+
+  const left = emitNumberExpression(expression.left, context);
+  const right = emitNumberExpression(expression.right, context);
+  const index = context.numIndex;
+  context.numIndex += 1;
+  const name = `%num.${index}`;
+
+  return {
+    lines: [...left.lines, ...right.lines, `  ${name} = ${llvmNumberOperator(expression.operator)} double ${left.value}, ${right.value}`],
+    value: name
+  };
+}
+
+function emitSimpleNumberExpression(
+  expression: JsIrNumberExpression,
+  context: EmitContext
+): { readonly lines: readonly string[]; readonly value: string } | undefined {
   if (expression.kind === "literal") {
     return {
       lines: [],
@@ -667,47 +798,94 @@ function emitNumberExpression(
     };
   }
 
-  if (expression.kind === "variable") {
-    const binding = context.bindings.get(expression.name);
-    let pointer = expression.name;
-    if (binding?.kind === "number" && binding.value.kind === "variable") {
-      pointer = binding.value.name;
-    }
-    const index = context.numIndex;
-    context.numIndex += 1;
-    const name = `%num.${index}`;
-
-    return {
-      lines: [`  ${name} = load double, ptr ${pointer}`],
-      value: name
-    };
+  if (expression.kind !== "variable") {
+    return undefined;
   }
 
-  if (expression.kind === "call") {
-    return emitCallExpressionResult(expression, context);
+  const binding = context.bindings.get(expression.name);
+  let pointer = expression.name;
+  if (binding?.kind === "number" && binding.value.kind === "variable") {
+    pointer = binding.value.name;
   }
-
-  if (expression.kind === "unary") {
-    const value = emitNumberExpression(expression.value, context);
-    const index = context.numIndex;
-    context.numIndex += 1;
-    const name = `%num.${index}`;
-
-    return {
-      lines: [...value.lines, `  ${name} = fneg double ${value.value}`],
-      value: name
-    };
-  }
-
-  const left = emitNumberExpression(expression.left, context);
-  const right = emitNumberExpression(expression.right, context);
   const index = context.numIndex;
   context.numIndex += 1;
   const name = `%num.${index}`;
 
   return {
-    lines: [...left.lines, ...right.lines, `  ${name} = ${llvmNumberOperator(expression.operator)} double ${left.value}, ${right.value}`],
+    lines: [`  ${name} = load double, ptr ${pointer}`],
     value: name
+  };
+}
+
+function emitTernaryNumberExpression(
+  expression: Extract<JsIrNumberExpression, { readonly kind: "ternary" }>,
+  context: EmitContext
+): { readonly lines: readonly string[]; readonly value: string } {
+  const condition = emitCondition(expression.condition, context);
+  const consequent = emitNumberExpression(expression.consequent, context);
+  const alternate = emitNumberExpression(expression.alternate, context);
+  const index = context.numIndex;
+  context.numIndex += 1;
+  const name = `%num.${index}`;
+
+  return {
+    lines: [
+      ...condition.lines,
+      ...consequent.lines,
+      ...alternate.lines,
+      `  ${name} = select i1 ${condition.value}, double ${consequent.value}, double ${alternate.value}`
+    ],
+    value: name
+  };
+}
+
+function emitStringExpression(
+  expression: JsIrStringExpression,
+  context: EmitContext
+): { readonly lines: readonly string[]; readonly value: string } {
+  if (expression.kind === "literal") {
+    return { lines: [], value: addStringConstant(expression.value, context) };
+  }
+
+  if (expression.kind === "variable") {
+    const index = context.stringIndex;
+    context.stringIndex += 1;
+    const name = `%str.${index}`;
+    return {
+      lines: [`  ${name} = load ptr, ptr ${variablePointerName(expression.name)}`],
+      value: name
+    };
+  }
+
+  return emitTernaryStringExpression(expression, context);
+}
+
+function emitTernaryStringExpression(
+  expression: Extract<JsIrStringExpression, { readonly kind: "ternary" }>,
+  context: EmitContext
+): { readonly lines: readonly string[]; readonly value: string } {
+  const index = context.stringIndex;
+  context.stringIndex += 1;
+  const thenLabel = `str.then.${index}`;
+  const elseLabel = `str.else.${index}`;
+  const endLabel = `str.end.${index}`;
+  const value = `%str.${index}`;
+  const condition = emitCondition(expression.condition, context);
+  const consequent = addStringConstant(expression.consequent, context);
+  const alternate = addStringConstant(expression.alternate, context);
+
+  return {
+    lines: [
+      ...condition.lines,
+      `  br i1 ${condition.value}, label %${thenLabel}, label %${elseLabel}`,
+      `${thenLabel}:`,
+      `  br label %${endLabel}`,
+      `${elseLabel}:`,
+      `  br label %${endLabel}`,
+      `${endLabel}:`,
+      `  ${value} = phi ptr [ ${consequent}, %${thenLabel} ], [ ${alternate}, %${elseLabel} ]`
+    ],
+    value
   };
 }
 
@@ -749,6 +927,21 @@ function emitStringPrint(value: string, context: EmitContext): string {
   context.stringConstants.push(`@.str.${index} = private unnamed_addr constant [${encoded.length} x i8] c"${encoded.value}"`);
   return `  %print.${index} = call i32 @puts(ptr @.str.${index})`;
 }
+
+function emitStringPointerPrint(value: string, context: EmitContext): string {
+  const index = context.printIndex;
+  context.printIndex += 1;
+  return `  %print.${index} = call i32 @puts(ptr ${value})`;
+}
+
+function addStringConstant(value: string, context: EmitContext): string {
+  const index = context.printIndex;
+  context.printIndex += 1;
+  const encoded = encodeCString(value);
+  context.stringConstants.push(`@.str.${index} = private unnamed_addr constant [${encoded.length} x i8] c"${encoded.value}"`);
+  return `@.str.${index}`;
+}
+
 
 function emitNumberPrint(value: string, context: EmitContext): string {
   const index = context.printIndex;
