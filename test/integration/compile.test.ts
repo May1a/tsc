@@ -537,6 +537,49 @@ describe("tscn function declarations and calls", () => {
       await result.cleanup();
     }
   });
+
+  test("lowers imported function calls used as print expressions", async () => {
+    const result = await expectSuccessfulCompile("import-function-expression.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define double @add(double %p0, double %p1)");
+      expect(llvmIr).toContain("%call.0 = call double @add(double 1, double 2)");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %call.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers mutual recursion across imported modules with forward declarations", async () => {
+    const result = await expectSuccessfulCompile("import-mutual-recursion.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("declare double @isEven(double)");
+      expect(llvmIr).toContain("declare double @isOdd(double)");
+      expect(llvmIr).toContain("define double @isEven(double %p0)");
+      expect(llvmIr).toContain("define double @isOdd(double %p0)");
+      expect(llvmIr).toContain("call double @isOdd(double");
+      expect(llvmIr).toContain("call double @isEven(double");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers returned closures with captured numeric parameters", async () => {
+    const result = await expectSuccessfulCompile("returning-closure.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define double @adder(double %p0, double %p1)");
+      expect(llvmIr).toContain("%num.0 = fadd double %p0, %p1");
+      expect(llvmIr).toContain("%call.0 = call double @adder(double 3, double 5)");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %call.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn loops", () => {
@@ -555,6 +598,47 @@ describe("tscn loops", () => {
       await result.cleanup();
     }
   });
+
+  test("lowers for loops with initializer, condition, and increment", async () => {
+    const result = await expectSuccessfulCompile("for-loop.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("store double 0, ptr %i.addr");
+      expect(llvmIr).toContain("br label %for.cond.0");
+      expect(llvmIr).toContain("for.body.0:");
+      expect(llvmIr).toContain("for.step.0:");
+      expect(llvmIr).toContain("for.end.0:");
+      expect(llvmIr).toContain("store double %num.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers break statements to the current loop exit", async () => {
+    const result = await expectSuccessfulCompile("while-break.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br label %while.end.0");
+      expect(llvmIr).toContain("while.end.0:");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers continue statements to the current for-loop increment", async () => {
+    const result = await expectSuccessfulCompile("for-continue.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br label %for.step.0");
+      expect(llvmIr).toContain("for.step.0:");
+      expect(llvmIr).toContain("br label %for.cond.0");
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn logical operators", () => {
@@ -566,6 +650,49 @@ describe("tscn logical operators", () => {
       expect(llvmIr).toContain("%cmp.0 = xor i1 false, true");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
       expect(llvmIr).toContain(String.raw`c"false branch\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers logical and in if conditions with short-circuit blocks", async () => {
+    const result = await expectSuccessfulCompile("if-and-condition.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("logic.rhs.0:");
+      expect(llvmIr).toContain("logic.end.0:");
+      expect(llvmIr).toContain("phi i1 [ false");
+      expect(llvmIr).toContain(String.raw`c"both\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers logical or in if conditions with short-circuit blocks", async () => {
+    const result = await expectSuccessfulCompile("if-or-condition.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("logic.rhs.0:");
+      expect(llvmIr).toContain("logic.end.0:");
+      expect(llvmIr).toContain("phi i1 [ true");
+      expect(llvmIr).toContain(String.raw`c"zero\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("prints const bindings initialized from logical expressions", async () => {
+    const result = await expectSuccessfulCompile("const-logical-expression.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("logic.rhs.0:");
+      expect(llvmIr).toContain("bool.true.0:");
+      expect(llvmIr).toContain("bool.false.0:");
+      expect(llvmIr).toContain(String.raw`c"true\00"`);
+      expect(llvmIr).toContain(String.raw`c"false\00"`);
     } finally {
       await result.cleanup();
     }

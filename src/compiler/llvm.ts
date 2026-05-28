@@ -11,6 +11,7 @@ import type {
 type EmitContext = {
   readonly bindings: Map<string, JsIrBindingValue>;
   readonly stringConstants: string[];
+  readonly loopLabels: LoopLabels[];
   hasNumberPrint: boolean;
   printIndex: number;
   ifIndex: number;
@@ -18,6 +19,13 @@ type EmitContext = {
   numIndex: number;
   callIndex: number;
   loopIndex: number;
+  logicIndex: number;
+  boolIndex: number;
+};
+
+type LoopLabels = {
+  readonly breakLabel: string;
+  readonly continueLabel: string;
 };
 
 type FunctionDef = {
@@ -68,13 +76,16 @@ export const emitLlvmIr = (module: JsIrModule): string => {
   const context: EmitContext = {
     bindings: new Map(),
     stringConstants: [],
+    loopLabels: [],
     hasNumberPrint: false,
     printIndex: 0,
     ifIndex: 0,
     cmpIndex: 0,
     numIndex: 0,
     callIndex: 0,
-    loopIndex: 0
+    loopIndex: 0,
+    logicIndex: 0,
+    boolIndex: 0
   };
   const functionDefs: FunctionDef[] = [];
   const mainOps: JsIrOperation[] = [];
@@ -136,16 +147,33 @@ function classifyAndProcessOperation(
     context.bindings.set(operation.name, { kind: "number", value: operation.value });
   } else if (operation.kind === "constBoolean") {
     context.bindings.set(operation.name, { kind: "boolean", value: operation.value });
+  } else if (operation.kind === "constBooleanExpression") {
+    context.bindings.set(operation.name, { kind: "booleanExpression", value: operation.value });
+  } else if (operation.kind === "constClosure") {
+    context.bindings.set(operation.name, { kind: "closure", value: operation.value });
   } else if (operation.kind === "constString") {
     context.bindings.set(operation.name, { kind: "string", value: operation.value });
   } else if (operation.kind === "letNumber") {
     context.bindings.set(operation.name, { kind: "number", value: { kind: "variable", name: operation.name } });
   } else if (operation.kind === "function") {
     const outerBindings = new Map(context.bindings);
+    const returnClosure = operation.body.find((op) => op.kind === "returnClosure");
+    if (returnClosure?.kind === "returnClosure") {
+      functionDefs.push({
+        name: returnClosure.functionName,
+        parameters: [...returnClosure.captures, ...returnClosure.parameters],
+        body: returnClosure.body,
+        outerBindings: new Map(),
+        returnType: "double"
+      });
+    }
     const hasReturn = operation.body.some((op) => op.kind === "return");
     let returnType = "void";
     if (hasReturn) {
       returnType = "double";
+    }
+    if (returnClosure !== undefined) {
+      returnType = "ptr";
     }
     functionDefs.push({
       name: operation.name,
@@ -166,13 +194,16 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
   const fnContext: EmitContext = {
     bindings: new Map(fn.outerBindings),
     stringConstants: context.stringConstants,
+    loopLabels: [],
     hasNumberPrint: context.hasNumberPrint,
     printIndex: context.printIndex,
     ifIndex: 0,
     cmpIndex: 0,
     numIndex: 0,
     callIndex: 0,
-    loopIndex: 0
+    loopIndex: 0,
+    logicIndex: 0,
+    boolIndex: 0
   };
   for (let i = 0; i < fn.parameters.length; i++) {
     fnContext.bindings.set(fn.parameters[i], {
@@ -206,6 +237,40 @@ function emitOperations(operations: readonly JsIrOperation[], context: EmitConte
 }
 
 function emitOperation(operation: JsIrOperation, context: EmitContext): string[] {
+  const bindingLines = emitBindingOperation(operation, context);
+  if (bindingLines !== undefined) {
+    return bindingLines;
+  }
+
+  const loopLines = emitLoopControlOperation(operation, context);
+  if (loopLines !== undefined) {
+    return loopLines;
+  }
+
+  if (operation.kind === "print") {
+    return emitExpressionPrint(operation.expression, context);
+  }
+
+  if (operation.kind === "if") {
+    return emitIfOperation(operation, context);
+  }
+
+  if (operation.kind === "call") {
+    return emitCallOperation(operation, context);
+  }
+
+  if (operation.kind === "return") {
+    return emitReturnOperation(operation, context);
+  }
+
+  if (operation.kind === "returnClosure") {
+    return ["  ret ptr null"];
+  }
+
+  return [];
+}
+
+function emitBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
   if (operation.kind === "constNumber") {
     context.bindings.set(operation.name, { kind: "number", value: operation.value });
     return [];
@@ -213,6 +278,16 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
 
   if (operation.kind === "constBoolean") {
     context.bindings.set(operation.name, { kind: "boolean", value: operation.value });
+    return [];
+  }
+
+  if (operation.kind === "constBooleanExpression") {
+    context.bindings.set(operation.name, { kind: "booleanExpression", value: operation.value });
+    return [];
+  }
+
+  if (operation.kind === "constClosure") {
+    context.bindings.set(operation.name, { kind: "closure", value: operation.value });
     return [];
   }
 
@@ -229,27 +304,27 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
     return emitAssignNumberOperation(operation, context);
   }
 
-  if (operation.kind === "print") {
-    return emitExpressionPrint(operation.expression, context);
-  }
+  return undefined;
+}
 
-  if (operation.kind === "if") {
-    return emitIfOperation(operation, context);
-  }
-
+function emitLoopControlOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
   if (operation.kind === "while") {
     return emitWhileOperation(operation, context);
   }
 
-  if (operation.kind === "call") {
-    return emitCallOperation(operation, context);
+  if (operation.kind === "for") {
+    return emitForOperation(operation, context);
   }
 
-  if (operation.kind === "return") {
-    return emitReturnOperation(operation, context);
+  if (operation.kind === "break") {
+    return emitBreakOperation(context);
   }
 
-  return [];
+  if (operation.kind === "continue") {
+    return emitContinueOperation(context);
+  }
+
+  return undefined;
 }
 
 function variablePointerName(name: string): string {
@@ -351,6 +426,15 @@ function emitBindingPrint(binding: JsIrBindingValue, context: EmitContext): stri
     return [emitStringPrint(String(binding.value), context)];
   }
 
+  if (binding.kind === "booleanExpression") {
+    const result = emitCondition(binding.value, context);
+    return [...result.lines, ...emitBooleanValuePrint(result.value, context)];
+  }
+
+  if (binding.kind !== "string") {
+    return [];
+  }
+
   return [emitStringPrint(binding.value, context)];
 }
 
@@ -392,6 +476,9 @@ function emitWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "
   const bodyLabel = `while.body.${loopIndex}`;
   const endLabel = `while.end.${loopIndex}`;
   const emittedCondition = emitCondition(operation.condition, context);
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel });
+  const bodyLines = emitOperations(operation.body, context);
+  context.loopLabels.pop();
 
   return [
     `  br label %${condLabel}`,
@@ -399,10 +486,58 @@ function emitWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "
     ...emittedCondition.lines,
     `  br i1 ${emittedCondition.value}, label %${bodyLabel}, label %${endLabel}`,
     `${bodyLabel}:`,
-    ...emitOperations(operation.body, context),
+    ...bodyLines,
     `  br label %${condLabel}`,
     `${endLabel}:`
   ];
+}
+
+function emitForOperation(operation: Extract<JsIrOperation, { readonly kind: "for" }>, context: EmitContext): string[] {
+  const { loopIndex } = context;
+  context.loopIndex += 1;
+  const condLabel = `for.cond.${loopIndex}`;
+  const bodyLabel = `for.body.${loopIndex}`;
+  const stepLabel = `for.step.${loopIndex}`;
+  const endLabel = `for.end.${loopIndex}`;
+  const initializerLines = emitOperation(operation.initializer, context);
+  const emittedCondition = emitCondition(operation.condition, context);
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  const bodyLines = emitOperations(operation.body, context);
+  context.loopLabels.pop();
+  const incrementLines = emitOperation(operation.increment, context);
+
+  return [
+    ...initializerLines,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    ...emittedCondition.lines,
+    `  br i1 ${emittedCondition.value}, label %${bodyLabel}, label %${endLabel}`,
+    `${bodyLabel}:`,
+    ...bodyLines,
+    `  br label %${stepLabel}`,
+    `${stepLabel}:`,
+    ...incrementLines,
+    `  br label %${condLabel}`,
+    `${endLabel}:`
+  ];
+}
+
+function emitBreakOperation(context: EmitContext): string[] {
+  const labels = context.loopLabels.at(-1);
+  if (labels === undefined) {
+    return [];
+  }
+
+  return [`  br label %${labels.breakLabel}`];
+}
+
+function emitContinueOperation(context: EmitContext): string[] {
+  const labels = context.loopLabels.at(-1);
+  if (labels === undefined) {
+    return [];
+  }
+
+  return [`  br label %${labels.continueLabel}`];
 }
 
 function emitCondition(
@@ -427,6 +562,10 @@ function emitCondition(
     };
   }
 
+  if (condition.kind === "and" || condition.kind === "or") {
+    return emitLogicalCondition(condition, context);
+  }
+
   const index = context.cmpIndex;
   context.cmpIndex += 1;
   const name = `%cmp.${index}`;
@@ -436,6 +575,43 @@ function emitCondition(
   return {
     lines: [...left.lines, ...right.lines, `  ${name} = ${llvmComparisonInstruction(condition.operator)} double ${left.value}, ${right.value}`],
     value: name
+  };
+}
+
+function emitLogicalCondition(
+  condition: Extract<JsIrCondition, { readonly kind: "and" | "or" }>,
+  context: EmitContext
+): { readonly lines: readonly string[]; readonly value: string } {
+  const index = context.logicIndex;
+  context.logicIndex += 1;
+  const leftLabel = `logic.left.${index}`;
+  const rhsLabel = `logic.rhs.${index}`;
+  const endLabel = `logic.end.${index}`;
+  const left = emitCondition(condition.left, context);
+  const right = emitCondition(condition.right, context);
+  const value = `%logic.${index}`;
+  let shortCircuitValue = "true";
+  let leftTrueLabel = endLabel;
+  let leftFalseLabel = rhsLabel;
+  if (condition.kind === "and") {
+    shortCircuitValue = "false";
+    leftTrueLabel = rhsLabel;
+    leftFalseLabel = endLabel;
+  }
+
+  return {
+    lines: [
+      `  br label %${leftLabel}`,
+      `${leftLabel}:`,
+      ...left.lines,
+      `  br i1 ${left.value}, label %${leftTrueLabel}, label %${leftFalseLabel}`,
+      `${rhsLabel}:`,
+      ...right.lines,
+      `  br label %${endLabel}`,
+      `${endLabel}:`,
+      `  ${value} = phi i1 [ ${shortCircuitValue}, %${leftLabel} ], [ ${right.value}, %${rhsLabel} ]`
+    ],
+    value
   };
 }
 
@@ -579,6 +755,27 @@ function emitNumberPrint(value: string, context: EmitContext): string {
   context.printIndex += 1;
   context.hasNumberPrint = true;
   return `  %print.${index} = call i32 (ptr, ...) @printf(ptr @.fmt.number, double ${value})`;
+}
+
+function emitBooleanValuePrint(value: string, context: EmitContext): string[] {
+  const index = context.boolIndex;
+  context.boolIndex += 1;
+  const truePrint = emitStringPrint("true", context);
+  const falsePrint = emitStringPrint("false", context);
+  const trueLabel = `bool.true.${index}`;
+  const falseLabel = `bool.false.${index}`;
+  const endLabel = `bool.end.${index}`;
+
+  return [
+    `  br i1 ${value}, label %${trueLabel}, label %${falseLabel}`,
+    `${trueLabel}:`,
+    truePrint,
+    `  br label %${endLabel}`,
+    `${falseLabel}:`,
+    falsePrint,
+    `  br label %${endLabel}`,
+    `${endLabel}:`
+  ];
 }
 
 export const emitTraceMap = (module: JsIrModule): string =>
