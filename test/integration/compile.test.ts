@@ -837,3 +837,201 @@ describe("tscn do while loops", () => {
     }
   });
 });
+
+describe("tscn boolean mutation", () => {
+  test("lowers mutable boolean bindings and reassignment", async () => {
+    const result = await expectSuccessfulCompile("let-boolean-reassignment.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%flag.addr = alloca i1");
+      expect(llvmIr).toContain("store i1 true, ptr %flag.addr");
+      expect(llvmIr).toContain("store i1 false, ptr %flag.addr");
+      expect(llvmIr).toContain("load i1, ptr %flag.addr");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("uses mutable boolean bindings in if conditions", async () => {
+    const result = await expectSuccessfulCompile("let-boolean-if.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%active.addr = alloca i1");
+      expect(llvmIr).toContain("load i1, ptr %active.addr");
+      expect(llvmIr).toContain("br i1 %bool.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn runtime strings", () => {
+  test("lowers string concat assignment to a runtime helper call", async () => {
+    const result = await expectSuccessfulCompile("string-concat-assign.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("declare ptr @strConcat(i64, ptr, i64, ptr)");
+      expect(llvmIr).toContain("call ptr @strConcat");
+      expect(llvmIr).toContain("store ptr %str.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("carries string concat assignment through loops", async () => {
+    const result = await expectSuccessfulCompile("string-concat-loop.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("for.body.0:");
+      expect(llvmIr).toContain("call ptr @strConcat");
+      expect(llvmIr).toContain("store ptr %str.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn arrays", () => {
+  test("lowers array literals and constant element access", async () => {
+    const result = await expectSuccessfulCompile("array-element-constant.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("@arr.0 = global [3 x double] [double 10, double 20, double 30]");
+      expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0, i64 0, i64 0");
+      expect(llvmIr).toContain("load double, ptr %arr.gep.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers array access with a mutable numeric index", async () => {
+    const result = await expectSuccessfulCompile("array-element-variable.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("load double, ptr %i.addr");
+      expect(llvmIr).toContain("fptosi double %num.");
+      expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers fixed array length as a numeric constant", async () => {
+    const result = await expectSuccessfulCompile("array-length.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 3)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers array element mutation", async () => {
+    const result = await expectSuccessfulCompile("array-mutation.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("store double 99, ptr %arr.gep.");
+      expect(llvmIr).toContain("load double, ptr %arr.gep.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers for loops over fixed arrays", async () => {
+    const result = await expectSuccessfulCompile("array-for-loop.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("for.body.0:");
+      expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn objects", () => {
+  test("lowers object literals and dot access", async () => {
+    const result = await expectSuccessfulCompile("object-dot-access.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%obj.0 = type { double, double }");
+      expect(llvmIr).toContain("%obj.addr = alloca %obj.0");
+      expect(llvmIr).toContain("load double, ptr %obj.gep.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers object bracket access with const string keys", async () => {
+    const result = await expectSuccessfulCompile("object-bracket-access.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("getelementptr %obj.0, ptr %obj.addr, i32 0, i32 0");
+      expect(llvmIr).toContain("load double, ptr %obj.gep.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers object property mutation", async () => {
+    const result = await expectSuccessfulCompile("object-mutation.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("store double 99, ptr %obj.gep.");
+      expect(llvmIr).toContain("load double, ptr %obj.gep.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers nested object property access", async () => {
+    const result = await expectSuccessfulCompile("object-nested.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%obj.1 = type { double }");
+      expect(llvmIr).toContain("%obj.0 = type { %obj.1 }");
+      expect(llvmIr).toContain("getelementptr %obj.0, ptr %obj.addr, i32 0, i32 0, i32 0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn runtime comparisons", () => {
+  test("lowers runtime string strict equality as pointer comparison", async () => {
+    const result = await expectSuccessfulCompile("runtime-string-equality.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("icmp eq ptr %str.");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers mutable boolean strict equality", async () => {
+    const result = await expectSuccessfulCompile("boolean-comparison.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("icmp eq i1 %bool.");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});

@@ -1,6 +1,6 @@
 declare function print(value: unknown): void;
 
 if (true) {
-  const unsupported = { value: 1 };
+  const unsupported = new Date();
   print(unsupported);
 }
