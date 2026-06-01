@@ -14,7 +14,7 @@ export type JsIrSourceModule = {
 
 export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide";
 
-export type JsIrValueKind = "number" | "string";
+export type JsIrValueKind = "number" | "string" | "value";
 
 export type JsIrFunctionParameter = {
   readonly name: string;
@@ -29,6 +29,42 @@ export type JsIrCallArgument =
   | {
       readonly valueKind: "string";
       readonly value: JsIrStringExpression;
+    }
+  | {
+      readonly valueKind: "value";
+      readonly value: JsIrValueExpression;
+    };
+
+export type JsIrValueExpression =
+  | {
+      readonly kind: "number";
+      readonly value: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "boolean";
+      readonly value: JsIrCondition;
+    }
+  | {
+      readonly kind: "undefined";
+    }
+  | {
+      readonly kind: "string";
+      readonly value: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "variable";
+      readonly name: string;
+    }
+  | {
+      readonly kind: "call";
+      readonly name: string;
+      readonly arguments: readonly JsIrCallArgument[];
+    }
+  | {
+      readonly kind: "ternary";
+      readonly condition: JsIrCondition;
+      readonly consequent: JsIrValueExpression;
+      readonly alternate: JsIrValueExpression;
     };
 
 export type JsIrNumberExpression =
@@ -145,6 +181,14 @@ export type JsIrBindingValue =
       readonly name: string;
     }
   | {
+      readonly kind: "value";
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "valueVariable";
+      readonly name: string;
+    }
+  | {
       readonly kind: "number";
       readonly value: JsIrNumberExpression;
     }
@@ -225,6 +269,12 @@ export type JsIrCondition =
       readonly operator: "===" | "!==";
       readonly left: JsIrCondition;
       readonly right: JsIrCondition;
+    }
+  | {
+      readonly kind: "valueComparison";
+      readonly operator: "===" | "!==";
+      readonly left: JsIrValueExpression;
+      readonly right: JsIrValueExpression;
     };
 
 export type JsIrExpression =
@@ -252,6 +302,10 @@ export type JsIrExpression =
       readonly kind: "call";
       readonly name: string;
       readonly arguments: readonly JsIrCallArgument[];
+    }
+  | {
+      readonly kind: "value";
+      readonly value: JsIrValueExpression;
     };
 
 export type JsIrOperation =
@@ -279,6 +333,11 @@ export type JsIrOperation =
       readonly kind: "constBooleanExpression";
       readonly name: string;
       readonly value: JsIrCondition;
+    }
+  | {
+      readonly kind: "constValue";
+      readonly name: string;
+      readonly value: JsIrValueExpression;
     }
   | {
       readonly kind: "constClosure";
@@ -390,6 +449,10 @@ export type JsIrOperation =
       readonly expression: JsIrStringExpression;
     }
   | {
+      readonly kind: "returnValue";
+      readonly expression: JsIrValueExpression;
+    }
+  | {
       readonly kind: "returnClosure";
       readonly functionName: string;
       readonly parameters: readonly string[];
@@ -461,6 +524,9 @@ function updateBindings(
   if (operation.kind === "constBooleanExpression") {
     bindings.set(operation.name, { kind: "booleanExpression", value: operation.value });
   }
+  if (operation.kind === "constValue") {
+    bindings.set(operation.name, { kind: "value", value: operation.value });
+  }
   if (operation.kind === "constClosure") {
     bindings.set(operation.name, { kind: "closure", value: operation.value });
   }
@@ -498,6 +564,9 @@ function updateBindings(
 }
 
 function functionReturnKind(operations: readonly JsIrOperation[]): JsIrValueKind | "void" {
+  if (operations.some((operation) => operation.kind === "returnValue")) {
+    return "value";
+  }
   if (operations.some((operation) => operation.kind === "returnString")) {
     return "string";
   }
@@ -728,27 +797,9 @@ function lowerPrintExpression(
     };
   }
 
-  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
-    return {
-      kind: "string",
-      value: expression.text
-    };
-  }
-
-  const stringArgument = lowerStringExpression(expression, bindings);
-  if (stringArgument !== undefined) {
-    return {
-      kind: "string",
-      value: stringArgument
-    };
-  }
-
-  const stringExpression = lowerStringRuntimeExpression(expression, bindings);
-  if (stringExpression !== undefined) {
-    return {
-      kind: "stringExpression",
-      value: stringExpression
-    };
+  const stringPrintExpression = lowerStringPrintExpression(expression, bindings);
+  if (stringPrintExpression !== undefined) {
+    return stringPrintExpression;
   }
 
   const numberArgument = lowerNumberExpression(expression, bindings);
@@ -764,6 +815,11 @@ function lowerPrintExpression(
       kind: "boolean",
       value: expression.kind === ts.SyntaxKind.TrueKeyword
     };
+  }
+
+  const valuePrintExpression = lowerValuePrintExpression(expression, bindings);
+  if (valuePrintExpression !== undefined) {
+    return valuePrintExpression;
   }
 
   if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
@@ -782,6 +838,38 @@ function lowerPrintExpression(
       name = callee.value.functionName;
     }
     return { kind: "call", name, arguments: args };
+  }
+
+  return undefined;
+}
+
+function lowerValuePrintExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrExpression | undefined {
+  const valueArgument = lowerValueExpression(expression, bindings);
+  if (valueArgument === undefined) {
+    return undefined;
+  }
+  return { kind: "value", value: valueArgument };
+}
+
+function lowerStringPrintExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrExpression | undefined {
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+    return { kind: "string", value: expression.text };
+  }
+
+  const stringArgument = lowerStringExpression(expression, bindings);
+  if (stringArgument !== undefined) {
+    return { kind: "string", value: stringArgument };
+  }
+
+  const stringExpression = lowerStringRuntimeExpression(expression, bindings);
+  if (stringExpression !== undefined) {
+    return { kind: "stringExpression", value: stringExpression };
   }
 
   return undefined;
@@ -869,6 +957,8 @@ function lowerFunctionDeclaration(
     parameters.push({ name: param.name.text, valueKind });
     if (valueKind === "string") {
       fnBindings.set(param.name.text, { kind: "stringVariable", name: param.name.text });
+    } else if (valueKind === "value") {
+      fnBindings.set(param.name.text, { kind: "valueVariable", name: param.name.text });
     } else {
       fnBindings.set(param.name.text, {
         kind: "number",
@@ -893,6 +983,9 @@ function lowerFunctionDeclaration(
 function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValueKind {
   if (parameter.type?.kind === ts.SyntaxKind.StringKeyword) {
     return "string";
+  }
+  if (parameter.type?.kind === ts.SyntaxKind.UnknownKeyword || parameter.type?.kind === ts.SyntaxKind.AnyKeyword) {
+    return "value";
   }
   return "number";
 }
@@ -943,12 +1036,21 @@ function lowerReturnStatement(
   }
 
   const expression = lowerNumberExpression(statement.expression, bindings);
-  if (expression === undefined) {
+  if (expression !== undefined) {
+    return {
+      kind: "returnNumber",
+      expression
+    };
+  }
+
+  const valueExpression = lowerValueExpression(statement.expression, bindings);
+  if (valueExpression === undefined) {
     return undefined;
   }
+
   return {
-    kind: "returnNumber",
-    expression
+    kind: "returnValue",
+    expression: valueExpression
   };
 }
 
@@ -1054,7 +1156,12 @@ function lowerVariableBinding(
     return undefined;
   }
 
-  return lowerConstVariableBinding(declaration.name.text, declaration.initializer, bindings);
+  return lowerConstVariableBinding(
+    declaration.name.text,
+    declaration.initializer,
+    bindings,
+    declaration.type?.kind === ts.SyntaxKind.UnknownKeyword || declaration.type?.kind === ts.SyntaxKind.AnyKeyword
+  );
 }
 
 function lowerLetVariableBinding(
@@ -1104,8 +1211,17 @@ function lowerLetVariableBinding(
 function lowerConstVariableBinding(
   name: string,
   initializer: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  forceValue = false
 ): JsIrOperation | undefined {
+  if (forceValue) {
+    const value = lowerValueExpression(initializer, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    return { kind: "constValue", name, value };
+  }
+
   const arrayElements = lowerArrayLiteralExpression(initializer, bindings);
   if (arrayElements !== undefined) {
     return {
@@ -1516,16 +1632,16 @@ function lowerComparisonConditionExpression(
 
   const left = lowerNumberExpression(expression.left, bindings);
   const right = lowerNumberExpression(expression.right, bindings);
-  if (left === undefined || right === undefined) {
-    return undefined;
+  if (left !== undefined && right !== undefined) {
+    return {
+      kind: "numberComparison",
+      operator,
+      left,
+      right
+    };
   }
 
-  return {
-    kind: "numberComparison",
-    operator,
-    left,
-    right
-  };
+  return lowerValueComparisonExpression(expression, operator, bindings);
 }
 
 function lowerStringComparisonExpression(
@@ -1599,6 +1715,111 @@ function lowerBooleanOperandExpression(
   }
 
   return undefined;
+}
+
+function lowerValueComparisonExpression(
+  expression: ts.BinaryExpression,
+  operator: "===" | "!==" | "<" | "<=" | ">" | ">=",
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCondition | undefined {
+  if (operator !== "===" && operator !== "!==") {
+    return undefined;
+  }
+
+  const left = lowerValueExpression(expression.left, bindings);
+  const right = lowerValueExpression(expression.right, bindings);
+  if (left === undefined || right === undefined) {
+    return undefined;
+  }
+
+  return { kind: "valueComparison", operator, left, right };
+}
+
+function lowerValueExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  const directValue = lowerDirectValueExpression(expression, bindings);
+  if (directValue !== undefined) {
+    return directValue;
+  }
+
+  const stringValue = lowerStringRuntimeExpression(expression, bindings);
+  if (stringValue !== undefined) {
+    return { kind: "string", value: stringValue };
+  }
+
+  const numberValue = lowerNumberExpression(expression, bindings);
+  if (numberValue !== undefined) {
+    return { kind: "number", value: numberValue };
+  }
+
+  const booleanValue = lowerConditionExpression(expression, bindings);
+  if (booleanValue !== undefined) {
+    return { kind: "boolean", value: booleanValue };
+  }
+
+  return undefined;
+}
+
+function lowerDirectValueExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (expression.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(expression) && expression.text === "undefined")) {
+    return { kind: "undefined" };
+  }
+
+  if (ts.isIdentifier(expression)) {
+    const binding = bindings.get(expression.text);
+    if (binding?.kind === "value") {
+      return binding.value;
+    }
+    if (binding?.kind === "valueVariable") {
+      return { kind: "variable", name: binding.name };
+    }
+  }
+
+  if (ts.isConditionalExpression(expression)) {
+    return lowerValueConditionalExpression(expression, bindings);
+  }
+
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
+    return lowerValueCallExpression(expression, bindings);
+  }
+
+  return undefined;
+}
+
+function lowerValueConditionalExpression(
+  expression: ts.ConditionalExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  const condition = lowerConditionExpression(expression.condition, bindings);
+  const consequent = lowerValueExpression(expression.whenTrue, bindings);
+  const alternate = lowerValueExpression(expression.whenFalse, bindings);
+  if (condition === undefined || consequent === undefined || alternate === undefined) {
+    return undefined;
+  }
+  return { kind: "ternary", condition, consequent, alternate };
+}
+
+function lowerValueCallExpression(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (!ts.isIdentifier(expression.expression)) {
+    return undefined;
+  }
+  const callee = bindings.get(expression.expression.text);
+  if (callee?.kind !== "function" || callee.returnKind !== "value") {
+    return undefined;
+  }
+  const args = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
+  if (args === undefined) {
+    return undefined;
+  }
+  return { kind: "call", name: expression.expression.text, arguments: args };
 }
 
 function lowerLogicalConditionExpression(
@@ -1792,7 +2013,7 @@ function lowerNumberCallExpression(
   if (callee?.kind === "closure") {
     args.push(...callee.value.captures);
     name = callee.value.functionName;
-  } else if (callee?.kind === "function" && callee.returnKind === "string") {
+  } else if (callee?.kind === "function" && (callee.returnKind === "string" || callee.returnKind === "value")) {
     return undefined;
   }
 
@@ -1863,6 +2084,13 @@ function lowerTypedCallArgument(
       return undefined;
     }
     return { valueKind: "string", value };
+  }
+  if (parameter.valueKind === "value") {
+    const value = lowerValueExpression(arg, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    return { valueKind: "value", value };
   }
   const value = lowerNumberExpression(arg, bindings);
   if (value === undefined) {

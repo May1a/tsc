@@ -30,6 +30,10 @@ type ExpectedNativeBehavior = {
   readonly status: number;
 };
 
+type ToolRunResult = NativeRunResult & {
+  readonly tool: string;
+};
+
 const compileFixture = async (fixture: string): Promise<CompileResult> => {
   const outDir = await mkdtemp(path.join(tmpdir(), "tscn-"));
   const result = spawnSync(
@@ -104,9 +108,25 @@ const expectNativeBehaviorIfAvailable = async (
   expect(native.stderr).toBe(expected.stderr);
 };
 
+const expectToolBehaviorIfAvailable = (
+  tool: string,
+  args: readonly string[],
+  expected: ExpectedNativeBehavior
+): ToolRunResult => {
+  if (!toolAvailable(tool)) {
+    return { tool, skipped: true, reason: `${tool} was not found; skipped native behavior check` };
+  }
+
+  const run = spawnSync(tool, args, { cwd: repoRoot, encoding: "utf8" });
+  expect(run.status, run.stderr).toBe(expected.status);
+  expect(run.stdout).toBe(expected.stdout);
+  expect(run.stderr).toBe(expected.stderr);
+  return { tool, skipped: false, status: run.status, stdout: run.stdout, stderr: run.stderr };
+};
+
 const expectLlvmAsVerificationIfAvailable = async (result: CompileResult): Promise<void> => {
   if (!toolAvailable("llvm-as")) {
-    expect(toolAvailable("llvm-as")).toBe(false);
+    expect("llvm-as was not found; skipped verifier check").toContain("llvm-as was not found");
     return;
   }
   const verifier = spawnSync("llvm-as", [path.join(result.outDir, "main.ll"), "-o", path.join(result.outDir, "main.bc")], {
@@ -1426,6 +1446,72 @@ describe("tscn runtime comparisons", () => {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("icmp eq i1 %bool.");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn JSValue ABI", () => {
+  test("lowers boxed print values through the value print helper", async () => {
+    const result = await expectSuccessfulCompile("value-print.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @valuePrint(i64 %value)");
+      expect(llvmIr).toContain("bitcast double 42.0 to i64");
+      expect(llvmIr).toContain("select i1 true, i64 9222246136947933186, i64 9222246136947933185");
+      expect(llvmIr).toContain("i64 9222246136947933184");
+      expect(llvmIr).toContain("or i64 %value.payload.");
+      expect(countOccurrences(llvmIr, "define void @valuePrint")).toBe(1);
+      await expectNativeBehaviorIfAvailable(result, {
+        status: 0,
+        stdout: "42\ntrue\nundefined\nboxed string\n",
+        stderr: ""
+      });
+      const lli = expectToolBehaviorIfAvailable("lli", [path.join(result.outDir, "main.ll")], {
+        status: 0,
+        stdout: "42\ntrue\nundefined\nboxed string\n",
+        stderr: ""
+      });
+      if (lli.skipped) {
+        expect(lli.reason).toContain("lli was not found");
+      }
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers value strict equality through a deterministic helper", async () => {
+    const result = await expectSuccessfulCompile("value-strict-equality.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define i1 @valueStrictEquals(i64 %left, i64 %right)");
+      expect(llvmIr).toContain("call i1 @valueStrictEquals(i64");
+      expect(countOccurrences(llvmIr, "define i1 @valueStrictEquals")).toBe(1);
+      expect(llvmIr.indexOf("define i1 @valueStrictEquals")).toBeLessThan(llvmIr.indexOf("define i32 @main"));
+      await expectNativeBehaviorIfAvailable(result, {
+        status: 0,
+        stdout: "numbers equal\nbooleans differ\nundefined equal\nstrings are references\n",
+        stderr: ""
+      });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("returns number or boolean through the same value-shaped ABI", async () => {
+    const result = await expectSuccessfulCompile("value-return-union.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("declare i64 @choose(double)");
+      expect(llvmIr).toContain("define i64 @choose(double %p0)");
+      expect(llvmIr).toContain("select i1 %cmp.0, i64 %value.");
+      expect(llvmIr).toContain("%call.0 = call i64 @choose(double 0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\n7\n", stderr: "" });
     } finally {
       await result.cleanup();
     }

@@ -1,4 +1,4 @@
-export type RuntimeHelper = "malloc" | "memcpy" | "memcmp" | "strConcat" | "strEquals";
+export type RuntimeHelper = "malloc" | "memcpy" | "memcmp" | "strConcat" | "strEquals" | "valueStrictEquals" | "valuePrint";
 
 export type RuntimeHelperEmitter = {
   readonly used: Set<RuntimeHelper>;
@@ -67,6 +67,55 @@ equal:
   ret i1 true
 not.equal:
   ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("valueStrictEquals")) {
+    definitions.push(`define i1 @valueStrictEquals(i64 %left, i64 %right) {
+entry:
+  %same = icmp eq i64 %left, %right
+  ret i1 %same
+}
+`);
+  }
+  if (runtime.used.has("valuePrint")) {
+    definitions.push(`@.value.fmt.number = private unnamed_addr constant [4 x i8] c"%g\\0A\\00"
+@.value.true = private unnamed_addr constant [5 x i8] c"true\\00"
+@.value.false = private unnamed_addr constant [6 x i8] c"false\\00"
+@.value.undefined = private unnamed_addr constant [10 x i8] c"undefined\\00"
+
+define void @valuePrint(i64 %value) {
+entry:
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  br i1 %is.undefined, label %print.undefined, label %check.false
+check.false:
+  %is.false = icmp eq i64 %value, 9222246136947933185
+  br i1 %is.false, label %print.false, label %check.true
+check.true:
+  %is.true = icmp eq i64 %value, 9222246136947933186
+  br i1 %is.true, label %print.true, label %check.string
+check.string:
+  %tagged = and i64 %value, -281474976710656
+  %is.string = icmp eq i64 %tagged, 9221683186994511872
+  br i1 %is.string, label %print.string, label %print.number
+print.undefined:
+  call i32 @puts(ptr @.value.undefined)
+  ret void
+print.false:
+  call i32 @puts(ptr @.value.false)
+  ret void
+print.true:
+  call i32 @puts(ptr @.value.true)
+  ret void
+print.string:
+  %payload = and i64 %value, 281474976710655
+  %ptr = inttoptr i64 %payload to ptr
+  call i32 @puts(ptr %ptr)
+  ret void
+print.number:
+  %number = bitcast i64 %value to double
+  call i32 (ptr, ...) @printf(ptr @.value.fmt.number, double %number)
+  ret void
 }
 `);
   }
