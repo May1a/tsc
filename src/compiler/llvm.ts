@@ -1,7 +1,9 @@
 import type {
+  JsIrCallArgument,
   JsIrBindingValue,
   JsIrCondition,
   JsIrExpression,
+  JsIrFunctionParameter,
   JsIrModule,
   JsIrNumberExpression,
   JsIrNumberOperator,
@@ -9,6 +11,13 @@ import type {
   JsIrOperation,
   JsIrStringExpression
 } from "./ir.js";
+import {
+  createRuntimeHelperEmitter,
+  emitRuntimeDeclarations,
+  emitRuntimeDefinitions,
+  useRuntimeHelper,
+  type RuntimeHelperEmitter
+} from "./runtime-helpers.js";
 
 type EmitContext = {
   readonly bindings: Map<string, JsIrBindingValue>;
@@ -33,12 +42,6 @@ type EmitContext = {
 };
 
 type ObjectLayout = ObjectValue;
-
-type RuntimeHelper = "malloc" | "memcpy" | "memcmp" | "strConcat" | "strEquals";
-
-type RuntimeHelperEmitter = {
-  readonly used: Set<RuntimeHelper>;
-};
 
 type NumberValue = {
   readonly lines: readonly string[];
@@ -70,11 +73,13 @@ type LoopLabels = {
 
 type FunctionDef = {
   readonly name: string;
-  readonly parameters: readonly string[];
+  readonly parameters: readonly JsIrFunctionParameter[];
   readonly body: readonly JsIrOperation[];
   readonly outerBindings: Map<string, JsIrBindingValue>;
-  returnType: string;
+  returnType: LlvmReturnType;
 };
+
+type LlvmReturnType = "void" | "double" | "ptr" | "{ ptr, i64 }";
 
 const doubleQuoteByte = 34;
 const backslashByte = 92;
@@ -119,7 +124,7 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     arrayGlobals: [],
     objectTypes: [],
     objectLayouts: new Map(),
-    runtime: { used: new Set() },
+    runtime: createRuntimeHelperEmitter(),
     loopLabels: [],
     hasNumberPrint: false,
     printIndex: 0,
@@ -148,7 +153,7 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     .join("\n");
   const forwardDeclarations = functionDefs
     .map((fn) => {
-      const params = fn.parameters.map(() => "double").join(", ");
+      const params = emitFunctionParameterTypes(fn.parameters).join(", ");
       return `declare ${fn.returnType} @${fn.name}(${params})`;
     })
     .join("\n");
@@ -165,8 +170,8 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     mainBody = `${mainLines.join("\n")}\n`;
   }
 
-  const runtimeDeclarations = emitRuntimeDeclarations(context).join("\n");
-  const runtimeDefinitions = emitRuntimeDefinitions(context).join("\n");
+  const runtimeDeclarations = emitRuntimeDeclarations(context.runtime).join("\n");
+  const runtimeDefinitions = emitRuntimeDefinitions(context.runtime).join("\n");
 
   return `; tscn textual LLVM IR placeholder
 ; entry ${module.entry}
@@ -190,73 +195,6 @@ ${mainBody}  ret i32 0
 }
 `;
 };
-
-function useRuntimeHelper(context: EmitContext, helper: RuntimeHelper): void {
-  context.runtime.used.add(helper);
-  if (helper === "strConcat") {
-    context.runtime.used.add("malloc");
-    context.runtime.used.add("memcpy");
-  }
-  if (helper === "strEquals") {
-    context.runtime.used.add("memcmp");
-  }
-}
-
-function emitRuntimeDeclarations(context: EmitContext): string[] {
-  const declarations: string[] = [];
-  const declarationByHelper = new Map<RuntimeHelper, string>([
-    ["malloc", "declare ptr @malloc(i64)"],
-    ["memcpy", "declare ptr @memcpy(ptr, ptr, i64)"],
-    ["memcmp", "declare i32 @memcmp(ptr, ptr, i64)"]
-  ]);
-
-  for (const helper of ["malloc", "memcpy", "memcmp"] as const) {
-    if (context.runtime.used.has(helper)) {
-      const declaration = declarationByHelper.get(helper);
-      if (declaration !== undefined) {
-        declarations.push(declaration);
-      }
-    }
-  }
-
-  return declarations;
-}
-
-function emitRuntimeDefinitions(context: EmitContext): string[] {
-  const definitions: string[] = [];
-  if (context.runtime.used.has("strConcat")) {
-    definitions.push(`define ptr @strConcat(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr) {
-entry:
-  %total = add i64 %left.len, %right.len
-  %alloc.size = add i64 %total, 1
-  %out = call ptr @malloc(i64 %alloc.size)
-  call ptr @memcpy(ptr %out, ptr %left.ptr, i64 %left.len)
-  %right.dst = getelementptr i8, ptr %out, i64 %left.len
-  call ptr @memcpy(ptr %right.dst, ptr %right.ptr, i64 %right.len)
-  %nul.ptr = getelementptr i8, ptr %out, i64 %total
-  store i8 0, ptr %nul.ptr
-  ret ptr %out
-}
-`);
-  }
-  if (context.runtime.used.has("strEquals")) {
-    definitions.push(`define i1 @strEquals(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr) {
-entry:
-  %same.len = icmp eq i64 %left.len, %right.len
-  br i1 %same.len, label %compare, label %not.equal
-compare:
-  %cmp = call i32 @memcmp(ptr %left.ptr, ptr %right.ptr, i64 %left.len)
-  %same.bytes = icmp eq i32 %cmp, 0
-  br i1 %same.bytes, label %equal, label %not.equal
-equal:
-  ret i1 true
-not.equal:
-  ret i1 false
-}
-`);
-  }
-  return definitions;
-}
 
 function classifyAndProcessOperation(
   operation: JsIrOperation,
@@ -292,16 +230,18 @@ function classifyAndProcessOperation(
     if (returnClosure?.kind === "returnClosure") {
       functionDefs.push({
         name: returnClosure.functionName,
-        parameters: [...returnClosure.captures, ...returnClosure.parameters],
+        parameters: [...returnClosure.captures, ...returnClosure.parameters].map((name) => ({ name, valueKind: "number" })),
         body: returnClosure.body,
         outerBindings: new Map(),
         returnType: "double"
       });
     }
-    const hasReturn = operation.body.some((op) => op.kind === "return");
-    let returnType = "void";
-    if (hasReturn) {
+    let returnType: LlvmReturnType = "void";
+    if (operation.body.some((op) => op.kind === "returnNumber")) {
       returnType = "double";
+    }
+    if (operation.body.some((op) => op.kind === "returnString")) {
+      returnType = "{ ptr, i64 }";
     }
     if (returnClosure !== undefined) {
       returnType = "ptr";
@@ -320,7 +260,7 @@ function classifyAndProcessOperation(
 }
 
 function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
-  const paramList = fn.parameters.map((_p, i) => `double %p${i}`).join(", ");
+  const paramList = emitFunctionParameters(fn.parameters).join(", ");
   const lines: string[] = [`define ${fn.returnType} @${fn.name}(${paramList}) {`];
   const fnContext: EmitContext = {
     bindings: new Map(fn.outerBindings),
@@ -344,13 +284,19 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     objectIndex: context.objectIndex
   };
   for (let i = 0; i < fn.parameters.length; i++) {
-    fnContext.bindings.set(fn.parameters[i], {
+    const parameter = fn.parameters[i];
+    if (parameter.valueKind === "string") {
+      fnContext.bindings.set(parameter.name, { kind: "stringVariable", name: parameter.name });
+      continue;
+    }
+    fnContext.bindings.set(parameter.name, {
       kind: "number",
       value: { kind: "parameter", name: `%p${i}` }
     });
   }
-  const bodyLines = emitOperations(fn.body, fnContext);
+  const bodyLines = [...emitStringParameterStores(fn.parameters), ...emitOperations(fn.body, fnContext)];
   context.printIndex = fnContext.printIndex;
+  context.hasNumberPrint = fnContext.hasNumberPrint;
   context.arrayIndex = fnContext.arrayIndex;
   context.objectIndex = fnContext.objectIndex;
   if (bodyLines.length > noLines) {
@@ -362,6 +308,41 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     lines.push("  ret void");
   }
   lines.push("}", "");
+  return lines;
+}
+
+function emitFunctionParameterTypes(parameters: readonly JsIrFunctionParameter[]): string[] {
+  return parameters.flatMap((parameter) => {
+    if (parameter.valueKind === "string") {
+      return ["i64", "ptr"];
+    }
+    return ["double"];
+  });
+}
+
+function emitFunctionParameters(parameters: readonly JsIrFunctionParameter[]): string[] {
+  return parameters.flatMap((parameter, index) => {
+    if (parameter.valueKind === "string") {
+      return [`i64 %p${index}.len`, `ptr %p${index}.ptr`];
+    }
+    return [`double %p${index}`];
+  });
+}
+
+function emitStringParameterStores(parameters: readonly JsIrFunctionParameter[]): string[] {
+  const lines: string[] = [];
+  for (let index = 0; index < parameters.length; index++) {
+    const parameter = parameters[index];
+    if (parameter.valueKind !== "string") {
+      continue;
+    }
+    lines.push(
+      `  ${variablePointerName(parameter.name)} = alloca ptr`,
+      `  ${stringLengthPointerName(parameter.name)} = alloca i64`,
+      `  store ptr %p${index}.ptr, ptr ${variablePointerName(parameter.name)}`,
+      `  store i64 %p${index}.len, ptr ${stringLengthPointerName(parameter.name)}`
+    );
+  }
   return lines;
 }
 
@@ -399,8 +380,12 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
     return emitCallOperation(operation, context);
   }
 
-  if (operation.kind === "return") {
-    return emitReturnOperation(operation, context);
+  if (operation.kind === "returnNumber") {
+    return emitNumberReturnOperation(operation, context);
+  }
+
+  if (operation.kind === "returnString") {
+    return emitStringReturnOperation(operation, context);
   }
 
   if (operation.kind === "returnClosure") {
@@ -658,18 +643,11 @@ function emitObjectStoreOperation(
   return [...pointer.lines, ...value.lines, `  store double ${value.value}, ptr ${pointer.value}`];
 }
 
-function emitCallOperation(operation: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrNumberExpression[] }, context: EmitContext): string[] {
+function emitCallOperation(operation: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): string[] {
   const returnType = "void";
-  const lines: string[] = [];
-  const argValues: string[] = [];
-  for (const arg of operation.arguments) {
-    const result = emitNumberExpression(arg, context);
-    lines.push(...result.lines);
-    argValues.push(`double ${result.value}`);
-  }
-  const args = argValues.join(", ");
-  lines.push(`  call ${returnType} @${operation.name}(${args})`);
-  return lines;
+  const args = emitCallArguments(operation.arguments, context);
+  const argValues = args.values.join(", ");
+  return [...args.lines, `  call ${returnType} @${operation.name}(${argValues})`];
 }
 
 function emitCallExpressionResult(expression: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrNumberExpression[] }, context: EmitContext): { readonly lines: string[]; readonly value: string } {
@@ -688,9 +666,63 @@ function emitCallExpressionResult(expression: { readonly kind: "call"; readonly 
   return { lines, value: name };
 }
 
-function emitReturnOperation(operation: { readonly kind: "return"; readonly expression: JsIrNumberExpression }, context: EmitContext): string[] {
+function emitNumberCallExpressionResult(expression: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): { readonly lines: string[]; readonly value: string } {
+  const args = emitCallArguments(expression.arguments, context);
+  const index = context.callIndex;
+  context.callIndex += 1;
+  const name = `%call.${index}`;
+  return { lines: [...args.lines, `  ${name} = call double @${expression.name}(${args.values.join(", ")})`], value: name };
+}
+
+function emitStringCallExpressionResult(expression: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): StringValue {
+  const args = emitCallArguments(expression.arguments, context);
+  const index = context.callIndex;
+  context.callIndex += 1;
+  const result = `%call.${index}`;
+  const value = `%call.${index}.ptr`;
+  const length = `%call.${index}.len`;
+  return {
+    lines: [
+      ...args.lines,
+      `  ${result} = call { ptr, i64 } @${expression.name}(${args.values.join(", ")})`,
+      `  ${value} = extractvalue { ptr, i64 } ${result}, 0`,
+      `  ${length} = extractvalue { ptr, i64 } ${result}, 1`
+    ],
+    value,
+    length
+  };
+}
+
+function emitCallArguments(args: readonly JsIrCallArgument[], context: EmitContext): { readonly lines: string[]; readonly values: string[] } {
+  const lines: string[] = [];
+  const values: string[] = [];
+  for (const arg of args) {
+    if (arg.valueKind === "string") {
+      const result = emitStringExpression(arg.value, context);
+      lines.push(...result.lines);
+      values.push(`i64 ${result.length}`, `ptr ${result.value}`);
+      continue;
+    }
+    const result = emitNumberExpression(arg.value, context);
+    lines.push(...result.lines);
+    values.push(`double ${result.value}`);
+  }
+  return { lines, values };
+}
+
+function emitNumberReturnOperation(operation: { readonly kind: "returnNumber"; readonly expression: JsIrNumberExpression }, context: EmitContext): string[] {
   const result = emitNumberExpression(operation.expression, context);
   return [...result.lines, `  ret double ${result.value}`];
+}
+
+function emitStringReturnOperation(operation: { readonly kind: "returnString"; readonly expression: JsIrStringExpression }, context: EmitContext): string[] {
+  const result = emitStringExpression(operation.expression, context);
+  return [
+    ...result.lines,
+    `  %ret.str.0 = insertvalue { ptr, i64 } undef, ptr ${result.value}, 0`,
+    `  %ret.str.1 = insertvalue { ptr, i64 } %ret.str.0, i64 ${result.length}, 1`,
+    "  ret { ptr, i64 } %ret.str.1"
+  ];
 }
 
 function emitExpressionPrint(expression: JsIrExpression, context: EmitContext): string[] {
@@ -713,7 +745,7 @@ function emitExpressionPrint(expression: JsIrExpression, context: EmitContext): 
   }
 
   if (expression.kind === "call") {
-    const result = emitCallExpressionResult(expression, context);
+    const result = emitNumberCallExpressionResult(expression, context);
     return [...result.lines, emitNumberPrint(result.value, context)];
   }
 
@@ -1042,7 +1074,7 @@ function emitStringComparisonCondition(
   const name = `%cmp.${index}`;
   const left = emitStringExpression(condition.left, context);
   const right = emitStringExpression(condition.right, context);
-  useRuntimeHelper(context, "strEquals");
+  useRuntimeHelper(context.runtime, "strEquals");
   const equals = `%str.eq.${index}`;
   let resultLine = `  ${name} = icmp eq i1 ${equals}, true`;
   if (condition.operator === "!==") {
@@ -1350,6 +1382,10 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     return emitConcatStringExpression(expression, context);
   }
 
+  if (expression.kind === "call") {
+    return emitStringCallExpressionResult(expression, context);
+  }
+
   return emitTernaryStringExpression(expression, context);
 }
 
@@ -1361,7 +1397,7 @@ function emitConcatStringExpression(
   const right = emitStringExpression(expression.right, context);
   const index = context.stringIndex;
   context.stringIndex += 1;
-  useRuntimeHelper(context, "strConcat");
+  useRuntimeHelper(context.runtime, "strConcat");
   const name = `%str.${index}`;
   const length = `%str.len.${index}`;
   return {

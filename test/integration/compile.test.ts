@@ -24,6 +24,12 @@ type NativeRunResult = {
   readonly stderr?: string;
 };
 
+type ExpectedNativeBehavior = {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly status: number;
+};
+
 const compileFixture = async (fixture: string): Promise<CompileResult> => {
   const outDir = await mkdtemp(path.join(tmpdir(), "tscn-"));
   const result = spawnSync(
@@ -80,6 +86,35 @@ const runNativeIfAvailable = (result: CompileResult): NativeRunResult => {
   return { skipped: false, status: native.status, stdout: native.stdout, stderr: native.stderr };
 };
 
+const toolAvailable = (name: string): boolean => spawnSync(name, ["--version"], { stdio: "ignore" }).status === 0;
+
+const expectNativeBehaviorIfAvailable = async (
+  result: CompileResult,
+  expected: ExpectedNativeBehavior
+): Promise<void> => {
+  const native = runNativeIfAvailable(result);
+  if (native.skipped) {
+    expect(native.reason).toContain("ENOENT");
+    const diagnostics = await result.readArtifact("diagnostics.txt");
+    expect(diagnostics).toContain("clang was not found");
+    return;
+  }
+  expect(native.status, native.stderr).toBe(expected.status);
+  expect(native.stdout).toBe(expected.stdout);
+  expect(native.stderr).toBe(expected.stderr);
+};
+
+const expectLlvmAsVerificationIfAvailable = async (result: CompileResult): Promise<void> => {
+  if (!toolAvailable("llvm-as")) {
+    expect(toolAvailable("llvm-as")).toBe(false);
+    return;
+  }
+  const verifier = spawnSync("llvm-as", [path.join(result.outDir, "main.ll"), "-o", path.join(result.outDir, "main.bc")], {
+    encoding: "utf8"
+  });
+  expect(verifier.status, verifier.stderr).toBe(0);
+};
+
 const countOccurrences = (value: string, needle: string): number => value.split(needle).length - 1;
 
 describe("tscn CLI", () => {
@@ -100,16 +135,17 @@ describe("tscn CLI", () => {
     const result = await expectSuccessfulCompile("hello.ts");
 
     try {
-      const native = runNativeIfAvailable(result);
-      if (native.skipped) {
-        expect(native.reason).toContain("ENOENT");
-        const diagnostics = await result.readArtifact("diagnostics.txt");
-        expect(diagnostics).toContain("clang was not found");
-        return;
-      }
-      expect(native.status, native.stderr).toBe(0);
-      expect(native.stdout).toBe("hello from tscn\n");
-      expect(native.stderr).toBe("");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "hello from tscn\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("verifies emitted LLVM IR when llvm-as is available", async () => {
+    const result = await expectSuccessfulCompile("hello.ts");
+
+    try {
+      await expectLlvmAsVerificationIfAvailable(result);
     } finally {
       await result.cleanup();
     }
@@ -676,12 +712,44 @@ describe("tscn function declarations and calls", () => {
     }
   });
 
-  test("rejects string function parameters with an ABI diagnostic", async () => {
-    await expectUnsupportedMessage("function-string-param.ts", "String parameters in function declarations are not supported");
+  test("lowers string function parameters through pointer and length arguments", async () => {
+    const result = await expectSuccessfulCompile("function-string-param.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @greet(i64 %p0.len, ptr %p0.ptr)");
+      expect(llvmIr).toContain("call void @greet(i64 3, ptr @.str.");
+      expect(llvmIr).toContain("call ptr @strConcat(i64 6, ptr @.str.");
+    } finally {
+      await result.cleanup();
+    }
   });
 
-  test("rejects string function returns with an ABI diagnostic", async () => {
-    await expectUnsupportedMessage("function-string-return.ts", "String returns from functions are not supported");
+  test("lowers string function returns through a string pair result", async () => {
+    const result = await expectSuccessfulCompile("function-string-return.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define { ptr, i64 } @suffix()");
+      expect(llvmIr).toContain("%call.0 = call { ptr, i64 } @suffix()");
+      expect(llvmIr).toContain("extractvalue { ptr, i64 } %call.0, 0");
+      expect(llvmIr).toContain("call ptr @strConcat");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers branches inside string function bodies", async () => {
+    const result = await expectSuccessfulCompile("function-string-branch.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @greet(i64 %p0.len, ptr %p0.ptr)");
+      expect(llvmIr).toContain("call i1 @strEquals(i64 %str.len.");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.else.0");
+    } finally {
+      await result.cleanup();
+    }
   });
 });
 

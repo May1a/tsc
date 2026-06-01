@@ -14,6 +14,23 @@ export type JsIrSourceModule = {
 
 export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide";
 
+export type JsIrValueKind = "number" | "string";
+
+export type JsIrFunctionParameter = {
+  readonly name: string;
+  readonly valueKind: JsIrValueKind;
+};
+
+export type JsIrCallArgument =
+  | {
+      readonly valueKind: "number";
+      readonly value: JsIrNumberExpression;
+    }
+  | {
+      readonly valueKind: "string";
+      readonly value: JsIrStringExpression;
+    };
+
 export type JsIrNumberExpression =
   | {
       readonly kind: "literal";
@@ -83,6 +100,11 @@ export type JsIrStringExpression =
       readonly kind: "concat";
       readonly left: JsIrStringExpression;
       readonly right: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "call";
+      readonly name: string;
+      readonly arguments: readonly JsIrCallArgument[];
     };
 
 export type JsIrObjectFieldValue =
@@ -156,6 +178,11 @@ export type JsIrBindingValue =
       readonly functionName: string;
       readonly factoryParameters: readonly string[];
       readonly captureNames: readonly string[];
+    }
+  | {
+      readonly kind: "function";
+      readonly parameters: readonly JsIrFunctionParameter[];
+      readonly returnKind: JsIrValueKind | "void";
     };
 
 export type JsIrCondition =
@@ -224,7 +251,7 @@ export type JsIrExpression =
   | {
       readonly kind: "call";
       readonly name: string;
-      readonly arguments: readonly JsIrNumberExpression[];
+      readonly arguments: readonly JsIrCallArgument[];
     };
 
 export type JsIrOperation =
@@ -346,17 +373,21 @@ export type JsIrOperation =
   | {
       readonly kind: "function";
       readonly name: string;
-      readonly parameters: readonly string[];
+      readonly parameters: readonly JsIrFunctionParameter[];
       readonly body: readonly JsIrOperation[];
     }
   | {
       readonly kind: "call";
       readonly name: string;
-      readonly arguments: readonly JsIrNumberExpression[];
+      readonly arguments: readonly JsIrCallArgument[];
     }
   | {
-      readonly kind: "return";
+      readonly kind: "returnNumber";
       readonly expression: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "returnString";
+      readonly expression: JsIrStringExpression;
     }
   | {
       readonly kind: "returnClosure";
@@ -449,16 +480,31 @@ function updateBindings(
     bindings.set(operation.name, { kind: "object", value: operation.value });
   }
   if (operation.kind === "function") {
+    bindings.set(operation.name, {
+      kind: "function",
+      parameters: operation.parameters,
+      returnKind: functionReturnKind(operation.body)
+    });
     const returnClosure = operation.body.find((bodyOperation) => bodyOperation.kind === "returnClosure");
     if (returnClosure?.kind === "returnClosure") {
       bindings.set(operation.name, {
         kind: "closureFactory",
         functionName: returnClosure.functionName,
-        factoryParameters: operation.parameters,
+        factoryParameters: operation.parameters.map((parameter) => parameter.name),
         captureNames: returnClosure.captures
       });
     }
   }
+}
+
+function functionReturnKind(operations: readonly JsIrOperation[]): JsIrValueKind | "void" {
+  if (operations.some((operation) => operation.kind === "returnString")) {
+    return "string";
+  }
+  if (operations.some((operation) => operation.kind === "returnNumber")) {
+    return "number";
+  }
+  return "void";
 }
 
 function isNonExecutableDeclaration(statement: ts.Statement): boolean {
@@ -722,17 +768,15 @@ function lowerPrintExpression(
 
   if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
     const callee = bindings.get(expression.expression.text);
-    const args: JsIrNumberExpression[] = [];
+    const args: JsIrCallArgument[] = [];
     if (callee?.kind === "closure") {
-      args.push(...callee.value.captures);
+      args.push(...callee.value.captures.map((value) => ({ valueKind: "number" as const, value })));
     }
-    for (const arg of expression.arguments) {
-      const lowered = lowerNumberExpression(arg, bindings);
-      if (lowered === undefined) {
-        return undefined;
-      }
-      args.push(lowered);
+    const loweredArgs = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
+    if (loweredArgs === undefined) {
+      return undefined;
     }
+    args.push(...loweredArgs);
     let name = expression.expression.text;
     if (callee?.kind === "closure") {
       name = callee.value.functionName;
@@ -815,17 +859,22 @@ function lowerFunctionDeclaration(
     return undefined;
   }
 
-  const parameters: string[] = [];
+  const parameters: JsIrFunctionParameter[] = [];
   const fnBindings = new Map(bindings);
   for (const param of statement.parameters) {
     if (!ts.isIdentifier(param.name)) {
       return undefined;
     }
-    parameters.push(param.name.text);
-    fnBindings.set(param.name.text, {
-      kind: "number",
-      value: { kind: "parameter", name: param.name.text }
-    });
+    const valueKind = parameterValueKind(param);
+    parameters.push({ name: param.name.text, valueKind });
+    if (valueKind === "string") {
+      fnBindings.set(param.name.text, { kind: "stringVariable", name: param.name.text });
+    } else {
+      fnBindings.set(param.name.text, {
+        kind: "number",
+        value: { kind: "parameter", name: param.name.text }
+      });
+    }
   }
 
   const body = lowerBlockStatements(statement.body, fnBindings);
@@ -841,6 +890,13 @@ function lowerFunctionDeclaration(
   };
 }
 
+function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValueKind {
+  if (parameter.type?.kind === ts.SyntaxKind.StringKeyword) {
+    return "string";
+  }
+  return "number";
+}
+
 function lowerCallStatement(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -853,13 +909,9 @@ function lowerCallStatement(
     return undefined;
   }
 
-  const args: JsIrNumberExpression[] = [];
-  for (const arg of expression.arguments) {
-    const lowered = lowerNumberExpression(arg, bindings);
-    if (lowered === undefined) {
-      return undefined;
-    }
-    args.push(lowered);
+  const args = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
+  if (args === undefined) {
+    return undefined;
   }
 
   return {
@@ -882,13 +934,20 @@ function lowerReturnStatement(
     return closure;
   }
 
+  const stringExpression = lowerStringRuntimeExpression(statement.expression, bindings);
+  if (stringExpression !== undefined) {
+    return {
+      kind: "returnString",
+      expression: stringExpression
+    };
+  }
+
   const expression = lowerNumberExpression(statement.expression, bindings);
   if (expression === undefined) {
     return undefined;
   }
-
   return {
-    kind: "return",
+    kind: "returnNumber",
     expression
   };
 }
@@ -963,7 +1022,7 @@ function collectCapturedParameterNames(
   };
 
   for (const operation of operations) {
-    if (operation.kind === "return") {
+    if (operation.kind === "returnNumber") {
       visitNumber(operation.expression);
     }
   }
@@ -1316,11 +1375,11 @@ function lowerStringRuntimeExpression(
   }
 
   if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = lowerStringRuntimeExpression(expression.left, bindings);
-    const right = lowerStringRuntimeExpression(expression.right, bindings);
-    if (left !== undefined && right !== undefined) {
-      return { kind: "concat", left, right };
-    }
+    return lowerStringConcatExpression(expression, bindings);
+  }
+
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
+    return lowerStringCallExpression(expression, bindings);
   }
 
   if (!ts.isConditionalExpression(expression)) {
@@ -1340,6 +1399,36 @@ function lowerStringRuntimeExpression(
     consequent,
     alternate
   };
+}
+
+function lowerStringConcatExpression(
+  expression: ts.BinaryExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrStringExpression | undefined {
+  const left = lowerStringRuntimeExpression(expression.left, bindings);
+  const right = lowerStringRuntimeExpression(expression.right, bindings);
+  if (left === undefined || right === undefined) {
+    return undefined;
+  }
+  return { kind: "concat", left, right };
+}
+
+function lowerStringCallExpression(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrStringExpression | undefined {
+  if (!ts.isIdentifier(expression.expression)) {
+    return undefined;
+  }
+  const callee = bindings.get(expression.expression.text);
+  if (callee?.kind !== "function" || callee.returnKind !== "string") {
+    return undefined;
+  }
+  const args = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
+  if (args === undefined) {
+    return undefined;
+  }
+  return { kind: "call", name: expression.expression.text, arguments: args };
 }
 
 function lowerBooleanExpression(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean | undefined {
@@ -1703,17 +1792,83 @@ function lowerNumberCallExpression(
   if (callee?.kind === "closure") {
     args.push(...callee.value.captures);
     name = callee.value.functionName;
+  } else if (callee?.kind === "function" && callee.returnKind === "string") {
+    return undefined;
   }
 
-  for (const arg of expression.arguments) {
-    const lowered = lowerNumberExpression(arg, bindings);
-    if (lowered === undefined) {
+  const loweredArgs = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
+  if (loweredArgs === undefined) {
+    return undefined;
+  }
+  for (const arg of loweredArgs) {
+    if (arg.valueKind !== "number") {
       return undefined;
     }
-    args.push(lowered);
+    args.push(arg.value);
   }
 
   return { kind: "call", name, arguments: args };
+}
+
+function lowerCallArguments(
+  name: string,
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrCallArgument[] | undefined {
+  const callee = bindings.get(name);
+  if (callee?.kind === "function") {
+    return lowerTypedCallArguments(callee.parameters, args, bindings);
+  }
+
+  const lowered: JsIrCallArgument[] = [];
+  for (const arg of args) {
+    const value = lowerNumberExpression(arg, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    lowered.push({ valueKind: "number", value });
+  }
+  return lowered;
+}
+
+function lowerTypedCallArguments(
+  parameters: readonly JsIrFunctionParameter[],
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrCallArgument[] | undefined {
+  if (parameters.length !== args.length) {
+    return undefined;
+  }
+  const lowered: JsIrCallArgument[] = [];
+  for (let i = 0; i < parameters.length; i++) {
+    const parameter = parameters[i];
+    const arg = args[i];
+    const value = lowerTypedCallArgument(parameter, arg, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    lowered.push(value);
+  }
+  return lowered;
+}
+
+function lowerTypedCallArgument(
+  parameter: JsIrFunctionParameter,
+  arg: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCallArgument | undefined {
+  if (parameter.valueKind === "string") {
+    const value = lowerStringRuntimeExpression(arg, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    return { valueKind: "string", value };
+  }
+  const value = lowerNumberExpression(arg, bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+  return { valueKind: "number", value };
 }
 
 function lowerNumberOperator(kind: ts.SyntaxKind): JsIrNumberOperator | undefined {
