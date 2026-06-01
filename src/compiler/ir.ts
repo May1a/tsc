@@ -1181,6 +1181,15 @@ function lowerElementAssignment(
   right: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
+  const objectAccess = lowerObjectAccessPath(left, bindings);
+  if (objectAccess !== undefined) {
+    const objectValue = lowerNumberExpression(right, bindings);
+    if (objectValue === undefined) {
+      return undefined;
+    }
+    return { kind: "objectStore", objectName: objectAccess.objectName, path: objectAccess.path, value: objectValue };
+  }
+
   if (!ts.isIdentifier(left.expression)) {
     return undefined;
   }

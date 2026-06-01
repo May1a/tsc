@@ -19,6 +19,7 @@ type EmitContext = {
   readonly loopLabels: LoopLabels[];
   hasNumberPrint: boolean;
   hasStringConcat: boolean;
+  hasStringEquals: boolean;
   printIndex: number;
   ifIndex: number;
   cmpIndex: number;
@@ -97,6 +98,7 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     loopLabels: [],
     hasNumberPrint: false,
     hasStringConcat: false,
+    hasStringEquals: false,
     printIndex: 0,
     ifIndex: 0,
     cmpIndex: 0,
@@ -140,10 +142,8 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     mainBody = `${mainLines.join("\n")}\n`;
   }
 
-  let strConcatDeclaration = "";
-  if (context.hasStringConcat) {
-    strConcatDeclaration = "declare ptr @strConcat(i64, ptr, i64, ptr)";
-  }
+  const runtimeDeclarations = emitRuntimeDeclarations(context).join("\n");
+  const runtimeDefinitions = emitRuntimeDefinitions(context).join("\n");
 
   return `; tscn textual LLVM IR placeholder
 ; entry ${module.entry}
@@ -153,12 +153,13 @@ target triple = "x86_64-unknown-linux-gnu"
 
 declare i32 @puts(ptr)
 declare i32 @printf(ptr, ...)
-${strConcatDeclaration}
+${runtimeDeclarations}
 
 ${numberFormat}
 ${stringConstants}
 ${aggregateGlobals}
 ${forwardDeclarations}
+${runtimeDefinitions}
 ${fnLines}
 define i32 @main() {
 entry:
@@ -166,6 +167,53 @@ ${mainBody}  ret i32 0
 }
 `;
 };
+
+function emitRuntimeDeclarations(context: EmitContext): string[] {
+  const declarations: string[] = [];
+  if (context.hasStringConcat) {
+    declarations.push("declare ptr @malloc(i64)", "declare ptr @memcpy(ptr, ptr, i64)");
+  }
+  if (context.hasStringEquals) {
+    declarations.push("declare i32 @memcmp(ptr, ptr, i64)");
+  }
+  return declarations;
+}
+
+function emitRuntimeDefinitions(context: EmitContext): string[] {
+  const definitions: string[] = [];
+  if (context.hasStringConcat) {
+    definitions.push(`define ptr @strConcat(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr) {
+entry:
+  %total = add i64 %left.len, %right.len
+  %alloc.size = add i64 %total, 1
+  %out = call ptr @malloc(i64 %alloc.size)
+  call ptr @memcpy(ptr %out, ptr %left.ptr, i64 %left.len)
+  %right.dst = getelementptr i8, ptr %out, i64 %left.len
+  call ptr @memcpy(ptr %right.dst, ptr %right.ptr, i64 %right.len)
+  %nul.ptr = getelementptr i8, ptr %out, i64 %total
+  store i8 0, ptr %nul.ptr
+  ret ptr %out
+}
+`);
+  }
+  if (context.hasStringEquals) {
+    definitions.push(`define i1 @strEquals(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr) {
+entry:
+  %same.len = icmp eq i64 %left.len, %right.len
+  br i1 %same.len, label %compare, label %not.equal
+compare:
+  %cmp = call i32 @memcmp(ptr %left.ptr, ptr %right.ptr, i64 %left.len)
+  %same.bytes = icmp eq i32 %cmp, 0
+  br i1 %same.bytes, label %equal, label %not.equal
+equal:
+  ret i1 true
+not.equal:
+  ret i1 false
+}
+`);
+  }
+  return definitions;
+}
 
 function classifyAndProcessOperation(
   operation: JsIrOperation,
@@ -240,6 +288,7 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     loopLabels: [],
     hasNumberPrint: context.hasNumberPrint,
     hasStringConcat: context.hasStringConcat,
+    hasStringEquals: context.hasStringEquals,
     printIndex: context.printIndex,
     ifIndex: 0,
     cmpIndex: 0,
@@ -263,6 +312,7 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
   context.arrayIndex = fnContext.arrayIndex;
   context.objectIndex = fnContext.objectIndex;
   context.hasStringConcat = fnContext.hasStringConcat;
+  context.hasStringEquals = fnContext.hasStringEquals;
   if (bodyLines.length > noLines) {
     lines.push("entry:", ...bodyLines);
   } else {
@@ -425,6 +475,10 @@ function variablePointerName(name: string): string {
   return `%${name}.addr`;
 }
 
+function stringLengthPointerName(name: string): string {
+  return `%${name}.len.addr`;
+}
+
 function emitLetNumberOperation(
   operation: Extract<JsIrOperation, { readonly kind: "letNumber" }>,
   context: EmitContext
@@ -441,8 +495,15 @@ function emitLetStringOperation(
 ): string[] {
   const result = emitStringExpression(operation.value, context);
   const pointer = variablePointerName(operation.name);
+  const lengthPointer = stringLengthPointerName(operation.name);
   context.bindings.set(operation.name, { kind: "stringVariable", name: operation.name });
-  return [...result.lines, `  ${pointer} = alloca ptr`, `  store ptr ${result.value}, ptr ${pointer}`];
+  return [
+    ...result.lines,
+    `  ${pointer} = alloca ptr`,
+    `  ${lengthPointer} = alloca i64`,
+    `  store ptr ${result.value}, ptr ${pointer}`,
+    `  store i64 ${result.length}, ptr ${lengthPointer}`
+  ];
 }
 
 function emitLetBooleanOperation(
@@ -461,18 +522,23 @@ function emitArrayLiteralOperation(
 ): string[] {
   const index = context.arrayIndex;
   context.arrayIndex += 1;
-  const globalName = `@arr.${index}`;
-  const values = operation.elements.map((element) => `double ${numberLiteralForGlobal(element)}`).join(", ");
-  context.arrayGlobals.push(`${globalName} = global [${operation.elements.length} x double] [${values}]`);
-  context.bindings.set(operation.name, { kind: "array", name: globalName, length: operation.elements.length });
-  return [];
-}
-
-function numberLiteralForGlobal(expression: JsIrNumberExpression): string {
-  if (expression.kind !== "literal") {
-    return "0";
+  if (operation.elements.every((element) => element.kind === "literal")) {
+    const globalName = `@arr.${index}`;
+    const values = operation.elements.map((element) => `double ${element.value}`).join(", ");
+    context.arrayGlobals.push(`${globalName} = global [${operation.elements.length} x double] [${values}]`);
+    context.bindings.set(operation.name, { kind: "array", name: globalName, length: operation.elements.length });
+    return [];
   }
-  return String(expression.value);
+
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "array", name: pointerName, length: operation.elements.length });
+  const lines = [`  ${pointerName} = alloca [${operation.elements.length} x double]`];
+  for (let i = 0; i < operation.elements.length; i++) {
+    const pointer = emitArrayElementPointer(operation.name, { kind: "literal", value: i }, context);
+    const value = emitNumberExpression(operation.elements[i], context);
+    lines.push(...pointer.lines, ...value.lines, `  store double ${value.value}, ptr ${pointer.value}`);
+  }
+  return lines;
 }
 
 function emitObjectLiteralOperation(
@@ -509,7 +575,11 @@ function emitAssignStringOperation(
   }
 
   const result = emitStringExpression(operation.value, context);
-  return [...result.lines, `  store ptr ${result.value}, ptr ${variablePointerName(binding.name)}`];
+  return [
+    ...result.lines,
+    `  store ptr ${result.value}, ptr ${variablePointerName(binding.name)}`,
+    `  store i64 ${result.length}, ptr ${stringLengthPointerName(binding.name)}`
+  ];
 }
 
 function emitAssignBooleanOperation(
@@ -936,11 +1006,21 @@ function emitStringComparisonCondition(
   const name = `%cmp.${index}`;
   const left = emitStringExpression(condition.left, context);
   const right = emitStringExpression(condition.right, context);
-  let predicate = "eq";
+  context.hasStringEquals = true;
+  const equals = `%str.eq.${index}`;
+  let resultLine = `  ${name} = icmp eq i1 ${equals}, true`;
   if (condition.operator === "!==") {
-    predicate = "ne";
+    resultLine = `  ${name} = icmp ne i1 ${equals}, true`;
   }
-  return { lines: [...left.lines, ...right.lines, `  ${name} = icmp ${predicate} ptr ${left.value}, ${right.value}`], value: name };
+  return {
+    lines: [
+      ...left.lines,
+      ...right.lines,
+      `  ${equals} = call i1 @strEquals(i64 ${left.length}, ptr ${left.value}, i64 ${right.length}, ptr ${right.value})`,
+      resultLine
+    ],
+    value: name
+  };
 }
 
 function emitBooleanComparisonCondition(
@@ -1219,18 +1299,23 @@ function emitTernaryNumberExpression(
 function emitStringExpression(
   expression: JsIrStringExpression,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } {
+): { readonly lines: readonly string[]; readonly value: string; readonly length: string } {
   if (expression.kind === "literal") {
-    return { lines: [], value: addStringConstant(expression.value, context) };
+    return { lines: [], value: addStringConstant(expression.value, context), length: String(utf8ByteLength(expression.value)) };
   }
 
   if (expression.kind === "variable") {
     const index = context.stringIndex;
     context.stringIndex += 1;
     const name = `%str.${index}`;
+    const length = `%str.len.${index}`;
     return {
-      lines: [`  ${name} = load ptr, ptr ${variablePointerName(expression.name)}`],
-      value: name
+      lines: [
+        `  ${name} = load ptr, ptr ${variablePointerName(expression.name)}`,
+        `  ${length} = load i64, ptr ${stringLengthPointerName(expression.name)}`
+      ],
+      value: name,
+      length
     };
   }
 
@@ -1244,43 +1329,46 @@ function emitStringExpression(
 function emitConcatStringExpression(
   expression: Extract<JsIrStringExpression, { readonly kind: "concat" }>,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } {
+): { readonly lines: readonly string[]; readonly value: string; readonly length: string } {
   const left = emitStringExpression(expression.left, context);
   const right = emitStringExpression(expression.right, context);
   const index = context.stringIndex;
   context.stringIndex += 1;
   context.hasStringConcat = true;
   const name = `%str.${index}`;
+  const length = `%str.len.${index}`;
   return {
     lines: [
       ...left.lines,
       ...right.lines,
-      `  ${name} = call ptr @strConcat(i64 ${stringLength(expression.left)}, ptr ${left.value}, i64 ${stringLength(expression.right)}, ptr ${right.value})`
+      `  ${length} = add i64 ${left.length}, ${right.length}`,
+      `  ${name} = call ptr @strConcat(i64 ${left.length}, ptr ${left.value}, i64 ${right.length}, ptr ${right.value})`
     ],
-    value: name
+    value: name,
+    length
   };
 }
 
-function stringLength(expression: JsIrStringExpression): number {
-  if (expression.kind === "literal") {
-    return Buffer.byteLength(expression.value, "utf8");
-  }
-  return 0;
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
 }
 
 function emitTernaryStringExpression(
   expression: Extract<JsIrStringExpression, { readonly kind: "ternary" }>,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } {
+): { readonly lines: readonly string[]; readonly value: string; readonly length: string } {
   const index = context.stringIndex;
   context.stringIndex += 1;
   const thenLabel = `str.then.${index}`;
   const elseLabel = `str.else.${index}`;
   const endLabel = `str.end.${index}`;
   const value = `%str.${index}`;
+  const length = `%str.len.${index}`;
   const condition = emitCondition(expression.condition, context);
   const consequent = addStringConstant(expression.consequent, context);
   const alternate = addStringConstant(expression.alternate, context);
+  const consequentLength = utf8ByteLength(expression.consequent);
+  const alternateLength = utf8ByteLength(expression.alternate);
 
   return {
     lines: [
@@ -1291,9 +1379,11 @@ function emitTernaryStringExpression(
       `${elseLabel}:`,
       `  br label %${endLabel}`,
       `${endLabel}:`,
-      `  ${value} = phi ptr [ ${consequent}, %${thenLabel} ], [ ${alternate}, %${elseLabel} ]`
+      `  ${value} = phi ptr [ ${consequent}, %${thenLabel} ], [ ${alternate}, %${elseLabel} ]`,
+      `  ${length} = phi i64 [ ${consequentLength}, %${thenLabel} ], [ ${alternateLength}, %${elseLabel} ]`
     ],
-    value
+    value,
+    length
   };
 }
 

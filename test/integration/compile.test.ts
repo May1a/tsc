@@ -40,6 +40,17 @@ const expectSuccessfulCompile = async (fixture: string): Promise<CompileResult> 
   return result;
 };
 
+const expectUnsupportedDiagnostic = async (fixture: string): Promise<void> => {
+  const result = await compileFixture(fixture);
+
+  try {
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("error TSCN1002");
+  } finally {
+    await result.cleanup();
+  }
+};
+
 describe("tscn CLI", () => {
   test("lowers top-level print string calls to LLVM IR", async () => {
     const result = await expectSuccessfulCompile("hello.ts");
@@ -319,6 +330,18 @@ describe("tscn CLI", () => {
     } finally {
       await result.cleanup();
     }
+  });
+
+  test("rejects unsupported array runtime boundaries", async () => {
+    const fixtures = ["array-hole.ts", "array-spread.ts", "array-non-numeric.ts"];
+
+    await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
+  });
+
+  test("rejects unsupported object runtime boundaries", async () => {
+    const fixtures = ["object-spread.ts", "object-shorthand.ts", "object-method.ts", "object-dynamic-key.ts", "object-non-numeric-field.ts"];
+
+    await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 });
 
@@ -873,11 +896,36 @@ describe("tscn runtime strings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("declare ptr @strConcat(i64, ptr, i64, ptr)");
+      expect(llvmIr).toContain("define ptr @strConcat(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr)");
       expect(llvmIr).toContain("call ptr @strConcat");
+      expect(llvmIr).toContain("call ptr @malloc(i64 %alloc.size)");
       expect(llvmIr).toContain("store ptr %str.");
+      expect(llvmIr).toContain("call ptr @strConcat(i64 %str.len.0, ptr %str.0, i64 6, ptr @.str.1)");
     } finally {
       await result.cleanup();
+    }
+  });
+
+  test("passes runtime string lengths through variables and repeated concat", async () => {
+    const prefix = await expectSuccessfulCompile("string-concat-prefix.ts");
+
+    try {
+      const llvmIr = await prefix.readArtifact("main.ll");
+      expect(llvmIr).toContain("%prefix.len.addr = alloca i64");
+      expect(llvmIr).toContain("%str.len.0 = load i64, ptr %prefix.len.addr");
+      expect(llvmIr).toContain("call ptr @strConcat(i64 %str.len.0, ptr %str.0, i64 3, ptr @.str.1)");
+    } finally {
+      await prefix.cleanup();
+    }
+
+    const repeated = await expectSuccessfulCompile("string-concat-repeated.ts");
+
+    try {
+      const llvmIr = await repeated.readArtifact("main.ll");
+      expect(llvmIr).toContain("store i64 %str.len.1, ptr %s.len.addr");
+      expect(llvmIr).toContain("call ptr @strConcat(i64 %str.len.2, ptr %str.2, i64 1, ptr @.str.2)");
+    } finally {
+      await repeated.cleanup();
     }
   });
 
@@ -956,6 +1004,57 @@ describe("tscn arrays", () => {
       await result.cleanup();
     }
   });
+
+  test("stores evaluated numeric expressions in array initializers", async () => {
+    const result = await expectSuccessfulCompile("array-expression-initializer.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%arr.addr = alloca [2 x double]");
+      expect(llvmIr).toContain("%num.0 = fadd double 10, 1");
+      expect(llvmIr).toContain("store double %num.0, ptr %arr.gep.");
+      expect(llvmIr).not.toContain("[double 0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("uses array accesses in conditions and length-bounded while loops", async () => {
+    const condition = await expectSuccessfulCompile("array-condition.ts");
+
+    try {
+      const llvmIr = await condition.readArtifact("main.ll");
+      expect(llvmIr).toContain("load double, ptr %arr.gep.");
+      expect(llvmIr).toContain("fcmp oeq double %num.");
+    } finally {
+      await condition.cleanup();
+    }
+
+    const loop = await expectSuccessfulCompile("array-while-length.ts");
+
+    try {
+      const llvmIr = await loop.readArtifact("main.ll");
+      expect(llvmIr).toContain("while.cond.0:");
+      expect(llvmIr).toContain("fcmp olt double %num.0, 3");
+      expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0");
+    } finally {
+      await loop.cleanup();
+    }
+  });
+
+  test("keeps multiple array literals deterministic and non-colliding", async () => {
+    const result = await expectSuccessfulCompile("array-multiple-literals.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("@arr.0 = global [2 x double] [double 1, double 2]");
+      expect(llvmIr).toContain("@arr.1 = global [2 x double] [double 3, double 4]");
+      expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.0, i64 0, i64 0");
+      expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.1, i64 0, i64 1");
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn objects", () => {
@@ -1008,18 +1107,88 @@ describe("tscn objects", () => {
       await result.cleanup();
     }
   });
+
+  test("lowers object bracket mutation", async () => {
+    const result = await expectSuccessfulCompile("object-bracket-mutation.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("store double 99, ptr %obj.gep.");
+      expect(llvmIr).toContain("load double, ptr %obj.gep.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("preserves numeric expression fields and nested object mutation", async () => {
+    const expression = await expectSuccessfulCompile("object-expression-field.ts");
+
+    try {
+      const llvmIr = await expression.readArtifact("main.ll");
+      expect(llvmIr).toContain("%num.0 = fadd double 40, 2");
+      expect(llvmIr).toContain("store double %num.0, ptr %obj.gep.");
+    } finally {
+      await expression.cleanup();
+    }
+
+    const nested = await expectSuccessfulCompile("object-nested-mutation.ts");
+
+    try {
+      const llvmIr = await nested.readArtifact("main.ll");
+      expect(llvmIr).toContain("getelementptr %obj.0, ptr %obj.addr, i32 0, i32 0, i32 0");
+      expect(llvmIr).toContain("store double 42, ptr %obj.gep.");
+    } finally {
+      await nested.cleanup();
+    }
+  });
+
+  test("uses object properties in numeric comparisons", async () => {
+    const result = await expectSuccessfulCompile("object-condition.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("load double, ptr %obj.gep.");
+      expect(llvmIr).toContain("fcmp oeq double %num.");
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn runtime comparisons", () => {
-  test("lowers runtime string strict equality as pointer comparison", async () => {
+  test("lowers runtime string strict equality as content comparison", async () => {
     const result = await expectSuccessfulCompile("runtime-string-equality.ts");
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("icmp eq ptr %str.");
+      expect(llvmIr).toContain("define i1 @strEquals(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr)");
+      expect(llvmIr).toContain("call i32 @memcmp(ptr %left.ptr, ptr %right.ptr, i64 %left.len)");
+      expect(llvmIr).toContain("call i1 @strEquals(i64 %str.len.");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
     } finally {
       await result.cleanup();
+    }
+  });
+
+  test("uses string equality helper for content equality and inequality", async () => {
+    const equality = await expectSuccessfulCompile("runtime-string-content-equality.ts");
+
+    try {
+      const llvmIr = await equality.readArtifact("main.ll");
+      expect(llvmIr).toContain("call i1 @strEquals");
+      expect(llvmIr).toContain("%cmp.0 = icmp eq i1 %str.eq.0, true");
+    } finally {
+      await equality.cleanup();
+    }
+
+    const inequality = await expectSuccessfulCompile("runtime-string-content-inequality.ts");
+
+    try {
+      const llvmIr = await inequality.readArtifact("main.ll");
+      expect(llvmIr).toContain("call i1 @strEquals");
+      expect(llvmIr).toContain("%cmp.0 = icmp ne i1 %str.eq.0, true");
+    } finally {
+      await inequality.cleanup();
     }
   });
 
