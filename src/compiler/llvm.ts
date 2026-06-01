@@ -16,10 +16,9 @@ type EmitContext = {
   readonly arrayGlobals: string[];
   readonly objectTypes: string[];
   readonly objectLayouts: Map<string, ObjectLayout>;
+  readonly runtime: RuntimeHelperEmitter;
   readonly loopLabels: LoopLabels[];
   hasNumberPrint: boolean;
-  hasStringConcat: boolean;
-  hasStringEquals: boolean;
   printIndex: number;
   ifIndex: number;
   cmpIndex: number;
@@ -33,7 +32,32 @@ type EmitContext = {
   objectIndex: number;
 };
 
-type ObjectLayout = {
+type ObjectLayout = ObjectValue;
+
+type RuntimeHelper = "malloc" | "memcpy" | "memcmp" | "strConcat" | "strEquals";
+
+type RuntimeHelperEmitter = {
+  readonly used: Set<RuntimeHelper>;
+};
+
+type NumberValue = {
+  readonly lines: readonly string[];
+  readonly value: string;
+};
+
+type StringValue = {
+  readonly lines: readonly string[];
+  readonly value: string;
+  readonly length: string;
+};
+
+type ArrayValue = {
+  readonly name: string;
+  readonly length: number;
+  readonly storageKind: "global" | "stack";
+};
+
+type ObjectValue = {
   readonly typeName: string;
   readonly pointerName: string;
   readonly value: JsIrObjectValue;
@@ -95,10 +119,9 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     arrayGlobals: [],
     objectTypes: [],
     objectLayouts: new Map(),
+    runtime: { used: new Set() },
     loopLabels: [],
     hasNumberPrint: false,
-    hasStringConcat: false,
-    hasStringEquals: false,
     printIndex: 0,
     ifIndex: 0,
     cmpIndex: 0,
@@ -168,20 +191,40 @@ ${mainBody}  ret i32 0
 `;
 };
 
+function useRuntimeHelper(context: EmitContext, helper: RuntimeHelper): void {
+  context.runtime.used.add(helper);
+  if (helper === "strConcat") {
+    context.runtime.used.add("malloc");
+    context.runtime.used.add("memcpy");
+  }
+  if (helper === "strEquals") {
+    context.runtime.used.add("memcmp");
+  }
+}
+
 function emitRuntimeDeclarations(context: EmitContext): string[] {
   const declarations: string[] = [];
-  if (context.hasStringConcat) {
-    declarations.push("declare ptr @malloc(i64)", "declare ptr @memcpy(ptr, ptr, i64)");
+  const declarationByHelper = new Map<RuntimeHelper, string>([
+    ["malloc", "declare ptr @malloc(i64)"],
+    ["memcpy", "declare ptr @memcpy(ptr, ptr, i64)"],
+    ["memcmp", "declare i32 @memcmp(ptr, ptr, i64)"]
+  ]);
+
+  for (const helper of ["malloc", "memcpy", "memcmp"] as const) {
+    if (context.runtime.used.has(helper)) {
+      const declaration = declarationByHelper.get(helper);
+      if (declaration !== undefined) {
+        declarations.push(declaration);
+      }
+    }
   }
-  if (context.hasStringEquals) {
-    declarations.push("declare i32 @memcmp(ptr, ptr, i64)");
-  }
+
   return declarations;
 }
 
 function emitRuntimeDefinitions(context: EmitContext): string[] {
   const definitions: string[] = [];
-  if (context.hasStringConcat) {
+  if (context.runtime.used.has("strConcat")) {
     definitions.push(`define ptr @strConcat(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr) {
 entry:
   %total = add i64 %left.len, %right.len
@@ -196,7 +239,7 @@ entry:
 }
 `);
   }
-  if (context.hasStringEquals) {
+  if (context.runtime.used.has("strEquals")) {
     definitions.push(`define i1 @strEquals(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr) {
 entry:
   %same.len = icmp eq i64 %left.len, %right.len
@@ -285,10 +328,9 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     arrayGlobals: context.arrayGlobals,
     objectTypes: context.objectTypes,
     objectLayouts: new Map(context.objectLayouts),
+    runtime: context.runtime,
     loopLabels: [],
     hasNumberPrint: context.hasNumberPrint,
-    hasStringConcat: context.hasStringConcat,
-    hasStringEquals: context.hasStringEquals,
     printIndex: context.printIndex,
     ifIndex: 0,
     cmpIndex: 0,
@@ -311,8 +353,6 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
   context.printIndex = fnContext.printIndex;
   context.arrayIndex = fnContext.arrayIndex;
   context.objectIndex = fnContext.objectIndex;
-  context.hasStringConcat = fnContext.hasStringConcat;
-  context.hasStringEquals = fnContext.hasStringEquals;
   if (bodyLines.length > noLines) {
     lines.push("entry:", ...bodyLines);
   } else {
@@ -525,13 +565,15 @@ function emitArrayLiteralOperation(
   if (operation.elements.every((element) => element.kind === "literal")) {
     const globalName = `@arr.${index}`;
     const values = operation.elements.map((element) => `double ${element.value}`).join(", ");
+    const arrayValue: ArrayValue = { name: globalName, length: operation.elements.length, storageKind: "global" };
     context.arrayGlobals.push(`${globalName} = global [${operation.elements.length} x double] [${values}]`);
-    context.bindings.set(operation.name, { kind: "array", name: globalName, length: operation.elements.length });
+    context.bindings.set(operation.name, { kind: "array", name: arrayValue.name, length: arrayValue.length });
     return [];
   }
 
   const pointerName = variablePointerName(operation.name);
-  context.bindings.set(operation.name, { kind: "array", name: pointerName, length: operation.elements.length });
+  const arrayValue: ArrayValue = { name: pointerName, length: operation.elements.length, storageKind: "stack" };
+  context.bindings.set(operation.name, { kind: "array", name: arrayValue.name, length: arrayValue.length });
   const lines = [`  ${pointerName} = alloca [${operation.elements.length} x double]`];
   for (let i = 0; i < operation.elements.length; i++) {
     const pointer = emitArrayElementPointer(operation.name, { kind: "literal", value: i }, context);
@@ -928,10 +970,7 @@ function objectPathToIndexes(value: JsIrObjectValue, path: readonly string[]): r
   return indexes;
 }
 
-function emitCondition(
-  condition: JsIrCondition,
-  context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } {
+function emitCondition(condition: JsIrCondition, context: EmitContext): NumberValue {
   if (condition.kind === "boolean") {
     return {
       lines: [],
@@ -975,10 +1014,7 @@ function emitCondition(
   };
 }
 
-function emitRuntimeCondition(
-  condition: JsIrCondition,
-  context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } | undefined {
+function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): NumberValue | undefined {
   if (condition.kind === "booleanVariable") {
     const index = context.boolIndex;
     context.boolIndex += 1;
@@ -1000,13 +1036,13 @@ function emitRuntimeCondition(
 function emitStringComparisonCondition(
   condition: Extract<JsIrCondition, { readonly kind: "stringComparison" }>,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } {
+): NumberValue {
   const index = context.cmpIndex;
   context.cmpIndex += 1;
   const name = `%cmp.${index}`;
   const left = emitStringExpression(condition.left, context);
   const right = emitStringExpression(condition.right, context);
-  context.hasStringEquals = true;
+  useRuntimeHelper(context, "strEquals");
   const equals = `%str.eq.${index}`;
   let resultLine = `  ${name} = icmp eq i1 ${equals}, true`;
   if (condition.operator === "!==") {
@@ -1026,7 +1062,7 @@ function emitStringComparisonCondition(
 function emitBooleanComparisonCondition(
   condition: Extract<JsIrCondition, { readonly kind: "booleanComparison" }>,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } {
+): NumberValue {
   const index = context.cmpIndex;
   context.cmpIndex += 1;
   const name = `%cmp.${index}`;
@@ -1042,7 +1078,7 @@ function emitBooleanComparisonCondition(
 function emitLogicalCondition(
   condition: Extract<JsIrCondition, { readonly kind: "and" | "or" }>,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } {
+): NumberValue {
   const index = context.logicIndex;
   context.logicIndex += 1;
   const leftLabel = `logic.left.${index}`;
@@ -1103,10 +1139,7 @@ function llvmComparisonInstruction(operator: "===" | "!==" | "<" | "<=" | ">" | 
   throw new Error("Unsupported comparison operator");
 }
 
-function emitNumberExpression(
-  expression: JsIrNumberExpression,
-  context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } {
+function emitNumberExpression(expression: JsIrNumberExpression, context: EmitContext): NumberValue {
   const simple = emitSimpleNumberExpression(expression, context);
   if (simple !== undefined) {
     return simple;
@@ -1156,7 +1189,7 @@ function emitNumberExpression(
 function emitAggregateNumberExpression(
   expression: JsIrNumberExpression,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } | undefined {
+): NumberValue | undefined {
   if (expression.kind === "arrayAccess") {
     const pointer = emitArrayElementPointer(expression.arrayName, expression.index, context);
     const index = context.numIndex;
@@ -1182,7 +1215,7 @@ function emitAggregateNumberExpression(
 function emitObjectNumberExpression(
   expression: Extract<JsIrNumberExpression, { readonly kind: "objectAccess" }>,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } | undefined {
+): NumberValue | undefined {
   const pointer = emitObjectFieldPointer(expression.objectName, expression.path, context);
   const index = context.numIndex;
   context.numIndex += 1;
@@ -1197,7 +1230,7 @@ function emitArrayElementPointer(
   arrayName: string,
   indexExpression: JsIrNumberExpression,
   context: EmitContext
-): { readonly lines: string[]; readonly value: string } {
+): NumberValue {
   const binding = context.bindings.get(arrayName);
   let arrayPointer = arrayName;
   let length = 0;
@@ -1216,10 +1249,7 @@ function emitArrayElementPointer(
   };
 }
 
-function emitArrayIndex(
-  expression: JsIrNumberExpression,
-  context: EmitContext
-): { readonly lines: string[]; readonly value: string } {
+function emitArrayIndex(expression: JsIrNumberExpression, context: EmitContext): NumberValue {
   if (expression.kind === "literal") {
     return { lines: [], value: String(expression.value) };
   }
@@ -1233,7 +1263,7 @@ function emitArrayIndex(
 function emitSimpleNumberExpression(
   expression: JsIrNumberExpression,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } | undefined {
+): NumberValue | undefined {
   if (expression.kind === "literal") {
     return {
       lines: [],
@@ -1277,7 +1307,7 @@ function emitSimpleNumberExpression(
 function emitTernaryNumberExpression(
   expression: Extract<JsIrNumberExpression, { readonly kind: "ternary" }>,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string } {
+): NumberValue {
   const condition = emitCondition(expression.condition, context);
   const consequent = emitNumberExpression(expression.consequent, context);
   const alternate = emitNumberExpression(expression.alternate, context);
@@ -1296,10 +1326,7 @@ function emitTernaryNumberExpression(
   };
 }
 
-function emitStringExpression(
-  expression: JsIrStringExpression,
-  context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string; readonly length: string } {
+function emitStringExpression(expression: JsIrStringExpression, context: EmitContext): StringValue {
   if (expression.kind === "literal") {
     return { lines: [], value: addStringConstant(expression.value, context), length: String(utf8ByteLength(expression.value)) };
   }
@@ -1329,12 +1356,12 @@ function emitStringExpression(
 function emitConcatStringExpression(
   expression: Extract<JsIrStringExpression, { readonly kind: "concat" }>,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string; readonly length: string } {
+): StringValue {
   const left = emitStringExpression(expression.left, context);
   const right = emitStringExpression(expression.right, context);
   const index = context.stringIndex;
   context.stringIndex += 1;
-  context.hasStringConcat = true;
+  useRuntimeHelper(context, "strConcat");
   const name = `%str.${index}`;
   const length = `%str.len.${index}`;
   return {
@@ -1356,7 +1383,7 @@ function utf8ByteLength(value: string): number {
 function emitTernaryStringExpression(
   expression: Extract<JsIrStringExpression, { readonly kind: "ternary" }>,
   context: EmitContext
-): { readonly lines: readonly string[]; readonly value: string; readonly length: string } {
+): StringValue {
   const index = context.stringIndex;
   context.stringIndex += 1;
   const thenLabel = `str.then.${index}`;
@@ -1365,22 +1392,22 @@ function emitTernaryStringExpression(
   const value = `%str.${index}`;
   const length = `%str.len.${index}`;
   const condition = emitCondition(expression.condition, context);
-  const consequent = addStringConstant(expression.consequent, context);
-  const alternate = addStringConstant(expression.alternate, context);
-  const consequentLength = utf8ByteLength(expression.consequent);
-  const alternateLength = utf8ByteLength(expression.alternate);
+  const consequent = emitStringExpression(expression.consequent, context);
+  const alternate = emitStringExpression(expression.alternate, context);
 
   return {
     lines: [
       ...condition.lines,
       `  br i1 ${condition.value}, label %${thenLabel}, label %${elseLabel}`,
       `${thenLabel}:`,
+      ...consequent.lines,
       `  br label %${endLabel}`,
       `${elseLabel}:`,
+      ...alternate.lines,
       `  br label %${endLabel}`,
       `${endLabel}:`,
-      `  ${value} = phi ptr [ ${consequent}, %${thenLabel} ], [ ${alternate}, %${elseLabel} ]`,
-      `  ${length} = phi i64 [ ${consequentLength}, %${thenLabel} ], [ ${alternateLength}, %${elseLabel} ]`
+      `  ${value} = phi ptr [ ${consequent.value}, %${thenLabel} ], [ ${alternate.value}, %${elseLabel} ]`,
+      `  ${length} = phi i64 [ ${consequent.length}, %${thenLabel} ], [ ${alternate.length}, %${elseLabel} ]`
     ],
     value,
     length

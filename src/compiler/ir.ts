@@ -76,8 +76,8 @@ export type JsIrStringExpression =
   | {
       readonly kind: "ternary";
       readonly condition: JsIrCondition;
-      readonly consequent: string;
-      readonly alternate: string;
+      readonly consequent: JsIrStringExpression;
+      readonly alternate: JsIrStringExpression;
     }
   | {
       readonly kind: "concat";
@@ -403,7 +403,7 @@ function lowerStatements(
     diagnostics.push({
       code: "TSCN1002",
       category: "error",
-      message: "Only top-level const string, number, or boolean bindings, print calls, and if statements are supported by the current lowering slice",
+      message: unsupportedStatementMessage(statement),
       span: sourceSpan(sourceFile, statement.getStart(sourceFile))
     });
   }
@@ -1003,6 +1003,15 @@ function lowerLetVariableBinding(
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
+  const arrayElements = lowerArrayLiteralExpression(initializer, bindings);
+  if (arrayElements !== undefined) {
+    return {
+      kind: "arrayLiteral",
+      name,
+      elements: arrayElements
+    };
+  }
+
   const booleanValue = lowerConditionExpression(initializer, bindings);
   if (booleanValue !== undefined) {
     return {
@@ -1319,8 +1328,8 @@ function lowerStringRuntimeExpression(
   }
 
   const condition = lowerConditionExpression(expression.condition, bindings);
-  const consequent = lowerStringExpression(expression.whenTrue, bindings);
-  const alternate = lowerStringExpression(expression.whenFalse, bindings);
+  const consequent = lowerStringRuntimeExpression(expression.whenTrue, bindings);
+  const alternate = lowerStringRuntimeExpression(expression.whenFalse, bindings);
   if (condition === undefined || consequent === undefined || alternate === undefined) {
     return undefined;
   }
@@ -1756,21 +1765,146 @@ function lowerObjectLiteralExpression(
 
   const fields: JsIrObjectField[] = [];
   for (const property of expression.properties) {
-    if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) {
+    if (!ts.isPropertyAssignment(property)) {
+      return undefined;
+    }
+    const fieldName = lowerObjectFieldName(property.name);
+    if (fieldName === undefined) {
       return undefined;
     }
     const objectValue = lowerObjectLiteralExpression(property.initializer, bindings);
     if (objectValue !== undefined) {
-      fields.push({ name: property.name.text, value: { kind: "object", value: objectValue } });
+      fields.push({ name: fieldName, value: { kind: "object", value: objectValue } });
       continue;
     }
     const numberValue = lowerNumberExpression(property.initializer, bindings);
     if (numberValue === undefined) {
       return undefined;
     }
-    fields.push({ name: property.name.text, value: { kind: "number", value: numberValue } });
+    fields.push({ name: fieldName, value: { kind: "number", value: numberValue } });
   }
   return { fields };
+}
+
+function lowerObjectFieldName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) {
+    return name.text;
+  }
+  return undefined;
+}
+
+function unsupportedStatementMessage(statement: ts.Statement): string {
+  if (ts.isVariableStatement(statement)) {
+    const [declaration] = statement.declarationList.declarations;
+    if (declaration.initializer !== undefined) {
+      const message = unsupportedExpressionMessage(declaration.initializer);
+      if (message !== undefined) {
+        return message;
+      }
+    }
+  }
+
+  if (ts.isFunctionDeclaration(statement)) {
+    if (statement.parameters.some((parameter) => parameter.type?.kind === ts.SyntaxKind.StringKeyword)) {
+      return "String parameters in function declarations are not supported by the current runtime string ABI";
+    }
+    if (statement.body?.statements.some((bodyStatement) => ts.isReturnStatement(bodyStatement) && bodyStatement.expression !== undefined && unsupportedStringExpression(bodyStatement.expression))) {
+      return "String returns from functions are not supported by the current runtime string ABI";
+    }
+  }
+
+  if (ts.isExpressionStatement(statement)) {
+    const message = unsupportedExpressionMessage(statement.expression);
+    if (message !== undefined) {
+      return message;
+    }
+  }
+
+  return "Only top-level const string, number, or boolean bindings, print calls, and if statements are supported by the current lowering slice";
+}
+
+function unsupportedExpressionMessage(expression: ts.Expression): string | undefined {
+  if (ts.isArrayLiteralExpression(expression)) {
+    return unsupportedArrayLiteralMessage(expression);
+  }
+  if (ts.isObjectLiteralExpression(expression)) {
+    return unsupportedObjectLiteralMessage(expression);
+  }
+  if (unsupportedStringExpression(expression)) {
+    return "Unsupported string expression in the current runtime string lowering slice";
+  }
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    return unsupportedExpressionMessage(expression.right);
+  }
+  if (ts.isCallExpression(expression)) {
+    for (const argument of expression.arguments) {
+      const message = unsupportedExpressionMessage(argument);
+      if (message !== undefined) {
+        return message;
+      }
+    }
+  }
+  if (ts.isElementAccessExpression(expression) && !ts.isStringLiteral(expression.argumentExpression)) {
+    return "Dynamic computed object keys are not supported by known-shape numeric objects";
+  }
+  return undefined;
+}
+
+function unsupportedArrayLiteralMessage(expression: ts.ArrayLiteralExpression): string | undefined {
+  for (const element of expression.elements) {
+    if (ts.isOmittedExpression(element)) {
+      return "Array holes are not supported; fixed numeric arrays require every element to be present";
+    }
+    if (ts.isSpreadElement(element)) {
+      return "Array spread elements are not supported in fixed numeric arrays";
+    }
+    if (ts.isArrayLiteralExpression(element) || ts.isObjectLiteralExpression(element) || unsupportedStringExpression(element)) {
+      return "Non-numeric array elements are not supported; fixed numeric arrays only store numbers";
+    }
+  }
+  return undefined;
+}
+
+function unsupportedObjectLiteralMessage(expression: ts.ObjectLiteralExpression): string | undefined {
+  for (const property of expression.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      return "Object spread properties are not supported by known-shape numeric objects";
+    }
+    if (ts.isShorthandPropertyAssignment(property)) {
+      return "Object shorthand properties are not supported by known-shape numeric objects";
+    }
+    if (ts.isMethodDeclaration(property)) {
+      return "Object methods are not supported by known-shape numeric objects";
+    }
+    if (ts.isPropertyAssignment(property)) {
+      if (ts.isComputedPropertyName(property.name)) {
+        return "Dynamic computed object keys are not supported by known-shape numeric objects";
+      }
+      if (unsupportedStringExpression(property.initializer) || property.initializer.kind === ts.SyntaxKind.TrueKeyword || property.initializer.kind === ts.SyntaxKind.FalseKeyword) {
+        return "Non-number object fields are not supported by known-shape numeric objects";
+      }
+      if (ts.isObjectLiteralExpression(property.initializer)) {
+        const nested = unsupportedObjectLiteralMessage(property.initializer);
+        if (nested !== undefined) {
+          return nested;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function unsupportedStringExpression(expression: ts.Expression): boolean {
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+    return true;
+  }
+  if (ts.isBinaryExpression(expression)) {
+    return unsupportedStringExpression(expression.left) || unsupportedStringExpression(expression.right);
+  }
+  if (ts.isConditionalExpression(expression)) {
+    return unsupportedStringExpression(expression.whenTrue) || unsupportedStringExpression(expression.whenFalse);
+  }
+  return false;
 }
 
 function lowerObjectAccessPath(

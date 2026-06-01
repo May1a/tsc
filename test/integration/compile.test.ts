@@ -16,6 +16,14 @@ type CompileResult = {
   readonly cleanup: () => Promise<void>;
 };
 
+type NativeRunResult = {
+  readonly skipped: boolean;
+  readonly reason?: string;
+  readonly status?: number | null;
+  readonly stdout?: string;
+  readonly stderr?: string;
+};
+
 const compileFixture = async (fixture: string): Promise<CompileResult> => {
   const outDir = await mkdtemp(path.join(tmpdir(), "tscn-"));
   const result = spawnSync(
@@ -51,6 +59,29 @@ const expectUnsupportedDiagnostic = async (fixture: string): Promise<void> => {
   }
 };
 
+const expectUnsupportedMessage = async (fixture: string, message: string): Promise<void> => {
+  const result = await compileFixture(fixture);
+
+  try {
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("error TSCN1002");
+    expect(result.stderr).toContain(message);
+  } finally {
+    await result.cleanup();
+  }
+};
+
+const runNativeIfAvailable = (result: CompileResult): NativeRunResult => {
+  const executable = path.join(result.outDir, "main");
+  const native = spawnSync(executable, [], { encoding: "utf8" });
+  if (native.error !== undefined) {
+    return { skipped: true, reason: native.error.message };
+  }
+  return { skipped: false, status: native.status, stdout: native.stdout, stderr: native.stderr };
+};
+
+const countOccurrences = (value: string, needle: string): number => value.split(needle).length - 1;
+
 describe("tscn CLI", () => {
   test("lowers top-level print string calls to LLVM IR", async () => {
     const result = await expectSuccessfulCompile("hello.ts");
@@ -60,6 +91,25 @@ describe("tscn CLI", () => {
       expect(llvmIr).toContain("declare i32 @puts(ptr)");
       expect(llvmIr).toContain(String.raw`c"hello from tscn\00"`);
       expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("runs emitted native executable when clang is available", async () => {
+    const result = await expectSuccessfulCompile("hello.ts");
+
+    try {
+      const native = runNativeIfAvailable(result);
+      if (native.skipped) {
+        expect(native.reason).toContain("ENOENT");
+        const diagnostics = await result.readArtifact("diagnostics.txt");
+        expect(diagnostics).toContain("clang was not found");
+        return;
+      }
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe("hello from tscn\n");
+      expect(native.stderr).toBe("");
     } finally {
       await result.cleanup();
     }
@@ -338,10 +388,32 @@ describe("tscn CLI", () => {
     await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 
+  test("explains unsupported array runtime boundaries precisely", async () => {
+    const expectations = new Map([
+      ["array-hole.ts", "Array holes are not supported"],
+      ["array-spread.ts", "Array spread elements are not supported"],
+      ["array-non-numeric.ts", "fixed numeric arrays only store numbers"]
+    ]);
+
+    await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
+  });
+
   test("rejects unsupported object runtime boundaries", async () => {
     const fixtures = ["object-spread.ts", "object-shorthand.ts", "object-method.ts", "object-dynamic-key.ts", "object-non-numeric-field.ts"];
 
     await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
+  });
+
+  test("explains unsupported object runtime boundaries precisely", async () => {
+    const expectations = new Map([
+      ["object-spread.ts", "Object spread properties are not supported"],
+      ["object-shorthand.ts", "Object shorthand properties are not supported"],
+      ["object-method.ts", "Object methods are not supported"],
+      ["object-dynamic-key.ts", "Dynamic computed object keys are not supported"],
+      ["object-non-numeric-field.ts", "Non-number object fields are not supported"]
+    ]);
+
+    await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
   });
 });
 
@@ -603,6 +675,14 @@ describe("tscn function declarations and calls", () => {
       await result.cleanup();
     }
   });
+
+  test("rejects string function parameters with an ABI diagnostic", async () => {
+    await expectUnsupportedMessage("function-string-param.ts", "String parameters in function declarations are not supported");
+  });
+
+  test("rejects string function returns with an ABI diagnostic", async () => {
+    await expectUnsupportedMessage("function-string-return.ts", "String returns from functions are not supported");
+  });
 });
 
 describe("tscn loops", () => {
@@ -745,6 +825,19 @@ describe("tscn rich expressions", () => {
       expect(llvmIr).toContain("%str.0 = phi ptr");
       expect(llvmIr).toContain(String.raw`c"yes\00"`);
       expect(llvmIr).toContain(String.raw`c"no\00"`);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers runtime string ternary expressions through pointer and length phis", async () => {
+    const result = await expectSuccessfulCompile("runtime-string-ternary.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("phi ptr [ %str.2, %str.then.0 ], [ @.str.2, %str.else.0 ]");
+      expect(llvmIr).toContain("phi i64 [ %str.len.2, %str.then.0 ], [ 7, %str.else.0 ]");
+      expect(llvmIr).toContain("call i32 @puts(ptr %str.0)");
     } finally {
       await result.cleanup();
     }
@@ -941,6 +1034,21 @@ describe("tscn runtime strings", () => {
       await result.cleanup();
     }
   });
+
+  test("emits runtime helper declarations and definitions once before user functions", async () => {
+    const result = await expectSuccessfulCompile("string-helper-ordering.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(countOccurrences(llvmIr, "declare ptr @malloc(i64)")).toBe(1);
+      expect(countOccurrences(llvmIr, "define ptr @strConcat")).toBe(1);
+      expect(countOccurrences(llvmIr, "define i1 @strEquals")).toBe(1);
+      expect(llvmIr.indexOf("declare ptr @malloc(i64)")).toBeLessThan(llvmIr.indexOf("define ptr @strConcat"));
+      expect(llvmIr.indexOf("define ptr @strConcat")).toBeLessThan(llvmIr.indexOf("define void @check"));
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn arrays", () => {
@@ -1055,6 +1163,33 @@ describe("tscn arrays", () => {
       await result.cleanup();
     }
   });
+
+  test("lowers mutable fixed arrays and nested numeric indexes", async () => {
+    const result = await expectSuccessfulCompile("array-let-nested-index.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("@arr.0 = global [3 x double] [double 1, double 2, double 3]");
+      expect(llvmIr).toContain("store double 3, ptr %arr.gep.");
+      expect(llvmIr).toContain("fadd double %num.");
+      expect(llvmIr).toContain("fptosi double %num.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("stores variables and function-call results in array initializers", async () => {
+    const result = await expectSuccessfulCompile("array-call-initializer.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%call.0 = call double @next()");
+      expect(llvmIr).toContain("load double, ptr %x.addr");
+      expect(llvmIr).toContain("store double %call.0, ptr %arr.gep.");
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn objects", () => {
@@ -1149,6 +1284,30 @@ describe("tscn objects", () => {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("load double, ptr %obj.gep.");
       expect(llvmIr).toContain("fcmp oeq double %num.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers string-key object literal fields", async () => {
+    const result = await expectSuccessfulCompile("object-string-key.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%obj.0 = type { double }");
+      expect(llvmIr).toContain("getelementptr %obj.0, ptr %obj.addr, i32 0, i32 0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("stores function-call results in object fields", async () => {
+    const result = await expectSuccessfulCompile("object-call-field.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%call.0 = call double @value()");
+      expect(llvmIr).toContain("store double %call.0, ptr %obj.gep.");
     } finally {
       await result.cleanup();
     }
