@@ -235,7 +235,7 @@ describe("tscn CLI", () => {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("declare i32 @printf(ptr, ...)");
       expect(llvmIr).toContain(String.raw`c"%g\0A\00"`);
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42)");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42.0)");
     } finally {
       await result.cleanup();
     }
@@ -246,7 +246,7 @@ describe("tscn CLI", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fadd double 1, 2");
+      expect(llvmIr).toContain("%num.0 = fadd double 1.0, 2.0");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
     } finally {
       await result.cleanup();
@@ -258,7 +258,7 @@ describe("tscn CLI", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42)");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42.0)");
     } finally {
       await result.cleanup();
     }
@@ -269,7 +269,7 @@ describe("tscn CLI", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fadd double 40, 2");
+      expect(llvmIr).toContain("%num.0 = fadd double 40.0, 2.0");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
     } finally {
       await result.cleanup();
@@ -347,7 +347,7 @@ describe("tscn CLI", () => {
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("br i1 true, label %if.then.0, label %if.end.0");
-      expect(llvmIr.indexOf("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 3)")).toBeLessThan(
+      expect(llvmIr.indexOf("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 3.0)")).toBeLessThan(
         llvmIr.indexOf("call i32 @puts(ptr @.str.1)")
       );
       expect(llvmIr).toContain(String.raw`c"done\00"`);
@@ -439,23 +439,21 @@ describe("tscn CLI", () => {
   });
 
   test("rejects unsupported array runtime boundaries", async () => {
-    const fixtures = ["array-hole.ts", "array-spread.ts", "array-non-numeric.ts"];
+    const fixtures = ["array-spread.ts"];
 
     await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 
   test("explains unsupported array runtime boundaries precisely", async () => {
     const expectations = new Map([
-      ["array-hole.ts", "Array holes are not supported"],
-      ["array-spread.ts", "Array spread elements are not supported"],
-      ["array-non-numeric.ts", "fixed numeric arrays only store numbers"]
+      ["array-spread.ts", "Array spread elements are not supported"]
     ]);
 
     await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
   });
 
   test("rejects unsupported object runtime boundaries", async () => {
-    const fixtures = ["object-spread.ts", "object-shorthand.ts", "object-method.ts", "object-dynamic-key.ts", "object-non-numeric-field.ts"];
+    const fixtures = ["object-spread.ts", "object-shorthand.ts", "object-method.ts"];
 
     await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
@@ -464,9 +462,7 @@ describe("tscn CLI", () => {
     const expectations = new Map([
       ["object-spread.ts", "Object spread properties are not supported"],
       ["object-shorthand.ts", "Object shorthand properties are not supported"],
-      ["object-method.ts", "Object methods are not supported"],
-      ["object-dynamic-key.ts", "Dynamic computed object keys are not supported"],
-      ["object-non-numeric-field.ts", "Non-number object fields are not supported"]
+      ["object-method.ts", "Object methods are not supported"]
     ]);
 
     await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
@@ -479,7 +475,7 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double 3, 3");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double 3.0, 3.0");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
       expect(llvmIr).toContain(String.raw`c"yes\00"`);
     } finally {
@@ -492,8 +488,8 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fadd double 1, 2");
-      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double %num.0, 3");
+      expect(llvmIr).toContain("%num.0 = fadd double 1.0, 2.0");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double %num.0, 3.0");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.else.0");
       expect(llvmIr).toContain(String.raw`c"yes\00"`);
       expect(llvmIr).toContain(String.raw`c"no\00"`);
@@ -507,14 +503,14 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fadd double 1, 2");
-      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double %num.0, 3");
+      expect(llvmIr).toContain("%num.0 = fadd double 1.0, 2.0");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oeq double %num.0, 3.0");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.else.0");
       expect(llvmIr).toContain("if.then.0:");
-      expect(llvmIr).toContain("%num.1 = fadd double 1, 2");
+      expect(llvmIr).toContain("%num.1 = fadd double 1.0, 2.0");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.1)");
       expect(llvmIr).toContain("if.else.0:");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 0)");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 0.0)");
     } finally {
       await result.cleanup();
     }
@@ -525,7 +521,7 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%cmp.0 = fcmp one double 1, 2");
+      expect(llvmIr).toContain("%cmp.0 = fcmp one double 1.0, 2.0");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
       expect(llvmIr).toContain(String.raw`c"different\00"`);
     } finally {
@@ -538,7 +534,7 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%cmp.0 = fcmp olt double 1, 2");
+      expect(llvmIr).toContain("%cmp.0 = fcmp olt double 1.0, 2.0");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
       expect(llvmIr).toContain(String.raw`c"less\00"`);
     } finally {
@@ -551,7 +547,7 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%cmp.0 = fcmp ole double 2, 2");
+      expect(llvmIr).toContain("%cmp.0 = fcmp ole double 2.0, 2.0");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
       expect(llvmIr).toContain(String.raw`c"less or equal\00"`);
     } finally {
@@ -564,7 +560,7 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%cmp.0 = fcmp ogt double 2, 1");
+      expect(llvmIr).toContain("%cmp.0 = fcmp ogt double 2.0, 1.0");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
       expect(llvmIr).toContain(String.raw`c"greater\00"`);
     } finally {
@@ -577,7 +573,7 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%cmp.0 = fcmp oge double 2, 2");
+      expect(llvmIr).toContain("%cmp.0 = fcmp oge double 2.0, 2.0");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.end.0");
       expect(llvmIr).toContain(String.raw`c"greater or equal\00"`);
     } finally {
@@ -590,7 +586,7 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fneg double 42");
+      expect(llvmIr).toContain("%num.0 = fneg double 42.0");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
     } finally {
       await result.cleanup();
@@ -602,7 +598,7 @@ describe("tscn numeric conditions and bindings", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fneg double 3");
+      expect(llvmIr).toContain("%num.0 = fneg double 3.0");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
     } finally {
       await result.cleanup();
@@ -631,7 +627,7 @@ describe("tscn function declarations and calls", () => {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("define void @add(double %p0, double %p1)");
       expect(llvmIr).toContain("%num.0 = fadd double %p0, %p1");
-      expect(llvmIr).toContain("call void @add(double 1, double 2)");
+      expect(llvmIr).toContain("call void @add(double 1.0, double 2.0)");
     } finally {
       await result.cleanup();
     }
@@ -643,7 +639,7 @@ describe("tscn function declarations and calls", () => {
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("define double @double(double %p0)");
-      expect(llvmIr).toContain("call double @double(double 3)");
+      expect(llvmIr).toContain("call double @double(double 3.0)");
       expect(llvmIr).toContain("ret double %");
     } finally {
       await result.cleanup();
@@ -655,7 +651,7 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("declare double @fib(double)");
+      expect(llvmIr).not.toContain("declare double @fib(double)");
       expect(llvmIr).toContain("define double @fib(double %p0)");
       expect(llvmIr).toContain("call double @fib(double");
     } finally {
@@ -669,7 +665,7 @@ describe("tscn function declarations and calls", () => {
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("define void @getX()");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42)");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42.0)");
       expect(llvmIr).toContain("call void @getX()");
     } finally {
       await result.cleanup();
@@ -695,7 +691,7 @@ describe("tscn function declarations and calls", () => {
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("define double @add(double %p0, double %p1)");
-      expect(llvmIr).toContain("%call.0 = call double @add(double 1, double 2)");
+      expect(llvmIr).toContain("%call.0 = call double @add(double 1.0, double 2.0)");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %call.0)");
     } finally {
       await result.cleanup();
@@ -707,8 +703,8 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("declare double @isEven(double)");
-      expect(llvmIr).toContain("declare double @isOdd(double)");
+      expect(llvmIr).not.toContain("declare double @isEven(double)");
+      expect(llvmIr).not.toContain("declare double @isOdd(double)");
       expect(llvmIr).toContain("define double @isEven(double %p0)");
       expect(llvmIr).toContain("define double @isOdd(double %p0)");
       expect(llvmIr).toContain("call double @isOdd(double");
@@ -725,7 +721,7 @@ describe("tscn function declarations and calls", () => {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("define double @adder(double %p0, double %p1)");
       expect(llvmIr).toContain("%num.0 = fadd double %p0, %p1");
-      expect(llvmIr).toContain("%call.0 = call double @adder(double 3, double 5)");
+      expect(llvmIr).toContain("%call.0 = call double @adder(double 3.0, double 5.0)");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %call.0)");
     } finally {
       await result.cleanup();
@@ -783,7 +779,7 @@ describe("tscn loops", () => {
       expect(llvmIr).toContain("while.cond.0:");
       expect(llvmIr).toContain("while.body.0:");
       expect(llvmIr).toContain("while.end.0:");
-      expect(llvmIr).toContain("store double 0, ptr %i.addr");
+      expect(llvmIr).toContain("store double 0.0, ptr %i.addr");
       expect(llvmIr).toContain("store double %num.");
     } finally {
       await result.cleanup();
@@ -795,7 +791,7 @@ describe("tscn loops", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("store double 0, ptr %i.addr");
+      expect(llvmIr).toContain("store double 0.0, ptr %i.addr");
       expect(llvmIr).toContain("br label %for.cond.0");
       expect(llvmIr).toContain("for.body.0:");
       expect(llvmIr).toContain("for.step.0:");
@@ -896,8 +892,8 @@ describe("tscn rich expressions", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%cmp.0 = fcmp ogt double 12, 10");
-      expect(llvmIr).toContain("select i1 %cmp.0, double 12, double 10");
+      expect(llvmIr).toContain("%cmp.0 = fcmp ogt double 12.0, 10.0");
+      expect(llvmIr).toContain("select i1 %cmp.0, double 12.0, double 10.0");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.");
     } finally {
       await result.cleanup();
@@ -1145,7 +1141,7 @@ describe("tscn arrays", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("@arr.0 = global [3 x double] [double 10, double 20, double 30]");
+      expect(llvmIr).toContain("@arr.0 = global [3 x double] [double 10.0, double 20.0, double 30.0]");
       expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0, i64 0, i64 0");
       expect(llvmIr).toContain("load double, ptr %arr.gep.");
     } finally {
@@ -1171,7 +1167,7 @@ describe("tscn arrays", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 3)");
+      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 3.0)");
     } finally {
       await result.cleanup();
     }
@@ -1182,7 +1178,7 @@ describe("tscn arrays", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("store double 99, ptr %arr.gep.");
+      expect(llvmIr).toContain("store double 99.0, ptr %arr.gep.");
       expect(llvmIr).toContain("load double, ptr %arr.gep.");
     } finally {
       await result.cleanup();
@@ -1207,7 +1203,7 @@ describe("tscn arrays", () => {
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("%arr.addr = alloca [2 x double]");
-      expect(llvmIr).toContain("%num.0 = fadd double 10, 1");
+      expect(llvmIr).toContain("%num.0 = fadd double 10.0, 1.0");
       expect(llvmIr).toContain("store double %num.0, ptr %arr.gep.");
       expect(llvmIr).not.toContain("[double 0");
     } finally {
@@ -1231,7 +1227,7 @@ describe("tscn arrays", () => {
     try {
       const llvmIr = await loop.readArtifact("main.ll");
       expect(llvmIr).toContain("while.cond.0:");
-      expect(llvmIr).toContain("fcmp olt double %num.0, 3");
+      expect(llvmIr).toContain("fcmp olt double %num.0, 3.0");
       expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0");
     } finally {
       await loop.cleanup();
@@ -1243,8 +1239,8 @@ describe("tscn arrays", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("@arr.0 = global [2 x double] [double 1, double 2]");
-      expect(llvmIr).toContain("@arr.1 = global [2 x double] [double 3, double 4]");
+      expect(llvmIr).toContain("@arr.0 = global [2 x double] [double 1.0, double 2.0]");
+      expect(llvmIr).toContain("@arr.1 = global [2 x double] [double 3.0, double 4.0]");
       expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.0, i64 0, i64 0");
       expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.1, i64 0, i64 1");
     } finally {
@@ -1257,8 +1253,8 @@ describe("tscn arrays", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("@arr.0 = global [3 x double] [double 1, double 2, double 3]");
-      expect(llvmIr).toContain("store double 3, ptr %arr.gep.");
+      expect(llvmIr).toContain("@arr.0 = global [3 x double] [double 1.0, double 2.0, double 3.0]");
+      expect(llvmIr).toContain("store double 3.0, ptr %arr.gep.");
       expect(llvmIr).toContain("fadd double %num.");
       expect(llvmIr).toContain("fptosi double %num.");
     } finally {
@@ -1274,6 +1270,47 @@ describe("tscn arrays", () => {
       expect(llvmIr).toContain("%call.0 = call double @next()");
       expect(llvmIr).toContain("load double, ptr %x.addr");
       expect(llvmIr).toContain("store double %call.0, ptr %arr.gep.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers holes and mixed values through runtime array helpers", async () => {
+    const hole = await expectSuccessfulCompile("array-hole.ts");
+
+    try {
+      const llvmIr = await hole.readArtifact("main.ll");
+      expect(llvmIr).toContain("define ptr @arrayNew(i64 %length)");
+      expect(llvmIr).toContain("define i64 @arrayGet(ptr %array, i64 %index)");
+      expect(llvmIr).toContain("call void @arraySet(ptr %arr.arr, i64 1, i64 9222246136947933184)");
+      expect(llvmIr).toContain("call i64 @arrayGet(ptr %arr.ptr.");
+      await expectNativeBehaviorIfAvailable(hole, { status: 0, stdout: "1\n", stderr: "" });
+    } finally {
+      await hole.cleanup();
+    }
+
+    const mixed = await expectSuccessfulCompile("array-non-numeric.ts");
+
+    try {
+      const llvmIr = await mixed.readArtifact("main.ll");
+      expect(llvmIr).toContain("call void @arraySet(ptr %arr.arr, i64 0, i64 %value.");
+      expect(llvmIr).toContain("call void @valuePrint(i64 %value.");
+      await expectNativeBehaviorIfAvailable(mixed, { status: 0, stdout: "x\n", stderr: "" });
+    } finally {
+      await mixed.cleanup();
+    }
+  });
+
+  test("keeps runtime and fixed array names from colliding", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-and-fixed.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("@arr.0 = global [2 x double] [double 1.0, double 2.0]");
+      expect(llvmIr).toContain("%mixed.arr = call ptr @arrayNew(i64 2)");
+      expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.0");
+      expect(llvmIr).toContain("call i64 @arrayGet(ptr %arr.ptr.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "2\ntrue\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
@@ -1311,7 +1348,7 @@ describe("tscn objects", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("store double 99, ptr %obj.gep.");
+      expect(llvmIr).toContain("store double 99.0, ptr %obj.gep.");
       expect(llvmIr).toContain("load double, ptr %obj.gep.");
     } finally {
       await result.cleanup();
@@ -1336,7 +1373,7 @@ describe("tscn objects", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("store double 99, ptr %obj.gep.");
+      expect(llvmIr).toContain("store double 99.0, ptr %obj.gep.");
       expect(llvmIr).toContain("load double, ptr %obj.gep.");
     } finally {
       await result.cleanup();
@@ -1348,7 +1385,7 @@ describe("tscn objects", () => {
 
     try {
       const llvmIr = await expression.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fadd double 40, 2");
+      expect(llvmIr).toContain("%num.0 = fadd double 40.0, 2.0");
       expect(llvmIr).toContain("store double %num.0, ptr %obj.gep.");
     } finally {
       await expression.cleanup();
@@ -1359,7 +1396,7 @@ describe("tscn objects", () => {
     try {
       const llvmIr = await nested.readArtifact("main.ll");
       expect(llvmIr).toContain("getelementptr %obj.0, ptr %obj.addr, i32 0, i32 0, i32 0");
-      expect(llvmIr).toContain("store double 42, ptr %obj.gep.");
+      expect(llvmIr).toContain("store double 42.0, ptr %obj.gep.");
     } finally {
       await nested.cleanup();
     }
@@ -1396,6 +1433,51 @@ describe("tscn objects", () => {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("%call.0 = call double @value()");
       expect(llvmIr).toContain("store double %call.0, ptr %obj.gep.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers dynamic string-key object reads through runtime helpers", async () => {
+    const result = await expectSuccessfulCompile("object-dynamic-key.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%obj.0 = type { double }");
+      expect(llvmIr).toContain("define ptr @objectNew(i64 %capacity)");
+      expect(llvmIr).toContain("define i64 @objectGet(ptr %object, i64 %key.len, ptr %key.ptr)");
+      expect(llvmIr).toContain("call void @objectSet(ptr %obj.rt.");
+      expect(llvmIr).toContain("call i64 @objectGet(ptr %obj.ptr.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers runtime-only object value fields through dictionary objects", async () => {
+    const result = await expectSuccessfulCompile("object-non-numeric-field.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).not.toContain("%obj.0 = type { double }");
+      expect(llvmIr).toContain("call void @objectSet(ptr %obj.rt.");
+      expect(llvmIr).toContain("call void @valuePrint(i64 %value.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "value\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("keeps runtime and known-shape object names from colliding", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-and-fixed.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%obj.0 = type { double }");
+      expect(llvmIr).toContain("%dynamic.addr = alloca ptr");
+      expect(llvmIr).toContain("getelementptr %obj.0, ptr %fixed.addr");
+      expect(llvmIr).toContain("call i64 @objectGet(ptr %obj.ptr.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\nruntime\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
@@ -1462,7 +1544,8 @@ describe("tscn JSValue ABI", () => {
       expect(llvmIr).toContain("bitcast double 42.0 to i64");
       expect(llvmIr).toContain("select i1 true, i64 9222246136947933186, i64 9222246136947933185");
       expect(llvmIr).toContain("i64 9222246136947933184");
-      expect(llvmIr).toContain("or i64 %value.payload.");
+      expect(llvmIr).toContain("define i64 @valueBoxString(ptr %string.ptr)");
+      expect(llvmIr).toContain("call i64 @valueBoxString(ptr @.str.");
       expect(countOccurrences(llvmIr, "define void @valuePrint")).toBe(1);
       await expectNativeBehaviorIfAvailable(result, {
         status: 0,
@@ -1507,10 +1590,10 @@ describe("tscn JSValue ABI", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("declare i64 @choose(double)");
+      expect(llvmIr).not.toContain("declare i64 @choose(double)");
       expect(llvmIr).toContain("define i64 @choose(double %p0)");
       expect(llvmIr).toContain("select i1 %cmp.0, i64 %value.");
-      expect(llvmIr).toContain("%call.0 = call i64 @choose(double 0)");
+      expect(llvmIr).toContain("%call.0 = call i64 @choose(double 0.0)");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\n7\n", stderr: "" });
     } finally {
       await result.cleanup();
