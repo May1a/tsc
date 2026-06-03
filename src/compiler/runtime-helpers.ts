@@ -44,6 +44,8 @@ export function useRuntimeHelper(runtime: RuntimeHelperEmitter, helper: RuntimeH
   }
   if (helper === "objectSet") {
     runtime.used.add("objectGet");
+    runtime.used.add("malloc");
+    runtime.used.add("memcpy");
   }
 }
 
@@ -114,7 +116,8 @@ entry:
   %box = call ptr @malloc(i64 8)
   store ptr %string.ptr, ptr %box
   %box.bits = ptrtoint ptr %box to i64
-  %value = or i64 %box.bits, 1
+  %payload = and i64 %box.bits, 281474976710655
+  %value = or i64 %payload, 9221683186994511872
   ret i64 %value
 }
 `);
@@ -136,8 +139,8 @@ check.true:
   %is.true = icmp eq i64 %value, 9222246136947933186
   br i1 %is.true, label %print.true, label %check.string
 check.string:
-  %boxed.tag = and i64 %value, 1
-  %is.string = icmp eq i64 %boxed.tag, 1
+  %tagged = and i64 %value, -281474976710656
+  %is.string = icmp eq i64 %tagged, 9221683186994511872
   br i1 %is.string, label %print.string, label %print.number
 print.undefined:
   call i32 @puts(ptr @.value.undefined)
@@ -149,7 +152,7 @@ print.true:
   call i32 @puts(ptr @.value.true)
   ret void
 print.string:
-  %box.bits = and i64 %value, -2
+  %box.bits = and i64 %value, 281474976710655
   %box = inttoptr i64 %box.bits to ptr
   %ptr = load ptr, ptr %box
   call i32 @puts(ptr %ptr)
@@ -231,10 +234,12 @@ exit:
     definitions.push(`define ptr @objectNew(i64 %capacity) {
 entry:
   %entries.bytes = mul i64 %capacity, 24
-  %object = call ptr @malloc(i64 16)
+  %object = call ptr @malloc(i64 24)
   %entries = call ptr @malloc(i64 %entries.bytes)
   store i64 0, ptr %object
-  %entries.slot = getelementptr i8, ptr %object, i64 8
+  %capacity.slot = getelementptr i8, ptr %object, i64 8
+  store i64 %capacity, ptr %capacity.slot
+  %entries.slot = getelementptr i8, ptr %object, i64 16
   store ptr %entries, ptr %entries.slot
   ret ptr %object
 }
@@ -244,7 +249,7 @@ entry:
     definitions.push(`define i64 @objectGet(ptr %object, i64 %key.len, ptr %key.ptr) {
 entry:
   %count = load i64, ptr %object
-  %entries.slot = getelementptr i8, ptr %object, i64 8
+  %entries.slot = getelementptr i8, ptr %object, i64 16
   %entries = load ptr, ptr %entries.slot
   br label %scan
 scan:
@@ -279,13 +284,15 @@ missing:
     definitions.push(`define void @objectSet(ptr %object, i64 %key.len, ptr %key.ptr, i64 %value) {
 entry:
   %count = load i64, ptr %object
-  %entries.slot = getelementptr i8, ptr %object, i64 8
+  %capacity.slot = getelementptr i8, ptr %object, i64 8
+  %capacity = load i64, ptr %capacity.slot
+  %entries.slot = getelementptr i8, ptr %object, i64 16
   %entries = load ptr, ptr %entries.slot
   br label %scan
 scan:
   %i = phi i64 [ 0, %entry ], [ %next, %advance ]
   %done = icmp eq i64 %i, %count
-  br i1 %done, label %append, label %check
+  br i1 %done, label %ensure.capacity, label %check
 check:
   %entry.bytes = mul i64 %i, 24
   %entry.ptr = getelementptr i8, ptr %entries, i64 %entry.bytes
@@ -305,9 +312,30 @@ replace:
 advance:
   %next = add i64 %i, 1
   br label %scan
+ensure.capacity:
+  %has.capacity = icmp ult i64 %count, %capacity
+  br i1 %has.capacity, label %append, label %grow
+grow:
+  %capacity.zero = icmp eq i64 %capacity, 0
+  br i1 %capacity.zero, label %grow.empty, label %grow.double
+grow.empty:
+  br label %grow.copy
+grow.double:
+  %double.capacity = mul i64 %capacity, 2
+  br label %grow.copy
+grow.copy:
+  %next.capacity = phi i64 [ 1, %grow.empty ], [ %double.capacity, %grow.double ]
+  %new.entries.bytes = mul i64 %next.capacity, 24
+  %new.entries = call ptr @malloc(i64 %new.entries.bytes)
+  %old.entries.bytes = mul i64 %count, 24
+  call ptr @memcpy(ptr %new.entries, ptr %entries, i64 %old.entries.bytes)
+  store i64 %next.capacity, ptr %capacity.slot
+  store ptr %new.entries, ptr %entries.slot
+  br label %append
 append:
+  %append.entries = phi ptr [ %entries, %ensure.capacity ], [ %new.entries, %grow.copy ]
   %append.bytes = mul i64 %count, 24
-  %append.ptr = getelementptr i8, ptr %entries, i64 %append.bytes
+  %append.ptr = getelementptr i8, ptr %append.entries, i64 %append.bytes
   store i64 %key.len, ptr %append.ptr
   %append.key.slot = getelementptr i8, ptr %append.ptr, i64 8
   store ptr %key.ptr, ptr %append.key.slot

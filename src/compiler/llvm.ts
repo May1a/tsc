@@ -1,17 +1,18 @@
-import type {
-  JsIrCallArgument,
-  JsIrBindingValue,
-  JsIrCondition,
-  JsIrExpression,
-  JsIrFunctionParameter,
-  JsIrModule,
-  JsIrNumberExpression,
-  JsIrNumberOperator,
-  JsIrObjectValue,
-  JsIrOperation,
-  JsIrRuntimeObjectValue,
-  JsIrStringExpression,
-  JsIrValueExpression
+import {
+  aggregateBindingForOperation,
+  type JsIrCallArgument,
+  type JsIrBindingValue,
+  type JsIrCondition,
+  type JsIrExpression,
+  type JsIrFunctionParameter,
+  type JsIrModule,
+  type JsIrNumberExpression,
+  type JsIrNumberOperator,
+  type JsIrObjectValue,
+  type JsIrOperation,
+  type JsIrRuntimeObjectValue,
+  type JsIrStringExpression,
+  type JsIrValueExpression
 } from "./ir.js";
 import {
   createRuntimeHelperEmitter,
@@ -74,7 +75,7 @@ type RuntimeArrayValue = {
 type ObjectValue = {
   readonly typeName: string;
   readonly pointerName: string;
-  readonly runtimePointerName: string;
+  readonly runtimePointerName?: string;
   readonly value: JsIrObjectValue;
 };
 
@@ -275,20 +276,9 @@ function classifyAndProcessOperation(
 }
 
 function classifyAggregateOperation(operation: JsIrOperation, context: EmitContext): boolean {
-  if (operation.kind === "arrayLiteral") {
-    context.bindings.set(operation.name, { kind: "array", name: operation.name, length: operation.elements.length });
-    return true;
-  }
-  if (operation.kind === "runtimeArrayLiteral") {
-    context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
-    return true;
-  }
-  if (operation.kind === "objectLiteral") {
-    context.bindings.set(operation.name, { kind: "object", value: operation.value });
-    return true;
-  }
-  if (operation.kind === "runtimeObjectLiteral") {
-    context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
+  const binding = aggregateBindingForOperation(operation);
+  if (binding !== undefined && "name" in operation) {
+    context.bindings.set(operation.name, binding);
     return true;
   }
   return false;
@@ -450,20 +440,9 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
     return emitLetBooleanOperation(operation, context);
   }
 
-  if (operation.kind === "arrayLiteral") {
-    return emitArrayLiteralOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayLiteral") {
-    return emitRuntimeArrayLiteralOperation(operation, context);
-  }
-
-  if (operation.kind === "objectLiteral") {
-    return emitObjectLiteralOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectLiteral") {
-    return emitRuntimeObjectLiteralOperation(operation, context);
+  const aggregateLines = emitAggregateBindingOperation(operation, context);
+  if (aggregateLines !== undefined) {
+    return aggregateLines;
   }
 
   if (operation.kind === "assignNumber") {
@@ -488,6 +467,30 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
 
   if (operation.kind === "objectStore") {
     return emitObjectStoreOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectStore") {
+    return emitRuntimeObjectStoreOperation(operation, context);
+  }
+
+  return undefined;
+}
+
+function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+  if (operation.kind === "arrayLiteral") {
+    return emitArrayLiteralOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArrayLiteral") {
+    return emitRuntimeArrayLiteralOperation(operation, context);
+  }
+
+  if (operation.kind === "objectLiteral") {
+    return emitObjectLiteralOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectLiteral") {
+    return emitRuntimeObjectLiteralOperation(operation, context);
   }
 
   return undefined;
@@ -648,15 +651,21 @@ function emitObjectLiteralOperation(
 ): string[] {
   const typeName = defineObjectType(operation.value, context);
   const pointerName = variablePointerName(operation.name);
-  const runtimePointerName = `%${operation.name}.obj.addr`;
+  let runtimePointerName: string | undefined;
+  if (operation.needsRuntimeShadow) {
+    runtimePointerName = `%${operation.name}.obj.addr`;
+  }
   context.objectLayouts.set(operation.name, { typeName, pointerName, runtimePointerName, value: operation.value });
   context.bindings.set(operation.name, { kind: "object", value: operation.value });
-  const runtimeValue = knownShapeObjectToRuntimeValue(operation.value);
-  return [
+  const lines = [
     `  ${pointerName} = alloca ${typeName}`,
-    ...emitObjectFieldStores(typeName, pointerName, operation.value, [], context),
-    ...emitRuntimeObjectLiteralStorage(runtimePointerName, runtimeValue, context)
+    ...emitObjectFieldStores(typeName, pointerName, operation.value, [], context)
   ];
+  if (runtimePointerName !== undefined) {
+    const runtimeValue = knownShapeObjectToRuntimeValue(operation.value);
+    lines.push(...emitRuntimeObjectLiteralStorage(runtimePointerName, runtimeValue, context));
+  }
+  return lines;
 }
 
 function emitRuntimeObjectLiteralOperation(
@@ -673,8 +682,8 @@ function knownShapeObjectToRuntimeValue(value: JsIrObjectValue): JsIrRuntimeObje
   return {
     fields: value.fields
       .flatMap((field) => {
-        if (field.value.kind !== "number") {
-          return [];
+        if (field.value.kind === "object") {
+          throw new Error("Nested known-shape object fields cannot be converted to runtime JSValue dictionaries yet");
         }
         return [{ key: { kind: "literal" as const, value: field.name }, value: { kind: "number" as const, value: field.value.value } }];
       })
@@ -771,7 +780,27 @@ function emitObjectStoreOperation(
     return [];
   }
   const value = emitNumberExpression(operation.value, context);
-  return [...pointer.lines, ...value.lines, `  store double ${value.value}, ptr ${pointer.value}`];
+  const lines = [...pointer.lines, ...value.lines, `  store double ${value.value}, ptr ${pointer.value}`];
+  const layout = context.objectLayouts.get(operation.objectName);
+  if (layout?.runtimePointerName !== undefined && operation.path.length === 1) {
+    const key = emitStringExpression({ kind: "literal", value: operation.path[0] }, context);
+    const jsValue = emitNumberValueExpression({ kind: "number", value: operation.value }, context);
+    const object = emitRuntimeObjectPointer(operation.objectName, context);
+    useRuntimeHelper(context.runtime, "objectSet");
+    lines.push(...key.lines, ...jsValue.lines, ...object.lines, `  call void @objectSet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${jsValue.value})`);
+  }
+  return lines;
+}
+
+function emitRuntimeObjectStoreOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectStore" }>,
+  context: EmitContext
+): string[] {
+  const object = emitRuntimeObjectPointer(operation.objectName, context);
+  const key = emitStringExpression(operation.key, context);
+  const value = emitValueExpression(operation.value, context);
+  useRuntimeHelper(context.runtime, "objectSet");
+  return [...object.lines, ...key.lines, ...value.lines, `  call void @objectSet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
 function emitCallOperation(operation: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): string[] {
@@ -988,10 +1017,7 @@ function llvmDoubleBitcastOperand(value: string): string {
 }
 
 function llvmDoubleLiteral(value: number): string {
-  if (Number.isInteger(value)) {
-    return `${value}.0`;
-  }
-  return String(value);
+  return llvmDoubleBitcastOperand(String(value));
 }
 
 function emitTernaryValueExpression(

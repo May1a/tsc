@@ -1326,6 +1326,7 @@ describe("tscn objects", () => {
       expect(llvmIr).toContain("%obj.0 = type { double, double }");
       expect(llvmIr).toContain("%obj.addr = alloca %obj.0");
       expect(llvmIr).toContain("load double, ptr %obj.gep.");
+      expect(llvmIr).not.toContain("define ptr @objectNew(i64 %capacity)");
     } finally {
       await result.cleanup();
     }
@@ -1454,6 +1455,46 @@ describe("tscn objects", () => {
     }
   });
 
+  test("keeps known-shape object runtime shadows synchronized after mutation", async () => {
+    const result = await expectSuccessfulCompile("object-fixed-shadow-mutation.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("store double 2.0, ptr %obj.gep.");
+      expect(llvmIr).toContain("call void @objectSet(ptr %obj.ptr.");
+      expect(llvmIr).toContain("call i64 @objectGet(ptr %obj.ptr.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers dynamic object stores with dictionary growth", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-dynamic-store.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%capacity.slot = getelementptr i8, ptr %object, i64 8");
+      expect(llvmIr).toContain("%new.entries = call ptr @malloc(i64 %new.entries.bytes)");
+      expect(llvmIr).toContain("call void @objectSet(ptr %obj.ptr.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "new\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("rejects nested known-shape object dynamic lookup explicitly", async () => {
+    const result = await compileFixture("object-nested-dynamic-key.ts");
+
+    try {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("error TSCN1002");
+      expect(result.stderr).toContain("Dynamic computed object keys on nested known-shape objects are not supported yet");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("lowers runtime-only object value fields through dictionary objects", async () => {
     const result = await expectSuccessfulCompile("object-non-numeric-field.ts");
 
@@ -1560,6 +1601,18 @@ describe("tscn JSValue ABI", () => {
       if (lli.skipped) {
         expect(lli.reason).toContain("lli was not found");
       }
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("keeps boxed string tags distinct from fractional number values", async () => {
+    const result = await expectSuccessfulCompile("value-print-fraction.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%tagged = and i64 %value, -281474976710656");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "0.3\n", stderr: "" });
     } finally {
       await result.cleanup();
     }

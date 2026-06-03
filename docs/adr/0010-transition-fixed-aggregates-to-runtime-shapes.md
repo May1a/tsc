@@ -18,9 +18,10 @@ During the transition:
 
 - Fixed numeric array literals continue to lower to `double` globals or stack storage.
 - Array literals with holes or non-number values lower to allocated runtime arrays with logical length and `JSValue` elements. Holes are currently represented as `undefined` values; resizing, deletion, and prototype fallback remain deferred.
-- Known-shape numeric object literals continue to lower to LLVM structs, and also populate a dictionary side table when dynamic lookup is used.
+- Known-shape numeric object literals continue to lower to LLVM structs, and only populate a dictionary side table when dynamic lookup is used. Fixed-property writes must update both the struct and the side table when a side table exists.
 - Runtime-only object literals lower to dictionary objects with string keys and `JSValue` fields. Descriptors, prototypes, deletion, and shape guards remain deferred.
 - Dynamic computed string keys lower through dictionary lookup rather than compile-time field indexes.
+- Computed-key writes on runtime dictionary objects lower through dictionary stores. Runtime dictionaries track capacity and grow before appending new keys. Computed-key writes on known-shape objects are only supported when the key resolves to a known fixed field.
 
 ## Consequences
 

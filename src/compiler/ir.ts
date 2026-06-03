@@ -400,6 +400,7 @@ export type JsIrOperation =
       readonly kind: "objectLiteral";
       readonly name: string;
       readonly value: JsIrObjectValue;
+      readonly needsRuntimeShadow: boolean;
     }
   | {
       readonly kind: "runtimeObjectLiteral";
@@ -438,6 +439,12 @@ export type JsIrOperation =
       readonly objectName: string;
       readonly path: readonly string[];
       readonly value: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "runtimeObjectStore";
+      readonly objectName: string;
+      readonly key: JsIrStringExpression;
+      readonly value: JsIrValueExpression;
     }
   | {
       readonly kind: "print";
@@ -508,6 +515,42 @@ export type JsIrResult = {
   readonly diagnostics: readonly CompilerDiagnostic[];
 };
 
+type ArrayLiteralClassification =
+  | {
+      readonly kind: "fixed";
+      readonly elements: readonly JsIrNumberExpression[];
+    }
+  | {
+      readonly kind: "runtime";
+      readonly elements: readonly JsIrValueExpression[];
+    };
+
+type ObjectLiteralClassification =
+  | {
+      readonly kind: "fixed";
+      readonly value: JsIrObjectValue;
+    }
+  | {
+      readonly kind: "runtime";
+      readonly value: JsIrRuntimeObjectValue;
+    };
+
+export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBindingValue | undefined {
+  if (operation.kind === "arrayLiteral") {
+    return { kind: "array", name: operation.name, length: operation.elements.length };
+  }
+  if (operation.kind === "runtimeArrayLiteral") {
+    return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "objectLiteral") {
+    return { kind: "object", value: operation.value };
+  }
+  if (operation.kind === "runtimeObjectLiteral") {
+    return { kind: "runtimeObject", name: operation.name };
+  }
+  return undefined;
+}
+
 const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
   const lineAndCharacter = sourceFile.getLineAndCharacterOfPosition(position);
 
@@ -545,7 +588,7 @@ function lowerStatements(
     });
   }
 
-  return operations;
+  return markRuntimeObjectShadows(operations);
 }
 
 function updateBindings(
@@ -605,17 +648,113 @@ function updateAggregateBindings(
   operation: JsIrOperation,
   bindings: Map<string, JsIrBindingValue>
 ): void {
-  if (operation.kind === "arrayLiteral") {
-    bindings.set(operation.name, { kind: "array", name: operation.name, length: operation.elements.length });
+  const binding = aggregateBindingForOperation(operation);
+  if (binding !== undefined && "name" in operation) {
+    bindings.set(operation.name, binding);
+  }
+}
+
+function markRuntimeObjectShadows(operations: readonly JsIrOperation[]): readonly JsIrOperation[] {
+  const shadowedObjects = new Set<string>();
+  for (const operation of operations) {
+    collectRuntimeShadowObjectNames(operation, shadowedObjects);
+  }
+
+  if (shadowedObjects.size === 0) {
+    return operations;
+  }
+
+  return operations.map((operation) => markRuntimeObjectShadow(operation, shadowedObjects));
+}
+
+function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObjects: ReadonlySet<string>): JsIrOperation {
+  if (operation.kind === "objectLiteral") {
+    return { ...operation, needsRuntimeShadow: shadowedObjects.has(operation.name) };
+  }
+  if (operation.kind === "if") {
+    return {
+      ...operation,
+      thenOperations: markRuntimeObjectShadows(operation.thenOperations),
+      elseOperations: markRuntimeObjectShadows(operation.elseOperations)
+    };
+  }
+  if (operation.kind === "while" || operation.kind === "doWhile") {
+    return { ...operation, body: markRuntimeObjectShadows(operation.body) };
+  }
+  if (operation.kind === "for") {
+    return {
+      ...operation,
+      initializer: markRuntimeObjectShadow(operation.initializer, shadowedObjects),
+      body: markRuntimeObjectShadows(operation.body),
+      increment: markRuntimeObjectShadow(operation.increment, shadowedObjects)
+    };
+  }
+  if (operation.kind === "function") {
+    return { ...operation, body: markRuntimeObjectShadows(operation.body) };
+  }
+  return operation;
+}
+
+function collectRuntimeShadowObjectNames(operation: JsIrOperation, names: Set<string>): void {
+  collectOperationValueExpressions(operation, names);
+  if (operation.kind === "runtimeObjectStore") {
+    names.add(operation.objectName);
+  }
+}
+
+function collectOperationValueExpressions(operation: JsIrOperation, names: Set<string>): void {
+  if (operation.kind === "constValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeObjectStore") {
+    collectValueExpressionObjectNames(operation.value, names);
+  }
+  if (operation.kind === "returnValue") {
+    collectValueExpressionObjectNames(operation.expression, names);
   }
   if (operation.kind === "runtimeArrayLiteral") {
-    bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
-  }
-  if (operation.kind === "objectLiteral") {
-    bindings.set(operation.name, { kind: "object", value: operation.value });
+    for (const element of operation.elements) {
+      collectValueExpressionObjectNames(element, names);
+    }
   }
   if (operation.kind === "runtimeObjectLiteral") {
-    bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
+    for (const field of operation.value.fields) {
+      collectValueExpressionObjectNames(field.value, names);
+    }
+  }
+  if (operation.kind === "print" && operation.expression.kind === "value") {
+    collectValueExpressionObjectNames(operation.expression.value, names);
+  }
+  if (operation.kind === "if") {
+    for (const nested of [...operation.thenOperations, ...operation.elseOperations]) {
+      collectRuntimeShadowObjectNames(nested, names);
+    }
+  }
+  if (operation.kind === "while" || operation.kind === "doWhile" || operation.kind === "function") {
+    for (const nested of operation.body) {
+      collectRuntimeShadowObjectNames(nested, names);
+    }
+  }
+  if (operation.kind === "for") {
+    collectRuntimeShadowObjectNames(operation.initializer, names);
+    for (const nested of operation.body) {
+      collectRuntimeShadowObjectNames(nested, names);
+    }
+    collectRuntimeShadowObjectNames(operation.increment, names);
+  }
+}
+
+function collectValueExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {
+  if (expression.kind === "objectDynamicAccess") {
+    names.add(expression.objectName);
+  }
+  if (expression.kind === "ternary") {
+    collectValueExpressionObjectNames(expression.consequent, names);
+    collectValueExpressionObjectNames(expression.alternate, names);
+  }
+  if (expression.kind === "call") {
+    for (const argument of expression.arguments) {
+      if (argument.valueKind === "value") {
+        collectValueExpressionObjectNames(argument.value, names);
+      }
+    }
   }
 }
 
@@ -1225,21 +1364,20 @@ function lowerLetVariableBinding(
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  const arrayElements = lowerArrayLiteralExpression(initializer, bindings);
-  if (arrayElements !== undefined) {
+  const arrayLiteral = classifyArrayLiteral(initializer, bindings);
+  if (arrayLiteral?.kind === "fixed") {
     return {
       kind: "arrayLiteral",
       name,
-      elements: arrayElements
+      elements: arrayLiteral.elements
     };
   }
 
-  const runtimeArrayElements = lowerRuntimeArrayLiteralExpression(initializer, bindings);
-  if (runtimeArrayElements !== undefined) {
+  if (arrayLiteral?.kind === "runtime") {
     return {
       kind: "runtimeArrayLiteral",
       name,
-      elements: runtimeArrayElements
+      elements: arrayLiteral.elements
     };
   }
 
@@ -1354,21 +1492,19 @@ function lowerConstAggregateBinding(
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  const arrayElements = lowerArrayLiteralExpression(initializer, bindings);
-  if (arrayElements !== undefined) {
-    return { kind: "arrayLiteral", name, elements: arrayElements };
+  const arrayLiteral = classifyArrayLiteral(initializer, bindings);
+  if (arrayLiteral?.kind === "fixed") {
+    return { kind: "arrayLiteral", name, elements: arrayLiteral.elements };
   }
-  const runtimeArrayElements = lowerRuntimeArrayLiteralExpression(initializer, bindings);
-  if (runtimeArrayElements !== undefined) {
-    return { kind: "runtimeArrayLiteral", name, elements: runtimeArrayElements };
+  if (arrayLiteral?.kind === "runtime") {
+    return { kind: "runtimeArrayLiteral", name, elements: arrayLiteral.elements };
   }
-  const objectValue = lowerObjectLiteralExpression(initializer, bindings);
-  if (objectValue !== undefined) {
-    return { kind: "objectLiteral", name, value: objectValue };
+  const objectLiteral = classifyObjectLiteral(initializer, bindings);
+  if (objectLiteral?.kind === "fixed") {
+    return { kind: "objectLiteral", name, value: objectLiteral.value, needsRuntimeShadow: false };
   }
-  const runtimeObjectValue = lowerRuntimeObjectLiteralExpression(initializer, bindings);
-  if (runtimeObjectValue !== undefined) {
-    return { kind: "runtimeObjectLiteral", name, value: runtimeObjectValue };
+  if (objectLiteral?.kind === "runtime") {
+    return { kind: "runtimeObjectLiteral", name, value: objectLiteral.value };
   }
   return undefined;
 }
@@ -1461,6 +1597,11 @@ function lowerElementAssignment(
     return { kind: "arrayStore", arrayName: left.expression.text, index, value };
   }
 
+  const objectStore = lowerObjectElementAssignment(left, right, arrayBinding, bindings);
+  if (objectStore !== undefined) {
+    return objectStore;
+  }
+
   const runtimeValue = lowerValueExpression(right, bindings);
   if (arrayBinding?.kind === "runtimeArray" && index !== undefined && runtimeValue !== undefined) {
     return { kind: "runtimeArrayStore", arrayName: left.expression.text, index, value: runtimeValue };
@@ -1469,11 +1610,52 @@ function lowerElementAssignment(
   return undefined;
 }
 
+function lowerObjectElementAssignment(
+  left: ts.ElementAccessExpression,
+  right: ts.Expression,
+  binding: JsIrBindingValue | undefined,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isIdentifier(left.expression)) {
+    return undefined;
+  }
+
+  if (binding?.kind === "object") {
+    const key = lowerStringExpression(left.argumentExpression, bindings);
+    const objectValue = lowerNumberExpression(right, bindings);
+    if (key !== undefined && objectValue !== undefined && objectPathExists(binding.value, [key])) {
+      return { kind: "objectStore", objectName: left.expression.text, path: [key], value: objectValue };
+    }
+    return undefined;
+  }
+
+  if (binding?.kind !== "runtimeObject") {
+    return undefined;
+  }
+
+  const key = lowerStringRuntimeExpression(left.argumentExpression, bindings);
+  const runtimeValue = lowerValueExpression(right, bindings);
+  if (key === undefined || runtimeValue === undefined) {
+    return undefined;
+  }
+  return { kind: "runtimeObjectStore", objectName: left.expression.text, key, value: runtimeValue };
+}
+
 function lowerObjectPropertyAssignment(
   left: ts.PropertyAccessExpression,
   right: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
+  if (ts.isIdentifier(left.expression)) {
+    const binding = bindings.get(left.expression.text);
+    if (binding?.kind === "runtimeObject") {
+      const value = lowerValueExpression(right, bindings);
+      if (value !== undefined) {
+        return { kind: "runtimeObjectStore", objectName: left.expression.text, key: { kind: "literal", value: left.name.text }, value };
+      }
+    }
+  }
+
   const access = lowerObjectAccessPath(left, bindings);
   const value = lowerNumberExpression(right, bindings);
   if (access === undefined || value === undefined) {
@@ -1861,6 +2043,9 @@ function lowerAggregateValueExpression(
       }
     }
     if (binding?.kind === "object" || binding?.kind === "runtimeObject") {
+      if (binding.kind === "object" && objectHasNestedFields(binding.value)) {
+        return undefined;
+      }
       const key = lowerStringRuntimeExpression(expression.argumentExpression, bindings);
       if (key !== undefined) {
         return { kind: "objectDynamicAccess", objectName: expression.expression.text, key };
@@ -2254,6 +2439,23 @@ function lowerArrayLiteralExpression(
   return elements;
 }
 
+function classifyArrayLiteral(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): ArrayLiteralClassification | undefined {
+  const fixed = lowerArrayLiteralExpression(expression, bindings);
+  if (fixed !== undefined) {
+    return { kind: "fixed", elements: fixed };
+  }
+
+  const runtime = lowerRuntimeArrayLiteralExpression(expression, bindings);
+  if (runtime !== undefined) {
+    return { kind: "runtime", elements: runtime };
+  }
+
+  return undefined;
+}
+
 function lowerRuntimeArrayLiteralExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -2288,6 +2490,23 @@ function lowerRuntimeArrayLiteralExpression(
     return undefined;
   }
   return elements;
+}
+
+function classifyObjectLiteral(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): ObjectLiteralClassification | undefined {
+  const fixed = lowerObjectLiteralExpression(expression, bindings);
+  if (fixed !== undefined) {
+    return { kind: "fixed", value: fixed };
+  }
+
+  const runtime = lowerRuntimeObjectLiteralExpression(expression, bindings);
+  if (runtime !== undefined) {
+    return { kind: "runtime", value: runtime };
+  }
+
+  return undefined;
 }
 
 function lowerObjectLiteralExpression(
@@ -2416,9 +2635,25 @@ function unsupportedExpressionMessage(expression: ts.Expression): string | undef
     }
   }
   if (ts.isElementAccessExpression(expression) && !ts.isStringLiteral(expression.argumentExpression)) {
+    if (containsNestedObjectElementAccess(expression)) {
+      return "Dynamic computed object keys on nested known-shape objects are not supported yet";
+    }
     return "Dynamic computed object keys are not supported by known-shape numeric objects";
   }
   return undefined;
+}
+
+function containsNestedObjectElementAccess(expression: ts.Expression): boolean {
+  if (ts.isElementAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
+    return true;
+  }
+  if (ts.isCallExpression(expression)) {
+    return expression.arguments.some((argument) => containsNestedObjectElementAccess(argument));
+  }
+  if (ts.isBinaryExpression(expression)) {
+    return containsNestedObjectElementAccess(expression.left) || containsNestedObjectElementAccess(expression.right);
+  }
+  return false;
 }
 
 function unsupportedArrayLiteralMessage(expression: ts.ArrayLiteralExpression): string | undefined {
@@ -2525,6 +2760,10 @@ function objectPathExists(value: JsIrObjectValue, path: readonly string[]): bool
     current = field.value.value;
   }
   return false;
+}
+
+function objectHasNestedFields(value: JsIrObjectValue): boolean {
+  return value.fields.some((field) => field.value.kind === "object");
 }
 
 export const lowerToJsIr = (entry: string, sourceFiles: readonly ts.SourceFile[]): JsIrResult => {
