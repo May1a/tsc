@@ -1,16 +1,18 @@
-import type {
-  JsIrCallArgument,
-  JsIrBindingValue,
-  JsIrCondition,
-  JsIrExpression,
-  JsIrFunctionParameter,
-  JsIrModule,
-  JsIrNumberExpression,
-  JsIrNumberOperator,
-  JsIrObjectValue,
-  JsIrOperation,
-  JsIrStringExpression,
-  JsIrValueExpression
+import {
+  aggregateBindingForOperation,
+  type JsIrCallArgument,
+  type JsIrBindingValue,
+  type JsIrCondition,
+  type JsIrExpression,
+  type JsIrFunctionParameter,
+  type JsIrModule,
+  type JsIrNumberExpression,
+  type JsIrNumberOperator,
+  type JsIrObjectValue,
+  type JsIrOperation,
+  type JsIrRuntimeObjectValue,
+  type JsIrStringExpression,
+  type JsIrValueExpression
 } from "./ir.js";
 import {
   createRuntimeHelperEmitter,
@@ -66,10 +68,19 @@ type ArrayValue = {
   readonly storageKind: "global" | "stack";
 };
 
+type RuntimeArrayValue = {
+  readonly pointerName: string;
+};
+
 type ObjectValue = {
   readonly typeName: string;
   readonly pointerName: string;
+  readonly runtimePointerName?: string;
   readonly value: JsIrObjectValue;
+};
+
+type RuntimeObjectValue = {
+  readonly pointerName: string;
 };
 
 type LoopLabels = {
@@ -96,7 +107,6 @@ const noLines = 0;
 const jsValueUndefined = "9222246136947933184";
 const jsValueFalse = "9222246136947933185";
 const jsValueTrue = "9222246136947933186";
-const jsValueStringTag = "9221683186994511872";
 
 const encodeCString = (value: string): { readonly value: string; readonly length: number } => {
   const bytes = [...Buffer.from(value, "utf8"), 0];
@@ -161,12 +171,6 @@ export const emitLlvmIr = (module: JsIrModule): string => {
   const fnLines = functionDefs
     .flatMap((fn) => emitFunctionDefinition(fn, context))
     .join("\n");
-  const forwardDeclarations = functionDefs
-    .map((fn) => {
-      const params = emitFunctionParameterTypes(fn.parameters).join(", ");
-      return `declare ${fn.returnType} @${fn.name}(${params})`;
-    })
-    .join("\n");
   const mainLines = emitOperations(mainOps, context);
   const stringConstants = context.stringConstants.join("\n");
   const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals].join("\n");
@@ -187,8 +191,6 @@ export const emitLlvmIr = (module: JsIrModule): string => {
 ; entry ${module.entry}
 ${moduleComments}
 
-target triple = "x86_64-unknown-linux-gnu"
-
 declare i32 @puts(ptr)
 declare i32 @printf(ptr, ...)
 ${runtimeDeclarations}
@@ -196,7 +198,6 @@ ${runtimeDeclarations}
 ${numberFormat}
 ${stringConstants}
 ${aggregateGlobals}
-${forwardDeclarations}
 ${runtimeDefinitions}
 ${fnLines}
 define i32 @main() {
@@ -232,10 +233,8 @@ function classifyAndProcessOperation(
     context.bindings.set(operation.name, { kind: "stringVariable", name: operation.name });
   } else if (operation.kind === "letBoolean") {
     context.bindings.set(operation.name, { kind: "booleanVariable", name: operation.name });
-  } else if (operation.kind === "arrayLiteral") {
-    context.bindings.set(operation.name, { kind: "array", name: operation.name, length: operation.elements.length });
-  } else if (operation.kind === "objectLiteral") {
-    context.bindings.set(operation.name, { kind: "object", value: operation.value });
+  } else if (classifyAggregateOperation(operation, context)) {
+    // Binding recorded; the operation still belongs in the emitted body below.
   } else if (operation.kind === "function") {
     const outerBindings = new Map(context.bindings);
     const returnClosure = operation.body.find((op) => op.kind === "returnClosure");
@@ -272,6 +271,15 @@ function classifyAndProcessOperation(
   }
 
   mainOps.push(operation);
+}
+
+function classifyAggregateOperation(operation: JsIrOperation, context: EmitContext): boolean {
+  const binding = aggregateBindingForOperation(operation);
+  if (binding !== undefined && "name" in operation) {
+    context.bindings.set(operation.name, binding);
+    return true;
+  }
+  return false;
 }
 
 function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
@@ -328,18 +336,6 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
   }
   lines.push("}", "");
   return lines;
-}
-
-function emitFunctionParameterTypes(parameters: readonly JsIrFunctionParameter[]): string[] {
-  return parameters.flatMap((parameter) => {
-    if (parameter.valueKind === "string") {
-      return ["i64", "ptr"];
-    }
-    if (parameter.valueKind === "value") {
-      return ["i64"];
-    }
-    return ["double"];
-  });
 }
 
 function emitFunctionParameters(parameters: readonly JsIrFunctionParameter[]): string[] {
@@ -442,12 +438,9 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
     return emitLetBooleanOperation(operation, context);
   }
 
-  if (operation.kind === "arrayLiteral") {
-    return emitArrayLiteralOperation(operation, context);
-  }
-
-  if (operation.kind === "objectLiteral") {
-    return emitObjectLiteralOperation(operation, context);
+  const aggregateLines = emitAggregateBindingOperation(operation, context);
+  if (aggregateLines !== undefined) {
+    return aggregateLines;
   }
 
   if (operation.kind === "assignNumber") {
@@ -466,8 +459,36 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
     return emitArrayStoreOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeArrayStore") {
+    return emitRuntimeArrayStoreOperation(operation, context);
+  }
+
   if (operation.kind === "objectStore") {
     return emitObjectStoreOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectStore") {
+    return emitRuntimeObjectStoreOperation(operation, context);
+  }
+
+  return undefined;
+}
+
+function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+  if (operation.kind === "arrayLiteral") {
+    return emitArrayLiteralOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArrayLiteral") {
+    return emitRuntimeArrayLiteralOperation(operation, context);
+  }
+
+  if (operation.kind === "objectLiteral") {
+    return emitObjectLiteralOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectLiteral") {
+    return emitRuntimeObjectLiteralOperation(operation, context);
   }
 
   return undefined;
@@ -582,7 +603,7 @@ function emitArrayLiteralOperation(
   context.arrayIndex += 1;
   if (operation.elements.every((element) => element.kind === "literal")) {
     const globalName = `@arr.${index}`;
-    const values = operation.elements.map((element) => `double ${element.value}`).join(", ");
+    const values = operation.elements.map((element) => `double ${llvmDoubleBitcastOperand(String(element.value))}`).join(", ");
     const arrayValue: ArrayValue = { name: globalName, length: operation.elements.length, storageKind: "global" };
     context.arrayGlobals.push(`${globalName} = global [${operation.elements.length} x double] [${values}]`);
     context.bindings.set(operation.name, { kind: "array", name: arrayValue.name, length: arrayValue.length });
@@ -601,15 +622,88 @@ function emitArrayLiteralOperation(
   return lines;
 }
 
+function emitRuntimeArrayLiteralOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayLiteral" }>,
+  context: EmitContext
+): string[] {
+  useRuntimeHelper(context.runtime, "arrayNew");
+  useRuntimeHelper(context.runtime, "arraySet");
+  const pointerName = variablePointerName(operation.name);
+  const arrayValue: RuntimeArrayValue = { pointerName };
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const lines = [
+    `  ${pointerName} = alloca ptr`,
+    `  %${operation.name}.arr = call ptr @arrayNew(i64 ${operation.elements.length})`,
+    `  store ptr %${operation.name}.arr, ptr ${arrayValue.pointerName}`
+  ];
+  for (let i = 0; i < operation.elements.length; i++) {
+    const value = emitValueExpression(operation.elements[i], context);
+    lines.push(...value.lines, `  call void @arraySet(ptr %${operation.name}.arr, i64 ${i}, i64 ${value.value})`);
+  }
+  return lines;
+}
+
 function emitObjectLiteralOperation(
   operation: Extract<JsIrOperation, { readonly kind: "objectLiteral" }>,
   context: EmitContext
 ): string[] {
   const typeName = defineObjectType(operation.value, context);
   const pointerName = variablePointerName(operation.name);
-  context.objectLayouts.set(operation.name, { typeName, pointerName, value: operation.value });
+  let runtimePointerName: string | undefined;
+  if (operation.needsRuntimeShadow) {
+    runtimePointerName = `%${operation.name}.obj.addr`;
+  }
+  context.objectLayouts.set(operation.name, { typeName, pointerName, runtimePointerName, value: operation.value });
   context.bindings.set(operation.name, { kind: "object", value: operation.value });
-  return [`  ${pointerName} = alloca ${typeName}`, ...emitObjectFieldStores(typeName, pointerName, operation.value, [], context)];
+  const lines = [
+    `  ${pointerName} = alloca ${typeName}`,
+    ...emitObjectFieldStores(typeName, pointerName, operation.value, [], context)
+  ];
+  if (runtimePointerName !== undefined) {
+    const runtimeValue = knownShapeObjectToRuntimeValue(operation.value);
+    lines.push(...emitRuntimeObjectLiteralStorage(runtimePointerName, runtimeValue, context));
+  }
+  return lines;
+}
+
+function emitRuntimeObjectLiteralOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectLiteral" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
+  const runtimeObject: RuntimeObjectValue = { pointerName };
+  return emitRuntimeObjectLiteralStorage(runtimeObject.pointerName, operation.value, context);
+}
+
+function knownShapeObjectToRuntimeValue(value: JsIrObjectValue): JsIrRuntimeObjectValue {
+  return {
+    fields: value.fields
+      .flatMap((field) => {
+        if (field.value.kind === "object") {
+          throw new Error("Nested known-shape object fields cannot be converted to runtime JSValue dictionaries yet");
+        }
+        return [{ key: { kind: "literal" as const, value: field.name }, value: { kind: "number" as const, value: field.value.value } }];
+      })
+  };
+}
+
+function emitRuntimeObjectLiteralStorage(
+  pointerName: string,
+  value: JsIrRuntimeObjectValue,
+  context: EmitContext
+): string[] {
+  useRuntimeHelper(context.runtime, "objectNew");
+  useRuntimeHelper(context.runtime, "objectSet");
+  const objectName = `%obj.rt.${context.objectIndex}`;
+  context.objectIndex += 1;
+  const lines = [`  ${pointerName} = alloca ptr`, `  ${objectName} = call ptr @objectNew(i64 ${value.fields.length})`, `  store ptr ${objectName}, ptr ${pointerName}`];
+  for (const field of value.fields) {
+    const key = emitStringExpression(field.key, context);
+    const fieldValue = emitValueExpression(field.value, context);
+    lines.push(...key.lines, ...fieldValue.lines, `  call void @objectSet(ptr ${objectName}, i64 ${key.length}, ptr ${key.value}, i64 ${fieldValue.value})`);
+  }
+  return lines;
 }
 
 function emitAssignNumberOperation(
@@ -664,6 +758,17 @@ function emitArrayStoreOperation(
   return [...pointer.lines, ...value.lines, `  store double ${value.value}, ptr ${pointer.value}`];
 }
 
+function emitRuntimeArrayStoreOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayStore" }>,
+  context: EmitContext
+): string[] {
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  const index = emitArrayIndex(operation.index, context);
+  const value = emitValueExpression(operation.value, context);
+  useRuntimeHelper(context.runtime, "arraySet");
+  return [...array.lines, ...index.lines, ...value.lines, `  call void @arraySet(ptr ${array.value}, i64 ${index.value}, i64 ${value.value})`];
+}
+
 function emitObjectStoreOperation(
   operation: Extract<JsIrOperation, { readonly kind: "objectStore" }>,
   context: EmitContext
@@ -673,7 +778,27 @@ function emitObjectStoreOperation(
     return [];
   }
   const value = emitNumberExpression(operation.value, context);
-  return [...pointer.lines, ...value.lines, `  store double ${value.value}, ptr ${pointer.value}`];
+  const lines = [...pointer.lines, ...value.lines, `  store double ${value.value}, ptr ${pointer.value}`];
+  const layout = context.objectLayouts.get(operation.objectName);
+  if (layout?.runtimePointerName !== undefined && operation.path.length === 1) {
+    const key = emitStringExpression({ kind: "literal", value: operation.path[0] }, context);
+    const jsValue = emitNumberValueExpression({ kind: "number", value: operation.value }, context);
+    const object = emitRuntimeObjectPointer(operation.objectName, context);
+    useRuntimeHelper(context.runtime, "objectSet");
+    lines.push(...key.lines, ...jsValue.lines, ...object.lines, `  call void @objectSet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${jsValue.value})`);
+  }
+  return lines;
+}
+
+function emitRuntimeObjectStoreOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectStore" }>,
+  context: EmitContext
+): string[] {
+  const object = emitRuntimeObjectPointer(operation.objectName, context);
+  const key = emitStringExpression(operation.key, context);
+  const value = emitValueExpression(operation.value, context);
+  useRuntimeHelper(context.runtime, "objectSet");
+  return [...object.lines, ...key.lines, ...value.lines, `  call void @objectSet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
 function emitCallOperation(operation: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): string[] {
@@ -791,7 +916,44 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return emitTernaryValueExpression(expression, context);
   }
 
+  if (expression.kind === "arrayAccess") {
+    return emitRuntimeArrayValueExpression(expression, context);
+  }
+
+  if (expression.kind === "objectDynamicAccess") {
+    return emitRuntimeObjectValueExpression(expression, context);
+  }
+
   throw new Error("Unsupported value expression");
+}
+
+function emitRuntimeArrayValueExpression(
+  expression: Extract<JsIrValueExpression, { readonly kind: "arrayAccess" }>,
+  context: EmitContext
+): JsValue {
+  const array = emitRuntimeArrayPointer(expression.arrayName, context);
+  const index = emitArrayIndex(expression.index, context);
+  const valueIndex = context.numIndex;
+  context.numIndex += 1;
+  const value = `%value.${valueIndex}`;
+  useRuntimeHelper(context.runtime, "arrayGet");
+  return { lines: [...array.lines, ...index.lines, `  ${value} = call i64 @arrayGet(ptr ${array.value}, i64 ${index.value})`], value };
+}
+
+function emitRuntimeObjectValueExpression(
+  expression: Extract<JsIrValueExpression, { readonly kind: "objectDynamicAccess" }>,
+  context: EmitContext
+): JsValue {
+  const object = emitRuntimeObjectPointer(expression.objectName, context);
+  const key = emitStringExpression(expression.key, context);
+  const valueIndex = context.numIndex;
+  context.numIndex += 1;
+  const value = `%value.${valueIndex}`;
+  useRuntimeHelper(context.runtime, "objectGet");
+  return {
+    lines: [...object.lines, ...key.lines, `  ${value} = call i64 @objectGet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`],
+    value
+  };
 }
 
 function emitPrimitiveValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
@@ -834,15 +996,12 @@ function emitStringValueExpression(expression: Extract<JsIrValueExpression, { re
   const string = emitStringExpression(expression.value, context);
   const index = context.numIndex;
   context.numIndex += 1;
-  const ptrBits = `%value.ptr.${index}`;
-  const payload = `%value.payload.${index}`;
   const value = `%value.${index}`;
+  useRuntimeHelper(context.runtime, "valueBoxString");
   return {
     lines: [
       ...string.lines,
-      `  ${ptrBits} = ptrtoint ptr ${string.value} to i64`,
-      `  ${payload} = and i64 ${ptrBits}, 281474976710655`,
-      `  ${value} = or i64 ${payload}, ${jsValueStringTag}`
+      `  ${value} = call i64 @valueBoxString(ptr ${string.value})`
     ],
     value
   };
@@ -853,6 +1012,10 @@ function llvmDoubleBitcastOperand(value: string): string {
     return `${value}.0`;
   }
   return value;
+}
+
+function llvmDoubleLiteral(value: number): string {
+  return llvmDoubleBitcastOperand(String(value));
 }
 
 function emitTernaryValueExpression(
@@ -1431,7 +1594,16 @@ function emitAggregateNumberExpression(
   if (expression.kind === "arrayLength") {
     const binding = context.bindings.get(expression.arrayName);
     if (binding?.kind === "array") {
-      return { lines: [], value: String(binding.length) };
+      return { lines: [], value: llvmDoubleLiteral(binding.length) };
+    }
+    if (binding?.kind === "runtimeArray") {
+      const array = emitRuntimeArrayPointer(expression.arrayName, context);
+      const index = context.numIndex;
+      context.numIndex += 1;
+      const length = `%arr.len.${index}`;
+      const value = `%num.${index}`;
+      useRuntimeHelper(context.runtime, "arrayLength");
+      return { lines: [...array.lines, `  ${length} = call i64 @arrayLength(ptr ${array.value})`, `  ${value} = uitofp i64 ${length} to double`], value };
     }
   }
 
@@ -1479,6 +1651,22 @@ function emitArrayElementPointer(
   };
 }
 
+function emitRuntimeArrayPointer(arrayName: string, context: EmitContext): NumberValue {
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  const value = `%arr.ptr.${index}`;
+  return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(arrayName)}`], value };
+}
+
+function emitRuntimeObjectPointer(objectName: string, context: EmitContext): NumberValue {
+  const layout = context.objectLayouts.get(objectName);
+  const pointerName = layout?.runtimePointerName ?? variablePointerName(objectName);
+  const index = context.objectIndex;
+  context.objectIndex += 1;
+  const value = `%obj.ptr.${index}`;
+  return { lines: [`  ${value} = load ptr, ptr ${pointerName}`], value };
+}
+
 function emitArrayIndex(expression: JsIrNumberExpression, context: EmitContext): NumberValue {
   if (expression.kind === "literal") {
     return { lines: [], value: String(expression.value) };
@@ -1497,7 +1685,7 @@ function emitSimpleNumberExpression(
   if (expression.kind === "literal") {
     return {
       lines: [],
-      value: String(expression.value)
+      value: llvmDoubleLiteral(expression.value)
     };
   }
 

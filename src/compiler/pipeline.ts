@@ -26,7 +26,7 @@ export const compile = (options: CompileOptions): Effect.Effect<CompileResult, E
 
     const frontendAndIrDiagnostics = [...frontend.diagnostics, ...jsIr.diagnostics];
     let link: LinkResult = { diagnostics: [] };
-    if (!frontendAndIrDiagnostics.some((diagnostic) => diagnostic.category === "error")) {
+    if (options.link !== false && !frontendAndIrDiagnostics.some((diagnostic) => diagnostic.category === "error")) {
       link = yield* linkWithClang(llvmIr, executable);
     }
     const diagnostics = [...frontendAndIrDiagnostics, ...link.diagnostics];
