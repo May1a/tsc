@@ -8,7 +8,7 @@ The first stable `JSValue` bit layout is:
 - `undefined`: `0x7ffc000000000000` (`9222246136947933184`).
 - `false`: `0x7ffc000000000001` (`9222246136947933185`).
 - `true`: `0x7ffc000000000002` (`9222246136947933186`).
-- `string reference`: `0x7ffa000000000000 | pointerPayload`, where `pointerPayload` is the low 48 bits of the UTF-8, NUL-terminated string data pointer. The current native Linux x86_64 target assumes canonical 48-bit process pointers.
+- `string reference`: `0x7ffa000000000000 | pointerPayload`, where `pointerPayload` is the low 48 bits of the UTF-8, NUL-terminated string data pointer. The current runtime assumes native string pointers fit in that payload space; targets that cannot satisfy this need a different string-reference representation before support.
 
 Generated code and runtime helpers must share these constants. Helper calls that accept or return arbitrary JavaScript-visible values use `i64` at the LLVM boundary.
 

@@ -191,8 +191,6 @@ export const emitLlvmIr = (module: JsIrModule): string => {
 ; entry ${module.entry}
 ${moduleComments}
 
-target triple = "x86_64-unknown-linux-gnu"
-
 declare i32 @puts(ptr)
 declare i32 @printf(ptr, ...)
 ${runtimeDeclarations}

@@ -13,7 +13,7 @@ This plan describes the first path toward a TypeScript compiler written in TypeS
 - The runtime includes a small sync-only internal Effect kernel for sequencing, failure, cleanup, and initialization.
 - Async functions, promises, fibers, and microtasks are deferred until after the synchronous runtime milestone.
 - The frontend initially uses the official `typescript` package for parsing, checking, module resolution, and diagnostics.
-- The backend initially emits textual LLVM IR and uses the clang driver to build Linux x86_64 native executables.
+- The backend initially emits textual LLVM IR and uses the clang driver to build native executables for the active host toolchain.
 - Runtime values use a 64-bit NaN-boxed `JSValue` ABI.
 - JavaScript exceptions lower to explicit value-or-exception returns, not native unwinding.
 - GC uses a non-moving mark-sweep collector with an explicit root stack maintained by generated code.
@@ -33,7 +33,7 @@ This plan describes the first path toward a TypeScript compiler written in TypeS
 - Set up the TypeScript package, Bun lockfile, Effect runtime dependencies, formatter, linter, `bun test` harness, and CLI entrypoint executed by Node.
 - Create separate source boundaries for compiler implementation, runtime source, CLI wiring, fixtures, and integration tests.
 - Expose the CLI command as `tscn`.
-- Add toolchain discovery for `clang`, LLVM verifier tools, and Linux x86_64 target assumptions.
+- Add toolchain discovery for `clang`, LLVM verifier tools, and host target assumptions.
 - Read `tsconfig.json` and reserve a minimal native compiler extension block for later.
 - Establish TS-style diagnostic rendering with stable error codes and source spans.
 
@@ -55,7 +55,7 @@ This plan describes the first path toward a TypeScript compiler written in TypeS
 
 - Emit textual LLVM IR from JS IR.
 - Include source-span comments and trace-map artifacts for debugging generated IR.
-- Use clang to compile and link the generated IR into a native Linux x86_64 executable.
+- Use clang to compile and link the generated IR into a native executable for the active host toolchain.
 - Snapshot generated IR in tests while treating runtime behavior as the correctness source.
 - Write the executable plus optional `.ll`, trace map, and diagnostics artifacts into a build directory.
 
