@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { NodeContext } from "@effect/platform-node";
+import { Effect } from "effect";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { formatDiagnostic } from "../../src/compiler/diagnostics.js";
+import { compile } from "../../src/compiler/pipeline.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
-const cli = path.join(repoRoot, "dist/cli/main.js");
 
 type CompileResult = {
   readonly outDir: string;
@@ -34,26 +37,41 @@ type ToolRunResult = NativeRunResult & {
   readonly tool: string;
 };
 
-const compileFixture = async (fixture: string): Promise<CompileResult> => {
+type CompileFixtureOptions = {
+  readonly link?: boolean;
+};
+
+const compileFixture = async (fixture: string, options: CompileFixtureOptions = {}): Promise<CompileResult> => {
   const outDir = await mkdtemp(path.join(tmpdir(), "tscn-"));
-  const result = spawnSync(
-    process.execPath,
-    [cli, `test/fixtures/${fixture}`, "--out-dir", outDir],
-    { cwd: repoRoot, encoding: "utf8" }
+  const result = await Effect.runPromise(
+    compile({ entry: `test/fixtures/${fixture}`, outDir, link: options.link ?? false }).pipe(
+      Effect.provide(NodeContext.layer)
+    )
   );
+  const stderr = result.diagnostics.map(formatDiagnostic).join("\n");
+  const failed = result.diagnostics.some((diagnostic) => diagnostic.category === "error");
+  let status = 0;
+  let renderedStderr = stderr;
+  if (failed) {
+    status = 1;
+    renderedStderr = `${stderr}\nCompilation failed\n`;
+  }
 
   return {
     outDir,
-    status: result.status,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    readArtifact: (name) => readFile(path.join(outDir, name), "utf8"),
-    cleanup: () => rm(outDir, { recursive: true, force: true })
+    status,
+    stdout: `Wrote ${result.artifacts.llvmIr}\nWrote ${result.artifacts.traceMap}\n`,
+    stderr: renderedStderr,
+    readArtifact: async (name) => readFile(path.join(outDir, name), "utf8"),
+    cleanup: async () => rm(outDir, { recursive: true, force: true })
   };
 };
 
-const expectSuccessfulCompile = async (fixture: string): Promise<CompileResult> => {
-  const result = await compileFixture(fixture);
+const expectSuccessfulCompile = async (
+  fixture: string,
+  options: CompileFixtureOptions = {}
+): Promise<CompileResult> => {
+  const result = await compileFixture(fixture, options);
   expect(result.status, result.stderr).toBe(0);
   return result;
 };
@@ -152,7 +170,7 @@ describe("tscn CLI", () => {
   });
 
   test("runs emitted native executable when clang is available", async () => {
-    const result = await expectSuccessfulCompile("hello.ts");
+    const result = await expectSuccessfulCompile("hello.ts", { link: true });
 
     try {
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "hello from tscn\n", stderr: "" });
@@ -1276,7 +1294,7 @@ describe("tscn arrays", () => {
   });
 
   test("lowers holes and mixed values through runtime array helpers", async () => {
-    const hole = await expectSuccessfulCompile("array-hole.ts");
+    const hole = await expectSuccessfulCompile("array-hole.ts", { link: true });
 
     try {
       const llvmIr = await hole.readArtifact("main.ll");
@@ -1289,7 +1307,7 @@ describe("tscn arrays", () => {
       await hole.cleanup();
     }
 
-    const mixed = await expectSuccessfulCompile("array-non-numeric.ts");
+    const mixed = await expectSuccessfulCompile("array-non-numeric.ts", { link: true });
 
     try {
       const llvmIr = await mixed.readArtifact("main.ll");
@@ -1302,7 +1320,7 @@ describe("tscn arrays", () => {
   });
 
   test("keeps runtime and fixed array names from colliding", async () => {
-    const result = await expectSuccessfulCompile("array-runtime-and-fixed.ts");
+    const result = await expectSuccessfulCompile("array-runtime-and-fixed.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
@@ -1440,7 +1458,7 @@ describe("tscn objects", () => {
   });
 
   test("lowers dynamic string-key object reads through runtime helpers", async () => {
-    const result = await expectSuccessfulCompile("object-dynamic-key.ts");
+    const result = await expectSuccessfulCompile("object-dynamic-key.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
@@ -1456,7 +1474,7 @@ describe("tscn objects", () => {
   });
 
   test("keeps known-shape object runtime shadows synchronized after mutation", async () => {
-    const result = await expectSuccessfulCompile("object-fixed-shadow-mutation.ts");
+    const result = await expectSuccessfulCompile("object-fixed-shadow-mutation.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
@@ -1470,7 +1488,7 @@ describe("tscn objects", () => {
   });
 
   test("lowers dynamic object stores with dictionary growth", async () => {
-    const result = await expectSuccessfulCompile("object-runtime-dynamic-store.ts");
+    const result = await expectSuccessfulCompile("object-runtime-dynamic-store.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
@@ -1496,7 +1514,7 @@ describe("tscn objects", () => {
   });
 
   test("lowers runtime-only object value fields through dictionary objects", async () => {
-    const result = await expectSuccessfulCompile("object-non-numeric-field.ts");
+    const result = await expectSuccessfulCompile("object-non-numeric-field.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
@@ -1510,7 +1528,7 @@ describe("tscn objects", () => {
   });
 
   test("keeps runtime and known-shape object names from colliding", async () => {
-    const result = await expectSuccessfulCompile("object-runtime-and-fixed.ts");
+    const result = await expectSuccessfulCompile("object-runtime-and-fixed.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
@@ -1577,7 +1595,7 @@ describe("tscn runtime comparisons", () => {
 
 describe("tscn JSValue ABI", () => {
   test("lowers boxed print values through the value print helper", async () => {
-    const result = await expectSuccessfulCompile("value-print.ts");
+    const result = await expectSuccessfulCompile("value-print.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
@@ -1607,7 +1625,7 @@ describe("tscn JSValue ABI", () => {
   });
 
   test("keeps boxed string tags distinct from fractional number values", async () => {
-    const result = await expectSuccessfulCompile("value-print-fraction.ts");
+    const result = await expectSuccessfulCompile("value-print-fraction.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
@@ -1619,7 +1637,7 @@ describe("tscn JSValue ABI", () => {
   });
 
   test("lowers value strict equality through a deterministic helper", async () => {
-    const result = await expectSuccessfulCompile("value-strict-equality.ts");
+    const result = await expectSuccessfulCompile("value-strict-equality.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
@@ -1639,7 +1657,7 @@ describe("tscn JSValue ABI", () => {
   });
 
   test("returns number or boolean through the same value-shaped ABI", async () => {
-    const result = await expectSuccessfulCompile("value-return-union.ts");
+    const result = await expectSuccessfulCompile("value-return-union.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
