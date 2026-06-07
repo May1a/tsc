@@ -13,6 +13,11 @@ export type BuildArtifacts = {
 };
 
 export type CompileResult = {
+  /**
+   * Success-channel diagnostics. Only `warning` and `info` categories are
+   * present here; error-category diagnostics are surfaced as a typed
+   * `CompilationFailed` failure rather than being smuggled through this field.
+   */
   readonly diagnostics: readonly CompilerDiagnostic[];
   readonly artifacts: BuildArtifacts;
 };

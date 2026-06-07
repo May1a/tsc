@@ -1,77 +1,63 @@
-import type { FileSystem } from "@effect/platform";
+import { Args, Command, HelpDoc, Options } from "@effect/cli";
+import type { CommandExecutor, FileSystem, Path } from "@effect/platform";
+import type { PlatformError } from "@effect/platform/Error";
 import { Console, Effect } from "effect";
 import { formatDiagnostic } from "../compiler/diagnostics.js";
+import type { Diagnostics } from "../compiler/diagnostics-service.js";
+import type { CompilationFailed } from "../compiler/errors.js";
 import { compile } from "../compiler/pipeline.js";
+import type { Toolchain } from "../compiler/toolchain.js";
 
-type CliOptions = {
+type CliConfig = {
   readonly entry: string;
   readonly outDir: string;
 };
 
-const usage = `Usage: tscn <entry.ts> [--out-dir <dir>]
+const rejectFlagLikeEntry = (value: string): string => {
+  if (value.startsWith("-")) {
+    throw new Error(`Unknown option: ${value}`);
+  }
+  return value;
+};
 
-Compiles a project-local TypeScript ES module graph to native build artifacts.`;
+const flagLikeEntryHelp = (error: unknown): HelpDoc.HelpDoc => {
+  if (error instanceof Error) {
+    return HelpDoc.p(error.message);
+  }
+  return HelpDoc.p(String(error));
+};
 
-const parseArgs = (args: readonly string[]): Effect.Effect<CliOptions, Error> =>
-  Effect.sync(() => {
-    let entry: string | undefined;
-    let outDir = "build";
+export const tscnCommand = Command.make(
+  "tscn",
+  {
+    entry: Args.text({ name: "entry" }).pipe(Args.mapTryCatch(rejectFlagLikeEntry, flagLikeEntryHelp)),
+    outDir: Options.text("out-dir").pipe(Options.withDefault("build"))
+  },
+  (config: CliConfig): Effect.Effect<
+    void,
+    CompilationFailed | PlatformError,
+    FileSystem.FileSystem | Path.Path | Toolchain | CommandExecutor.CommandExecutor | Diagnostics
+  > =>
+    Effect.gen(function* runHandler() {
+      const result = yield* compile(config);
 
-    for (let index = 0; index < args.length; index += 1) {
-      const arg = args[index];
-
-      if (arg === "--out-dir") {
-        const value = args[index + 1];
-        if (!value) {
-          throw new Error("Missing value for --out-dir");
-        }
-        outDir = value;
-        index += 1;
-        continue;
+      yield* Console.log(`Wrote ${result.artifacts.llvmIr}`);
+      yield* Console.log(`Wrote ${result.artifacts.traceMap}`);
+      if (result.artifacts.executable) {
+        yield* Console.log(`Wrote ${result.artifacts.executable}`);
       }
 
-      if (arg === "--help" || arg === "-h") {
-        throw new Error(usage);
+      for (const diagnostic of result.diagnostics) {
+        yield* Console.error(formatDiagnostic(diagnostic));
       }
-
-      if (arg.startsWith("-")) {
-        throw new Error(`Unknown option: ${arg}`);
-      }
-
-      if (entry) {
-        throw new Error(`Unexpected extra argument: ${arg}`);
-      }
-
-      entry = arg;
-    }
-
-    if (!entry) {
-      throw new Error(usage);
-    }
-
-    return { entry, outDir };
-  });
-
-export const runCli = (args: readonly string[]): Effect.Effect<void, Error, FileSystem.FileSystem> =>
-  Effect.gen(function* runCliEffect() {
-    const options = yield* parseArgs(args);
-    const result = yield* compile(options);
-
-    for (const diagnostic of result.diagnostics) {
-      yield* Console.error(formatDiagnostic(diagnostic));
-    }
-
-    if (result.diagnostics.some((diagnostic) => diagnostic.category === "error")) {
-      yield* Effect.fail(new Error("Compilation failed"));
-    }
-
-    yield* Console.log(`Wrote ${result.artifacts.llvmIr}`);
-    yield* Console.log(`Wrote ${result.artifacts.traceMap}`);
-    if (result.artifacts.executable) {
-      yield* Console.log(`Wrote ${result.artifacts.executable}`);
-    }
-
-    yield* Effect.void;
-  }).pipe(
-    Effect.catchAll((error) => Console.error(error.message).pipe(Effect.zipRight(Effect.fail(error))))
-  );
+    }).pipe(
+      Effect.catchTag("CompilationFailed", (error) =>
+        Effect.gen(function* printFailure() {
+          for (const diagnostic of error.diagnostics) {
+            yield* Console.error(formatDiagnostic(diagnostic));
+          }
+          return yield* Effect.fail(error);
+        })
+      )
+    )
+);

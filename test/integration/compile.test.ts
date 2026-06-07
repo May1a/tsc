@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { Command, type CommandExecutor } from "@effect/platform";
 import { NodeContext } from "@effect/platform-node";
-import { Effect } from "effect";
-import { spawnSync } from "node:child_process";
+import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { formatDiagnostic } from "../../src/compiler/diagnostics.js";
+import { DiagnosticsLive } from "../../src/compiler/diagnostics-service.js";
+import type { CompilationFailed } from "../../src/compiler/errors.js";
 import { compile } from "../../src/compiler/pipeline.js";
+import { Toolchain, ToolchainLive } from "../../src/compiler/toolchain.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 
@@ -41,29 +44,46 @@ type CompileFixtureOptions = {
   readonly link?: boolean;
 };
 
+const testCompileLayer = Layer.provideMerge(
+  Layer.provideMerge(ToolchainLive, NodeContext.layer),
+  DiagnosticsLive
+);
+
 const compileFixture = async (fixture: string, options: CompileFixtureOptions = {}): Promise<CompileResult> => {
   const outDir = await mkdtemp(path.join(tmpdir(), "tscn-"));
-  const result = await Effect.runPromise(
+  const llvmIr = path.join(outDir, "main.ll");
+  const traceMap = path.join(outDir, "trace-map.json");
+  const stdout = `Wrote ${llvmIr}\nWrote ${traceMap}\n`;
+  const readArtifact = async (name: string): Promise<string> => readFile(path.join(outDir, name), "utf8");
+  const cleanup = async (): Promise<void> => rm(outDir, { recursive: true, force: true });
+
+  const exit = await Effect.runPromiseExit(
     compile({ entry: `test/fixtures/${fixture}`, outDir, link: options.link ?? false }).pipe(
-      Effect.provide(NodeContext.layer)
+      Effect.provide(testCompileLayer)
     )
   );
-  const stderr = result.diagnostics.map(formatDiagnostic).join("\n");
-  const failed = result.diagnostics.some((diagnostic) => diagnostic.category === "error");
-  let status = 0;
-  let renderedStderr = stderr;
-  if (failed) {
-    status = 1;
-    renderedStderr = `${stderr}\nCompilation failed\n`;
+
+  if (Exit.isSuccess(exit)) {
+    const result = exit.value;
+    return {
+      outDir,
+      status: 0,
+      stdout,
+      stderr: result.diagnostics.map(formatDiagnostic).join("\n"),
+      readArtifact,
+      cleanup
+    };
   }
 
+  const failure = Option.getOrThrow(Cause.failureOption(exit.cause)) as CompilationFailed;
+  const stderr = failure.diagnostics.map(formatDiagnostic).join("\n");
   return {
     outDir,
-    status,
-    stdout: `Wrote ${result.artifacts.llvmIr}\nWrote ${result.artifacts.traceMap}\n`,
-    stderr: renderedStderr,
-    readArtifact: async (name) => readFile(path.join(outDir, name), "utf8"),
-    cleanup: async () => rm(outDir, { recursive: true, force: true })
+    status: 1,
+    stdout,
+    stderr: `${stderr}\nCompilation failed\n`,
+    readArtifact,
+    cleanup
   };
 };
 
@@ -99,22 +119,88 @@ const expectUnsupportedMessage = async (fixture: string, message: string): Promi
   }
 };
 
-const runNativeIfAvailable = (result: CompileResult): NativeRunResult => {
-  const executable = path.join(result.outDir, "main");
-  const native = spawnSync(executable, [], { encoding: "utf8" });
-  if (native.error !== undefined) {
-    return { skipped: true, reason: native.error.message };
-  }
-  return { skipped: false, status: native.status, stdout: native.stdout, stderr: native.stderr };
+type CapturedRun = {
+  readonly status: number;
+  readonly stdout: string;
+  readonly stderr: string;
 };
 
-const toolAvailable = (name: string): boolean => spawnSync(name, ["--version"], { stdio: "ignore" }).status === 0;
+const captureCommand = (
+  executable: string,
+  args: readonly string[],
+  options: { readonly cwd?: string } = {}
+): Effect.Effect<CapturedRun, never, CommandExecutor.CommandExecutor> => {
+  const buildCommand = (): Command.Command => {
+    if (options.cwd === undefined) {
+      return Command.make(executable, ...args);
+    }
+    return Command.workingDirectory(Command.make(executable, ...args), options.cwd);
+  };
+  return Effect.scoped(
+    Effect.gen(function* captureCommandGen() {
+      const process = yield* Command.start(buildCommand());
+      const stdoutFiber = yield* Effect.fork(
+        Stream.runFold(Stream.decodeText(process.stdout, "utf8"), "", (acc, chunk) => acc + chunk)
+      );
+      const stderrFiber = yield* Effect.fork(
+        Stream.runFold(Stream.decodeText(process.stderr, "utf8"), "", (acc, chunk) => acc + chunk)
+      );
+      const exitCode = yield* process.exitCode;
+      const stdout = yield* Fiber.join(stdoutFiber);
+      const stderr = yield* Fiber.join(stderrFiber);
+      return { status: exitCode, stdout, stderr };
+    })
+  );
+};
+
+const runNativeIfAvailable = async (result: CompileResult): Promise<NativeRunResult> => {
+  const executable = path.join(result.outDir, "main");
+  return Effect.runPromise(
+    captureCommand(executable, []).pipe(
+      Effect.map(
+        (run): NativeRunResult => ({
+          skipped: false,
+          status: run.status,
+          stdout: run.stdout,
+          stderr: run.stderr
+        })
+      ),
+      Effect.catchTag("SystemError", (error) =>
+        Effect.succeed({ skipped: true, reason: error.message })
+      ),
+      Effect.catchAll((error) => {
+        if (error instanceof Error) {
+          return Effect.succeed({ skipped: true, reason: error.message });
+        }
+        return Effect.succeed({ skipped: true, reason: String(error) });
+      }),
+      Effect.provide(testCompileLayer)
+    )
+  );
+};
+
+const toolAvailable = async (name: string): Promise<boolean> =>
+  Effect.runPromise(
+    Effect.gen(function* toolAvailableGen() {
+      const toolchain = yield* Toolchain;
+      if (name === "clang") {
+        return Option.isSome(toolchain.clang);
+      }
+      if (name === "llvm-as") {
+        return Option.isSome(toolchain.llvmAs);
+      }
+      if (name === "lli") {
+        return Option.isSome(toolchain.lli);
+      }
+      return false;
+    }).pipe(Effect.provide(testCompileLayer))
+  );
 
 const expectNativeBehaviorIfAvailable = async (
   result: CompileResult,
   expected: ExpectedNativeBehavior
 ): Promise<void> => {
-  const native = runNativeIfAvailable(result);
+  const native = await runNativeIfAvailable(result);
   if (native.skipped) {
     expect(native.reason).toContain("ENOENT");
     const diagnostics = await result.readArtifact("diagnostics.txt");
@@ -126,16 +212,18 @@ const expectNativeBehaviorIfAvailable = async (
   expect(native.stderr).toBe(expected.stderr);
 };
 
-const expectToolBehaviorIfAvailable = (
+const expectToolBehaviorIfAvailable = async (
   tool: string,
   args: readonly string[],
   expected: ExpectedNativeBehavior
-): ToolRunResult => {
-  if (!toolAvailable(tool)) {
+): Promise<ToolRunResult> => {
+  if (!await toolAvailable(tool)) {
     return { tool, skipped: true, reason: `${tool} was not found; skipped native behavior check` };
   }
 
-  const run = spawnSync(tool, args, { cwd: repoRoot, encoding: "utf8" });
+  const run = await Effect.runPromise(
+    captureCommand(tool, args, { cwd: repoRoot }).pipe(Effect.provide(testCompileLayer))
+  );
   expect(run.status, run.stderr).toBe(expected.status);
   expect(run.stdout).toBe(expected.stdout);
   expect(run.stderr).toBe(expected.stderr);
@@ -143,13 +231,17 @@ const expectToolBehaviorIfAvailable = (
 };
 
 const expectLlvmAsVerificationIfAvailable = async (result: CompileResult): Promise<void> => {
-  if (!toolAvailable("llvm-as")) {
+  if (!await toolAvailable("llvm-as")) {
     expect("llvm-as was not found; skipped verifier check").toContain("llvm-as was not found");
     return;
   }
-  const verifier = spawnSync("llvm-as", [path.join(result.outDir, "main.ll"), "-o", path.join(result.outDir, "main.bc")], {
-    encoding: "utf8"
-  });
+  const verifier = await Effect.runPromise(
+    captureCommand("llvm-as", [
+      path.join(result.outDir, "main.ll"),
+      "-o",
+      path.join(result.outDir, "main.bc")
+    ]).pipe(Effect.provide(testCompileLayer))
+  );
   expect(verifier.status, verifier.stderr).toBe(0);
 };
 
@@ -1611,7 +1703,7 @@ describe("tscn JSValue ABI", () => {
         stdout: "42\ntrue\nundefined\nboxed string\n",
         stderr: ""
       });
-      const lli = expectToolBehaviorIfAvailable("lli", [path.join(result.outDir, "main.ll")], {
+      const lli = await expectToolBehaviorIfAvailable("lli", [path.join(result.outDir, "main.ll")], {
         status: 0,
         stdout: "42\ntrue\nundefined\nboxed string\n",
         stderr: ""
