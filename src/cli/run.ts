@@ -4,7 +4,7 @@ import type { PlatformError } from "@effect/platform/Error";
 import { Console, Effect } from "effect";
 import { formatDiagnostic } from "../compiler/diagnostics.js";
 import type { Diagnostics } from "../compiler/diagnostics-service.js";
-import type { CompilationFailed } from "../compiler/errors.js";
+import { CompilationFailed } from "../compiler/errors.js";
 import { compile } from "../compiler/pipeline.js";
 import type { Toolchain } from "../compiler/toolchain.js";
 
@@ -25,6 +25,13 @@ const flagLikeEntryHelp = (error: unknown): HelpDoc.HelpDoc => {
     return HelpDoc.p(error.message);
   }
   return HelpDoc.p(String(error));
+};
+
+const describeError = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 };
 
 export const tscnCommand = Command.make(
@@ -56,6 +63,15 @@ export const tscnCommand = Command.make(
           for (const diagnostic of error.diagnostics) {
             yield* Console.error(formatDiagnostic(diagnostic));
           }
+          return yield* Effect.fail(error);
+        })
+      ),
+      Effect.catchAll((error) =>
+        Effect.gen(function* printUnexpectedFailure() {
+          if (error instanceof CompilationFailed) {
+            return yield* Effect.fail(error);
+          }
+          yield* Console.error(`error: ${describeError(error)}`);
           return yield* Effect.fail(error);
         })
       )

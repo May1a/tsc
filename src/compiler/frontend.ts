@@ -10,6 +10,11 @@ export type FrontendResult = {
   readonly sourceFiles: readonly ts.SourceFile[];
 };
 
+type ParsedConfigResult = {
+  readonly parsed: ts.ParsedCommandLine;
+  readonly diagnostics: readonly CompilerDiagnostic[];
+};
+
 const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
   const lineAndCharacter = sourceFile.getLineAndCharacterOfPosition(position);
 
@@ -30,6 +35,21 @@ const defaultCompilerOptions = (): ts.ParsedCommandLine => ({
   fileNames: [],
   errors: []
 });
+
+const tsDiagnosticsToCompiler = (diagnostics: readonly ts.Diagnostic[]): readonly CompilerDiagnostic[] =>
+  diagnostics.map((diagnostic) => {
+    let span;
+    if (diagnostic.file && diagnostic.start !== undefined) {
+      span = sourceSpan(diagnostic.file, diagnostic.start);
+    }
+
+    return {
+      code: `TS${diagnostic.code}`,
+      category: "error",
+      message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+      span
+    };
+  });
 
 const findAncestorTsConfig = (
   searchPath: string,
@@ -74,10 +94,14 @@ const parseConfigFromContent = (
   configFileName: string,
   content: string,
   pathService: Path.Path
-): ts.ParsedCommandLine => {
+): ParsedConfigResult => {
   const parsedJson = ts.parseConfigFileTextToJson(configFileName, content);
+  let parseDiagnostics: readonly ts.Diagnostic[] = [];
+  if (parsedJson.error !== undefined) {
+    parseDiagnostics = [parsedJson.error];
+  }
   if (!parsedJson.config) {
-    return defaultCompilerOptions();
+    return { parsed: defaultCompilerOptions(), diagnostics: tsDiagnosticsToCompiler(parseDiagnostics) };
   }
   const host: ts.ParseConfigHost = {
     useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
@@ -96,23 +120,9 @@ const parseConfigFromContent = (
       return ts.sys.readFile(fileName);
     }
   };
-  return ts.parseJsonConfigFileContent(parsedJson.config, host, pathService.dirname(configFileName));
+  const parsed = ts.parseJsonConfigFileContent(parsedJson.config, host, pathService.dirname(configFileName));
+  return { parsed, diagnostics: tsDiagnosticsToCompiler([...parseDiagnostics, ...parsed.errors]) };
 };
-
-const tsDiagnosticsToCompiler = (diagnostics: readonly ts.Diagnostic[]): readonly CompilerDiagnostic[] =>
-  diagnostics.map((diagnostic) => {
-    let span;
-    if (diagnostic.file && diagnostic.start !== undefined) {
-      span = sourceSpan(diagnostic.file, diagnostic.start);
-    }
-
-    return {
-      code: `TS${diagnostic.code}`,
-      category: "error",
-      message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
-      span
-    };
-  });
 
 const rejectPackageImports = (
   sourceFiles: readonly ts.SourceFile[]
@@ -160,7 +170,9 @@ export const loadProgram = (
         .readFileString(configFileName)
         .pipe(Effect.orElseSucceed(() => ""));
       if (content.length > 0) {
-        parsed = parseConfigFromContent(configFileName, content, path);
+        const { parsed: parsedConfig, diagnostics: configDiagnostics } = parseConfigFromContent(configFileName, content, path);
+        parsed = parsedConfig;
+        yield* Effect.forEach(configDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
       }
     }
 
@@ -171,8 +183,14 @@ export const loadProgram = (
 
     const tsDiagnostics = Chunk.toReadonlyArray(
       Chunk.appendAll(
-        Chunk.fromIterable(tsDiagnosticsToCompiler(program.getSyntacticDiagnostics())),
-        Chunk.fromIterable(tsDiagnosticsToCompiler(program.getSemanticDiagnostics()))
+        Chunk.fromIterable(tsDiagnosticsToCompiler(program.getOptionsDiagnostics())),
+        Chunk.appendAll(
+          Chunk.fromIterable(tsDiagnosticsToCompiler(program.getGlobalDiagnostics())),
+          Chunk.appendAll(
+            Chunk.fromIterable(tsDiagnosticsToCompiler(program.getSyntacticDiagnostics())),
+            Chunk.fromIterable(tsDiagnosticsToCompiler(program.getSemanticDiagnostics()))
+          )
+        )
       )
     );
     yield* Effect.forEach(tsDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });

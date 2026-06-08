@@ -40,6 +40,8 @@ type ToolRunResult = NativeRunResult & {
   readonly tool: string;
 };
 
+type ToolName = "clang" | "llvm-as" | "lli";
+
 type CompileFixtureOptions = {
   readonly link?: boolean;
 };
@@ -179,20 +181,25 @@ const runNativeIfAvailable = async (result: CompileResult): Promise<NativeRunRes
   );
 };
 
-const toolAvailable = async (name: string): Promise<boolean> =>
+const toolExecutable = async (name: ToolName): Promise<string | undefined> =>
   Effect.runPromise(
     Effect.gen(function* toolAvailableGen() {
       const toolchain = yield* Toolchain;
-      if (name === "clang") {
-        return Option.isSome(toolchain.clang);
+      switch (name) {
+        case "clang": {
+          return Option.getOrUndefined(toolchain.clang);
+        }
+        case "llvm-as": {
+          return Option.getOrUndefined(toolchain.llvmAs);
+        }
+        case "lli": {
+          return Option.getOrUndefined(toolchain.lli);
+        }
+        default: {
+          const exhaustive: never = name;
+          return exhaustive;
+        }
       }
-      if (name === "llvm-as") {
-        return Option.isSome(toolchain.llvmAs);
-      }
-      if (name === "lli") {
-        return Option.isSome(toolchain.lli);
-      }
-      return false;
     }).pipe(Effect.provide(testCompileLayer))
   );
 
@@ -213,16 +220,17 @@ const expectNativeBehaviorIfAvailable = async (
 };
 
 const expectToolBehaviorIfAvailable = async (
-  tool: string,
+  tool: ToolName,
   args: readonly string[],
   expected: ExpectedNativeBehavior
 ): Promise<ToolRunResult> => {
-  if (!await toolAvailable(tool)) {
+  const executable = await toolExecutable(tool);
+  if (executable === undefined) {
     return { tool, skipped: true, reason: `${tool} was not found; skipped native behavior check` };
   }
 
   const run = await Effect.runPromise(
-    captureCommand(tool, args, { cwd: repoRoot }).pipe(Effect.provide(testCompileLayer))
+    captureCommand(executable, args, { cwd: repoRoot }).pipe(Effect.provide(testCompileLayer))
   );
   expect(run.status, run.stderr).toBe(expected.status);
   expect(run.stdout).toBe(expected.stdout);
@@ -231,12 +239,13 @@ const expectToolBehaviorIfAvailable = async (
 };
 
 const expectLlvmAsVerificationIfAvailable = async (result: CompileResult): Promise<void> => {
-  if (!await toolAvailable("llvm-as")) {
+  const llvmAs = await toolExecutable("llvm-as");
+  if (llvmAs === undefined) {
     expect("llvm-as was not found; skipped verifier check").toContain("llvm-as was not found");
     return;
   }
   const verifier = await Effect.runPromise(
-    captureCommand("llvm-as", [
+    captureCommand(llvmAs, [
       path.join(result.outDir, "main.ll"),
       "-o",
       path.join(result.outDir, "main.bc")

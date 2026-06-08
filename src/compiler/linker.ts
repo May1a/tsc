@@ -46,10 +46,11 @@ const linkExitFailureDiagnostic = (exitCode: number, stderr: string): CompilerDi
 };
 
 const runClang = (
+  clangPath: string,
   llvmIr: string,
   executable: string
 ): Effect.Effect<LinkResult, LinkerError, CommandExecutor.CommandExecutor> => {
-  const command = Command.make("clang", llvmIr, "-o", executable);
+  const command = Command.make(clangPath, llvmIr, "-o", executable);
   return Effect.scoped(
     Effect.gen(function* runClangScoped() {
       const process = yield* Command.start(command);
@@ -68,13 +69,16 @@ const runClang = (
       if (error instanceof SystemError && error.reason === "NotFound") {
         return Effect.succeed({ diagnostics: [missingClangDiagnostic] });
       }
+      if (error instanceof LinkerExitFailed) {
+        return Effect.fail(error);
+      }
       let description: string;
       if (error instanceof Error) {
         description = error.message;
       } else {
         description = String(error);
       }
-      return Effect.succeed({ diagnostics: [linkFailureDiagnostic(`Failed to start clang: ${description}`)] });
+      return Effect.succeed({ diagnostics: [linkFailureDiagnostic(`Failed to start ${clangPath}: ${description}`)] });
     })
   );
 };
@@ -88,7 +92,7 @@ export const linkWithClang = (
     if (Option.isNone(toolchain.clang)) {
       return { diagnostics: [missingClangDiagnostic] };
     }
-    return yield* runClang(llvmIr, executable);
+    return yield* runClang(toolchain.clang.value, llvmIr, executable);
   });
 
 export const linkerErrorToLinkResult = (error: LinkerError): LinkResult => {
