@@ -1,4 +1,6 @@
+import { Chunk, Effect } from "effect";
 import ts from "typescript";
+import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
 
 export type JsIrModule = {
@@ -512,7 +514,6 @@ export type JsIrOperation =
 
 export type JsIrResult = {
   readonly module: JsIrModule;
-  readonly diagnostics: readonly CompilerDiagnostic[];
 };
 
 type ArrayLiteralClassification =
@@ -562,11 +563,11 @@ const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
 };
 
 function lowerStatements(
-  sourceFile: ts.SourceFile,
-  diagnostics: CompilerDiagnostic[]
-): readonly JsIrOperation[] {
+  sourceFile: ts.SourceFile
+): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } {
   const operations: JsIrOperation[] = [];
   const bindings = new Map<string, JsIrBindingValue>();
+  const diagnostics: CompilerDiagnostic[] = [];
 
   for (const statement of sourceFile.statements) {
     if (isNonExecutableDeclaration(statement)) {
@@ -588,7 +589,7 @@ function lowerStatements(
     });
   }
 
-  return markRuntimeObjectShadows(operations);
+  return { operations: markRuntimeObjectShadows(operations), diagnostics: Chunk.fromIterable(diagnostics) };
 }
 
 function updateBindings(
@@ -2766,18 +2767,27 @@ function objectHasNestedFields(value: JsIrObjectValue): boolean {
   return value.fields.some((field) => field.value.kind === "object");
 }
 
-export const lowerToJsIr = (entry: string, sourceFiles: readonly ts.SourceFile[]): JsIrResult => {
-  const diagnostics: CompilerDiagnostic[] = [];
-
-  return {
-    module: {
-      entry,
-      modules: sourceFiles.map((sourceFile) => ({
+export const lowerToJsIr = (
+  entry: string,
+  sourceFiles: readonly ts.SourceFile[]
+): Effect.Effect<JsIrResult, never, Diagnostics> =>
+  Effect.gen(function* lowerToJsIrEffect() {
+    const diagnostics = yield* Diagnostics;
+    const allDiagnostics: CompilerDiagnostic[] = [];
+    const modules = sourceFiles.map((sourceFile) => {
+      const lowered = lowerStatements(sourceFile);
+      allDiagnostics.push(...lowered.diagnostics);
+      return {
         fileName: sourceFile.fileName,
         statementCount: sourceFile.statements.length,
-        operations: lowerStatements(sourceFile, diagnostics)
-      }))
-    },
-    diagnostics
-  };
-};
+        operations: lowered.operations
+      };
+    });
+    yield* Effect.forEach(allDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
+    return {
+      module: {
+        entry,
+        modules
+      }
+    };
+  });
