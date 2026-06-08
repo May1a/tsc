@@ -79,6 +79,15 @@ export type JsIrValueExpression =
       readonly key: JsIrStringExpression;
     };
 
+export type JsIrRuntimeArrayElement =
+  | {
+      readonly kind: "hole";
+    }
+  | {
+      readonly kind: "value";
+      readonly value: JsIrValueExpression;
+    };
+
 export type JsIrNumberExpression =
   | {
       readonly kind: "literal";
@@ -396,7 +405,7 @@ export type JsIrOperation =
   | {
       readonly kind: "runtimeArrayLiteral";
       readonly name: string;
-      readonly elements: readonly JsIrValueExpression[];
+      readonly elements: readonly JsIrRuntimeArrayElement[];
     }
   | {
       readonly kind: "objectLiteral";
@@ -447,6 +456,11 @@ export type JsIrOperation =
       readonly objectName: string;
       readonly key: JsIrStringExpression;
       readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "runtimeObjectDelete";
+      readonly objectName: string;
+      readonly key: JsIrStringExpression;
     }
   | {
       readonly kind: "print";
@@ -523,7 +537,7 @@ type ArrayLiteralClassification =
     }
   | {
       readonly kind: "runtime";
-      readonly elements: readonly JsIrValueExpression[];
+      readonly elements: readonly JsIrRuntimeArrayElement[];
     };
 
 type ObjectLiteralClassification =
@@ -712,7 +726,9 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
   }
   if (operation.kind === "runtimeArrayLiteral") {
     for (const element of operation.elements) {
-      collectValueExpressionObjectNames(element, names);
+      if (element.kind === "value") {
+        collectValueExpressionObjectNames(element.value, names);
+      }
     }
   }
   if (operation.kind === "runtimeObjectLiteral") {
@@ -846,6 +862,11 @@ function lowerExpressionStatement(
     return assignment;
   }
 
+  const deletion = lowerDeleteExpression(expression, bindings);
+  if (deletion !== undefined) {
+    return deletion;
+  }
+
   if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)) {
     return undefined;
   }
@@ -866,6 +887,33 @@ function lowerExpressionStatement(
       kind: "print",
       expression: printExpression
     };
+  }
+
+  return undefined;
+}
+
+function lowerDeleteExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isDeleteExpression(expression)) {
+    return undefined;
+  }
+
+  const target = expression.expression;
+  if (ts.isPropertyAccessExpression(target) && ts.isIdentifier(target.expression)) {
+    const binding = bindings.get(target.expression.text);
+    if (binding?.kind === "runtimeObject") {
+      return { kind: "runtimeObjectDelete", objectName: target.expression.text, key: { kind: "literal", value: target.name.text } };
+    }
+  }
+
+  if (ts.isElementAccessExpression(target) && ts.isIdentifier(target.expression)) {
+    const binding = bindings.get(target.expression.text);
+    const key = lowerStringRuntimeExpression(target.argumentExpression, bindings);
+    if (binding?.kind === "runtimeObject" && key !== undefined) {
+      return { kind: "runtimeObjectDelete", objectName: target.expression.text, key };
+    }
   }
 
   return undefined;
@@ -2460,19 +2508,19 @@ function classifyArrayLiteral(
 function lowerRuntimeArrayLiteralExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrValueExpression[] | undefined {
+): readonly JsIrRuntimeArrayElement[] | undefined {
   if (!ts.isArrayLiteralExpression(expression)) {
     return undefined;
   }
 
-  const elements: JsIrValueExpression[] = [];
+  const elements: JsIrRuntimeArrayElement[] = [];
   let needsRuntimeArray = false;
   for (const element of expression.elements) {
     if (ts.isSpreadElement(element)) {
       return undefined;
     }
     if (ts.isOmittedExpression(element)) {
-      elements.push({ kind: "undefined" });
+      elements.push({ kind: "hole" });
       needsRuntimeArray = true;
       continue;
     }
@@ -2484,7 +2532,7 @@ function lowerRuntimeArrayLiteralExpression(
     if (number === undefined) {
       needsRuntimeArray = true;
     }
-    elements.push(value);
+    elements.push({ kind: "value", value });
   }
 
   if (!needsRuntimeArray) {

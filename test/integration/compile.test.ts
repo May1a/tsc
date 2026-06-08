@@ -1401,9 +1401,11 @@ describe("tscn arrays", () => {
       const llvmIr = await hole.readArtifact("main.ll");
       expect(llvmIr).toContain("define ptr @arrayNew(i64 %length)");
       expect(llvmIr).toContain("define i64 @arrayGet(ptr %array, i64 %index)");
-      expect(llvmIr).toContain("call void @arraySet(ptr %arr.arr, i64 1, i64 9222246136947933184)");
+      expect(llvmIr).toContain("store i64 9222246136947933191, ptr %slot");
+      expect(llvmIr).toContain("%is.hole = icmp eq i64 %value, 9222246136947933191");
+      expect(llvmIr).not.toContain("call void @arraySet(ptr %arr.arr, i64 1, i64 9222246136947933184)");
       expect(llvmIr).toContain("call i64 @arrayGet(ptr %arr.ptr.");
-      await expectNativeBehaviorIfAvailable(hole, { status: 0, stdout: "1\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(hole, { status: 0, stdout: "1\nundefined\n", stderr: "" });
     } finally {
       await hole.cleanup();
     }
@@ -1430,6 +1432,23 @@ describe("tscn arrays", () => {
       expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.0");
       expect(llvmIr).toContain("call i64 @arrayGet(ptr %arr.ptr.");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "2\ntrue\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("grows runtime arrays on out-of-bounds writes", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-growth.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%capacity.slot = getelementptr i8, ptr %array, i64 8");
+      expect(llvmIr).toContain("%elements.slot = getelementptr i8, ptr %array, i64 16");
+      expect(llvmIr).toContain("%new.elements = call ptr @malloc(i64 %new.elements.bytes)");
+      expect(llvmIr).toContain("call ptr @memcpy(ptr %new.elements, ptr %elements, i64 %old.elements.bytes)");
+      expect(llvmIr).toContain("store i64 %next.length, ptr %array");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "6\nundefined\nx\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
     } finally {
       await result.cleanup();
     }
@@ -1595,6 +1614,10 @@ describe("tscn objects", () => {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("%capacity.slot = getelementptr i8, ptr %object, i64 8");
       expect(llvmIr).toContain("%new.entries = call ptr @malloc(i64 %new.entries.bytes)");
+      expect(llvmIr).toContain("%shape.version.slot = getelementptr i8, ptr %object, i64 24");
+      expect(llvmIr).toContain("%append.descriptor.slot = getelementptr i8, ptr %append.ptr, i64 24");
+      expect(llvmIr).toContain("store i64 7, ptr %append.descriptor.slot");
+      expect(llvmIr).toContain("store i64 %next.shape.version, ptr %shape.version.slot");
       expect(llvmIr).toContain("call void @objectSet(ptr %obj.ptr.");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "new\n", stderr: "" });
     } finally {
@@ -1638,6 +1661,22 @@ describe("tscn objects", () => {
       expect(llvmIr).toContain("getelementptr %obj.0, ptr %fixed.addr");
       expect(llvmIr).toContain("call i64 @objectGet(ptr %obj.ptr.");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\nruntime\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("deletes runtime object properties from dictionary objects", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-delete.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @objectDelete(ptr %object, i64 %key.len, ptr %key.ptr)");
+      expect(llvmIr).toContain("call void @objectDelete(ptr %obj.ptr.");
+      expect(llvmIr).toContain("store i64 -1, ptr %entry.ptr");
+      expect(llvmIr).toContain("%next.shape.version = add i64 %shape.version, 1");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "undefined\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
     } finally {
       await result.cleanup();
     }

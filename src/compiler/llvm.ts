@@ -471,6 +471,10 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
     return emitRuntimeObjectStoreOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeObjectDelete") {
+    return emitRuntimeObjectDeleteOperation(operation, context);
+  }
+
   return undefined;
 }
 
@@ -637,7 +641,11 @@ function emitRuntimeArrayLiteralOperation(
     `  store ptr %${operation.name}.arr, ptr ${arrayValue.pointerName}`
   ];
   for (let i = 0; i < operation.elements.length; i++) {
-    const value = emitValueExpression(operation.elements[i], context);
+    const element = operation.elements[i];
+    if (element.kind === "hole") {
+      continue;
+    }
+    const value = emitValueExpression(element.value, context);
     lines.push(...value.lines, `  call void @arraySet(ptr %${operation.name}.arr, i64 ${i}, i64 ${value.value})`);
   }
   return lines;
@@ -799,6 +807,16 @@ function emitRuntimeObjectStoreOperation(
   const value = emitValueExpression(operation.value, context);
   useRuntimeHelper(context.runtime, "objectSet");
   return [...object.lines, ...key.lines, ...value.lines, `  call void @objectSet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
+}
+
+function emitRuntimeObjectDeleteOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectDelete" }>,
+  context: EmitContext
+): string[] {
+  const object = emitRuntimeObjectPointer(operation.objectName, context);
+  const key = emitStringExpression(operation.key, context);
+  useRuntimeHelper(context.runtime, "objectDelete");
+  return [...object.lines, ...key.lines, `  call void @objectDelete(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`];
 }
 
 function emitCallOperation(operation: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): string[] {
