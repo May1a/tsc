@@ -1453,6 +1453,21 @@ describe("tscn arrays", () => {
       await result.cleanup();
     }
   });
+
+  test("deletes runtime array elements as holes without changing length", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-delete.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @arrayDelete(ptr %array, i64 %index)");
+      expect(llvmIr).toContain("call void @arrayDelete(ptr %arr.ptr.");
+      expect(llvmIr).toContain("store i64 9222246136947933191, ptr %slot");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\nundefined\nc\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn objects", () => {
@@ -1676,6 +1691,26 @@ describe("tscn objects", () => {
       expect(llvmIr).toContain("store i64 -1, ptr %entry.ptr");
       expect(llvmIr).toContain("%next.shape.version = add i64 %shape.version, 1");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "undefined\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("falls back through runtime object prototypes created with Object.create", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-prototype.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define ptr @objectCreate(ptr %prototype)");
+      expect(llvmIr).toContain("define { i64, i64 } @objectGetOwn(ptr %object, i64 %key.len, ptr %key.ptr)");
+      expect(llvmIr).toContain("%prototype.slot = getelementptr i8, ptr %object, i64 32");
+      expect(llvmIr).toContain("call ptr @objectCreate(ptr %obj.ptr.");
+      await expectNativeBehaviorIfAvailable(result, {
+        status: 0,
+        stdout: "proto\nown\nundefined\nproto\nundefined\n",
+        stderr: ""
+      });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
       await result.cleanup();

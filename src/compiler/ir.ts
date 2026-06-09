@@ -419,6 +419,11 @@ export type JsIrOperation =
       readonly value: JsIrRuntimeObjectValue;
     }
   | {
+      readonly kind: "runtimeObjectCreate";
+      readonly name: string;
+      readonly prototypeName?: string;
+    }
+  | {
       readonly kind: "assignNumber";
       readonly name: string;
       readonly value: JsIrNumberExpression;
@@ -444,6 +449,11 @@ export type JsIrOperation =
       readonly arrayName: string;
       readonly index: JsIrNumberExpression;
       readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "runtimeArrayDelete";
+      readonly arrayName: string;
+      readonly index: JsIrNumberExpression;
     }
   | {
       readonly kind: "objectStore";
@@ -561,6 +571,9 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
     return { kind: "object", value: operation.value };
   }
   if (operation.kind === "runtimeObjectLiteral") {
+    return { kind: "runtimeObject", name: operation.name };
+  }
+  if (operation.kind === "runtimeObjectCreate") {
     return { kind: "runtimeObject", name: operation.name };
   }
   return undefined;
@@ -910,6 +923,12 @@ function lowerDeleteExpression(
 
   if (ts.isElementAccessExpression(target) && ts.isIdentifier(target.expression)) {
     const binding = bindings.get(target.expression.text);
+    if (binding?.kind === "runtimeArray") {
+      const index = lowerNumberExpression(target.argumentExpression, bindings);
+      if (index !== undefined) {
+        return { kind: "runtimeArrayDelete", arrayName: target.expression.text, index };
+      }
+    }
     const key = lowerStringRuntimeExpression(target.argumentExpression, bindings);
     if (binding?.kind === "runtimeObject" && key !== undefined) {
       return { kind: "runtimeObjectDelete", objectName: target.expression.text, key };
@@ -1555,7 +1574,37 @@ function lowerConstAggregateBinding(
   if (objectLiteral?.kind === "runtime") {
     return { kind: "runtimeObjectLiteral", name, value: objectLiteral.value };
   }
+  const objectCreate = lowerRuntimeObjectCreateBinding(name, initializer, bindings);
+  if (objectCreate !== undefined) {
+    return objectCreate;
+  }
   return undefined;
+}
+
+function lowerRuntimeObjectCreateBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || initializer.arguments.length !== 1) {
+    return undefined;
+  }
+  const callee = initializer.expression;
+  if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression) || callee.expression.text !== "Object" || callee.name.text !== "create") {
+    return undefined;
+  }
+  const [prototype] = initializer.arguments;
+  if (prototype.kind === ts.SyntaxKind.NullKeyword) {
+    return { kind: "runtimeObjectCreate", name };
+  }
+  if (!ts.isIdentifier(prototype)) {
+    return undefined;
+  }
+  const binding = bindings.get(prototype.text);
+  if (binding?.kind !== "runtimeObject") {
+    return undefined;
+  }
+  return { kind: "runtimeObjectCreate", name, prototypeName: prototype.text };
 }
 
 function lowerAssignmentStatement(

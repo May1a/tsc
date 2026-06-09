@@ -443,6 +443,11 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
     return aggregateLines;
   }
 
+  return emitMutationOperation(operation, context);
+}
+
+function emitMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+
   if (operation.kind === "assignNumber") {
     return emitAssignNumberOperation(operation, context);
   }
@@ -461,6 +466,10 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
 
   if (operation.kind === "runtimeArrayStore") {
     return emitRuntimeArrayStoreOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArrayDelete") {
+    return emitRuntimeArrayDeleteOperation(operation, context);
   }
 
   if (operation.kind === "objectStore") {
@@ -493,6 +502,10 @@ function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitCo
 
   if (operation.kind === "runtimeObjectLiteral") {
     return emitRuntimeObjectLiteralOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectCreate") {
+    return emitRuntimeObjectCreateOperation(operation, context);
   }
 
   return undefined;
@@ -684,6 +697,30 @@ function emitRuntimeObjectLiteralOperation(
   return emitRuntimeObjectLiteralStorage(runtimeObject.pointerName, operation.value, context);
 }
 
+function emitRuntimeObjectCreateOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectCreate" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
+  useRuntimeHelper(context.runtime, "objectCreate");
+  const prototypeLines: string[] = [];
+  let prototype = "null";
+  if (operation.prototypeName !== undefined) {
+    const prototypeObject = emitRuntimeObjectPointer(operation.prototypeName, context);
+    prototypeLines.push(...prototypeObject.lines);
+    prototype = prototypeObject.value;
+  }
+  const objectName = `%obj.rt.${context.objectIndex}`;
+  context.objectIndex += 1;
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...prototypeLines,
+    `  ${objectName} = call ptr @objectCreate(ptr ${prototype})`,
+    `  store ptr ${objectName}, ptr ${pointerName}`
+  ];
+}
+
 function knownShapeObjectToRuntimeValue(value: JsIrObjectValue): JsIrRuntimeObjectValue {
   return {
     fields: value.fields
@@ -775,6 +812,16 @@ function emitRuntimeArrayStoreOperation(
   const value = emitValueExpression(operation.value, context);
   useRuntimeHelper(context.runtime, "arraySet");
   return [...array.lines, ...index.lines, ...value.lines, `  call void @arraySet(ptr ${array.value}, i64 ${index.value}, i64 ${value.value})`];
+}
+
+function emitRuntimeArrayDeleteOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayDelete" }>,
+  context: EmitContext
+): string[] {
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  const index = emitArrayIndex(operation.index, context);
+  useRuntimeHelper(context.runtime, "arrayDelete");
+  return [...array.lines, ...index.lines, `  call void @arrayDelete(ptr ${array.value}, i64 ${index.value})`];
 }
 
 function emitObjectStoreOperation(

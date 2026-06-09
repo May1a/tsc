@@ -11,7 +11,10 @@ export type RuntimeHelper =
   | "arrayLength"
   | "arrayGet"
   | "arraySet"
+  | "arrayDelete"
   | "objectNew"
+  | "objectCreate"
+  | "objectGetOwn"
   | "objectGet"
   | "objectDelete"
   | "objectSet";
@@ -37,14 +40,20 @@ export function useRuntimeHelper(runtime: RuntimeHelperEmitter, helper: RuntimeH
   if (helper === "valueBoxString") {
     runtime.used.add("malloc");
   }
-  if (helper === "arrayGet" || helper === "arraySet") {
+  if (helper === "arrayGet" || helper === "arraySet" || helper === "arrayDelete") {
     runtime.used.add("arrayLength");
   }
   if (helper === "arraySet") {
     runtime.used.add("malloc");
     runtime.used.add("memcpy");
   }
-  if (helper === "objectGet" || helper === "objectSet") {
+  if (helper === "objectCreate") {
+    runtime.used.add("objectNew");
+  }
+  if (helper === "objectGet") {
+    runtime.used.add("objectGetOwn");
+  }
+  if (helper === "objectGet" || helper === "objectGetOwn" || helper === "objectSet") {
     runtime.used.add("memcmp");
   }
   if (helper === "objectDelete") {
@@ -77,6 +86,7 @@ export function emitRuntimeDeclarations(runtime: RuntimeHelperEmitter): string[]
   return declarations;
 }
 
+// eslint-disable-next-line max-statements -- Generated helper emission stays centralized during the runtime ABI transition.
 export function emitRuntimeDefinitions(runtime: RuntimeHelperEmitter): string[] {
   const definitions: string[] = [];
   if (runtime.used.has("strConcat")) {
@@ -288,11 +298,29 @@ store.grown:
 }
 `);
   }
+  if (runtime.used.has("arrayDelete")) {
+    definitions.push(`define void @arrayDelete(ptr %array, i64 %index) {
+entry:
+  %length = call i64 @arrayLength(ptr %array)
+  %in.bounds = icmp ult i64 %index, %length
+  br i1 %in.bounds, label %delete, label %exit
+delete:
+  %elements.slot = getelementptr i8, ptr %array, i64 16
+  %elements = load ptr, ptr %elements.slot
+  %slot.bytes = mul i64 %index, 8
+  %slot = getelementptr i8, ptr %elements, i64 %slot.bytes
+  store i64 9222246136947933191, ptr %slot
+  ret void
+exit:
+  ret void
+}
+`);
+  }
   if (runtime.used.has("objectNew")) {
     definitions.push(`define ptr @objectNew(i64 %capacity) {
 entry:
   %entries.bytes = mul i64 %capacity, 32
-  %object = call ptr @malloc(i64 32)
+  %object = call ptr @malloc(i64 40)
   %entries = call ptr @malloc(i64 %entries.bytes)
   store i64 0, ptr %object
   %capacity.slot = getelementptr i8, ptr %object, i64 8
@@ -301,12 +329,24 @@ entry:
   store ptr %entries, ptr %entries.slot
   %shape.version.slot = getelementptr i8, ptr %object, i64 24
   store i64 0, ptr %shape.version.slot
+  %prototype.slot = getelementptr i8, ptr %object, i64 32
+  store ptr null, ptr %prototype.slot
   ret ptr %object
 }
 `);
   }
-  if (runtime.used.has("objectGet")) {
-    definitions.push(`define i64 @objectGet(ptr %object, i64 %key.len, ptr %key.ptr) {
+  if (runtime.used.has("objectCreate")) {
+    definitions.push(`define ptr @objectCreate(ptr %prototype) {
+entry:
+  %object = call ptr @objectNew(i64 0)
+  %prototype.slot = getelementptr i8, ptr %object, i64 32
+  store ptr %prototype, ptr %prototype.slot
+  ret ptr %object
+}
+`);
+  }
+  if (runtime.used.has("objectGetOwn")) {
+    definitions.push(`define { i64, i64 } @objectGetOwn(ptr %object, i64 %key.len, ptr %key.ptr) {
 entry:
   %count = load i64, ptr %object
   %entries.slot = getelementptr i8, ptr %object, i64 16
@@ -331,10 +371,39 @@ compare:
 found:
   %value.slot = getelementptr i8, ptr %entry.ptr, i64 16
   %value = load i64, ptr %value.slot
-  ret i64 %value
+  %found.0 = insertvalue { i64, i64 } undef, i64 1, 0
+  %found.1 = insertvalue { i64, i64 } %found.0, i64 %value, 1
+  ret { i64, i64 } %found.1
 advance:
   %next = add i64 %i, 1
   br label %scan
+missing:
+  %missing.0 = insertvalue { i64, i64 } undef, i64 0, 0
+  %missing.1 = insertvalue { i64, i64 } %missing.0, i64 9222246136947933184, 1
+  ret { i64, i64 } %missing.1
+}
+`);
+  }
+  if (runtime.used.has("objectGet")) {
+    definitions.push(`define i64 @objectGet(ptr %object, i64 %key.len, ptr %key.ptr) {
+entry:
+  br label %lookup
+lookup:
+  %current = phi ptr [ %object, %entry ], [ %prototype, %advance.prototype ]
+  %own = call { i64, i64 } @objectGetOwn(ptr %current, i64 %key.len, ptr %key.ptr)
+  %found = extractvalue { i64, i64 } %own, 0
+  %value = extractvalue { i64, i64 } %own, 1
+  %has.own = icmp ne i64 %found, 0
+  br i1 %has.own, label %own.found, label %check.prototype
+own.found:
+  ret i64 %value
+check.prototype:
+  %prototype.slot = getelementptr i8, ptr %current, i64 32
+  %prototype = load ptr, ptr %prototype.slot
+  %has.prototype = icmp ne ptr %prototype, null
+  br i1 %has.prototype, label %advance.prototype, label %missing
+advance.prototype:
+  br label %lookup
 missing:
   ret i64 9222246136947933184
 }
