@@ -107,6 +107,9 @@ const noLines = 0;
 const jsValueUndefined = "9222246136947933184";
 const jsValueFalse = "9222246136947933185";
 const jsValueTrue = "9222246136947933186";
+const descriptorWritableFlag = 1;
+const descriptorEnumerableFlag = 2;
+const descriptorConfigurableFlag = 4;
 
 const encodeCString = (value: string): { readonly value: string; readonly length: number } => {
   const bytes = [...Buffer.from(value, "utf8"), 0];
@@ -472,6 +475,10 @@ function emitMutationOperation(operation: JsIrOperation, context: EmitContext): 
     return emitRuntimeArrayDeleteOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeArraySetLength") {
+    return emitRuntimeArraySetLengthOperation(operation, context);
+  }
+
   if (operation.kind === "objectStore") {
     return emitObjectStoreOperation(operation, context);
   }
@@ -482,6 +489,14 @@ function emitMutationOperation(operation: JsIrOperation, context: EmitContext): 
 
   if (operation.kind === "runtimeObjectDelete") {
     return emitRuntimeObjectDeleteOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectSetPrototype") {
+    return emitRuntimeObjectSetPrototypeOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectDefineDataProperty") {
+    return emitRuntimeObjectDefineDataPropertyOperation(operation, context);
   }
 
   return undefined;
@@ -506,6 +521,10 @@ function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitCo
 
   if (operation.kind === "runtimeObjectCreate") {
     return emitRuntimeObjectCreateOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectKeys") {
+    return emitRuntimeObjectKeysOperation(operation, context);
   }
 
   return undefined;
@@ -721,6 +740,24 @@ function emitRuntimeObjectCreateOperation(
   ];
 }
 
+function emitRuntimeObjectKeysOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectKeys" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const object = emitRuntimeObjectPointer(operation.objectName, context);
+  const result = `%arr.rt.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  useRuntimeHelper(context.runtime, "objectKeys");
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...object.lines,
+    `  ${result} = call ptr @objectKeys(ptr ${object.value})`,
+    `  store ptr ${result}, ptr ${pointerName}`
+  ];
+}
+
 function knownShapeObjectToRuntimeValue(value: JsIrObjectValue): JsIrRuntimeObjectValue {
   return {
     fields: value.fields
@@ -824,6 +861,16 @@ function emitRuntimeArrayDeleteOperation(
   return [...array.lines, ...index.lines, `  call void @arrayDelete(ptr ${array.value}, i64 ${index.value})`];
 }
 
+function emitRuntimeArraySetLengthOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArraySetLength" }>,
+  context: EmitContext
+): string[] {
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  const length = emitArrayIndex(operation.length, context);
+  useRuntimeHelper(context.runtime, "arraySetLength");
+  return [...array.lines, ...length.lines, `  call void @arraySetLength(ptr ${array.value}, i64 ${length.value})`];
+}
+
 function emitObjectStoreOperation(
   operation: Extract<JsIrOperation, { readonly kind: "objectStore" }>,
   context: EmitContext
@@ -864,6 +911,61 @@ function emitRuntimeObjectDeleteOperation(
   const key = emitStringExpression(operation.key, context);
   useRuntimeHelper(context.runtime, "objectDelete");
   return [...object.lines, ...key.lines, `  call void @objectDelete(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`];
+}
+
+function emitRuntimeObjectSetPrototypeOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectSetPrototype" }>,
+  context: EmitContext
+): string[] {
+  let target = emitRuntimeObjectPointer(operation.targetName, context);
+  if (operation.targetKind === "array") {
+    target = emitRuntimeArrayPointer(operation.targetName, context);
+  }
+  const lines = [...target.lines];
+  let prototype = "null";
+  if (operation.prototypeName !== undefined) {
+    const prototypeObject = emitRuntimeObjectPointer(operation.prototypeName, context);
+    lines.push(...prototypeObject.lines);
+    prototype = prototypeObject.value;
+  }
+  let helper: "arraySetPrototype" | "objectSetPrototype" = "objectSetPrototype";
+  if (operation.targetKind === "array") {
+    helper = "arraySetPrototype";
+  }
+  useRuntimeHelper(context.runtime, helper);
+  lines.push(`  call void @${helper}(ptr ${target.value}, ptr ${prototype})`);
+  return lines;
+}
+
+function emitRuntimeObjectDefineDataPropertyOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectDefineDataProperty" }>,
+  context: EmitContext
+): string[] {
+  const object = emitRuntimeObjectPointer(operation.objectName, context);
+  const key = emitStringExpression(operation.descriptor.key, context);
+  const value = emitValueExpression(operation.descriptor.value, context);
+  const flags = descriptorFlags(operation.descriptor);
+  useRuntimeHelper(context.runtime, "objectDefineDataProperty");
+  return [
+    ...object.lines,
+    ...key.lines,
+    ...value.lines,
+    `  call void @objectDefineDataProperty(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value}, i64 ${flags})`
+  ];
+}
+
+function descriptorFlags(descriptor: Extract<JsIrOperation, { readonly kind: "runtimeObjectDefineDataProperty" }>["descriptor"]): number {
+  let flags = 0;
+  if (descriptor.writable) {
+    flags += descriptorWritableFlag;
+  }
+  if (descriptor.enumerable) {
+    flags += descriptorEnumerableFlag;
+  }
+  if (descriptor.configurable) {
+    flags += descriptorConfigurableFlag;
+  }
+  return flags;
 }
 
 function emitCallOperation(operation: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): string[] {
@@ -1001,6 +1103,14 @@ function emitRuntimeArrayValueExpression(
   const valueIndex = context.numIndex;
   context.numIndex += 1;
   const value = `%value.${valueIndex}`;
+  if (expression.key !== undefined) {
+    const key = emitStringExpression(expression.key, context);
+    useRuntimeHelper(context.runtime, "arrayGetWithKey");
+    return {
+      lines: [...array.lines, ...index.lines, ...key.lines, `  ${value} = call i64 @arrayGetWithKey(ptr ${array.value}, i64 ${index.value}, i64 ${key.length}, ptr ${key.value})`],
+      value
+    };
+  }
   useRuntimeHelper(context.runtime, "arrayGet");
   return { lines: [...array.lines, ...index.lines, `  ${value} = call i64 @arrayGet(ptr ${array.value}, i64 ${index.value})`], value };
 }
@@ -1462,7 +1572,45 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     return emitValueComparisonCondition(condition, context);
   }
 
+  if (condition.kind === "runtimeObjectHas") {
+    return emitRuntimeObjectHasCondition(condition, context);
+  }
+
+  if (condition.kind === "runtimeArrayHas") {
+    return emitRuntimeArrayHasCondition(condition, context);
+  }
+
   return undefined;
+}
+
+function emitRuntimeObjectHasCondition(
+  condition: Extract<JsIrCondition, { readonly kind: "runtimeObjectHas" }>,
+  context: EmitContext
+): NumberValue {
+  const object = emitRuntimeObjectPointer(condition.objectName, context);
+  const key = emitStringExpression(condition.key, context);
+  const index = context.cmpIndex;
+  context.cmpIndex += 1;
+  const name = `%cmp.${index}`;
+  let helper: "objectHasOwn" | "objectHas" = "objectHas";
+  if (condition.ownOnly) {
+    helper = "objectHasOwn";
+  }
+  useRuntimeHelper(context.runtime, helper);
+  return { lines: [...object.lines, ...key.lines, `  ${name} = call i1 @${helper}(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`], value: name };
+}
+
+function emitRuntimeArrayHasCondition(
+  condition: Extract<JsIrCondition, { readonly kind: "runtimeArrayHas" }>,
+  context: EmitContext
+): NumberValue {
+  const array = emitRuntimeArrayPointer(condition.arrayName, context);
+  const index = emitArrayIndex(condition.index, context);
+  const { cmpIndex } = context;
+  context.cmpIndex += 1;
+  const name = `%cmp.${cmpIndex}`;
+  useRuntimeHelper(context.runtime, "arrayHasOwnIndex");
+  return { lines: [...array.lines, ...index.lines, `  ${name} = call i1 @arrayHasOwnIndex(ptr ${array.value}, i64 ${index.value})`], value: name };
 }
 
 function emitStringComparisonCondition(

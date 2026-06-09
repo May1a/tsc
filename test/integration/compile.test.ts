@@ -1400,11 +1400,11 @@ describe("tscn arrays", () => {
     try {
       const llvmIr = await hole.readArtifact("main.ll");
       expect(llvmIr).toContain("define ptr @arrayNew(i64 %length)");
-      expect(llvmIr).toContain("define i64 @arrayGet(ptr %array, i64 %index)");
+      expect(llvmIr).toContain("define i64 @arrayGetWithKey(ptr %array, i64 %index, i64 %key.len, ptr %key.ptr)");
       expect(llvmIr).toContain("store i64 9222246136947933191, ptr %slot");
       expect(llvmIr).toContain("%is.hole = icmp eq i64 %value, 9222246136947933191");
       expect(llvmIr).not.toContain("call void @arraySet(ptr %arr.arr, i64 1, i64 9222246136947933184)");
-      expect(llvmIr).toContain("call i64 @arrayGet(ptr %arr.ptr.");
+      expect(llvmIr).toContain("call i64 @arrayGetWithKey(ptr %arr.ptr.");
       await expectNativeBehaviorIfAvailable(hole, { status: 0, stdout: "1\nundefined\n", stderr: "" });
     } finally {
       await hole.cleanup();
@@ -1430,7 +1430,7 @@ describe("tscn arrays", () => {
       expect(llvmIr).toContain("@arr.0 = global [2 x double] [double 1.0, double 2.0]");
       expect(llvmIr).toContain("%mixed.arr = call ptr @arrayNew(i64 2)");
       expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.0");
-      expect(llvmIr).toContain("call i64 @arrayGet(ptr %arr.ptr.");
+      expect(llvmIr).toContain("call i64 @arrayGetWithKey(ptr %arr.ptr.");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "2\ntrue\n", stderr: "" });
     } finally {
       await result.cleanup();
@@ -1463,6 +1463,48 @@ describe("tscn arrays", () => {
       expect(llvmIr).toContain("call void @arrayDelete(ptr %arr.ptr.");
       expect(llvmIr).toContain("store i64 9222246136947933191, ptr %slot");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\nundefined\nc\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("assigns runtime array length with truncation and holes", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-length-assignment.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @arraySetLength(ptr %array, i64 %new.length)");
+      expect(llvmIr).toContain("call void @arraySetLength(ptr %arr.ptr.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\nundefined\n4\nundefined\nd\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("checks runtime array indexed presence without treating holes as present", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-presence.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define i1 @arrayHasOwnIndex(ptr %array, i64 %index)");
+      expect(llvmIr).toContain("call i1 @arrayHasOwnIndex(ptr %arr.ptr.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\ntrue\nfalse\nfalse\nfalse\nfalse\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("falls back from runtime array holes to object prototypes for literal indexes", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-prototype.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define i64 @arrayGetWithKey(ptr %array, i64 %index, i64 %key.len, ptr %key.ptr)");
+      expect(llvmIr).toContain("%prototype.slot = getelementptr i8, ptr %array, i64 24");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "zero\none\nundefined\nthree\nundefined\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
       await result.cleanup();
@@ -1711,6 +1753,63 @@ describe("tscn objects", () => {
         stdout: "proto\nown\nundefined\nproto\nundefined\n",
         stderr: ""
       });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("checks runtime object property presence through own and prototype lookups", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-presence.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define i1 @objectHasOwn(ptr %object, i64 %key.len, ptr %key.ptr)");
+      expect(llvmIr).toContain("define i1 @objectHas(ptr %object, i64 %key.len, ptr %key.ptr)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("mutates runtime object prototypes with Object.setPrototypeOf", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-set-prototype.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @objectSetPrototype(ptr %object, ptr %prototype)");
+      expect(llvmIr).toContain("call void @objectSetPrototype(ptr %obj.ptr.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "first\nundefined\nsecond\nundefined\nundefined\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("defines runtime data property descriptors and observes writable/configurable bits", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-define-property.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @objectDefineDataProperty(ptr %object, i64 %key.len, ptr %key.ptr, i64 %value, i64 %flags)");
+      expect(llvmIr).toContain("%is.writable = icmp ne i64 %writable.bit, 0");
+      expect(llvmIr).toContain("%is.configurable = icmp ne i64 %configurable.bit, 0");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "fixed\nundefined\nnormal\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("returns own enumerable runtime object keys in insertion order", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-keys.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define ptr @objectKeys(ptr %object)");
+      expect(llvmIr).toContain("call ptr @objectKeys(ptr %obj.ptr.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\nvisible\nundefined\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
       await result.cleanup();
