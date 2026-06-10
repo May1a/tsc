@@ -528,6 +528,10 @@ function emitObjectMutationOperation(operation: JsIrOperation, context: EmitCont
     return emitRuntimeObjectDefineDataPropertyOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeObjectDefineDataProperties") {
+    return operation.descriptors.flatMap((descriptor) => emitRuntimeObjectDefineDataPropertyOperation({ kind: "runtimeObjectDefineDataProperty", objectName: operation.objectName, descriptor }, context));
+  }
+
   return undefined;
 }
 
@@ -554,6 +558,18 @@ function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitCo
 
   if (operation.kind === "runtimeObjectKeys") {
     return emitRuntimeObjectKeysOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectValues") {
+    return emitRuntimeObjectValuesOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectOwnPropertyDescriptor") {
+    return emitRuntimeObjectOwnPropertyDescriptorOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArraySlice") {
+    return emitRuntimeArraySliceOperation(operation, context);
   }
 
   if (operation.kind === "runtimeObjectGetPrototype") {
@@ -790,6 +806,76 @@ function emitRuntimeObjectKeysOperation(
     `  ${result} = call ptr @${helper}(ptr ${object.value})`,
     `  store ptr ${result}, ptr ${pointerName}`
   ];
+}
+
+function emitRuntimeObjectValuesOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectValues" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const target = emitRuntimeValuesTargetPointer(operation, context);
+  const result = `%arr.rt.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  let helper: "arrayValues" | "objectValues" = "objectValues";
+  if (operation.targetKind === "array") {
+    helper = "arrayValues";
+  }
+  useRuntimeHelper(context.runtime, helper);
+  return [`  ${pointerName} = alloca ptr`, ...target.lines, `  ${result} = call ptr @${helper}(ptr ${target.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+}
+
+function emitRuntimeObjectOwnPropertyDescriptorOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectOwnPropertyDescriptor" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
+  const result = `%obj.rt.${context.objectIndex}`;
+  context.objectIndex += 1;
+  if (operation.targetKind === "array") {
+    const array = emitRuntimeArrayPointer(operation.targetName, context);
+    const index = emitArrayIndex(operation.index ?? { kind: "literal", value: 0 }, context);
+    useRuntimeHelper(context.runtime, "arrayOwnPropertyDescriptor");
+    return [`  ${pointerName} = alloca ptr`, ...array.lines, ...index.lines, `  ${result} = call ptr @arrayOwnPropertyDescriptor(ptr ${array.value}, i64 ${index.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+  }
+  const object = emitRuntimeObjectPointer(operation.targetName, context);
+  const key = emitStringExpression(operation.key, context);
+  useRuntimeHelper(context.runtime, "objectOwnPropertyDescriptor");
+  return [`  ${pointerName} = alloca ptr`, ...object.lines, ...key.lines, `  ${result} = call ptr @objectOwnPropertyDescriptor(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+}
+
+function emitRuntimeArraySliceOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArraySlice" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  const start = emitArrayIndex(operation.start, context);
+  let end: NumberValue;
+  if (operation.end === undefined) {
+    const length = `%arr.len.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "arrayLength");
+    end = { lines: [`  ${length} = call i64 @arrayLength(ptr ${array.value})`], value: length };
+  } else {
+    end = emitArrayIndex(operation.end, context);
+  }
+  const result = `%arr.rt.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  useRuntimeHelper(context.runtime, "arraySlice");
+  return [`  ${pointerName} = alloca ptr`, ...array.lines, ...start.lines, ...end.lines, `  ${result} = call ptr @arraySlice(ptr ${array.value}, i64 ${start.value}, i64 ${end.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+}
+
+function emitRuntimeValuesTargetPointer(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectValues" }>,
+  context: EmitContext
+): NumberValue {
+  if (operation.targetKind === "array") {
+    return emitRuntimeArrayPointer(operation.targetName, context);
+  }
+  return emitRuntimeObjectPointer(operation.targetName, context);
 }
 
 function emitRuntimeObjectGetPrototypeOperation(
@@ -1211,6 +1297,7 @@ function emitValueReturnOperation(operation: { readonly kind: "returnValue"; rea
   return [...result.lines, `  ret i64 ${result.value}`];
 }
 
+// eslint-disable-next-line max-statements -- Transitional JSValue emission remains centralized during aggregate boxing.
 function emitValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue {
   const primitive = emitPrimitiveValueExpression(expression, context);
   if (primitive !== undefined) {
@@ -1243,6 +1330,30 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   if (expression.kind === "arrayPop" || expression.kind === "arrayShift") {
     return emitRuntimeArrayRemoveValueExpression(expression, context);
+  }
+
+  if (expression.kind === "arrayIncludes") {
+    const condition = emitRuntimeArrayIncludesCondition(expression, context);
+    const index = context.numIndex;
+    context.numIndex += 1;
+    const value = `%value.${index}`;
+    return { lines: [...condition.lines, `  ${value} = select i1 ${condition.value}, i64 ${jsValueTrue}, i64 ${jsValueFalse}`], value };
+  }
+
+  if (expression.kind === "objectRef") {
+    const object = emitRuntimeObjectPointer(expression.name, context);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "valueBoxObject");
+    return { lines: [...object.lines, `  ${value} = call i64 @valueBoxObject(ptr ${object.value})`], value };
+  }
+
+  if (expression.kind === "arrayRef") {
+    const array = emitRuntimeArrayPointer(expression.name, context);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "valueBoxArray");
+    return { lines: [...array.lines, `  ${value} = call i64 @valueBoxArray(ptr ${array.value})`], value };
   }
 
   throw new Error("Unsupported value expression");
@@ -1354,7 +1465,7 @@ function emitStringValueExpression(expression: Extract<JsIrValueExpression, { re
   return {
     lines: [
       ...string.lines,
-      `  ${value} = call i64 @valueBoxString(ptr ${string.value})`
+      `  ${value} = call i64 @valueBoxString(ptr ${string.value}, i64 ${string.length})`
     ],
     value
   };
@@ -1430,6 +1541,7 @@ function emitExpressionPrint(expression: JsIrExpression, context: EmitContext): 
   return emitBindingPrint(binding, context);
 }
 
+// eslint-disable-next-line max-statements -- Print lowering handles all current binding variants in one dispatch.
 function emitBindingPrint(binding: JsIrBindingValue, context: EmitContext): string[] {
   if (binding.kind === "number") {
     const result = emitNumberExpression(binding.value, context);
@@ -1473,6 +1585,18 @@ function emitBindingPrint(binding: JsIrBindingValue, context: EmitContext): stri
   if (binding.kind === "valueVariable") {
     useRuntimeHelper(context.runtime, "valuePrint");
     return [`  call void @valuePrint(i64 ${binding.name})`];
+  }
+
+  if (binding.kind === "runtimeObject") {
+    const result = emitValueExpression({ kind: "objectRef", name: binding.name }, context);
+    useRuntimeHelper(context.runtime, "valuePrint");
+    return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
+  }
+
+  if (binding.kind === "runtimeArray") {
+    const result = emitValueExpression({ kind: "arrayRef", name: binding.name }, context);
+    useRuntimeHelper(context.runtime, "valuePrint");
+    return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
   }
 
   return [];
@@ -1730,6 +1854,7 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
   };
 }
 
+// eslint-disable-next-line max-statements -- Runtime condition dispatch is centralized while predicates are transitional.
 function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): NumberValue | undefined {
   if (condition.kind === "booleanVariable") {
     const index = context.boolIndex;
@@ -1760,6 +1885,27 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
 
   if (condition.kind === "runtimeObjectState") {
     return emitRuntimeObjectStateCondition(condition, context);
+  }
+
+  if (condition.kind === "runtimeObjectPropertyIsEnumerable") {
+    const object = emitRuntimeObjectPointer(condition.objectName, context);
+    const key = emitStringExpression(condition.key, context);
+    const name = `%cmp.${context.cmpIndex}`;
+    context.cmpIndex += 1;
+    useRuntimeHelper(context.runtime, "objectPropertyIsEnumerable");
+    return { lines: [...object.lines, ...key.lines, `  ${name} = call i1 @objectPropertyIsEnumerable(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`], value: name };
+  }
+
+  if (condition.kind === "runtimeArrayIsArray") {
+    return { lines: [], value: String(condition.value) };
+  }
+
+  if (condition.kind === "valueTruthy") {
+    const value = emitValueExpression(condition.value, context);
+    const name = `%cmp.${context.cmpIndex}`;
+    context.cmpIndex += 1;
+    useRuntimeHelper(context.runtime, "valueTruthy");
+    return { lines: [...value.lines, `  ${name} = call i1 @valueTruthy(i64 ${value.value})`], value: name };
   }
 
   return undefined;
@@ -1798,6 +1944,18 @@ function emitRuntimeArrayHasCondition(
   const key = emitStringExpression(condition.key, context);
   useRuntimeHelper(context.runtime, "arrayHas");
   return { lines: [...array.lines, ...index.lines, ...key.lines, `  ${name} = call i1 @arrayHas(ptr ${array.value}, i64 ${index.value}, i64 ${key.length}, ptr ${key.value})`], value: name };
+}
+
+function emitRuntimeArrayIncludesCondition(
+  expression: Extract<JsIrValueExpression, { readonly kind: "arrayIncludes" }>,
+  context: EmitContext
+): NumberValue {
+  const array = emitRuntimeArrayPointer(expression.arrayName, context);
+  const value = emitValueExpression(expression.value, context);
+  const name = `%cmp.${context.cmpIndex}`;
+  context.cmpIndex += 1;
+  useRuntimeHelper(context.runtime, "arrayIncludes");
+  return { lines: [...array.lines, ...value.lines, `  ${name} = call i1 @arrayIncludes(ptr ${array.value}, i64 ${value.value})`], value: name };
 }
 
 function emitRuntimeObjectStateCondition(
@@ -1950,6 +2108,7 @@ function llvmComparisonInstruction(operator: "===" | "!==" | "<" | "<=" | ">" | 
   throw new Error("Unsupported comparison operator");
 }
 
+// eslint-disable-next-line max-statements -- Number expression lowering includes temporary runtime array method branches.
 function emitNumberExpression(expression: JsIrNumberExpression, context: EmitContext): NumberValue {
   const simple = emitSimpleNumberExpression(expression, context);
   if (simple !== undefined) {
@@ -1962,6 +2121,17 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
 
   if (expression.kind === "arrayPush" || expression.kind === "arrayUnshift") {
     return emitRuntimeArrayAppendNumberExpression(expression, context);
+  }
+
+  if (expression.kind === "arrayIndexOf") {
+    const array = emitRuntimeArrayPointer(expression.arrayName, context);
+    const needle = emitValueExpression(expression.value, context);
+    const raw = `%arr.index.${context.arrayIndex}`;
+    context.arrayIndex += 1;
+    const number = `%num.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "arrayIndexOf");
+    return { lines: [...array.lines, ...needle.lines, `  ${raw} = call i64 @arrayIndexOf(ptr ${array.value}, i64 ${needle.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
   }
 
   if (expression.kind === "ternary") {
@@ -2222,6 +2392,19 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
 
   if (expression.kind === "call") {
     return emitStringCallExpressionResult(expression, context);
+  }
+
+  if (expression.kind === "arrayJoin") {
+    const array = emitRuntimeArrayPointer(expression.arrayName, context);
+    const separator = emitStringExpression(expression.separator, context);
+    const name = `%str.${context.stringIndex}`;
+    context.stringIndex += 1;
+    useRuntimeHelper(context.runtime, "arrayJoin");
+    return { lines: [...array.lines, ...separator.lines, `  ${name} = call ptr @arrayJoin(ptr ${array.value}, i64 ${separator.length}, ptr ${separator.value})`], value: name, length: "0" };
+  }
+
+  if (expression.kind === "typeof") {
+    return { lines: [], value: addStringConstant(expression.value, context), length: String(utf8ByteLength(expression.value)) };
   }
 
   return emitTernaryStringExpression(expression, context);

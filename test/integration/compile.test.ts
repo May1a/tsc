@@ -256,6 +256,7 @@ const expectLlvmAsVerificationIfAvailable = async (result: CompileResult): Promi
 
 const countOccurrences = (value: string, needle: string): number => value.split(needle).length - 1;
 
+// eslint-disable-next-line max-statements -- CLI coverage intentionally groups diagnostics and smoke tests.
 describe("tscn CLI", () => {
   test("lowers top-level print string calls to LLVM IR", async () => {
     const result = await expectSuccessfulCompile("hello.ts");
@@ -600,6 +601,24 @@ describe("tscn CLI", () => {
     ]);
 
     await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
+  });
+
+  test("rejects unsupported expanded runtime roadmap boundaries", async () => {
+    const fixtures = [
+      "object-values-fixed.ts",
+      "array-is-array-number.ts",
+      "array-is-array-string.ts",
+      "array-is-array-fixed.ts",
+      "object-define-properties-accessor.ts",
+      "object-define-properties-spread.ts",
+      "object-define-properties-shorthand.ts",
+      "object-define-properties-method.ts",
+      "object-define-properties-dynamic-boolean.ts",
+      "array-runtime-slice-negative-start.ts",
+      "runtime-object-truthiness.ts"
+    ];
+
+    await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 });
 
@@ -2026,7 +2045,7 @@ describe("tscn JSValue ABI", () => {
       expect(llvmIr).toContain("bitcast double 42.0 to i64");
       expect(llvmIr).toContain("select i1 true, i64 9222246136947933186, i64 9222246136947933185");
       expect(llvmIr).toContain("i64 9222246136947933184");
-      expect(llvmIr).toContain("define i64 @valueBoxString(ptr %string.ptr)");
+      expect(llvmIr).toContain("define i64 @valueBoxString(ptr %string.ptr, i64 %string.len)");
       expect(llvmIr).toContain("call i64 @valueBoxString(ptr @.str.");
       expect(countOccurrences(llvmIr, "define void @valuePrint")).toBe(1);
       await expectNativeBehaviorIfAvailable(result, {
@@ -2091,6 +2110,150 @@ describe("tscn JSValue ABI", () => {
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\n7\n", stderr: "" });
     } finally {
       await result.cleanup();
+    }
+  });
+});
+
+describe("tscn expanded runtime roadmap", () => {
+  test("materializes multi-digit runtime array keys", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-keys-multi-digit.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "5\n0\n9\n10\n12\n123\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("classifies runtime arrays with Array.isArray", async () => {
+    const result = await expectSuccessfulCompile("array-is-array.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nfalse\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("returns runtime Object.values for objects and arrays", async () => {
+    const object = await expectSuccessfulCompile("object-runtime-values.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(object, { status: 0, stdout: "2\na\nundefined\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(object);
+    } finally {
+      await object.cleanup();
+    }
+
+    const array = await expectSuccessfulCompile("array-runtime-values.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(array, { status: 0, stdout: "2\nundefined\ny\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(array);
+    } finally {
+      await array.cleanup();
+    }
+  });
+
+  test("returns runtime data descriptors", async () => {
+    const object = await expectSuccessfulCompile("object-runtime-get-own-property-descriptor.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(object, { status: 0, stdout: "value\nfalse\ntrue\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(object);
+    } finally {
+      await object.cleanup();
+    }
+
+    const array = await expectSuccessfulCompile("array-runtime-get-own-property-descriptor.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(array, { status: 0, stdout: "zero\ntrue\ntrue\ntrue\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(array);
+    } finally {
+      await array.cleanup();
+    }
+  });
+
+  test("defines multiple runtime data properties", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-define-properties.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "a\nhidden\nlocked\n2\na\nlocked\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("converts narrow runtime object property keys", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-property-key-conversion.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "zero\nten\nyes\nvalue\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers object and array method-call sugar", async () => {
+    const object = await expectSuccessfulCompile("object-runtime-method-sugar.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(object, { status: 0, stdout: "true\nfalse\ntrue\nfalse\n", stderr: "" });
+    } finally {
+      await object.cleanup();
+    }
+
+    const array = await expectSuccessfulCompile("array-runtime-method-sugar.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(array, { status: 0, stdout: "false\ntrue\ntrue\n", stderr: "" });
+    } finally {
+      await array.cleanup();
+    }
+  });
+
+  test("supports runtime array includes, indexOf, slice, and join", async () => {
+    const search = await expectSuccessfulCompile("array-runtime-includes-index-of.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(search, { status: 0, stdout: "true\ntrue\n3\n-1\n", stderr: "" });
+    } finally {
+      await search.cleanup();
+    }
+
+    const slice = await expectSuccessfulCompile("array-runtime-slice.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(slice, { status: 0, stdout: "3\nundefined\nc\nd\n", stderr: "" });
+    } finally {
+      await slice.cleanup();
+    }
+
+    const join = await expectSuccessfulCompile("array-runtime-join.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(join, { status: 0, stdout: "a---d\n", stderr: "" });
+    } finally {
+      await join.cleanup();
+    }
+  });
+
+  test("carries boxed string length and supports typeof, truthiness, and aggregate refs", async () => {
+    const boxed = await expectSuccessfulCompile("value-boxed-string-length.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(boxed, { status: 0, stdout: "hello\nfalse\n", stderr: "" });
+    } finally {
+      await boxed.cleanup();
+    }
+
+    const typeOf = await expectSuccessfulCompile("typeof-supported-values.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(typeOf, { status: 0, stdout: "undefined\nobject\nboolean\nnumber\nstring\n", stderr: "" });
+    } finally {
+      await typeOf.cleanup();
+    }
+
+    const truthiness = await expectSuccessfulCompile("value-truthiness.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(truthiness, { status: 0, stdout: "text\nzero\none\nundefined\nnull\n", stderr: "" });
+    } finally {
+      await truthiness.cleanup();
+    }
+
+    const refs = await expectSuccessfulCompile("value-runtime-aggregate-references.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(refs, { status: 0, stdout: "true\ntrue\ntrue\n[object Object]\n[object Array]\n", stderr: "" });
+    } finally {
+      await refs.cleanup();
     }
   });
 });
