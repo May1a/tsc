@@ -586,6 +586,21 @@ describe("tscn CLI", () => {
 
     await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
   });
+
+  test("explains unsupported new runtime built-in boundaries precisely", async () => {
+    const expectations = new Map([
+      ["object-define-property-accessor.ts", "Object.defineProperty accessor descriptors are not supported yet"],
+      ["object-define-property-dynamic-boolean.ts", "Object.defineProperty descriptor booleans must be literal true or false"],
+      ["object-keys-fixed.ts", "Object.keys is only supported for runtime dictionary objects and runtime arrays"],
+      ["array-runtime-string-key-leading-zero.ts", "Runtime array string key \"01\" is not supported"],
+      ["array-runtime-string-key-negative.ts", "Runtime array string key \"-1\" is not supported"],
+      ["array-runtime-string-key-fraction.ts", "Runtime array string key \"1.5\" is not supported"],
+      ["object-assign-fixed.ts", "Object.assign is only supported for runtime dictionary object targets and sources"],
+      ["array-fixed-push.ts", "Array method calls are only supported on runtime arrays"]
+    ]);
+
+    await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
+  });
 });
 
 describe("tscn numeric conditions and bindings", () => {
@@ -1510,6 +1525,73 @@ describe("tscn arrays", () => {
       await result.cleanup();
     }
   });
+
+  test("returns own enumerable runtime array keys", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-keys.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define ptr @arrayKeys(ptr %array)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "2\n0\n4\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports canonical string keys for runtime arrays", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-string-keys.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define i1 @arrayHas(ptr %array, i64 %index, i64 %key.len, ptr %key.ptr)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "zero\nproto\ntrue\ntrue\nfalse\nfalse\n4\nthree\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports runtime array push and pop", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-push-pop.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define i64 @arrayPush(ptr %array, i64 %value)");
+      expect(llvmIr).toContain("define i64 @arrayPop(ptr %array)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "4\n4\nd\nc\nundefined\na\nundefined\n0\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports runtime array shift and unshift", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-shift-unshift.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define i64 @arrayUnshift(ptr %array, i64 %value)");
+      expect(llvmIr).toContain("define i64 @arrayShift(ptr %array)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "4\na\nundefined\na\n3\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("gets runtime array prototypes", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-get-prototype.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define ptr @arrayGetPrototype(ptr %array)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "array-proto\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn objects", () => {
@@ -1815,6 +1897,60 @@ describe("tscn objects", () => {
       await result.cleanup();
     }
   });
+
+  test("supports runtime object extensibility", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-extensible.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @objectPreventExtensions(ptr %object)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nfalse\nnew\nundefined\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports runtime object seal and freeze", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-seal-freeze.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @objectSeal(ptr %object)");
+      expect(llvmIr).toContain("define void @objectFreeze(ptr %object)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nnew\nkeep\nundefined\ntrue\nnew\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("copies runtime object enumerable own properties", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-assign.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @objectAssign(ptr %target, ptr %source)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "override\nb\nundefined\nundefined\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("gets runtime object prototypes and guards cycles", async () => {
+    const result = await expectSuccessfulCompile("object-runtime-get-prototype-cycle.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define ptr @objectGetPrototype(ptr %object)");
+      expect(llvmIr).toContain("define i1 @objectWouldCreateCycle(ptr %object, ptr %prototype)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "root\na\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn runtime comparisons", () => {
@@ -1868,6 +2004,19 @@ describe("tscn runtime comparisons", () => {
 });
 
 describe("tscn JSValue ABI", () => {
+  test("supports null as a first-class JSValue", async () => {
+    const result = await expectSuccessfulCompile("value-null.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("9222246136947933187");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "null\nnull\ntrue\ntrue\nfalse\nfalse\ntrue\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("lowers boxed print values through the value print helper", async () => {
     const result = await expectSuccessfulCompile("value-print.ts", { link: true });
 

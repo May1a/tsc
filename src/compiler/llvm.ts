@@ -107,6 +107,7 @@ const noLines = 0;
 const jsValueUndefined = "9222246136947933184";
 const jsValueFalse = "9222246136947933185";
 const jsValueTrue = "9222246136947933186";
+const jsValueNull = "9222246136947933187";
 const descriptorWritableFlag = 1;
 const descriptorEnumerableFlag = 2;
 const descriptorConfigurableFlag = 4;
@@ -450,7 +451,6 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
 }
 
 function emitMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-
   if (operation.kind === "assignNumber") {
     return emitAssignNumberOperation(operation, context);
   }
@@ -463,6 +463,15 @@ function emitMutationOperation(operation: JsIrOperation, context: EmitContext): 
     return emitAssignBooleanOperation(operation, context);
   }
 
+  const arrayMutation = emitArrayMutationOperation(operation, context);
+  if (arrayMutation !== undefined) {
+    return arrayMutation;
+  }
+
+  return emitObjectMutationOperation(operation, context);
+}
+
+function emitArrayMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
   if (operation.kind === "arrayStore") {
     return emitArrayStoreOperation(operation, context);
   }
@@ -479,6 +488,18 @@ function emitMutationOperation(operation: JsIrOperation, context: EmitContext): 
     return emitRuntimeArraySetLengthOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeArrayPush" || operation.kind === "runtimeArrayUnshift") {
+    return emitRuntimeArrayAppendOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArrayPop" || operation.kind === "runtimeArrayShift") {
+    return emitRuntimeArrayRemoveOperation(operation, context);
+  }
+
+  return undefined;
+}
+
+function emitObjectMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
   if (operation.kind === "objectStore") {
     return emitObjectStoreOperation(operation, context);
   }
@@ -493,6 +514,14 @@ function emitMutationOperation(operation: JsIrOperation, context: EmitContext): 
 
   if (operation.kind === "runtimeObjectSetPrototype") {
     return emitRuntimeObjectSetPrototypeOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectPreventExtensions" || operation.kind === "runtimeObjectSeal" || operation.kind === "runtimeObjectFreeze") {
+    return emitRuntimeObjectStateMutationOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectAssign") {
+    return emitRuntimeObjectAssignOperation(operation, context);
   }
 
   if (operation.kind === "runtimeObjectDefineDataProperty") {
@@ -525,6 +554,10 @@ function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitCo
 
   if (operation.kind === "runtimeObjectKeys") {
     return emitRuntimeObjectKeysOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeObjectGetPrototype") {
+    return emitRuntimeObjectGetPrototypeOperation(operation, context);
   }
 
   return undefined;
@@ -746,16 +779,65 @@ function emitRuntimeObjectKeysOperation(
 ): string[] {
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
-  const object = emitRuntimeObjectPointer(operation.objectName, context);
+  const object = emitRuntimeKeysTargetPointer(operation, context);
   const result = `%arr.rt.${context.arrayIndex}`;
   context.arrayIndex += 1;
-  useRuntimeHelper(context.runtime, "objectKeys");
+  const helper = runtimeKeysHelper(operation.targetKind);
+  useRuntimeHelper(context.runtime, helper);
   return [
     `  ${pointerName} = alloca ptr`,
     ...object.lines,
-    `  ${result} = call ptr @objectKeys(ptr ${object.value})`,
+    `  ${result} = call ptr @${helper}(ptr ${object.value})`,
     `  store ptr ${result}, ptr ${pointerName}`
   ];
+}
+
+function emitRuntimeObjectGetPrototypeOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectGetPrototype" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
+  const target = emitRuntimePrototypeTargetPointer(operation, context);
+  const helper = runtimeGetPrototypeHelper(operation.targetKind);
+  const result = `%obj.rt.${context.objectIndex}`;
+  context.objectIndex += 1;
+  useRuntimeHelper(context.runtime, helper);
+  return [`  ${pointerName} = alloca ptr`, ...target.lines, `  ${result} = call ptr @${helper}(ptr ${target.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+}
+
+function emitRuntimeKeysTargetPointer(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectKeys" }>,
+  context: EmitContext
+): NumberValue {
+  if (operation.targetKind === "array") {
+    return emitRuntimeArrayPointer(operation.targetName, context);
+  }
+  return emitRuntimeObjectPointer(operation.targetName, context);
+}
+
+function runtimeKeysHelper(targetKind: "object" | "array"): "objectKeys" | "arrayKeys" {
+  if (targetKind === "array") {
+    return "arrayKeys";
+  }
+  return "objectKeys";
+}
+
+function emitRuntimePrototypeTargetPointer(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectGetPrototype" }>,
+  context: EmitContext
+): NumberValue {
+  if (operation.targetKind === "array") {
+    return emitRuntimeArrayPointer(operation.targetName, context);
+  }
+  return emitRuntimeObjectPointer(operation.targetName, context);
+}
+
+function runtimeGetPrototypeHelper(targetKind: "object" | "array"): "objectGetPrototype" | "arrayGetPrototype" {
+  if (targetKind === "array") {
+    return "arrayGetPrototype";
+  }
+  return "objectGetPrototype";
 }
 
 function knownShapeObjectToRuntimeValue(value: JsIrObjectValue): JsIrRuntimeObjectValue {
@@ -871,6 +953,45 @@ function emitRuntimeArraySetLengthOperation(
   return [...array.lines, ...length.lines, `  call void @arraySetLength(ptr ${array.value}, i64 ${length.value})`];
 }
 
+function emitRuntimeArrayAppendOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayPush" | "runtimeArrayUnshift" }>,
+  context: EmitContext
+): string[] {
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  const values = operation.values.map((value) => emitValueExpression(value, context));
+  const lines = [...array.lines];
+  const helper = runtimeArrayAppendHelper(operation.kind);
+  useRuntimeHelper(context.runtime, helper);
+  for (const value of values) {
+    lines.push(...value.lines, `  call i64 @${helper}(ptr ${array.value}, i64 ${value.value})`);
+  }
+  return lines;
+}
+
+function emitRuntimeArrayRemoveOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayPop" | "runtimeArrayShift" }>,
+  context: EmitContext
+): string[] {
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  const helper = runtimeArrayRemoveHelper(operation.kind);
+  useRuntimeHelper(context.runtime, helper);
+  return [...array.lines, `  call i64 @${helper}(ptr ${array.value})`];
+}
+
+function runtimeArrayAppendHelper(kind: "runtimeArrayPush" | "runtimeArrayUnshift"): "arrayPush" | "arrayUnshift" {
+  if (kind === "runtimeArrayPush") {
+    return "arrayPush";
+  }
+  return "arrayUnshift";
+}
+
+function runtimeArrayRemoveHelper(kind: "runtimeArrayPop" | "runtimeArrayShift"): "arrayPop" | "arrayShift" {
+  if (kind === "runtimeArrayPop") {
+    return "arrayPop";
+  }
+  return "arrayShift";
+}
+
 function emitObjectStoreOperation(
   operation: Extract<JsIrOperation, { readonly kind: "objectStore" }>,
   context: EmitContext
@@ -952,6 +1073,35 @@ function emitRuntimeObjectDefineDataPropertyOperation(
     ...value.lines,
     `  call void @objectDefineDataProperty(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value}, i64 ${flags})`
   ];
+}
+
+function emitRuntimeObjectStateMutationOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectPreventExtensions" | "runtimeObjectSeal" | "runtimeObjectFreeze" }>,
+  context: EmitContext
+): string[] {
+  const object = emitRuntimeObjectPointer(operation.objectName, context);
+  const helperByKind = {
+    runtimeObjectPreventExtensions: "objectPreventExtensions",
+    runtimeObjectSeal: "objectSeal",
+    runtimeObjectFreeze: "objectFreeze"
+  } as const;
+  const helper = helperByKind[operation.kind];
+  useRuntimeHelper(context.runtime, helper);
+  return [...object.lines, `  call void @${helper}(ptr ${object.value})`];
+}
+
+function emitRuntimeObjectAssignOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectAssign" }>,
+  context: EmitContext
+): string[] {
+  const target = emitRuntimeObjectPointer(operation.targetName, context);
+  const lines = [...target.lines];
+  useRuntimeHelper(context.runtime, "objectAssign");
+  for (const sourceName of operation.sourceNames) {
+    const source = emitRuntimeObjectPointer(sourceName, context);
+    lines.push(...source.lines, `  call void @objectAssign(ptr ${target.value}, ptr ${source.value})`);
+  }
+  return lines;
 }
 
 function descriptorFlags(descriptor: Extract<JsIrOperation, { readonly kind: "runtimeObjectDefineDataProperty" }>["descriptor"]): number {
@@ -1091,7 +1241,31 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return emitRuntimeObjectValueExpression(expression, context);
   }
 
+  if (expression.kind === "arrayPop" || expression.kind === "arrayShift") {
+    return emitRuntimeArrayRemoveValueExpression(expression, context);
+  }
+
   throw new Error("Unsupported value expression");
+}
+
+function emitRuntimeArrayRemoveValueExpression(
+  expression: Extract<JsIrValueExpression, { readonly kind: "arrayPop" | "arrayShift" }>,
+  context: EmitContext
+): JsValue {
+  const array = emitRuntimeArrayPointer(expression.arrayName, context);
+  const valueIndex = context.numIndex;
+  context.numIndex += 1;
+  const value = `%value.${valueIndex}`;
+  const helper = arrayValueRemoveHelper(expression.kind);
+  useRuntimeHelper(context.runtime, helper);
+  return { lines: [...array.lines, `  ${value} = call i64 @${helper}(ptr ${array.value})`], value };
+}
+
+function arrayValueRemoveHelper(kind: "arrayPop" | "arrayShift"): "arrayPop" | "arrayShift" {
+  if (kind === "arrayPop") {
+    return "arrayPop";
+  }
+  return "arrayShift";
 }
 
 function emitRuntimeArrayValueExpression(
@@ -1134,6 +1308,10 @@ function emitRuntimeObjectValueExpression(
 function emitPrimitiveValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
   if (expression.kind === "undefined") {
     return { lines: [], value: jsValueUndefined };
+  }
+
+  if (expression.kind === "null") {
+    return { lines: [], value: jsValueNull };
   }
 
   if (expression.kind === "number") {
@@ -1580,6 +1758,10 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     return emitRuntimeArrayHasCondition(condition, context);
   }
 
+  if (condition.kind === "runtimeObjectState") {
+    return emitRuntimeObjectStateCondition(condition, context);
+  }
+
   return undefined;
 }
 
@@ -1609,8 +1791,31 @@ function emitRuntimeArrayHasCondition(
   const { cmpIndex } = context;
   context.cmpIndex += 1;
   const name = `%cmp.${cmpIndex}`;
-  useRuntimeHelper(context.runtime, "arrayHasOwnIndex");
-  return { lines: [...array.lines, ...index.lines, `  ${name} = call i1 @arrayHasOwnIndex(ptr ${array.value}, i64 ${index.value})`], value: name };
+  if (condition.ownOnly || condition.key === undefined) {
+    useRuntimeHelper(context.runtime, "arrayHasOwnIndex");
+    return { lines: [...array.lines, ...index.lines, `  ${name} = call i1 @arrayHasOwnIndex(ptr ${array.value}, i64 ${index.value})`], value: name };
+  }
+  const key = emitStringExpression(condition.key, context);
+  useRuntimeHelper(context.runtime, "arrayHas");
+  return { lines: [...array.lines, ...index.lines, ...key.lines, `  ${name} = call i1 @arrayHas(ptr ${array.value}, i64 ${index.value}, i64 ${key.length}, ptr ${key.value})`], value: name };
+}
+
+function emitRuntimeObjectStateCondition(
+  condition: Extract<JsIrCondition, { readonly kind: "runtimeObjectState" }>,
+  context: EmitContext
+): NumberValue {
+  const object = emitRuntimeObjectPointer(condition.objectName, context);
+  const helperByState = {
+    isExtensible: "objectIsExtensible",
+    isSealed: "objectIsSealed",
+    isFrozen: "objectIsFrozen"
+  } as const;
+  const helper = helperByState[condition.state];
+  const index = context.cmpIndex;
+  context.cmpIndex += 1;
+  const name = `%cmp.${index}`;
+  useRuntimeHelper(context.runtime, helper);
+  return { lines: [...object.lines, `  ${name} = call i1 @${helper}(ptr ${object.value})`], value: name };
 }
 
 function emitStringComparisonCondition(
@@ -1755,6 +1960,10 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     return emitCallExpressionResult(expression, context);
   }
 
+  if (expression.kind === "arrayPush" || expression.kind === "arrayUnshift") {
+    return emitRuntimeArrayAppendNumberExpression(expression, context);
+  }
+
   if (expression.kind === "ternary") {
     return emitTernaryNumberExpression(expression, context);
   }
@@ -1790,6 +1999,36 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     lines: [...left.lines, ...right.lines, `  ${name} = ${llvmNumberOperator(expression.operator)} double ${left.value}, ${right.value}`],
     value: name
   };
+}
+
+function emitRuntimeArrayAppendNumberExpression(
+  expression: Extract<JsIrNumberExpression, { readonly kind: "arrayPush" | "arrayUnshift" }>,
+  context: EmitContext
+): NumberValue {
+  const array = emitRuntimeArrayPointer(expression.arrayName, context);
+  const values = expression.values.map((value) => emitValueExpression(value, context));
+  const lines = [...array.lines];
+  const helper = arrayNumberAppendHelper(expression.kind);
+  useRuntimeHelper(context.runtime, helper);
+  let result = "0";
+  for (const value of values) {
+    const index = context.arrayIndex;
+    context.arrayIndex += 1;
+    result = `%arr.method.${index}`;
+    lines.push(...value.lines, `  ${result} = call i64 @${helper}(ptr ${array.value}, i64 ${value.value})`);
+  }
+  const { numIndex } = context;
+  context.numIndex += 1;
+  const number = `%num.${numIndex}`;
+  lines.push(`  ${number} = uitofp i64 ${result} to double`);
+  return { lines, value: number };
+}
+
+function arrayNumberAppendHelper(kind: "arrayPush" | "arrayUnshift"): "arrayPush" | "arrayUnshift" {
+  if (kind === "arrayPush") {
+    return "arrayPush";
+  }
+  return "arrayUnshift";
 }
 
 function emitAggregateNumberExpression(
