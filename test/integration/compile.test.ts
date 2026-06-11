@@ -626,9 +626,14 @@ describe("tscn CLI", () => {
       "object-keys-unknown-primitive.ts",
       "object-values-unknown-primitive.ts",
       "object-entries-unknown-primitive.ts",
+      "object-get-own-property-descriptor-unknown-primitive.ts",
+      "object-get-own-property-names-unknown-primitive.ts",
+      "object-get-own-property-descriptors-primitive.ts",
       "object-from-entries-non-array.ts",
+      "object-from-entries-entry-non-array.ts",
       "array-runtime-concat-fixed.ts",
       "array-runtime-fill-negative-start.ts",
+      "array-runtime-copy-within-negative-target.ts",
       "array-runtime-reverse-extra-arg.ts"
     ];
 
@@ -2385,7 +2390,7 @@ describe("tscn expanded runtime roadmap", () => {
   test("converts supported JSValues to strings and joins mixed values", async () => {
     const conversion = await expectSuccessfulCompile("value-string-conversion.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(conversion, { status: 0, stdout: "undefined\nnull\ntrue\nfalse\n42\n[object Object]\n[object Array]\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(conversion, { status: 0, stdout: "undefined\nnull\ntrue\nfalse\n42\n[object Object]\nx\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(conversion);
     } finally {
       await conversion.cleanup();
@@ -2397,6 +2402,167 @@ describe("tscn expanded runtime roadmap", () => {
       await expectLlvmAsVerificationIfAvailable(join);
     } finally {
       await join.cleanup();
+    }
+  });
+
+  test("mutates and deletes through boxed aggregate JSValues", async () => {
+    const mutation = await expectSuccessfulCompile("value-runtime-aggregate-mutation.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(mutation, { status: 0, stdout: "next\n42\nzero\nnext\n2\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(mutation);
+    } finally {
+      await mutation.cleanup();
+    }
+
+    const deletion = await expectSuccessfulCompile("value-runtime-aggregate-delete.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(deletion, { status: 0, stdout: "undefined\nundefined\none\n0\n1\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(deletion);
+    } finally {
+      await deletion.cleanup();
+    }
+  });
+
+  test("introspects boxed aggregate descriptors and entries", async () => {
+    const descriptors = await expectSuccessfulCompile("value-runtime-aggregate-descriptors.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(descriptors, { status: 0, stdout: "object\ntrue\nzero\ntrue\n2\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(descriptors);
+    } finally {
+      await descriptors.cleanup();
+    }
+
+    const entries = await expectSuccessfulCompile("value-runtime-aggregate-entries.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(entries, { status: 0, stdout: "2\na\nvalue\n3\n0\n1\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(entries);
+    } finally {
+      await entries.cleanup();
+    }
+  });
+
+  test("returns own property names and descriptor maps", async () => {
+    const objectNames = await expectSuccessfulCompile("object-runtime-get-own-property-names.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(objectNames, { status: 0, stdout: "2\nhidden\nb\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(objectNames);
+    } finally {
+      await objectNames.cleanup();
+    }
+
+    const arrayNames = await expectSuccessfulCompile("array-runtime-get-own-property-names.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(arrayNames, { status: 0, stdout: "3\n0\n2\nlength\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(arrayNames);
+    } finally {
+      await arrayNames.cleanup();
+    }
+
+    const descriptors = await expectSuccessfulCompile("object-runtime-get-own-property-descriptors.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(descriptors, { status: 0, stdout: "a\ntrue\nhidden\nfalse\n2\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(descriptors);
+    } finally {
+      await descriptors.cleanup();
+    }
+  });
+
+  test("supports more callback-free runtime array methods", async () => {
+    const at = await expectSuccessfulCompile("array-runtime-at.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(at, { status: 0, stdout: "a\nc\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(at);
+    } finally {
+      await at.cleanup();
+    }
+
+    const lastIndexOf = await expectSuccessfulCompile("array-runtime-last-index-of.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(lastIndexOf, { status: 0, stdout: "2\n-1\n3\n", stderr: "" });
+    } finally {
+      await lastIndexOf.cleanup();
+    }
+
+    const copyWithin = await expectSuccessfulCompile("array-runtime-copy-within.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(copyWithin, { status: 0, stdout: "5\na\nc\nundefined\ne\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(copyWithin);
+    } finally {
+      await copyWithin.cleanup();
+    }
+  });
+
+  test("supports variadic concat and boxed array concat arguments", async () => {
+    const variadic = await expectSuccessfulCompile("array-runtime-concat-variadic.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(variadic, { status: 0, stdout: "7\na\nb\nundefined\nd\ntail\n1\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(variadic);
+    } finally {
+      await variadic.cleanup();
+    }
+
+    const boxed = await expectSuccessfulCompile("array-runtime-concat-boxed-array.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(boxed, { status: 0, stdout: "4\na\nb\nc\ntail\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(boxed);
+    } finally {
+      await boxed.cleanup();
+    }
+  });
+
+  test("hardens Object.fromEntries malformed entries", async () => {
+    const duplicates = await expectSuccessfulCompile("object-runtime-from-entries-duplicate-keys.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(duplicates, { status: 0, stdout: "second\n1\n", stderr: "" });
+    } finally {
+      await duplicates.cleanup();
+    }
+
+    const malformed = await expectSuccessfulCompile("object-runtime-from-entries-malformed.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(malformed, { status: 0, stdout: "1\nyes\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(malformed);
+    } finally {
+      await malformed.cleanup();
+    }
+  });
+
+  test("converts runtime arrays to strings and documents scoped number edges", async () => {
+    const array = await expectSuccessfulCompile("value-string-conversion-array.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(array, { status: 0, stdout: "a,,true\na,,true\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(array);
+    } finally {
+      await array.cleanup();
+    }
+
+    const numbers = await expectSuccessfulCompile("value-string-conversion-number-edge.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(numbers, { status: 0, stdout: "-0\ninf\n", stderr: "" });
+    } finally {
+      await numbers.cleanup();
+    }
+  });
+
+  test("emits nested runtime helper dependencies once", async () => {
+    const result = await expectSuccessfulCompile("value-string-conversion-array.ts");
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(countOccurrences(llvmIr, "define ptr @arrayJoin")).toBe(1);
+      expect(countOccurrences(llvmIr, "define ptr @objectEntries")).toBe(0);
+      expect(countOccurrences(llvmIr, "define { ptr, i64 } @valueToString")).toBe(1);
+      expect(countOccurrences(llvmIr, "declare ptr @malloc(i64)")).toBe(1);
+    } finally {
+      await result.cleanup();
+    }
+
+    const entries = await expectSuccessfulCompile("object-runtime-from-entries.ts");
+    try {
+      const llvmIr = await entries.readArtifact("main.ll");
+      expect(countOccurrences(llvmIr, "define ptr @objectEntries")).toBe(1);
+      expect(countOccurrences(llvmIr, "define ptr @objectFromEntries")).toBe(1);
+    } finally {
+      await entries.cleanup();
     }
   });
 });

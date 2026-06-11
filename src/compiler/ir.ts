@@ -87,6 +87,11 @@ export type JsIrValueExpression =
       readonly value: JsIrValueExpression;
     }
   | {
+      readonly kind: "arrayAt";
+      readonly arrayName: string;
+      readonly index: JsIrNumberExpression;
+    }
+  | {
       readonly kind: "objectRef" | "arrayRef";
       readonly name: string;
     }
@@ -173,6 +178,7 @@ export type JsIrNumberExpression =
       readonly kind: "arrayIndexOf";
       readonly arrayName: string;
       readonly value: JsIrValueExpression;
+      readonly fromEnd?: boolean;
     }
   | {
       readonly kind: "objectAccess";
@@ -534,7 +540,7 @@ export type JsIrOperation =
       readonly kind: "runtimeObjectEntries";
       readonly name: string;
       readonly targetName: string;
-      readonly targetKind: "object" | "array";
+      readonly targetKind: "object" | "array" | "value";
     }
   | {
       readonly kind: "runtimeObjectFromEntries";
@@ -545,9 +551,21 @@ export type JsIrOperation =
       readonly kind: "runtimeObjectOwnPropertyDescriptor";
       readonly name: string;
       readonly targetName: string;
-      readonly targetKind: "object" | "array";
+      readonly targetKind: "object" | "array" | "value";
       readonly key: JsIrStringExpression;
       readonly index?: JsIrNumberExpression;
+      readonly isLength?: boolean;
+    }
+  | {
+      readonly kind: "runtimeObjectOwnPropertyNames";
+      readonly name: string;
+      readonly targetName: string;
+      readonly targetKind: "object" | "array";
+    }
+  | {
+      readonly kind: "runtimeObjectOwnPropertyDescriptors";
+      readonly name: string;
+      readonly targetName: string;
     }
   | {
       readonly kind: "runtimeArraySlice";
@@ -560,8 +578,7 @@ export type JsIrOperation =
       readonly kind: "runtimeArrayConcat";
       readonly name: string;
       readonly leftName: string;
-      readonly rightName: string;
-      readonly tail: JsIrValueExpression;
+      readonly values: readonly JsIrValueExpression[];
     }
   | {
       readonly kind: "runtimeObjectGetPrototype";
@@ -623,6 +640,13 @@ export type JsIrOperation =
       readonly arrayName: string;
     }
   | {
+      readonly kind: "runtimeArrayCopyWithin";
+      readonly arrayName: string;
+      readonly target: JsIrNumberExpression;
+      readonly start: JsIrNumberExpression;
+      readonly end: JsIrNumberExpression;
+    }
+  | {
       readonly kind: "runtimeArrayPop" | "runtimeArrayShift";
       readonly arrayName: string;
     }
@@ -639,9 +663,36 @@ export type JsIrOperation =
       readonly value: JsIrValueExpression;
     }
   | {
+      readonly kind: "valueObjectStore";
+      readonly targetName: string;
+      readonly key: JsIrStringExpression;
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "valueArrayStore";
+      readonly targetName: string;
+      readonly index: JsIrNumberExpression;
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "valueArraySetLength";
+      readonly targetName: string;
+      readonly length: JsIrNumberExpression;
+    }
+  | {
       readonly kind: "runtimeObjectDelete";
       readonly objectName: string;
       readonly key: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "valueObjectDelete";
+      readonly targetName: string;
+      readonly key: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "valueArrayDelete";
+      readonly targetName: string;
+      readonly index: JsIrNumberExpression;
     }
   | {
       readonly kind: "runtimeObjectSetPrototype";
@@ -758,7 +809,9 @@ type ObjectLiteralClassification =
 
 const definePropertyArgumentCount = 3;
 const arrayFillRangeArgumentCount = 3;
+const arrayCopyWithinArgumentCount = 3;
 
+// eslint-disable-next-line max-statements -- Aggregate binding classification is centralized during the runtime-shape transition.
 export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBindingValue | undefined {
   if (operation.kind === "arrayLiteral") {
     return { kind: "array", name: operation.name, length: operation.elements.length };
@@ -789,6 +842,12 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   }
   if (operation.kind === "runtimeObjectOwnPropertyDescriptor") {
     return { kind: "valueVariable", name: operation.name };
+  }
+  if (operation.kind === "runtimeObjectOwnPropertyNames") {
+    return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "runtimeObjectOwnPropertyDescriptors") {
+    return { kind: "runtimeObject", name: operation.name };
   }
   if (operation.kind === "runtimeArraySlice") {
     return { kind: "runtimeArray", name: operation.name };
@@ -959,10 +1018,15 @@ function collectRuntimeShadowObjectNames(operation: JsIrOperation, names: Set<st
   }
 }
 
-// eslint-disable-next-line complexity -- Transitional aggregate JSValue tracking centralizes all operation variants.
+// eslint-disable-next-line complexity, max-statements -- Transitional aggregate JSValue tracking centralizes all operation variants.
 function collectOperationValueExpressions(operation: JsIrOperation, names: Set<string>): void {
-  if (operation.kind === "constValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeObjectStore") {
+  if (operation.kind === "constValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore") {
     collectValueExpressionObjectNames(operation.value, names);
+  }
+  if (operation.kind === "runtimeArrayConcat") {
+    for (const value of operation.values) {
+      collectValueExpressionObjectNames(value, names);
+    }
   }
   if (operation.kind === "returnValue") {
     collectValueExpressionObjectNames(operation.expression, names);
@@ -1154,6 +1218,7 @@ function lowerExpressionStatement(
   return undefined;
 }
 
+// eslint-disable-next-line max-statements -- Delete lowering handles fixed, runtime, and boxed aggregate targets in one place.
 function lowerDeleteExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -1168,6 +1233,9 @@ function lowerDeleteExpression(
     if (binding?.kind === "runtimeObject") {
       return { kind: "runtimeObjectDelete", objectName: target.expression.text, key: { kind: "literal", value: target.name.text } };
     }
+    if (isProvenBoxedAggregateBinding(binding)) {
+      return { kind: "valueObjectDelete", targetName: target.expression.text, key: { kind: "literal", value: target.name.text } };
+    }
   }
 
   if (ts.isElementAccessExpression(target) && ts.isIdentifier(target.expression)) {
@@ -1180,6 +1248,20 @@ function lowerDeleteExpression(
       const stringIndex = lowerCanonicalArrayIndexString(target.argumentExpression);
       if (stringIndex !== undefined) {
         return { kind: "runtimeArrayDelete", arrayName: target.expression.text, index: { kind: "literal", value: stringIndex } };
+      }
+    }
+    if (isProvenBoxedAggregateBinding(binding)) {
+      const index = lowerNumberExpression(target.argumentExpression, bindings);
+      const stringIndex = lowerCanonicalArrayIndexString(target.argumentExpression);
+      if (index !== undefined) {
+        return { kind: "valueArrayDelete", targetName: target.expression.text, index };
+      }
+      if (stringIndex !== undefined) {
+        return { kind: "valueArrayDelete", targetName: target.expression.text, index: { kind: "literal", value: stringIndex } };
+      }
+      const key = lowerPropertyKeyExpression(target.argumentExpression, bindings);
+      if (key !== undefined) {
+        return { kind: "valueObjectDelete", targetName: target.expression.text, key };
       }
     }
     const key = lowerStringRuntimeExpression(target.argumentExpression, bindings);
@@ -1601,6 +1683,7 @@ function lowerRuntimeObjectAssignCall(
   return { kind: "runtimeObjectAssign", targetName: target.text, sourceNames };
 }
 
+// eslint-disable-next-line complexity -- Runtime array statement methods are centralized while the method surface is small.
 function lowerRuntimeArrayCallStatement(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -1629,6 +1712,14 @@ function lowerRuntimeArrayCallStatement(
   }
   if (method === "reverse" && expression.arguments.length === 0) {
     return { kind: "runtimeArrayReverse", arrayName };
+  }
+  if (method === "copyWithin" && expression.arguments.length === arrayCopyWithinArgumentCount) {
+    const target = lowerNumberExpression(expression.arguments[0], bindings);
+    const start = lowerNumberExpression(expression.arguments[1], bindings);
+    const end = lowerNumberExpression(expression.arguments[2], bindings);
+    if (target !== undefined && start !== undefined && end !== undefined && !isNegativeNumberExpression(target) && !isNegativeNumberExpression(start) && !isNegativeNumberExpression(end)) {
+      return { kind: "runtimeArrayCopyWithin", arrayName, target, start, end };
+    }
   }
   return undefined;
 }
@@ -2096,6 +2187,7 @@ function unwrapTypeOnlyExpression(expression: ts.Expression): ts.Expression {
   return expression;
 }
 
+// eslint-disable-next-line max-statements -- Const aggregate binding routes the supported built-in constructors and inspectors.
 function lowerConstAggregateBinding(
   name: string,
   initializer: ts.Expression,
@@ -2134,6 +2226,14 @@ function lowerConstAggregateBinding(
   const descriptor = lowerRuntimeObjectOwnPropertyDescriptorBinding(name, initializer, bindings);
   if (descriptor !== undefined) {
     return descriptor;
+  }
+  const propertyNames = lowerRuntimeObjectOwnPropertyNamesBinding(name, initializer, bindings);
+  if (propertyNames !== undefined) {
+    return propertyNames;
+  }
+  const descriptors = lowerRuntimeObjectOwnPropertyDescriptorsBinding(name, initializer, bindings);
+  if (descriptors !== undefined) {
+    return descriptors;
   }
   const objectPrototype = lowerRuntimeObjectGetPrototypeBinding(name, initializer, bindings);
   if (objectPrototype !== undefined) {
@@ -2213,7 +2313,7 @@ function lowerRuntimeObjectEntriesBinding(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   const target = lowerUnaryObjectAggregateCall(initializer, bindings, "entries");
-  if (target === undefined || target.kind === "value") {
+  if (target === undefined) {
     return undefined;
   }
   return { kind: "runtimeObjectEntries", name, targetName: target.name, targetKind: target.kind };
@@ -2238,6 +2338,7 @@ function lowerRuntimeObjectFromEntriesBinding(
   return { kind: "runtimeObjectFromEntries", name, entriesName: entries.text };
 }
 
+// eslint-disable-next-line complexity, max-statements -- Descriptor lowering handles object, array, and boxed aggregate receiver shapes.
 function lowerRuntimeObjectOwnPropertyDescriptorBinding(
   name: string,
   initializer: ts.Expression,
@@ -2263,7 +2364,7 @@ function lowerRuntimeObjectOwnPropertyDescriptorBinding(
   }
   if (binding?.kind === "runtimeArray") {
     if (ts.isStringLiteral(keyExpression) && keyExpression.text === "length") {
-      return { kind: "runtimeObjectOwnPropertyDescriptor", name, targetName: target.text, targetKind: "array", key: { kind: "literal", value: "length" } };
+      return { kind: "runtimeObjectOwnPropertyDescriptor", name, targetName: target.text, targetKind: "array", key: { kind: "literal", value: "length" }, isLength: true };
     }
     let index = lowerNumberExpression(keyExpression, bindings);
     const stringIndex = lowerCanonicalArrayIndexString(keyExpression);
@@ -2278,7 +2379,46 @@ function lowerRuntimeObjectOwnPropertyDescriptorBinding(
       return { kind: "runtimeObjectOwnPropertyDescriptor", name, targetName: target.text, targetKind: "array", key, index };
     }
   }
+  if (isProvenBoxedAggregateBinding(binding)) {
+    const key = lowerPropertyKeyExpression(keyExpression, bindings);
+    if (key === undefined) {
+      return undefined;
+    }
+    if (ts.isStringLiteral(keyExpression) && keyExpression.text === "length") {
+      return { kind: "runtimeObjectOwnPropertyDescriptor", name, targetName: target.text, targetKind: "value", key, isLength: true };
+    }
+    let index = lowerNumberExpression(keyExpression, bindings);
+    const stringIndex = lowerCanonicalArrayIndexString(keyExpression);
+    if (stringIndex !== undefined) {
+      index = { kind: "literal", value: stringIndex };
+    }
+    return { kind: "runtimeObjectOwnPropertyDescriptor", name, targetName: target.text, targetKind: "value", key, index };
+  }
   return undefined;
+}
+
+function lowerRuntimeObjectOwnPropertyNamesBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const target = lowerUnaryObjectAggregateCall(initializer, bindings, "getOwnPropertyNames");
+  if (target === undefined || target.kind === "value") {
+    return undefined;
+  }
+  return { kind: "runtimeObjectOwnPropertyNames", name, targetName: target.name, targetKind: target.kind };
+}
+
+function lowerRuntimeObjectOwnPropertyDescriptorsBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const target = lowerUnaryObjectAggregateCall(initializer, bindings, "getOwnPropertyDescriptors");
+  if (target?.kind !== "object") {
+    return undefined;
+  }
+  return { kind: "runtimeObjectOwnPropertyDescriptors", name, targetName: target.name };
 }
 
 function lowerRuntimeArraySliceBinding(
@@ -2316,18 +2456,18 @@ function lowerRuntimeArrayConcatBinding(
     return undefined;
   }
   const leftName = initializer.expression.expression.text;
-  if (initializer.expression.name.text !== "concat" || bindings.get(leftName)?.kind !== "runtimeArray" || initializer.arguments.length !== 2) {
+  if (initializer.expression.name.text !== "concat" || bindings.get(leftName)?.kind !== "runtimeArray" || initializer.arguments.length === 0) {
     return undefined;
   }
-  const [rightExpression, tailExpression] = initializer.arguments;
-  if (!ts.isIdentifier(rightExpression) || bindings.get(rightExpression.text)?.kind !== "runtimeArray") {
-    return undefined;
+  const values: JsIrValueExpression[] = [];
+  for (const argument of initializer.arguments) {
+    const value = lowerValueExpression(argument, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    values.push(value);
   }
-  const tail = lowerValueExpression(tailExpression, bindings);
-  if (tail === undefined) {
-    return undefined;
-  }
-  return { kind: "runtimeArrayConcat", name, leftName, rightName: rightExpression.text, tail };
+  return { kind: "runtimeArrayConcat", name, leftName, values };
 }
 
 function isNegativeNumberExpression(expression: JsIrNumberExpression): boolean {
@@ -2478,6 +2618,7 @@ function lowerAssignmentStatement(
   };
 }
 
+// eslint-disable-next-line complexity -- Element assignment handles fixed, runtime, and boxed aggregate targets.
 function lowerElementAssignment(
   left: ts.ElementAccessExpression,
   right: ts.Expression,
@@ -2517,6 +2658,15 @@ function lowerElementAssignment(
   const runtimeValue = lowerValueExpression(right, bindings);
   if (arrayBinding?.kind === "runtimeArray" && index !== undefined && runtimeValue !== undefined) {
     return { kind: "runtimeArrayStore", arrayName: left.expression.text, index, value: runtimeValue };
+  }
+  if (isProvenBoxedAggregateBinding(arrayBinding) && runtimeValue !== undefined) {
+    if (index !== undefined) {
+      return { kind: "valueArrayStore", targetName: left.expression.text, index, value: runtimeValue };
+    }
+    const key = lowerPropertyKeyExpression(left.argumentExpression, bindings);
+    if (key !== undefined) {
+      return { kind: "valueObjectStore", targetName: left.expression.text, key, value: runtimeValue };
+    }
   }
 
   return undefined;
@@ -2566,10 +2716,22 @@ function lowerObjectPropertyAssignment(
         return { kind: "runtimeArraySetLength", arrayName: left.expression.text, length };
       }
     }
+    if (isProvenBoxedAggregateBinding(binding) && left.name.text === "length") {
+      const length = lowerNumberExpression(right, bindings);
+      if (length !== undefined) {
+        return { kind: "valueArraySetLength", targetName: left.expression.text, length };
+      }
+    }
     if (binding?.kind === "runtimeObject") {
       const value = lowerValueExpression(right, bindings);
       if (value !== undefined) {
         return { kind: "runtimeObjectStore", objectName: left.expression.text, key: { kind: "literal", value: left.name.text }, value };
+      }
+    }
+    if (isProvenBoxedAggregateBinding(binding)) {
+      const value = lowerValueExpression(right, bindings);
+      if (value !== undefined) {
+        return { kind: "valueObjectStore", targetName: left.expression.text, key: { kind: "literal", value: left.name.text }, value };
       }
     }
   }
@@ -3438,6 +3600,12 @@ function lowerArrayValueMethodCall(
       return { kind: "arrayIncludes", arrayName, value };
     }
   }
+  if (method === "at" && expression.arguments.length === 1) {
+    const index = lowerNumberExpression(expression.arguments[0], bindings);
+    if (index !== undefined) {
+      return { kind: "arrayAt", arrayName, index };
+    }
+  }
   return undefined;
 }
 
@@ -3601,10 +3769,10 @@ function lowerArrayNumberMethodCall(
   }
   const method = expression.expression.name.text;
   if (method !== "push" && method !== "unshift") {
-    if (method === "indexOf" && expression.arguments.length === 1) {
+    if ((method === "indexOf" || method === "lastIndexOf") && expression.arguments.length === 1) {
       const value = lowerValueExpression(expression.arguments[0], bindings);
       if (value !== undefined) {
-        return { kind: "arrayIndexOf", arrayName, value };
+        return { kind: "arrayIndexOf", arrayName, value, fromEnd: method === "lastIndexOf" };
       }
     }
     return undefined;
@@ -3666,6 +3834,13 @@ function isBoxedAggregateCandidateBinding(binding: JsIrBindingValue | undefined)
   if (binding?.kind === "valueVariable") {
     return true;
   }
+  if (binding?.kind !== "value") {
+    return false;
+  }
+  return binding.value.kind === "objectRef" || binding.value.kind === "arrayRef" || binding.value.kind === "objectDynamicAccess" || binding.value.kind === "arrayAccess" || binding.value.kind === "valueObjectDynamicAccess" || binding.value.kind === "valueArrayAccess";
+}
+
+function isProvenBoxedAggregateBinding(binding: JsIrBindingValue | undefined): boolean {
   if (binding?.kind !== "value") {
     return false;
   }
