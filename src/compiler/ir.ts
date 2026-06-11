@@ -94,6 +94,17 @@ export type JsIrValueExpression =
       readonly kind: "objectDynamicAccess";
       readonly objectName: string;
       readonly key: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "valueObjectDynamicAccess";
+      readonly value: JsIrValueExpression;
+      readonly key: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "valueArrayAccess";
+      readonly value: JsIrValueExpression;
+      readonly index: JsIrNumberExpression;
+      readonly key: JsIrStringExpression;
     };
 
 export type JsIrRuntimeArrayElement =
@@ -150,6 +161,10 @@ export type JsIrNumberExpression =
       readonly arrayName: string;
     }
   | {
+      readonly kind: "valueArrayLength";
+      readonly value: JsIrValueExpression;
+    }
+  | {
       readonly kind: "arrayPush" | "arrayUnshift";
       readonly arrayName: string;
       readonly values: readonly JsIrValueExpression[];
@@ -198,6 +213,10 @@ export type JsIrStringExpression =
   | {
       readonly kind: "typeof";
       readonly value: string;
+    }
+  | {
+      readonly kind: "stringConversion";
+      readonly value: JsIrValueExpression;
     };
 
 export type JsIrObjectFieldValue =
@@ -355,6 +374,7 @@ export type JsIrCondition =
       readonly objectName: string;
       readonly key: JsIrStringExpression;
       readonly ownOnly: boolean;
+      readonly receiverKind?: "object" | "value";
     }
   | {
       readonly kind: "runtimeArrayHas";
@@ -370,7 +390,7 @@ export type JsIrCondition =
     }
   | {
       readonly kind: "runtimeArrayIsArray";
-      readonly value: boolean;
+      readonly value: boolean | JsIrValueExpression;
     }
   | {
       readonly kind: "valueTruthy";
@@ -502,13 +522,24 @@ export type JsIrOperation =
       readonly kind: "runtimeObjectKeys";
       readonly name: string;
       readonly targetName: string;
-      readonly targetKind: "object" | "array";
+      readonly targetKind: "object" | "array" | "value";
     }
   | {
       readonly kind: "runtimeObjectValues";
       readonly name: string;
       readonly targetName: string;
+      readonly targetKind: "object" | "array" | "value";
+    }
+  | {
+      readonly kind: "runtimeObjectEntries";
+      readonly name: string;
+      readonly targetName: string;
       readonly targetKind: "object" | "array";
+    }
+  | {
+      readonly kind: "runtimeObjectFromEntries";
+      readonly name: string;
+      readonly entriesName: string;
     }
   | {
       readonly kind: "runtimeObjectOwnPropertyDescriptor";
@@ -524,6 +555,13 @@ export type JsIrOperation =
       readonly arrayName: string;
       readonly start: JsIrNumberExpression;
       readonly end?: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "runtimeArrayConcat";
+      readonly name: string;
+      readonly leftName: string;
+      readonly rightName: string;
+      readonly tail: JsIrValueExpression;
     }
   | {
       readonly kind: "runtimeObjectGetPrototype";
@@ -572,6 +610,17 @@ export type JsIrOperation =
       readonly kind: "runtimeArrayPush" | "runtimeArrayUnshift";
       readonly arrayName: string;
       readonly values: readonly JsIrValueExpression[];
+    }
+  | {
+      readonly kind: "runtimeArrayFill";
+      readonly arrayName: string;
+      readonly value: JsIrValueExpression;
+      readonly start?: JsIrNumberExpression;
+      readonly end?: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "runtimeArrayReverse";
+      readonly arrayName: string;
     }
   | {
       readonly kind: "runtimeArrayPop" | "runtimeArrayShift";
@@ -708,6 +757,7 @@ type ObjectLiteralClassification =
     };
 
 const definePropertyArgumentCount = 3;
+const arrayFillRangeArgumentCount = 3;
 
 export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBindingValue | undefined {
   if (operation.kind === "arrayLiteral") {
@@ -731,10 +781,19 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   if (operation.kind === "runtimeObjectValues") {
     return { kind: "runtimeArray", name: operation.name };
   }
-  if (operation.kind === "runtimeObjectOwnPropertyDescriptor") {
+  if (operation.kind === "runtimeObjectEntries") {
+    return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "runtimeObjectFromEntries") {
     return { kind: "runtimeObject", name: operation.name };
   }
+  if (operation.kind === "runtimeObjectOwnPropertyDescriptor") {
+    return { kind: "valueVariable", name: operation.name };
+  }
   if (operation.kind === "runtimeArraySlice") {
+    return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "runtimeArrayConcat") {
     return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeObjectGetPrototype") {
@@ -1564,7 +1623,38 @@ function lowerRuntimeArrayCallStatement(
   if ((method === "pop" || method === "shift") && expression.arguments.length === 0) {
     return { kind: runtimeArrayRemoveOperationKind(method), arrayName };
   }
+  const fill = lowerRuntimeArrayFillCallStatement(arrayName, method, expression.arguments, bindings);
+  if (fill !== undefined) {
+    return fill;
+  }
+  if (method === "reverse" && expression.arguments.length === 0) {
+    return { kind: "runtimeArrayReverse", arrayName };
+  }
   return undefined;
+}
+
+function lowerRuntimeArrayFillCallStatement(
+  arrayName: string,
+  method: string,
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (method !== "fill" || (args.length !== 1 && args.length !== arrayFillRangeArgumentCount)) {
+    return undefined;
+  }
+  const value = lowerValueExpression(args[0], bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (args.length === 1) {
+    return { kind: "runtimeArrayFill", arrayName, value };
+  }
+  const start = lowerNumberExpression(args[1], bindings);
+  const end = lowerNumberExpression(args[2], bindings);
+  if (start === undefined || end === undefined || isNegativeNumberExpression(start) || isNegativeNumberExpression(end)) {
+    return undefined;
+  }
+  return { kind: "runtimeArrayFill", arrayName, value, start, end };
 }
 
 function runtimeArrayAppendOperationKind(method: "push" | "unshift"): "runtimeArrayPush" | "runtimeArrayUnshift" {
@@ -2037,17 +2127,41 @@ function lowerConstAggregateBinding(
   if (objectValues !== undefined) {
     return objectValues;
   }
+  const runtimeExpansion = lowerRuntimeAggregateExpansionBinding(name, initializer, bindings);
+  if (runtimeExpansion !== undefined) {
+    return runtimeExpansion;
+  }
   const descriptor = lowerRuntimeObjectOwnPropertyDescriptorBinding(name, initializer, bindings);
   if (descriptor !== undefined) {
     return descriptor;
+  }
+  const objectPrototype = lowerRuntimeObjectGetPrototypeBinding(name, initializer, bindings);
+  if (objectPrototype !== undefined) {
+    return objectPrototype;
+  }
+  return undefined;
+}
+
+function lowerRuntimeAggregateExpansionBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const objectEntries = lowerRuntimeObjectEntriesBinding(name, initializer, bindings);
+  if (objectEntries !== undefined) {
+    return objectEntries;
+  }
+  const fromEntries = lowerRuntimeObjectFromEntriesBinding(name, initializer, bindings);
+  if (fromEntries !== undefined) {
+    return fromEntries;
   }
   const slice = lowerRuntimeArraySliceBinding(name, initializer, bindings);
   if (slice !== undefined) {
     return slice;
   }
-  const objectPrototype = lowerRuntimeObjectGetPrototypeBinding(name, initializer, bindings);
-  if (objectPrototype !== undefined) {
-    return objectPrototype;
+  const concat = lowerRuntimeArrayConcatBinding(name, initializer, bindings);
+  if (concat !== undefined) {
+    return concat;
   }
   return undefined;
 }
@@ -2075,6 +2189,9 @@ function lowerRuntimeObjectKeysBinding(
   if (binding?.kind === "runtimeArray") {
     return { kind: "runtimeObjectKeys", name, targetName: objectExpression.text, targetKind: "array" };
   }
+  if (isBoxedAggregateCandidateBinding(binding)) {
+    return { kind: "runtimeObjectKeys", name, targetName: objectExpression.text, targetKind: "value" };
+  }
   return undefined;
 }
 
@@ -2088,6 +2205,37 @@ function lowerRuntimeObjectValuesBinding(
     return undefined;
   }
   return { kind: "runtimeObjectValues", name, targetName: target.name, targetKind: target.kind };
+}
+
+function lowerRuntimeObjectEntriesBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const target = lowerUnaryObjectAggregateCall(initializer, bindings, "entries");
+  if (target === undefined || target.kind === "value") {
+    return undefined;
+  }
+  return { kind: "runtimeObjectEntries", name, targetName: target.name, targetKind: target.kind };
+}
+
+function lowerRuntimeObjectFromEntriesBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || initializer.arguments.length !== 1) {
+    return undefined;
+  }
+  const callee = initializer.expression;
+  if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression) || callee.expression.text !== "Object" || callee.name.text !== "fromEntries") {
+    return undefined;
+  }
+  const [entries] = initializer.arguments;
+  if (!ts.isIdentifier(entries) || bindings.get(entries.text)?.kind !== "runtimeArray") {
+    return undefined;
+  }
+  return { kind: "runtimeObjectFromEntries", name, entriesName: entries.text };
 }
 
 function lowerRuntimeObjectOwnPropertyDescriptorBinding(
@@ -2114,6 +2262,9 @@ function lowerRuntimeObjectOwnPropertyDescriptorBinding(
     }
   }
   if (binding?.kind === "runtimeArray") {
+    if (ts.isStringLiteral(keyExpression) && keyExpression.text === "length") {
+      return { kind: "runtimeObjectOwnPropertyDescriptor", name, targetName: target.text, targetKind: "array", key: { kind: "literal", value: "length" } };
+    }
     let index = lowerNumberExpression(keyExpression, bindings);
     const stringIndex = lowerCanonicalArrayIndexString(keyExpression);
     if (stringIndex !== undefined) {
@@ -2156,6 +2307,29 @@ function lowerRuntimeArraySliceBinding(
   return { kind: "runtimeArraySlice", name, arrayName, start, end };
 }
 
+function lowerRuntimeArrayConcatBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || !ts.isPropertyAccessExpression(initializer.expression) || !ts.isIdentifier(initializer.expression.expression)) {
+    return undefined;
+  }
+  const leftName = initializer.expression.expression.text;
+  if (initializer.expression.name.text !== "concat" || bindings.get(leftName)?.kind !== "runtimeArray" || initializer.arguments.length !== 2) {
+    return undefined;
+  }
+  const [rightExpression, tailExpression] = initializer.arguments;
+  if (!ts.isIdentifier(rightExpression) || bindings.get(rightExpression.text)?.kind !== "runtimeArray") {
+    return undefined;
+  }
+  const tail = lowerValueExpression(tailExpression, bindings);
+  if (tail === undefined) {
+    return undefined;
+  }
+  return { kind: "runtimeArrayConcat", name, leftName, rightName: rightExpression.text, tail };
+}
+
 function isNegativeNumberExpression(expression: JsIrNumberExpression): boolean {
   return expression.kind === "unary" && expression.value.kind === "literal";
 }
@@ -2164,7 +2338,7 @@ function lowerUnaryObjectAggregateCall(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   method: string
-): { readonly name: string; readonly kind: "object" | "array" } | undefined {
+): { readonly name: string; readonly kind: "object" | "array" | "value" } | undefined {
   if (!ts.isCallExpression(expression) || expression.arguments.length !== 1) {
     return undefined;
   }
@@ -2182,6 +2356,9 @@ function lowerUnaryObjectAggregateCall(
   }
   if (binding?.kind === "runtimeArray") {
     return { name: target.text, kind: "array" };
+  }
+  if (isBoxedAggregateCandidateBinding(binding)) {
+    return { name: target.text, kind: "value" };
   }
   return undefined;
 }
@@ -2500,6 +2677,12 @@ function lowerStringRuntimeExpression(
   }
 
   if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
+    if (expression.expression.text === "String" && expression.arguments.length === 1) {
+      const value = lowerValueExpression(expression.arguments[0], bindings);
+      if (value !== undefined) {
+        return { kind: "stringConversion", value };
+      }
+    }
     return lowerStringCallExpression(expression, bindings);
   }
 
@@ -2812,7 +2995,13 @@ function lowerHasOwnConditionExpression(
   if (binding?.kind === "runtimeObject") {
     const key = lowerStringRuntimeExpression(keyExpression, bindings);
     if (key !== undefined) {
-      return { kind: "runtimeObjectHas", objectName: target.text, key, ownOnly: true };
+      return { kind: "runtimeObjectHas", objectName: target.text, key, ownOnly: true, receiverKind: "object" };
+    }
+  }
+  if (isBoxedAggregateCandidateBinding(binding)) {
+    const key = lowerStringRuntimeExpression(keyExpression, bindings);
+    if (key !== undefined) {
+      return { kind: "runtimeObjectHas", objectName: target.text, key, ownOnly: true, receiverKind: "value" };
     }
   }
   if (binding?.kind === "runtimeArray") {
@@ -2886,6 +3075,12 @@ function lowerArrayIsArrayConditionExpression(
   }
   if (binding?.kind === "runtimeObject") {
     return { kind: "runtimeArrayIsArray", value: false };
+  }
+  if (isBoxedAggregateCandidateBinding(binding)) {
+    const value = lowerValueExpression(arg, bindings);
+    if (value !== undefined) {
+      return { kind: "runtimeArrayIsArray", value };
+    }
   }
   return undefined;
 }
@@ -3051,14 +3246,20 @@ function lowerAggregateValueExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
-  if (ts.isElementAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
-    const arrayAccess = lowerRuntimeArrayValueAccess(expression, bindings);
-    if (arrayAccess !== undefined) {
-      return arrayAccess;
+  if (ts.isElementAccessExpression(expression)) {
+    if (ts.isIdentifier(expression.expression)) {
+      const arrayAccess = lowerRuntimeArrayValueAccess(expression, bindings);
+      if (arrayAccess !== undefined) {
+        return arrayAccess;
+      }
+      const objectAccess = lowerRuntimeObjectElementValueAccess(expression, bindings);
+      if (objectAccess !== undefined) {
+        return objectAccess;
+      }
     }
-    const objectAccess = lowerRuntimeObjectElementValueAccess(expression, bindings);
-    if (objectAccess !== undefined) {
-      return objectAccess;
+    const valueAccess = lowerValueElementAccess(expression, bindings);
+    if (valueAccess !== undefined) {
+      return valueAccess;
     }
   }
 
@@ -3066,6 +3267,12 @@ function lowerAggregateValueExpression(
     const binding = bindings.get(expression.expression.text);
     if (binding?.kind === "runtimeObject") {
       return { kind: "objectDynamicAccess", objectName: expression.expression.text, key: { kind: "literal", value: expression.name.text } };
+    }
+    if (isBoxedAggregateCandidateBinding(binding)) {
+      const value = lowerValueExpression(expression.expression, bindings);
+      if (value !== undefined) {
+        return { kind: "valueObjectDynamicAccess", value, key: { kind: "literal", value: expression.name.text } };
+      }
     }
   }
 
@@ -3080,6 +3287,50 @@ function lowerAggregateValueExpression(
   }
 
   return undefined;
+}
+
+function lowerValueElementAccess(
+  expression: ts.ElementAccessExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  const value = lowerValueElementReceiver(expression.expression, bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+  let index = lowerNumberExpression(expression.argumentExpression, bindings);
+  const stringIndex = lowerCanonicalArrayIndexString(expression.argumentExpression);
+  if (stringIndex !== undefined) {
+    index = { kind: "literal", value: stringIndex };
+  }
+  if (index !== undefined) {
+    let keyValue = "0";
+    if (index.kind === "literal") {
+      keyValue = String(index.value);
+    }
+    return { kind: "valueArrayAccess", value, index, key: { kind: "literal", value: keyValue } };
+  }
+  const key = lowerPropertyKeyExpression(expression.argumentExpression, bindings);
+  if (key !== undefined) {
+    return { kind: "valueObjectDynamicAccess", value, key };
+  }
+  return undefined;
+}
+
+function lowerValueElementReceiver(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (ts.isElementAccessExpression(expression)) {
+    return lowerValueExpression(expression, bindings);
+  }
+  if (!ts.isIdentifier(expression)) {
+    return undefined;
+  }
+  const binding = bindings.get(expression.text);
+  if (!isBoxedAggregateCandidateBinding(binding)) {
+    return undefined;
+  }
+  return lowerValueExpression(expression, bindings);
 }
 
 function lowerRuntimeArrayValueAccess(
@@ -3399,10 +3650,26 @@ function lowerNumberAccessExpression(
       if (binding?.kind === "array" || binding?.kind === "runtimeArray") {
         return { kind: "arrayLength", arrayName: expression.expression.text };
       }
+      if (isBoxedAggregateCandidateBinding(binding)) {
+        const value = lowerValueExpression(expression.expression, bindings);
+        if (value !== undefined) {
+          return { kind: "valueArrayLength", value };
+        }
+      }
     }
   }
 
   return undefined;
+}
+
+function isBoxedAggregateCandidateBinding(binding: JsIrBindingValue | undefined): boolean {
+  if (binding?.kind === "valueVariable") {
+    return true;
+  }
+  if (binding?.kind !== "value") {
+    return false;
+  }
+  return binding.value.kind === "objectRef" || binding.value.kind === "arrayRef" || binding.value.kind === "objectDynamicAccess" || binding.value.kind === "arrayAccess" || binding.value.kind === "valueObjectDynamicAccess" || binding.value.kind === "valueArrayAccess";
 }
 
 function lowerNumberBinaryExpression(
