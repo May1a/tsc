@@ -2311,7 +2311,7 @@ describe("tscn expanded runtime roadmap", () => {
   test("uses boxed aggregate JSValues as built-in receivers", async () => {
     const result = await expectSuccessfulCompile("value-runtime-aggregate-builtins.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nfalse\ntrue\nvalue\narray\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\ntrue\nfalse\ntrue\nvalue\narray\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
       await result.cleanup();

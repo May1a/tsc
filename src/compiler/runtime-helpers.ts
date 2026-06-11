@@ -381,14 +381,37 @@ check.array:
   br i1 %is.array, label %array, label %missing
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
-  %is.zero = icmp eq i64 %key.len, 1
-  br i1 %is.zero, label %array.zero.char, label %missing
-array.zero.char:
-  %byte = load i8, ptr %key.ptr
-  %zero = icmp eq i8 %byte, 48
-  br i1 %zero, label %array.zero, label %missing
-array.zero:
-  %array.has = call i1 @arrayHasOwnIndex(ptr %array.ptr, i64 0)
+  %empty.key = icmp eq i64 %key.len, 0
+  br i1 %empty.key, label %missing, label %array.leading.zero
+array.leading.zero:
+  %first.byte = load i8, ptr %key.ptr
+  %first.zero = icmp eq i8 %first.byte, 48
+  %multi.char = icmp ugt i64 %key.len, 1
+  %leading.zero = and i1 %first.zero, %multi.char
+  br i1 %leading.zero, label %missing, label %array.parse
+array.parse:
+  br label %array.parse.loop
+array.parse.loop:
+  %parse.i = phi i64 [ 0, %array.parse ], [ %parse.next, %array.parse.advance ]
+  %index = phi i64 [ 0, %array.parse ], [ %next.index, %array.parse.advance ]
+  %parse.done = icmp eq i64 %parse.i, %key.len
+  br i1 %parse.done, label %array.has.index, label %array.parse.digit
+array.parse.digit:
+  %char.ptr = getelementptr i8, ptr %key.ptr, i64 %parse.i
+  %char = load i8, ptr %char.ptr
+  %above.lower = icmp uge i8 %char, 48
+  %below.upper = icmp ule i8 %char, 57
+  %is.digit = and i1 %above.lower, %below.upper
+  br i1 %is.digit, label %array.parse.advance, label %missing
+array.parse.advance:
+  %digit.i8 = sub i8 %char, 48
+  %digit = zext i8 %digit.i8 to i64
+  %shifted.index = mul i64 %index, 10
+  %next.index = add i64 %shifted.index, %digit
+  %parse.next = add i64 %parse.i, 1
+  br label %array.parse.loop
+array.has.index:
+  %array.has = call i1 @arrayHasOwnIndex(ptr %array.ptr, i64 %index)
   ret i1 %array.has
 missing:
   ret i1 false

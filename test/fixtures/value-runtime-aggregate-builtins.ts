@@ -10,6 +10,7 @@ const boxedObj: any = wrapper.obj;
 const boxedArr: any = wrapper.arr;
 
 print(Object.hasOwn(boxedObj, "value"));
+print(Object.hasOwn(boxedArr, "0"));
 print(Array.isArray(boxedObj));
 print(Array.isArray(boxedArr));
 const keys: unknown[] = Object.keys(boxedObj);
