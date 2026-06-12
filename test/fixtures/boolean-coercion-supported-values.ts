@@ -1,0 +1,13 @@
+declare function print(value: unknown): void;
+const arr: unknown[] = [0];
+print(Boolean(undefined));
+print(Boolean(null));
+print(Boolean(false));
+print(Boolean(0));
+print(Boolean(NaN));
+print(Boolean(""));
+print(Boolean(true));
+print(Boolean(1));
+print(Boolean("x"));
+print(Boolean({ value: 1 }));
+print(Boolean(arr));

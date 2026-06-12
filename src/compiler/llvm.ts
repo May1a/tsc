@@ -20,6 +20,7 @@ import {
   emitRuntimeDeclarations,
   emitRuntimeDefinitions,
   useRuntimeHelper,
+  type RuntimeHelper,
   type RuntimeHelperEmitter
 } from "./runtime-helpers.js";
 
@@ -198,6 +199,7 @@ ${moduleComments}
 
 declare i32 @puts(ptr)
 declare i32 @printf(ptr, ...)
+declare void @exit(i32)
 ${runtimeDeclarations}
 
 ${numberFormat}
@@ -396,6 +398,16 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
 
   if (operation.kind === "print") {
     return emitExpressionPrint(operation.expression, context);
+  }
+
+  if (operation.kind === "throwValue") {
+    const value = emitValueExpression(operation.value, context);
+    useRuntimeHelper(context.runtime, "valuePrint");
+    return [...value.lines, `  call void @valuePrint(i64 ${value.value})`, "  call void @exit(i32 1)"];
+  }
+
+  if (operation.kind === "block") {
+    return emitOperationsWithScopedBindings(operation.operations, context);
   }
 
   if (operation.kind === "if") {
@@ -1829,7 +1841,7 @@ function emitValueReturnOperation(operation: { readonly kind: "returnValue"; rea
   return [...result.lines, `  ret i64 ${result.value}`];
 }
 
-// eslint-disable-next-line max-statements -- Transitional JSValue emission remains centralized during aggregate boxing.
+// eslint-disable-next-line complexity, max-statements -- Transitional JSValue emission remains centralized during aggregate boxing.
 function emitValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue {
   const primitive = emitPrimitiveValueExpression(expression, context);
   if (primitive !== undefined) {
@@ -1892,6 +1904,19 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     context.numIndex += 1;
     useRuntimeHelper(context.runtime, "arrayAt");
     return { lines: [...array.lines, ...atIndex.lines, `  ${value} = call i64 @arrayAt(ptr ${array.value}, i64 ${atIndex.value})`], value };
+  }
+
+  if (expression.kind === "valuePlus") {
+    const left = emitValueExpression(expression.left, context);
+    const right = emitValueExpression(expression.right, context);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "valuePlus");
+    return { lines: [...left.lines, ...right.lines, `  ${value} = call i64 @valuePlus(i64 ${left.value}, i64 ${right.value})`], value };
+  }
+
+  if (expression.kind === "logicalValue") {
+    return emitLogicalValueExpression(expression, context);
   }
 
   if (expression.kind === "arrayFind") {
@@ -2113,6 +2138,45 @@ function emitTernaryValueExpression(
       ...consequent.lines,
       ...alternate.lines,
       `  ${value} = select i1 ${condition.value}, i64 ${consequent.value}, i64 ${alternate.value}`
+    ],
+    value
+  };
+}
+
+function emitLogicalValueExpression(
+  expression: Extract<JsIrValueExpression, { readonly kind: "logicalValue" }>,
+  context: EmitContext
+): JsValue {
+  const index = context.logicIndex;
+  context.logicIndex += 1;
+  const leftLabel = `value.logic.left.${index}`;
+  const rhsLabel = `value.logic.rhs.${index}`;
+  const endLabel = `value.logic.end.${index}`;
+  const left = emitValueExpression(expression.left, context);
+  const leftTruthy = `%cmp.${context.cmpIndex}`;
+  context.cmpIndex += 1;
+  const right = emitValueExpression(expression.right, context);
+  const value = `%value.${context.numIndex}`;
+  context.numIndex += 1;
+  let leftTrueLabel = endLabel;
+  let leftFalseLabel = rhsLabel;
+  if (expression.operator === "&&") {
+    leftTrueLabel = rhsLabel;
+    leftFalseLabel = endLabel;
+  }
+  useRuntimeHelper(context.runtime, "valueTruthy");
+  return {
+    lines: [
+      `  br label %${leftLabel}`,
+      `${leftLabel}:`,
+      ...left.lines,
+      `  ${leftTruthy} = call i1 @valueTruthy(i64 ${left.value})`,
+      `  br i1 ${leftTruthy}, label %${leftTrueLabel}, label %${leftFalseLabel}`,
+      `${rhsLabel}:`,
+      ...right.lines,
+      `  br label %${endLabel}`,
+      `${endLabel}:`,
+      `  ${value} = phi i64 [ ${left.value}, %${leftLabel} ], [ ${right.value}, %${rhsLabel} ]`
     ],
     value
   };
@@ -2470,7 +2534,7 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
   };
 }
 
-// eslint-disable-next-line max-statements -- Runtime condition dispatch is centralized while predicates are transitional.
+// eslint-disable-next-line complexity, max-statements -- Runtime condition dispatch is centralized while predicates are transitional.
 function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): NumberValue | undefined {
   if (condition.kind === "booleanVariable") {
     const index = context.boolIndex;
@@ -2489,6 +2553,28 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
 
   if (condition.kind === "valueComparison") {
     return emitValueComparisonCondition(condition, context);
+  }
+
+  if (condition.kind === "valueLooseComparison" || condition.kind === "valueRelationalComparison") {
+    const left = emitValueExpression(condition.left, context);
+    const right = emitValueExpression(condition.right, context);
+    const index = context.cmpIndex;
+    const name = `%cmp.${index}`;
+    context.cmpIndex += 1;
+    let helper: RuntimeHelper = "valueRelationalCompare";
+    if (condition.kind === "valueLooseComparison") {
+      helper = "valueLooseEquals";
+    }
+    useRuntimeHelper(context.runtime, helper);
+    if (condition.kind === "valueLooseComparison") {
+      const equals = `%value.eq.${index}`;
+      let predicate = "eq";
+      if (condition.operator === "!=") {
+        predicate = "ne";
+      }
+      return { lines: [...left.lines, ...right.lines, `  ${equals} = call i1 @valueLooseEquals(i64 ${left.value}, i64 ${right.value})`, `  ${name} = icmp ${predicate} i1 ${equals}, true`], value: name };
+    }
+    return { lines: [...left.lines, ...right.lines, `  ${name} = call i1 @valueRelationalCompare(i64 ${left.value}, i64 ${right.value}, i64 ${valueComparisonOperatorCode(condition.operator)})`], value: name };
   }
 
   if (condition.kind === "runtimeObjectHas") {
@@ -2531,6 +2617,35 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     return { lines: [...value.lines, `  ${name} = call i1 @valueTruthy(i64 ${value.value})`], value: name };
   }
 
+  if (condition.kind === "numberPredicate") {
+    const value = emitValueExpression(condition.value, context);
+    const name = `%cmp.${context.cmpIndex}`;
+    context.cmpIndex += 1;
+    const helperByPredicate = {
+      globalIsNaN: "globalIsNaN",
+      numberIsNaN: "numberIsNaN",
+      numberIsFinite: "numberIsFinite"
+    } as const;
+    const helper = helperByPredicate[condition.predicate];
+    useRuntimeHelper(context.runtime, helper);
+    return { lines: [...value.lines, `  ${name} = call i1 @${helper}(i64 ${value.value})`], value: name };
+  }
+
+  if (condition.kind === "stringSearch") {
+    const receiver = emitStringExpression(condition.receiver, context);
+    const search = emitStringExpression(condition.search, context);
+    const name = `%cmp.${context.cmpIndex}`;
+    context.cmpIndex += 1;
+    const helperByMethod: Record<typeof condition.method, RuntimeHelper> = {
+      includes: "stringIncludes",
+      startsWith: "stringStartsWith",
+      endsWith: "stringEndsWith"
+    };
+    const helper = helperByMethod[condition.method];
+    useRuntimeHelper(context.runtime, helper);
+    return { lines: [...receiver.lines, ...search.lines, `  ${name} = call i1 @${helper}(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value})`], value: name };
+  }
+
   if (condition.kind === "runtimeArrayEvery" || condition.kind === "runtimeArraySome") {
     const array = emitRuntimeArrayPointer(condition.arrayName, context);
     const length = `%arr.len.${context.numIndex}`;
@@ -2555,6 +2670,38 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
   }
 
   return undefined;
+}
+
+function valueComparisonOperatorCode(operator: "==" | "!=" | "<" | "<=" | ">" | ">="): number {
+  const lessThanCode = 0;
+  const lessThanOrEqualCode = 1;
+  const greaterThanCode = 2;
+  const greaterThanOrEqualCode = 3;
+  const looseEqualCode = 4;
+  const looseNotEqualCode = 5;
+  switch (operator) {
+    case "<": {
+      return lessThanCode;
+    }
+    case "<=": {
+      return lessThanOrEqualCode;
+    }
+    case ">": {
+      return greaterThanCode;
+    }
+    case ">=": {
+      return greaterThanOrEqualCode;
+    }
+    case "==": {
+      return looseEqualCode;
+    }
+    case "!=": {
+      return looseNotEqualCode;
+    }
+  }
+  const unsupported: never = operator;
+  void unsupported;
+  throw new Error("Unsupported value comparison operator");
 }
 
 function emitRuntimeObjectHasCondition(
@@ -2828,6 +2975,26 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     return { lines: [...array.lines, `  ${raw} = call i64 @arrayFindIndex(ptr ${array.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
   }
 
+  if (expression.kind === "valueToNumber") {
+    const value = emitValueExpression(expression.value, context);
+    const number = `%num.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "valueToNumber");
+    return { lines: [...value.lines, `  ${number} = call double @valueToNumber(i64 ${value.value})`], value: number };
+  }
+
+  if (expression.kind === "mathCall") {
+    return emitMathCallNumberExpression(expression, context);
+  }
+
+  if (expression.kind === "parseInt" || expression.kind === "parseFloat") {
+    const source = emitStringExpression(expression.value, context);
+    const number = `%num.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, expression.kind);
+    return { lines: [...source.lines, `  ${number} = call double @${expression.kind}(i64 ${source.length}, ptr ${source.value})`], value: number };
+  }
+
   if (expression.kind === "ternary") {
     return emitTernaryNumberExpression(expression, context);
   }
@@ -2886,6 +3053,60 @@ function emitRuntimeArrayAppendNumberExpression(
   const number = `%num.${numIndex}`;
   lines.push(`  ${number} = uitofp i64 ${result} to double`);
   return { lines, value: number };
+}
+
+function emitMathCallNumberExpression(
+  expression: Extract<JsIrNumberExpression, { readonly kind: "mathCall" }>,
+  context: EmitContext
+): NumberValue {
+  const args = expression.arguments.map((argument) => emitNumberExpression(argument, context));
+  const number = `%num.${context.numIndex}`;
+  context.numIndex += 1;
+  const lines = args.flatMap((argument) => argument.lines);
+  if (expression.method === "min" || expression.method === "max") {
+    if (args.length === 0) {
+      if (expression.method === "min") {
+        return { lines, value: "0x7FF0000000000000" };
+      }
+      return { lines, value: "0xFFF0000000000000" };
+    }
+    let helper: RuntimeHelper = "mathMax2";
+    if (expression.method === "min") {
+      helper = "mathMin2";
+    }
+    useRuntimeHelper(context.runtime, helper);
+    let current = args[0].value;
+    for (let i = 1; i < args.length; i++) {
+      const next = `%num.${context.numIndex}`;
+      context.numIndex += 1;
+      lines.push(`  ${next} = call double @${helper}(double ${current}, double ${args[i].value})`);
+      current = next;
+    }
+    return { lines, value: current };
+  }
+  if (expression.method === "pow") {
+    useRuntimeHelper(context.runtime, "mathPow");
+    const base = args[0]?.value ?? "0.0";
+    const exponent = args[1]?.value ?? "0.0";
+    return { lines: [...lines, `  ${number} = call double @mathPow(double ${base}, double ${exponent})`], value: number };
+  }
+  const helperByMethod = {
+    abs: "mathAbs",
+    floor: "mathFloor",
+    ceil: "mathCeil",
+    trunc: "mathTrunc",
+    round: "mathRound",
+    sqrt: "mathSqrt",
+    sign: "mathSign"
+  } as const;
+  const helper = helperByMethod[expression.method];
+  useRuntimeHelper(context.runtime, helper);
+  const argument = args[0]?.value ?? "0.0";
+  return { lines: [...lines, `  ${number} = call double @${runtimeMathFunctionName(helper)}(double ${argument})`], value: number };
+}
+
+function runtimeMathFunctionName(helper: "mathAbs" | "mathFloor" | "mathCeil" | "mathTrunc" | "mathRound" | "mathSqrt" | "mathSign"): string {
+  return helper;
 }
 
 function arrayNumberAppendHelper(kind: "arrayPush" | "arrayUnshift"): "arrayPush" | "arrayUnshift" {
@@ -3084,6 +3305,7 @@ function emitTernaryNumberExpression(
   };
 }
 
+// eslint-disable-next-line max-statements -- Runtime string expression emission is centralized during the JSValue transition.
 function emitStringExpression(expression: JsIrStringExpression, context: EmitContext): StringValue {
   if (expression.kind === "literal") {
     return { lines: [], value: addStringConstant(expression.value, context), length: String(utf8ByteLength(expression.value)) };
@@ -3127,6 +3349,32 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
 
   if (expression.kind === "stringConversion") {
     return emitStringConversionExpression(expression, context);
+  }
+
+  if (expression.kind === "stringMethod") {
+    const receiver = emitStringExpression(expression.receiver, context);
+    const index = context.stringIndex;
+    context.stringIndex += 1;
+    const raw = `%str.result.${index}`;
+    const value = `%str.${index}`;
+    const length = `%str.len.${index}`;
+    const helperByMethod = {
+      trim: "stringTrim",
+      trimStart: "stringTrimStart",
+      trimEnd: "stringTrimEnd"
+    } as const;
+    const helper = helperByMethod[expression.method];
+    useRuntimeHelper(context.runtime, helper);
+    return {
+      lines: [
+        ...receiver.lines,
+        `  ${raw} = call { ptr, i64 } @${helper}(i64 ${receiver.length}, ptr ${receiver.value})`,
+        `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
+        `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+      ],
+      value,
+      length
+    };
   }
 
   return emitTernaryStringExpression(expression, context);

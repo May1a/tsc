@@ -1,0 +1,11 @@
+declare function print(value: unknown): void;
+const one: any = 1;
+const two: any = 2;
+const yes: any = true;
+const zero: any = 0;
+const empty: any = null;
+const missing: any = undefined;
+print(one + two);
+print(yes + zero);
+print(empty + zero);
+print(missing + one);

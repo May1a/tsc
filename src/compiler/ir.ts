@@ -15,6 +15,7 @@ export type JsIrSourceModule = {
 };
 
 export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide";
+export type JsIrValueComparisonOperator = "==" | "!=" | "<" | "<=" | ">" | ">=";
 
 export type JsIrValueKind = "number" | "string" | "value";
 
@@ -90,6 +91,17 @@ export type JsIrValueExpression =
       readonly kind: "arrayAt";
       readonly arrayName: string;
       readonly index: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "valuePlus";
+      readonly left: JsIrValueExpression;
+      readonly right: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "logicalValue";
+      readonly operator: "&&" | "||";
+      readonly left: JsIrValueExpression;
+      readonly right: JsIrValueExpression;
     }
   | {
       readonly kind: "arrayFind" | "arrayForEach";
@@ -208,6 +220,19 @@ export type JsIrNumberExpression =
       readonly kind: "objectAccess";
       readonly objectName: string;
       readonly path: readonly string[];
+    }
+  | {
+      readonly kind: "valueToNumber";
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "mathCall";
+      readonly method: "abs" | "floor" | "ceil" | "trunc" | "round" | "sqrt" | "pow" | "min" | "max" | "sign";
+      readonly arguments: readonly JsIrNumberExpression[];
+    }
+  | {
+      readonly kind: "parseInt" | "parseFloat";
+      readonly value: JsIrStringExpression;
     };
 
 export type JsIrStringExpression =
@@ -247,6 +272,11 @@ export type JsIrStringExpression =
   | {
       readonly kind: "stringConversion";
       readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "stringMethod";
+      readonly method: "trim" | "trimStart" | "trimEnd";
+      readonly receiver: JsIrStringExpression;
     };
 
 export type JsIrObjectFieldValue =
@@ -442,6 +472,23 @@ export type JsIrCondition =
   | {
       readonly kind: "valueTruthy";
       readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "valueLooseComparison" | "valueRelationalComparison";
+      readonly operator: JsIrValueComparisonOperator;
+      readonly left: JsIrValueExpression;
+      readonly right: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "numberPredicate";
+      readonly predicate: "globalIsNaN" | "numberIsNaN" | "numberIsFinite";
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "stringSearch";
+      readonly method: "includes" | "startsWith" | "endsWith";
+      readonly receiver: JsIrStringExpression;
+      readonly search: JsIrStringExpression;
     }
   | {
       readonly kind: "runtimeObjectState";
@@ -841,6 +888,14 @@ export type JsIrOperation =
       readonly expression: JsIrExpression;
     }
   | {
+      readonly kind: "throwValue";
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "block";
+      readonly operations: readonly JsIrOperation[];
+    }
+  | {
       readonly kind: "if";
       readonly condition: JsIrCondition;
       readonly thenOperations: readonly JsIrOperation[];
@@ -927,6 +982,7 @@ type ObjectLiteralClassification =
 const definePropertyArgumentCount = 3;
 const arrayFillRangeArgumentCount = 3;
 const arrayCopyWithinArgumentCount = 3;
+const decimalRadix = 10;
 
 // eslint-disable-next-line max-statements -- Aggregate binding classification is centralized during the runtime-shape transition.
 export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBindingValue | undefined {
@@ -1189,8 +1245,13 @@ function collectRuntimeShadowObjectNames(operation: JsIrOperation, names: Set<st
 
 // eslint-disable-next-line complexity, max-statements -- Transitional aggregate JSValue tracking centralizes all operation variants.
 function collectOperationValueExpressions(operation: JsIrOperation, names: Set<string>): void {
-  if (operation.kind === "constValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore") {
+  if (operation.kind === "constValue" || operation.kind === "throwValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore") {
     collectValueExpressionObjectNames(operation.value, names);
+  }
+  if (operation.kind === "block") {
+    for (const nested of operation.operations) {
+      collectRuntimeShadowObjectNames(nested, names);
+    }
   }
   if (operation.kind === "runtimeArrayConcat") {
     for (const value of operation.values) {
@@ -1337,11 +1398,55 @@ function lowerStatement(
     return lowerReturnStatement(statement, bindings);
   }
 
+  if (ts.isThrowStatement(statement)) {
+    return lowerThrowStatement(statement, bindings);
+  }
+
+  if (ts.isTryStatement(statement)) {
+    return lowerTryCatchStatement(statement, bindings);
+  }
+
   if (ts.isExpressionStatement(statement)) {
     return lowerExpressionStatement(statement.expression, bindings);
   }
 
   return undefined;
+}
+
+function lowerThrowStatement(
+  statement: ts.ThrowStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const value = lowerValueExpression(statement.expression, bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+  return { kind: "throwValue", value };
+}
+
+function lowerTryCatchStatement(
+  statement: ts.TryStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (statement.finallyBlock !== undefined || statement.catchClause === undefined || statement.tryBlock.statements.length !== 1) {
+    return undefined;
+  }
+  const [throwStatement] = statement.tryBlock.statements;
+  if (!ts.isThrowStatement(throwStatement)) {
+    return undefined;
+  }
+  const thrown = lowerValueExpression(throwStatement.expression, bindings);
+  const variable = statement.catchClause.variableDeclaration?.name;
+  if (thrown === undefined || variable === undefined || !ts.isIdentifier(variable)) {
+    return undefined;
+  }
+  const catchBindings = new Map(bindings);
+  catchBindings.set(variable.text, { kind: "value", value: thrown });
+  const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
+  if (operations === undefined) {
+    return undefined;
+  }
+  return { kind: "block", operations: [{ kind: "constValue", name: variable.text, value: thrown }, ...operations] };
 }
 
 function lowerExpressionStatement(
@@ -1722,6 +1827,9 @@ function lowerFunctionDeclaration(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
+    return undefined;
+  }
+  if (statement.body.statements.some((bodyStatement) => ts.isThrowStatement(bodyStatement))) {
     return undefined;
   }
 
@@ -3403,6 +3511,10 @@ function lowerStringRuntimeExpression(
   }
 
   if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression) && ts.isIdentifier(expression.expression.expression)) {
+    const runtimeStringMethod = lowerRuntimeStringMethodExpression(expression, bindings);
+    if (runtimeStringMethod !== undefined) {
+      return runtimeStringMethod;
+    }
     const arrayName = expression.expression.expression.text;
     if (expression.expression.name.text === "join" && bindings.get(arrayName)?.kind === "runtimeArray" && expression.arguments.length === 1) {
       const separator = lowerStringRuntimeExpression(expression.arguments[0], bindings);
@@ -3436,6 +3548,24 @@ function lowerStringRuntimeExpression(
     consequent,
     alternate
   };
+}
+
+function lowerRuntimeStringMethodExpression(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrStringExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression) || expression.arguments.length > 0) {
+    return undefined;
+  }
+  const method = expression.expression.name.text;
+  if (method !== "trim" && method !== "trimStart" && method !== "trimEnd") {
+    return undefined;
+  }
+  const receiver = lowerStringRuntimeExpression(expression.expression.expression, bindings);
+  if (receiver === undefined) {
+    return undefined;
+  }
+  return { kind: "stringMethod", method, receiver };
 }
 
 // eslint-disable-next-line complexity -- Mirrors supported typeof cases explicitly while unsupported expressions stay diagnostic-only.
@@ -3496,10 +3626,22 @@ function lowerStringConcatExpression(
 ): JsIrStringExpression | undefined {
   const left = lowerStringRuntimeExpression(expression.left, bindings);
   const right = lowerStringRuntimeExpression(expression.right, bindings);
-  if (left === undefined || right === undefined) {
+  if (left !== undefined && right !== undefined) {
+    return { kind: "concat", left, right };
+  }
+  if (left === undefined && right === undefined) {
     return undefined;
   }
-  return { kind: "concat", left, right };
+  const leftValue = lowerValueExpression(expression.left, bindings);
+  const rightValue = lowerValueExpression(expression.right, bindings);
+  if (leftValue === undefined || rightValue === undefined) {
+    return undefined;
+  }
+  return {
+    kind: "concat",
+    left: { kind: "stringConversion", value: leftValue },
+    right: { kind: "stringConversion", value: rightValue }
+  };
 }
 
 function lowerStringCallExpression(
@@ -3543,6 +3685,11 @@ function lowerConditionExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrCondition | undefined {
+  const unwrappedExpression = unwrapTypeOnlyExpression(expression);
+  if (unwrappedExpression !== expression) {
+    return lowerConditionExpression(unwrappedExpression, bindings);
+  }
+
   if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken) {
     const condition = lowerConditionExpression(expression.operand, bindings);
     if (condition === undefined) {
@@ -3596,6 +3743,16 @@ function lowerConditionExpression(
     return objectStateCondition;
   }
 
+  const numberPredicate = lowerNumberPredicateCondition(expression, bindings);
+  if (numberPredicate !== undefined) {
+    return numberPredicate;
+  }
+
+  const stringSearch = lowerRuntimeStringSearchCondition(expression, bindings);
+  if (stringSearch !== undefined) {
+    return stringSearch;
+  }
+
   if (ts.isIdentifier(expression)) {
     const binding = bindings.get(expression.text);
     if (binding?.kind === "booleanExpression") {
@@ -3624,6 +3781,57 @@ function lowerConditionExpression(
   }
 
   return lowerComparisonConditionExpression(expression, bindings);
+}
+
+function lowerRuntimeStringSearchCondition(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCondition | undefined {
+  if (!ts.isCallExpression(expression) || !ts.isPropertyAccessExpression(expression.expression) || expression.arguments.length !== 1) {
+    return undefined;
+  }
+  const method = expression.expression.name.text;
+  if (method !== "includes" && method !== "startsWith" && method !== "endsWith") {
+    return undefined;
+  }
+  const receiver = lowerStringRuntimeExpression(expression.expression.expression, bindings);
+  const search = lowerStringRuntimeExpression(expression.arguments[0], bindings);
+  if (receiver === undefined || search === undefined) {
+    return undefined;
+  }
+  return { kind: "stringSearch", method, receiver, search };
+}
+
+function lowerNumberPredicateCondition(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCondition | undefined {
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "Boolean" && expression.arguments.length === 1) {
+    const value = lowerValueExpression(expression.arguments[0], bindings);
+    if (value !== undefined) {
+      return { kind: "valueTruthy", value };
+    }
+  }
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "isNaN" && expression.arguments.length === 1) {
+    const value = lowerValueExpression(expression.arguments[0], bindings);
+    if (value !== undefined) {
+      return { kind: "numberPredicate", predicate: "globalIsNaN", value };
+    }
+  }
+  if (!ts.isCallExpression(expression) || !ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression) || expression.expression.expression.text !== "Number" || expression.arguments.length !== 1) {
+    return undefined;
+  }
+  const value = lowerValueExpression(expression.arguments[0], bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (expression.expression.name.text === "isNaN") {
+    return { kind: "numberPredicate", predicate: "numberIsNaN", value };
+  }
+  if (expression.expression.name.text === "isFinite") {
+    return { kind: "numberPredicate", predicate: "numberIsFinite", value };
+  }
+  return undefined;
 }
 
 function lowerTruthyConditionExpression(
@@ -3930,7 +4138,7 @@ function lowerComparisonConditionExpression(
 
   const left = lowerNumberExpression(expression.left, bindings);
   const right = lowerNumberExpression(expression.right, bindings);
-  if (left !== undefined && right !== undefined) {
+  if (left !== undefined && right !== undefined && operator !== "==" && operator !== "!=") {
     return {
       kind: "numberComparison",
       operator,
@@ -3944,7 +4152,7 @@ function lowerComparisonConditionExpression(
 
 function lowerStringComparisonExpression(
   expression: ts.BinaryExpression,
-  operator: "===" | "!==" | "<" | "<=" | ">" | ">=",
+  operator: "===" | "!==" | "==" | "!=" | "<" | "<=" | ">" | ">=",
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrCondition | undefined {
   if (operator !== "===" && operator !== "!==") {
@@ -3973,7 +4181,7 @@ function lowerStringComparisonExpression(
 
 function lowerBooleanComparisonExpression(
   expression: ts.BinaryExpression,
-  operator: "===" | "!==" | "<" | "<=" | ">" | ">=",
+  operator: "===" | "!==" | "==" | "!=" | "<" | "<=" | ">" | ">=",
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrCondition | undefined {
   if (operator !== "===" && operator !== "!==") {
@@ -4017,17 +4225,21 @@ function lowerBooleanOperandExpression(
 
 function lowerValueComparisonExpression(
   expression: ts.BinaryExpression,
-  operator: "===" | "!==" | "<" | "<=" | ">" | ">=",
+  operator: "===" | "!==" | "==" | "!=" | "<" | "<=" | ">" | ">=",
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrCondition | undefined {
-  if (operator !== "===" && operator !== "!==") {
-    return undefined;
-  }
-
   const left = lowerValueExpression(expression.left, bindings);
   const right = lowerValueExpression(expression.right, bindings);
   if (left === undefined || right === undefined) {
     return undefined;
+  }
+
+  if (operator === "==" || operator === "!=") {
+    return { kind: "valueLooseComparison", operator, left, right };
+  }
+
+  if (operator !== "===" && operator !== "!==") {
+    return { kind: "valueRelationalComparison", operator, left, right };
   }
 
   return { kind: "valueComparison", operator, left, right };
@@ -4037,6 +4249,11 @@ function lowerValueExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
+  const unwrappedExpression = unwrapTypeOnlyExpression(expression);
+  if (unwrappedExpression !== expression) {
+    return lowerValueExpression(unwrappedExpression, bindings);
+  }
+
   const directValue = lowerDirectValueExpression(expression, bindings);
   if (directValue !== undefined) {
     return directValue;
@@ -4214,10 +4431,32 @@ function lowerRuntimeObjectElementValueAccess(
   return { kind: "objectDynamicAccess", objectName: expression.expression.text, key };
 }
 
+// eslint-disable-next-line complexity, max-statements -- Direct JSValue lowering is centralized while the runtime ABI expands.
 function lowerDirectValueExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
+  if (ts.isBinaryExpression(expression)) {
+    if (expression.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = lowerValueExpression(expression.left, bindings);
+      const right = lowerValueExpression(expression.right, bindings);
+      if (left !== undefined && right !== undefined) {
+        return { kind: "valuePlus", left, right };
+      }
+    }
+    if (expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || expression.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+      const left = lowerValueExpression(expression.left, bindings);
+      const right = lowerValueExpression(expression.right, bindings);
+      if (left !== undefined && right !== undefined) {
+        let operator: "&&" | "||" = "||";
+        if (expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+          operator = "&&";
+        }
+        return { kind: "logicalValue", operator, left, right };
+      }
+    }
+  }
+
   if (expression.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(expression) && expression.text === "undefined")) {
     return { kind: "undefined" };
   }
@@ -4369,7 +4608,7 @@ function lowerStringMethodCall(
   const args = [...expression.arguments];
   const first = args.at(0);
   const second = args.at(1);
-  if ((method === "includes" || method === "indexOf") && (expression.arguments.length === 1 || expression.arguments.length === 2)) {
+  if ((method === "includes" || method === "indexOf" || method === "startsWith" || method === "endsWith") && (expression.arguments.length === 1 || expression.arguments.length === 2)) {
     const search = lowerStringSearchArgument(first, bindings);
     let fromIndex = 0;
     if (second !== undefined) {
@@ -4389,7 +4628,26 @@ function lowerStringMethodCall(
     if (method === "includes") {
       return value.includes(search, fromIndex);
     }
+    if (method === "startsWith") {
+      return value.startsWith(search, fromIndex);
+    }
+    if (method === "endsWith") {
+      let endPosition: number | undefined;
+      if (second !== undefined) {
+        endPosition = fromIndex;
+      }
+      return value.endsWith(search, endPosition);
+    }
     return value.indexOf(search, fromIndex);
+  }
+  if (method === "trim" && expression.arguments.length === 0) {
+    return value.trim();
+  }
+  if (method === "trimStart" && expression.arguments.length === 0) {
+    return value.trimStart();
+  }
+  if (method === "trimEnd" && expression.arguments.length === 0) {
+    return value.trimEnd();
   }
   let firstLiteral: number | undefined;
   if (first !== undefined) {
@@ -4517,8 +4775,14 @@ function lowerLogicalConditionExpression(
   return { kind: "or", left, right };
 }
 
-function lowerComparisonOperator(kind: ts.SyntaxKind): "===" | "!==" | "<" | "<=" | ">" | ">=" | undefined {
+function lowerComparisonOperator(kind: ts.SyntaxKind): "===" | "!==" | "==" | "!=" | "<" | "<=" | ">" | ">=" | undefined {
   switch (kind) {
+    case ts.SyntaxKind.EqualsEqualsToken: {
+      return "==";
+    }
+    case ts.SyntaxKind.ExclamationEqualsToken: {
+      return "!=";
+    }
     case ts.SyntaxKind.EqualsEqualsEqualsToken: {
       return "===";
     }
@@ -4548,6 +4812,16 @@ function lowerNumberExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrNumberExpression | undefined {
+  const unwrappedExpression = unwrapTypeOnlyExpression(expression);
+  if (unwrappedExpression !== expression) {
+    return lowerNumberExpression(unwrappedExpression, bindings);
+  }
+
+  const numericBuiltin = lowerNumericBuiltinCall(expression, bindings);
+  if (numericBuiltin !== undefined) {
+    return numericBuiltin;
+  }
+
   if (ts.isNumericLiteral(expression)) {
     return {
       kind: "literal",
@@ -4569,6 +4843,21 @@ function lowerNumberExpression(
     return binding.value;
   }
 
+  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "Math") {
+    if (expression.name.text === "PI") {
+      return { kind: "literal", value: Math.PI };
+    }
+    if (expression.name.text === "E") {
+      return { kind: "literal", value: Math.E };
+    }
+    if (expression.name.text === "NaN") {
+      return { kind: "nan" };
+    }
+    if (expression.name.text === "Infinity") {
+      return { kind: "literal", value: Number.POSITIVE_INFINITY };
+    }
+  }
+
   if (
     ts.isPrefixUnaryExpression(expression) &&
     expression.operator === ts.SyntaxKind.MinusToken &&
@@ -4578,7 +4867,7 @@ function lowerNumberExpression(
     return { kind: "negatedZero" };
   }
 
-  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print" && expression.expression.text !== "Boolean" && expression.expression.text !== "isNaN") {
     return lowerNumberCallExpression(expression, bindings);
   }
 
@@ -4620,6 +4909,69 @@ function lowerNumberExpression(
   }
 
   return lowerNumberBinaryExpression(expression, bindings);
+}
+
+// eslint-disable-next-line complexity, max-statements -- Scoped numeric built-in routing is centralized during roadmap package AQ/AR.
+function lowerNumericBuiltinCall(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrNumberExpression | undefined {
+  if (!ts.isCallExpression(expression)) {
+    return undefined;
+  }
+  if (ts.isIdentifier(expression.expression)) {
+    if (expression.expression.text === "Number" && expression.arguments.length === 1) {
+      const string = lowerStringRuntimeExpression(expression.arguments[0], bindings);
+      if (string?.kind === "literal") {
+        return numberExpressionFromNumber(coerceStringToNumber(string.value));
+      }
+      const value = lowerValueExpression(expression.arguments[0], bindings);
+      if (value !== undefined) {
+        return { kind: "valueToNumber", value };
+      }
+    }
+    if (expression.expression.text === "parseInt" && (expression.arguments.length === 1 || expression.arguments.length === 2)) {
+      if (expression.arguments.length === 2) {
+        const radix = lowerNumberExpression(expression.arguments[1], bindings);
+        if (numericLiteralValue(radix ?? { kind: "nan" }) !== decimalRadix) {
+          return undefined;
+        }
+      }
+      const value = lowerStringRuntimeExpression(expression.arguments[0], bindings);
+      if (value !== undefined) {
+        return { kind: "parseInt", value };
+      }
+    }
+    if (expression.expression.text === "parseFloat" && expression.arguments.length === 1) {
+      const value = lowerStringRuntimeExpression(expression.arguments[0], bindings);
+      if (value !== undefined) {
+        return { kind: "parseFloat", value };
+      }
+    }
+  }
+  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression) || expression.expression.expression.text !== "Math") {
+    return undefined;
+  }
+  const method = expression.expression.name.text;
+  if (method === "PI" || method === "E" || method === "NaN" || method === "Infinity") {
+    return undefined;
+  }
+  if (!isMathMethod(method)) {
+    return undefined;
+  }
+  const args: JsIrNumberExpression[] = [];
+  for (const argument of expression.arguments) {
+    const lowered = lowerNumberExpression(argument, bindings);
+    if (lowered === undefined) {
+      return undefined;
+    }
+    args.push(lowered);
+  }
+  return { kind: "mathCall", method, arguments: args };
+}
+
+function isMathMethod(method: string): method is Extract<JsIrNumberExpression, { readonly kind: "mathCall" }>["method"] {
+  return method === "abs" || method === "floor" || method === "ceil" || method === "trunc" || method === "round" || method === "sqrt" || method === "pow" || method === "min" || method === "max" || method === "sign";
 }
 
 function lowerArrayNumberMethodCall(

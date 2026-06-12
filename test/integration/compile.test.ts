@@ -12,6 +12,7 @@ import { compile } from "../../src/compiler/pipeline.js";
 import { Toolchain, ToolchainLive } from "../../src/compiler/toolchain.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
+const roadmapIntegrationTimeoutMs = 60_000;
 
 type CompileResult = {
   readonly outDir: string;
@@ -3007,6 +3008,63 @@ describe("tscn expanded runtime roadmap", () => {
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports scoped JSValue coercion, comparisons, Math, parsing, and runtime string methods", async () => {
+    const cases = [
+      ["value-plus-string-coercion.ts", "a1\ntrue!\nnullx\nundefinedx\n"],
+      ["value-plus-number-coercion.ts", "3\n1\n0\nnan\n"],
+      ["value-plus-aggregate-coercion.ts", "a,b!\n[object Object]!\n"],
+      ["value-loose-equality-primitives.ts", "true\nfalse\ntrue\ntrue\nfalse\n"],
+      ["value-loose-equality-string-number.ts", "true\ntrue\nfalse\n"],
+      ["value-relational-string-number.ts", "true\ntrue\nfalse\nfalse\n"],
+      ["value-relational-string-lexicographic.ts", "true\ntrue\nfalse\n"],
+      ["boolean-coercion-supported-values.ts", "false\nfalse\nfalse\nfalse\nfalse\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\n"],
+      ["logical-and-or-value-results.ts", "fallback\nvalue\n0\nright\n"],
+      ["math-basic-number-functions.ts", "3\n2\n3\n2\n3\n4\n8\n-1\n"],
+      ["math-min-max-variadic.ts", "2\n1\n3\n4\ninf\n-inf\n"],
+      ["math-constants.ts", "true\ntrue\n"],
+      ["number-is-nan-finite.ts", "true\nfalse\ntrue\nfalse\nfalse\nfalse\n"],
+      ["global-is-nan-coercion.ts", "true\nfalse\ntrue\nfalse\n"],
+      ["parse-int-decimal.ts", "-42\n17\n5\n"],
+      ["parse-float-decimal.ts", "-4.5\n3.25\n"],
+      ["string-runtime-search-methods.ts", "true\ntrue\ntrue\n4\n-1\n"],
+      ["string-runtime-trim-methods.ts", "hi\nhi  \n  hi\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  }, roadmapIntegrationTimeoutMs);
+
+  test("preserves unsupported roadmap diagnostics", async () => {
+    await Promise.all([
+      "boolean-constructor-unsupported.ts",
+      "parse-int-radix-unsupported.ts",
+      "array-runtime-map-unsupported-callback.ts",
+      "array-runtime-filter-unsupported-callback.ts",
+      "array-runtime-reduce-unsupported-callback.ts",
+      "array-runtime-map-noarg-unsupported.ts",
+      "error-constructor-unsupported.ts",
+      "try-finally-unsupported.ts",
+      "throw-across-function-unsupported.ts"
+    ].map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
+  });
+
+  test("supports first explicit throw and catch groundwork", async () => {
+    const caught = await expectSuccessfulCompile("try-catch-throw-primitives.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(caught, { status: 0, stdout: "message\n42\ntrue\nnull\nundefined\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(caught);
+    } finally {
+      await caught.cleanup();
+    }
+
+    const thrown = await expectSuccessfulCompile("throw-string-top-level.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(thrown, { status: 1, stdout: "message\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(thrown);
+    } finally {
+      await thrown.cleanup();
+    }
   });
 
   test("emits nested runtime helper dependencies once", async () => {

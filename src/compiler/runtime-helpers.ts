@@ -5,7 +5,32 @@ export type RuntimeHelper =
   | "sprintf"
   | "strConcat"
   | "strEquals"
+  | "stringIncludes"
+  | "stringStartsWith"
+  | "stringEndsWith"
+  | "stringTrim"
+  | "stringTrimStart"
+  | "stringTrimEnd"
   | "valueStrictEquals"
+  | "valueLooseEquals"
+  | "valueRelationalCompare"
+  | "valueToNumber"
+  | "valuePlus"
+  | "globalIsNaN"
+  | "numberIsNaN"
+  | "numberIsFinite"
+  | "parseInt"
+  | "parseFloat"
+  | "mathAbs"
+  | "mathFloor"
+  | "mathCeil"
+  | "mathTrunc"
+  | "mathRound"
+  | "mathSqrt"
+  | "mathPow"
+  | "mathMin2"
+  | "mathMax2"
+  | "mathSign"
   | "valueBoxString"
   | "valueStringPtr"
   | "valueStringLength"
@@ -113,7 +138,32 @@ export const createRuntimeHelperEmitter = (): RuntimeHelperEmitter => ({ used: n
 const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[]>([
   ["strConcat", ["malloc", "memcpy"]],
   ["strEquals", ["memcmp"]],
+  ["stringIncludes", ["memcmp"]],
+  ["stringStartsWith", ["memcmp"]],
+  ["stringEndsWith", ["memcmp"]],
+  ["stringTrim", ["malloc", "memcpy"]],
+  ["stringTrimStart", ["malloc", "memcpy"]],
+  ["stringTrimEnd", ["malloc", "memcpy"]],
   ["valueStrictEquals", ["valueStringLength", "valueStringPtr", "memcmp"]],
+  ["valueLooseEquals", ["valueStrictEquals", "valueToNumber", "valueStringPtr", "valueStringLength", "memcmp"]],
+  ["valueRelationalCompare", ["valueToNumber", "valueStringPtr", "valueStringLength", "memcmp"]],
+  ["valueToNumber", ["valueStringPtr"]],
+  ["valuePlus", ["valueToNumber", "valueToString", "valueBoxString", "strConcat"]],
+  ["globalIsNaN", ["valueToNumber"]],
+  ["numberIsNaN", []],
+  ["numberIsFinite", []],
+  ["parseInt", []],
+  ["parseFloat", []],
+  ["mathAbs", []],
+  ["mathFloor", []],
+  ["mathCeil", []],
+  ["mathTrunc", []],
+  ["mathRound", []],
+  ["mathSqrt", []],
+  ["mathPow", []],
+  ["mathMin2", []],
+  ["mathMax2", []],
+  ["mathSign", []],
   ["arrayNew", ["malloc", "objectNew"]],
   ["objectNew", ["malloc"]],
   ["valueBoxString", ["malloc"]],
@@ -233,6 +283,15 @@ export function emitRuntimeDeclarations(runtime: RuntimeHelperEmitter): string[]
     }
   }
 
+  if (runtime.used.has("mathAbs") || runtime.used.has("numberIsFinite")) declarations.push("declare double @llvm.fabs.f64(double)");
+  if (runtime.used.has("mathFloor")) declarations.push("declare double @llvm.floor.f64(double)");
+  if (runtime.used.has("mathCeil")) declarations.push("declare double @llvm.ceil.f64(double)");
+  if (runtime.used.has("mathTrunc") || runtime.used.has("parseInt")) declarations.push("declare double @llvm.trunc.f64(double)");
+  if (runtime.used.has("mathRound")) declarations.push("declare double @llvm.round.f64(double)");
+  if (runtime.used.has("mathSqrt")) declarations.push("declare double @llvm.sqrt.f64(double)");
+  if (runtime.used.has("mathPow")) declarations.push("declare double @llvm.pow.f64(double, double)");
+  if (runtime.used.has("parseInt") || runtime.used.has("parseFloat") || runtime.used.has("valueToNumber")) declarations.push("declare double @strtod(ptr, ptr)");
+
   return declarations;
 }
 
@@ -270,6 +329,162 @@ not.equal:
 }
 `);
   }
+  if (runtime.used.has("stringIncludes")) {
+    definitions.push(`define i1 @stringIncludes(i64 %hay.len, ptr %hay.ptr, i64 %needle.len, ptr %needle.ptr) {
+entry:
+  %empty = icmp eq i64 %needle.len, 0
+  br i1 %empty, label %true, label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %continue ]
+  %remaining = sub i64 %hay.len, %i
+  %enough = icmp uge i64 %remaining, %needle.len
+  br i1 %enough, label %compare, label %false
+compare:
+  %ptr = getelementptr i8, ptr %hay.ptr, i64 %i
+  %cmp = call i32 @memcmp(ptr %ptr, ptr %needle.ptr, i64 %needle.len)
+  %same = icmp eq i32 %cmp, 0
+  br i1 %same, label %true, label %continue
+continue:
+  %next = add i64 %i, 1
+  br label %loop
+true:
+  ret i1 true
+false:
+  ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("stringStartsWith")) {
+    definitions.push(`define i1 @stringStartsWith(i64 %value.len, ptr %value.ptr, i64 %search.len, ptr %search.ptr) {
+entry:
+  %enough = icmp uge i64 %value.len, %search.len
+  br i1 %enough, label %compare, label %false
+compare:
+  %cmp = call i32 @memcmp(ptr %value.ptr, ptr %search.ptr, i64 %search.len)
+  %same = icmp eq i32 %cmp, 0
+  ret i1 %same
+false:
+  ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("stringEndsWith")) {
+    definitions.push(`define i1 @stringEndsWith(i64 %value.len, ptr %value.ptr, i64 %search.len, ptr %search.ptr) {
+entry:
+  %enough = icmp uge i64 %value.len, %search.len
+  br i1 %enough, label %compare, label %false
+compare:
+  %offset = sub i64 %value.len, %search.len
+  %ptr = getelementptr i8, ptr %value.ptr, i64 %offset
+  %cmp = call i32 @memcmp(ptr %ptr, ptr %search.ptr, i64 %search.len)
+  %same = icmp eq i32 %cmp, 0
+  ret i1 %same
+false:
+  ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("stringTrim") || runtime.used.has("stringTrimStart") || runtime.used.has("stringTrimEnd")) {
+    definitions.push(`define i1 @stringIsAsciiWhitespace(i8 %byte) {
+entry:
+  %space = icmp eq i8 %byte, 32
+  %tab = icmp eq i8 %byte, 9
+  %lf = icmp eq i8 %byte, 10
+  %cr = icmp eq i8 %byte, 13
+  %a = or i1 %space, %tab
+  %b = or i1 %lf, %cr
+  %result = or i1 %a, %b
+  ret i1 %result
+}
+
+define { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 %start, i64 %len) {
+entry:
+  %alloc.size = add i64 %len, 1
+  %out = call ptr @malloc(i64 %alloc.size)
+  %src = getelementptr i8, ptr %value.ptr, i64 %start
+  call ptr @memcpy(ptr %out, ptr %src, i64 %len)
+  %nul = getelementptr i8, ptr %out, i64 %len
+  store i8 0, ptr %nul
+  %r0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %r1 = insertvalue { ptr, i64 } %r0, i64 %len, 1
+  ret { ptr, i64 } %r1
+}
+`);
+  }
+  if (runtime.used.has("stringTrim") || runtime.used.has("stringTrimStart")) {
+    definitions.push(`define i64 @stringTrimStartIndex(i64 %value.len, ptr %value.ptr) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %ws ]
+  %done = icmp uge i64 %i, %value.len
+  br i1 %done, label %end, label %check
+check:
+  %ptr = getelementptr i8, ptr %value.ptr, i64 %i
+  %byte = load i8, ptr %ptr
+  %is.ws = call i1 @stringIsAsciiWhitespace(i8 %byte)
+  br i1 %is.ws, label %ws, label %end
+ws:
+  %next = add i64 %i, 1
+  br label %loop
+end:
+  ret i64 %i
+}
+`);
+  }
+  if (runtime.used.has("stringTrim") || runtime.used.has("stringTrimEnd")) {
+    definitions.push(`define i64 @stringTrimEndIndex(i64 %value.len, ptr %value.ptr) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ %value.len, %entry ], [ %prev, %ws ]
+  %done = icmp eq i64 %i, 0
+  br i1 %done, label %end, label %check
+check:
+  %prev = sub i64 %i, 1
+  %ptr = getelementptr i8, ptr %value.ptr, i64 %prev
+  %byte = load i8, ptr %ptr
+  %is.ws = call i1 @stringIsAsciiWhitespace(i8 %byte)
+  br i1 %is.ws, label %ws, label %end
+ws:
+  br label %loop
+end:
+  ret i64 %i
+}
+`);
+  }
+  if (runtime.used.has("stringTrim")) {
+    definitions.push(`define { ptr, i64 } @stringTrim(i64 %value.len, ptr %value.ptr) {
+entry:
+  %start = call i64 @stringTrimStartIndex(i64 %value.len, ptr %value.ptr)
+  %end = call i64 @stringTrimEndIndex(i64 %value.len, ptr %value.ptr)
+  %raw.len = sub i64 %end, %start
+  %negative = icmp slt i64 %raw.len, 0
+  %len = select i1 %negative, i64 0, i64 %raw.len
+  %result = call { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 %start, i64 %len)
+  ret { ptr, i64 } %result
+}
+`);
+  }
+  if (runtime.used.has("stringTrimStart")) {
+    definitions.push(`define { ptr, i64 } @stringTrimStart(i64 %value.len, ptr %value.ptr) {
+entry:
+  %start = call i64 @stringTrimStartIndex(i64 %value.len, ptr %value.ptr)
+  %len = sub i64 %value.len, %start
+  %result = call { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 %start, i64 %len)
+  ret { ptr, i64 } %result
+}
+`);
+  }
+  if (runtime.used.has("stringTrimEnd")) {
+    definitions.push(`define { ptr, i64 } @stringTrimEnd(i64 %value.len, ptr %value.ptr) {
+entry:
+  %end = call i64 @stringTrimEndIndex(i64 %value.len, ptr %value.ptr)
+  %result = call { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 0, i64 %end)
+  ret { ptr, i64 } %result
+}
+`);
+  }
   if (runtime.used.has("valueStrictEquals")) {
     definitions.push(`define i1 @valueStrictEquals(i64 %left, i64 %right) {
 entry:
@@ -297,6 +512,375 @@ equal:
   ret i1 true
 not.equal:
   ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("valueToNumber")) {
+    definitions.push(`define double @valueToNumber(i64 %value) {
+entry:
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  br i1 %is.undefined, label %nan, label %check.null
+check.null:
+  %is.null = icmp eq i64 %value, 9222246136947933187
+  br i1 %is.null, label %zero, label %check.false
+check.false:
+  %is.false = icmp eq i64 %value, 9222246136947933185
+  br i1 %is.false, label %zero, label %check.true
+check.true:
+  %is.true = icmp eq i64 %value, 9222246136947933186
+  br i1 %is.true, label %one, label %check.string
+check.string:
+  %tag = and i64 %value, -281474976710656
+  %is.string = icmp eq i64 %tag, 9221683186994511872
+  br i1 %is.string, label %string, label %check.aggregate
+check.aggregate:
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.aggregate = or i1 %is.object, %is.array
+  br i1 %is.aggregate, label %nan, label %as.number
+string:
+  %ptr = call ptr @valueStringPtr(i64 %value)
+  br label %string.skip.ws
+string.skip.ws:
+  %scan.i = phi i64 [ 0, %string ], [ %scan.next, %scan_ws ]
+  %scan.ptr = getelementptr i8, ptr %ptr, i64 %scan.i
+  %scan.byte = load i8, ptr %scan.ptr
+  %scan.is.space = icmp eq i8 %scan.byte, 32
+  %scan.is.tab = icmp eq i8 %scan.byte, 9
+  %scan.is.lf = icmp eq i8 %scan.byte, 10
+  %scan.is.ws.0 = or i1 %scan.is.space, %scan.is.tab
+  %scan.is.ws = or i1 %scan.is.ws.0, %scan.is.lf
+  br i1 %scan.is.ws, label %scan_ws, label %string.validate
+scan_ws:
+  %scan.next = add i64 %scan.i, 1
+  br label %string.skip.ws
+string.validate:
+  %is.digit.low = icmp uge i8 %scan.byte, 48
+  %is.digit.high = icmp ule i8 %scan.byte, 57
+  %is.digit = and i1 %is.digit.low, %is.digit.high
+  %is.plus = icmp eq i8 %scan.byte, 43
+  %is.minus = icmp eq i8 %scan.byte, 45
+  %is.dot = icmp eq i8 %scan.byte, 46
+  %sign = or i1 %is.plus, %is.minus
+  %numeric.start.0 = or i1 %is.digit, %sign
+  %numeric.start = or i1 %numeric.start.0, %is.dot
+  br i1 %numeric.start, label %string.parse, label %nan
+string.parse:
+  %parsed = call double @strtod(ptr %ptr, ptr null)
+  ret double %parsed
+as.number:
+  %number = bitcast i64 %value to double
+  ret double %number
+zero:
+  ret double 0.0
+one:
+  ret double 1.0
+nan:
+  ret double 0x7FF5000000000000
+}
+`);
+  }
+  if (runtime.used.has("valueLooseEquals")) {
+    definitions.push(`define i1 @valueLooseEquals(i64 %left, i64 %right) {
+entry:
+  %strict = call i1 @valueStrictEquals(i64 %left, i64 %right)
+  br i1 %strict, label %true, label %nullish
+nullish:
+  %left.null = icmp eq i64 %left, 9222246136947933187
+  %left.undefined = icmp eq i64 %left, 9222246136947933184
+  %right.null = icmp eq i64 %right, 9222246136947933187
+  %right.undefined = icmp eq i64 %right, 9222246136947933184
+  %left.nullish = or i1 %left.null, %left.undefined
+  %right.nullish = or i1 %right.null, %right.undefined
+  %both.nullish = and i1 %left.nullish, %right.nullish
+  br i1 %both.nullish, label %true, label %one.nullish
+one.nullish:
+  %either.nullish = or i1 %left.nullish, %right.nullish
+  br i1 %either.nullish, label %false, label %numeric
+numeric:
+  %left.num = call double @valueToNumber(i64 %left)
+  %right.num = call double @valueToNumber(i64 %right)
+  %same = fcmp oeq double %left.num, %right.num
+  ret i1 %same
+true:
+  ret i1 true
+false:
+  ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("valueRelationalCompare")) {
+    definitions.push(`define i1 @valueRelationalCompare(i64 %left, i64 %right, i64 %operator) {
+entry:
+  %left.tag = and i64 %left, -281474976710656
+  %right.tag = and i64 %right, -281474976710656
+  %left.string = icmp eq i64 %left.tag, 9221683186994511872
+  %right.string = icmp eq i64 %right.tag, 9221683186994511872
+  %both.strings = and i1 %left.string, %right.string
+  br i1 %both.strings, label %strings, label %numbers
+strings:
+  %left.ptr = call ptr @valueStringPtr(i64 %left)
+  %right.ptr = call ptr @valueStringPtr(i64 %right)
+  %left.len = call i64 @valueStringLength(i64 %left)
+  %right.len = call i64 @valueStringLength(i64 %right)
+  %min.cmp = icmp ult i64 %left.len, %right.len
+  %min = select i1 %min.cmp, i64 %left.len, i64 %right.len
+  %byte.cmp = call i32 @memcmp(ptr %left.ptr, ptr %right.ptr, i64 %min)
+  %byte.lt = icmp slt i32 %byte.cmp, 0
+  %byte.gt = icmp sgt i32 %byte.cmp, 0
+  %len.lt = icmp ult i64 %left.len, %right.len
+  %len.gt = icmp ugt i64 %left.len, %right.len
+  %lt.when.prefix = and i1 %len.lt, true
+  %gt.when.prefix = and i1 %len.gt, true
+  %bytes.equal = icmp eq i32 %byte.cmp, 0
+  %prefix.lt = and i1 %bytes.equal, %lt.when.prefix
+  %prefix.gt = and i1 %bytes.equal, %gt.when.prefix
+  %str.lt = or i1 %byte.lt, %prefix.lt
+  %str.gt = or i1 %byte.gt, %prefix.gt
+  br label %select
+numbers:
+  %left.num = call double @valueToNumber(i64 %left)
+  %right.num = call double @valueToNumber(i64 %right)
+  %num.lt = fcmp olt double %left.num, %right.num
+  %num.gt = fcmp ogt double %left.num, %right.num
+  br label %select
+select:
+  %lt = phi i1 [ %str.lt, %strings ], [ %num.lt, %numbers ]
+  %gt = phi i1 [ %str.gt, %strings ], [ %num.gt, %numbers ]
+  %not.lt = xor i1 %lt, true
+  %not.gt = xor i1 %gt, true
+  %eq = and i1 %not.lt, %not.gt
+  %op.lt = icmp eq i64 %operator, 0
+  %op.le = icmp eq i64 %operator, 1
+  %op.gt = icmp eq i64 %operator, 2
+  %op.ge = icmp eq i64 %operator, 3
+  %le = or i1 %lt, %eq
+  %ge = or i1 %gt, %eq
+  %r0 = select i1 %op.lt, i1 %lt, i1 false
+  %r1 = select i1 %op.le, i1 %le, i1 %r0
+  %r2 = select i1 %op.gt, i1 %gt, i1 %r1
+  %r3 = select i1 %op.ge, i1 %ge, i1 %r2
+  ret i1 %r3
+}
+`);
+  }
+  if (runtime.used.has("valuePlus")) {
+    definitions.push(`define i64 @valuePlus(i64 %left, i64 %right) {
+entry:
+  %left.tag = and i64 %left, -281474976710656
+  %right.tag = and i64 %right, -281474976710656
+  %left.string = icmp eq i64 %left.tag, 9221683186994511872
+  %right.string = icmp eq i64 %right.tag, 9221683186994511872
+  %left.object = icmp eq i64 %left.tag, 9221120237041090560
+  %right.object = icmp eq i64 %right.tag, 9221120237041090560
+  %left.array = icmp eq i64 %left.tag, 9221401712017801216
+  %right.array = icmp eq i64 %right.tag, 9221401712017801216
+  %left.aggregate = or i1 %left.object, %left.array
+  %right.aggregate = or i1 %right.object, %right.array
+  %has.string.0 = or i1 %left.string, %right.string
+  %has.aggregate = or i1 %left.aggregate, %right.aggregate
+  %concat = or i1 %has.string.0, %has.aggregate
+  br i1 %concat, label %strings, label %numbers
+strings:
+  %left.str = call { ptr, i64 } @valueToString(i64 %left)
+  %left.ptr = extractvalue { ptr, i64 } %left.str, 0
+  %left.len = extractvalue { ptr, i64 } %left.str, 1
+  %right.str = call { ptr, i64 } @valueToString(i64 %right)
+  %right.ptr = extractvalue { ptr, i64 } %right.str, 0
+  %right.len = extractvalue { ptr, i64 } %right.str, 1
+  %concat.ptr = call ptr @strConcat(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr)
+  %total = add i64 %left.len, %right.len
+  %boxed = call i64 @valueBoxString(ptr %concat.ptr, i64 %total)
+  ret i64 %boxed
+numbers:
+  %left.num = call double @valueToNumber(i64 %left)
+  %right.num = call double @valueToNumber(i64 %right)
+  %sum = fadd double %left.num, %right.num
+  %sum.is.nan = fcmp uno double %sum, %sum
+  %safe.sum = select i1 %sum.is.nan, double 0x7FF5000000000000, double %sum
+  %boxed.num = bitcast double %safe.sum to i64
+  ret i64 %boxed.num
+}
+`);
+  }
+  if (runtime.used.has("globalIsNaN")) {
+    definitions.push(`define i1 @globalIsNaN(i64 %value) {
+entry:
+  %number = call double @valueToNumber(i64 %value)
+  %ordered = fcmp ord double %number, %number
+  %is.nan = xor i1 %ordered, true
+  ret i1 %is.nan
+}
+`);
+  }
+  if (runtime.used.has("numberIsNaN")) {
+    definitions.push(`define i1 @numberIsNaN(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %is.boxed = icmp eq i64 %tag, 9221683186994511872
+  br i1 %is.boxed, label %false, label %as.number
+as.number:
+  %number = bitcast i64 %value to double
+  %ordered = fcmp ord double %number, %number
+  %is.nan = xor i1 %ordered, true
+  ret i1 %is.nan
+false:
+  ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("numberIsFinite")) {
+    definitions.push(`define i1 @numberIsFinite(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %is.boxed = icmp eq i64 %tag, 9221683186994511872
+  br i1 %is.boxed, label %false, label %as.number
+as.number:
+  %number = bitcast i64 %value to double
+  %not.nan = fcmp ord double %number, %number
+  %lt.zero = fcmp olt double %number, 0.0
+  %neg = fneg double %number
+  %abs = select i1 %lt.zero, double %neg, double %number
+  %finite = fcmp olt double %abs, 0x7FF0000000000000
+  %result = and i1 %not.nan, %finite
+  ret i1 %result
+false:
+  ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("parseInt")) {
+    definitions.push(`define double @parseInt(i64 %value.len, ptr %value.ptr) {
+entry:
+  %parsed = call double @strtod(ptr %value.ptr, ptr null)
+  %int = fptosi double %parsed to i64
+  %truncated = sitofp i64 %int to double
+  ret double %truncated
+}
+`);
+  }
+  if (runtime.used.has("parseFloat")) {
+    definitions.push(`define double @parseFloat(i64 %value.len, ptr %value.ptr) {
+entry:
+  %parsed = call double @strtod(ptr %value.ptr, ptr null)
+  ret double %parsed
+}
+`);
+  }
+  if (runtime.used.has("mathAbs")) {
+    definitions.push(`define double @mathAbs(double %value) {
+entry:
+  %lt = fcmp olt double %value, 0.0
+  %neg = fneg double %value
+  %result = select i1 %lt, double %neg, double %value
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathFloor")) {
+    definitions.push(`define double @mathFloor(double %value) {
+entry:
+  %int = fptosi double %value to i64
+  %result = sitofp i64 %int to double
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathCeil")) {
+    definitions.push(`define double @mathCeil(double %value) {
+entry:
+  %int = fptosi double %value to i64
+  %trunc = sitofp i64 %int to double
+  %has.frac = fcmp ogt double %value, %trunc
+  %next = add i64 %int, 1
+  %ceil.int = select i1 %has.frac, i64 %next, i64 %int
+  %result = sitofp i64 %ceil.int to double
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathTrunc")) {
+    definitions.push(`define double @mathTrunc(double %value) {
+entry:
+  %int = fptosi double %value to i64
+  %result = sitofp i64 %int to double
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathRound")) {
+    definitions.push(`define double @mathRound(double %value) {
+entry:
+  %biased = fadd double %value, 5.000000e-01
+  %int = fptosi double %biased to i64
+  %result = sitofp i64 %int to double
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathSqrt")) {
+    definitions.push(`define double @mathSqrt(double %value) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next.i, %loop ]
+  %guess = phi double [ %value, %entry ], [ %next.guess, %loop ]
+  %div = fdiv double %value, %guess
+  %sum = fadd double %guess, %div
+  %next.guess = fmul double %sum, 5.000000e-01
+  %next.i = add i64 %i, 1
+  %done = icmp eq i64 %next.i, 8
+  br i1 %done, label %end, label %loop
+end:
+  ret double %next.guess
+}
+`);
+  }
+  if (runtime.used.has("mathPow")) {
+    definitions.push(`define double @mathPow(double %base, double %exponent) {
+entry:
+  %count = fptosi double %exponent to i64
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next.i, %body ]
+  %acc = phi double [ 1.0, %entry ], [ %next.acc, %body ]
+  %done = icmp sge i64 %i, %count
+  br i1 %done, label %end, label %body
+body:
+  %next.acc = fmul double %acc, %base
+  %next.i = add i64 %i, 1
+  br label %loop
+end:
+  ret double %acc
+}
+`);
+  }
+  if (runtime.used.has("mathMin2")) {
+    definitions.push(`define double @mathMin2(double %left, double %right) {
+entry:
+  %cmp = fcmp olt double %left, %right
+  %result = select i1 %cmp, double %left, double %right
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathMax2")) {
+    definitions.push(`define double @mathMax2(double %left, double %right) {
+entry:
+  %cmp = fcmp ogt double %left, %right
+  %result = select i1 %cmp, double %left, double %right
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathSign")) {
+    definitions.push(`define double @mathSign(double %value) {
+entry:
+  %lt = fcmp olt double %value, 0.0
+  %gt = fcmp ogt double %value, 0.0
+  %positive = select i1 %gt, double 1.0, double 0.0
+  %result = select i1 %lt, double -1.0, double %positive
+  ret double %result
 }
 `);
   }
@@ -676,11 +1260,16 @@ check.true:
 check.string:
   %tagged = and i64 %value, -281474976710656
   %is.string = icmp eq i64 %tagged, 9221683186994511872
-  br i1 %is.string, label %string, label %number.block
+  br i1 %is.string, label %string, label %check.aggregate
 string:
   %len = call i64 @valueStringLength(i64 %value)
   %nonempty = icmp ne i64 %len, 0
   ret i1 %nonempty
+check.aggregate:
+  %is.object = icmp eq i64 %tagged, 9221120237041090560
+  %is.array = icmp eq i64 %tagged, 9221401712017801216
+  %is.aggregate = or i1 %is.object, %is.array
+  br i1 %is.aggregate, label %true, label %number.block
 number.block:
   %number.value = bitcast i64 %value to double
   %nonzero = fcmp one double %number.value, 0.0
