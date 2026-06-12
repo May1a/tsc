@@ -64,6 +64,7 @@ export type RuntimeHelper =
   | "arraySlice"
   | "arrayJoin"
   | "arrayConcat"
+  | "arrayAppendElements"
   | "arrayFill"
   | "arrayReverse"
   | "arrayPush"
@@ -88,6 +89,8 @@ export type RuntimeHelper =
   | "objectIsSealed"
   | "objectIsFrozen"
   | "objectAssign"
+  | "objectAssignArray"
+  | "valueObjectAssign"
   | "objectDefineDataProperty"
   | "objectValues"
   | "objectOwnPropertyDescriptor"
@@ -134,9 +137,9 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["valueObjectOwnPropertyDescriptors", ["valueObjectPtr", "valueArrayPtr", "objectOwnPropertyDescriptors", "arrayOwnPropertyDescriptors", "objectNew"]],
   ["objectEntries", ["arrayNew", "arraySet", "valueBoxString", "valueBoxArray"]],
   ["objectFromEntries", ["objectNew", "objectSet", "arrayLength", "arrayHasOwnIndex", "valueArrayPtr", "arrayGet", "valueStringPtr", "valueStringLength", "valueIsArray"]],
-  ["arrayEntries", ["arrayLength", "arrayHasOwnIndex", "arrayNew", "arraySet", "indexToString", "valueBoxString", "valueBoxArray"]],
+  ["arrayEntries", ["arrayLength", "arrayHasOwnIndex", "arrayNew", "arraySet", "indexToString", "valueBoxString", "valueBoxArray", "objectEntries", "arrayAppendElements"]],
   ["objectOwnPropertyNames", ["arrayNew", "arraySet", "valueBoxString"]],
-  ["arrayOwnPropertyNames", ["arrayKeys", "arrayPush", "valueBoxString"]],
+  ["arrayOwnPropertyNames", ["arrayLength", "arrayHasOwnIndex", "arrayNew", "arraySet", "arrayPush", "valueBoxString", "indexToString", "objectOwnPropertyNames", "arrayAppendElements"]],
   ["objectOwnPropertyDescriptors", ["objectNew", "objectOwnPropertyDescriptor", "objectSet"]],
   ["valueTruthy", ["valueStringLength"]],
   ["indexToString", ["malloc"]],
@@ -153,10 +156,10 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["arrayShift", ["arrayLength"]],
   ["arrayUnshift", ["arraySetLength", "arrayLength"]],
   ["arrayKeys", ["arrayNew", "arraySet", "arrayHasOwnIndex", "valueBoxString", "indexToString", "objectKeys", "arrayConcat"]],
-  ["arrayValues", ["arrayNew", "arraySet", "arrayHasOwnIndex"]],
-  ["arrayOwnPropertyDescriptor", ["arrayHasOwnIndex", "arrayGet", "objectNew", "objectSet", "valueBoxObject"]],
+  ["arrayValues", ["arrayNew", "arraySet", "arrayHasOwnIndex", "objectValues", "arrayAppendElements"]],
+  ["arrayOwnPropertyDescriptor", ["arrayHasOwnIndex", "arrayGet", "objectNew", "objectSet", "objectOwnPropertyDescriptor", "valueBoxObject"]],
   ["arrayLengthPropertyDescriptor", ["arrayLength", "objectNew", "objectSet", "valueBoxObject"]],
-  ["arrayOwnPropertyDescriptors", ["arrayLength", "arrayHasOwnIndex", "arrayOwnPropertyDescriptor", "arrayLengthPropertyDescriptor", "indexToString", "objectNew", "objectSet"]],
+  ["arrayOwnPropertyDescriptors", ["arrayLength", "arrayHasOwnIndex", "arrayOwnPropertyDescriptor", "arrayLengthPropertyDescriptor", "indexToString", "objectNew", "objectSet", "objectOwnPropertyDescriptors", "objectAssign"]],
   ["arrayIncludes", ["arrayLength", "arrayHasOwnIndex", "valueStrictEquals", "valueStringLength", "valueStringPtr", "memcmp"]],
   ["arrayIndexOf", ["arrayLength", "arrayHasOwnIndex", "valueStrictEquals", "valueStringLength", "valueStringPtr", "memcmp"]],
   ["arrayLastIndexOf", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "valueStrictEquals"]],
@@ -165,6 +168,7 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["arraySlice", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet"]],
   ["arrayJoin", ["arrayLength", "arrayHasOwnIndex", "valueToString", "malloc", "memcpy"]],
   ["arrayConcat", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet", "arrayGet", "valueIsArray", "valueArrayPtr"]],
+  ["arrayAppendElements", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "arrayPush"]],
   ["arrayFill", ["arrayLength", "arraySet"]],
   ["arrayReverse", ["arrayLength"]],
   ["arrayHas", ["arrayHasOwnIndex", "objectHas", "objectHasOwn", "objectGetOwn", "memcmp"]],
@@ -183,6 +187,8 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["objectIsSealed", ["objectPreventExtensions", "objectIsExtensible"]],
   ["objectIsFrozen", ["objectPreventExtensions", "objectIsSealed"]],
   ["objectAssign", ["objectSet"]],
+  ["objectAssignArray", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "indexToString", "objectSet", "objectAssign"]],
+  ["valueObjectAssign", ["valueObjectPtr", "valueArrayPtr", "objectAssign", "objectAssignArray"]],
   ["objectGetOwn", ["memcmp"]],
   ["objectSet", ["objectGet", "objectGetOwn", "memcmp", "malloc", "memcpy"]],
   ["objectDefineDataProperty", ["objectGet", "objectGetOwn", "memcmp", "malloc", "memcpy"]],
@@ -590,7 +596,7 @@ array.length:
   %length.desc = call i64 @arrayLengthPropertyDescriptor(ptr %array.ptr)
   ret i64 %length.desc
 array.index:
-  %array.desc = call i64 @arrayOwnPropertyDescriptor(ptr %array.ptr, i64 %index)
+  %array.desc = call i64 @arrayOwnPropertyDescriptor(ptr %array.ptr, i64 %key.len, ptr %key.ptr, i64 %index)
   ret i64 %array.desc
 primitive:
   ret i64 9222246136947933184
@@ -1275,6 +1281,10 @@ fill.advance:
   %fill.next = add i64 %fill.i, 1
   br label %fill.scan
 exit:
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named.values = call ptr @objectValues(ptr %properties)
+  call void @arrayAppendElements(ptr %out, ptr %named.values)
   ret ptr %out
 }
 `);
@@ -1345,15 +1355,22 @@ fill.advance:
   %fill.next = add i64 %fill.i, 1
   br label %fill.scan
 exit:
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named.entries = call ptr @objectEntries(ptr %properties)
+  call void @arrayAppendElements(ptr %out, ptr %named.entries)
   ret ptr %out
 }
 `);
   }
   if (runtime.used.has("arrayOwnPropertyDescriptor")) {
-    definitions.push(`define i64 @arrayOwnPropertyDescriptor(ptr %array, i64 %index) {
+    definitions.push(`define i64 @arrayOwnPropertyDescriptor(ptr %array, i64 %key.len, ptr %key.ptr, i64 %index) {
 entry:
+  %is.index = icmp sge i64 %index, 0
+  br i1 %is.index, label %check.index, label %named
+check.index:
   %has = call i1 @arrayHasOwnIndex(ptr %array, i64 %index)
-  br i1 %has, label %present, label %missing
+  br i1 %has, label %present, label %named
 present:
   %value = call i64 @arrayGet(ptr %array, i64 %index)
   %desc = call ptr @objectNew(i64 4)
@@ -1363,8 +1380,11 @@ present:
   call void @objectSet(ptr %desc, i64 12, ptr @.desc.configurable, i64 9222246136947933186)
   %boxed = call i64 @valueBoxObject(ptr %desc)
   ret i64 %boxed
-missing:
-  ret i64 9222246136947933184
+named:
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named.desc = call i64 @objectOwnPropertyDescriptor(ptr %properties, i64 %key.len, ptr %key.ptr)
+  ret i64 %named.desc
 }
 `);
   }
@@ -1401,7 +1421,7 @@ check:
   br i1 %has, label %copy, label %advance
 copy:
   %key = call ptr @indexToString(i64 %i)
-  %desc = call i64 @arrayOwnPropertyDescriptor(ptr %array, i64 %i)
+  %desc = call i64 @arrayOwnPropertyDescriptor(ptr %array, i64 1, ptr %key, i64 %i)
   call void @objectSet(ptr %out, i64 1, ptr %key, i64 %desc)
   br label %advance
 advance:
@@ -1410,6 +1430,10 @@ advance:
 length.desc:
   %length.desc.value = call i64 @arrayLengthPropertyDescriptor(ptr %array)
   call void @objectSet(ptr %out, i64 6, ptr @.array.desc.length, i64 %length.desc.value)
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named.descriptors = call ptr @objectOwnPropertyDescriptors(ptr %properties)
+  call void @objectAssign(ptr %out, ptr %named.descriptors)
   ret ptr %out
 }
 `);
@@ -2603,6 +2627,67 @@ exit:
 }
 `);
   }
+  if (runtime.used.has("objectAssignArray")) {
+    definitions.push(`define void @objectAssignArray(ptr %target, ptr %source) {
+entry:
+  %length = call i64 @arrayLength(ptr %source)
+  br label %scan
+scan:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %named, label %check
+check:
+  %has = call i1 @arrayHasOwnIndex(ptr %source, i64 %i)
+  br i1 %has, label %copy, label %advance
+copy:
+  %key.ptr = call ptr @indexToString(i64 %i)
+  br label %digit.count
+digit.count:
+  %digit.value = phi i64 [ %i, %copy ], [ %digit.next.value, %digit.more ]
+  %digit.len = phi i64 [ 1, %copy ], [ %digit.len.next, %digit.more ]
+  %digit.more.check = icmp uge i64 %digit.value, 10
+  br i1 %digit.more.check, label %digit.more, label %store
+digit.more:
+  %digit.next.value = udiv i64 %digit.value, 10
+  %digit.len.next = add i64 %digit.len, 1
+  br label %digit.count
+store:
+  %value = call i64 @arrayGet(ptr %source, i64 %i)
+  call void @objectSet(ptr %target, i64 %digit.len, ptr %key.ptr, i64 %value)
+  br label %advance
+advance:
+  %next = add i64 %i, 1
+  br label %scan
+named:
+  %properties.slot = getelementptr i8, ptr %source, i64 32
+  %properties = load ptr, ptr %properties.slot
+  call void @objectAssign(ptr %target, ptr %properties)
+  ret void
+}
+`);
+  }
+  if (runtime.used.has("valueObjectAssign")) {
+    definitions.push(`define void @valueObjectAssign(ptr %target, i64 %source) {
+entry:
+  %tag = and i64 %source, -281474976710656
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  br i1 %is.object, label %object, label %check.array
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %source)
+  call void @objectAssign(ptr %target, ptr %object.ptr)
+  ret void
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %exit
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %source)
+  call void @objectAssignArray(ptr %target, ptr %array.ptr)
+  ret void
+exit:
+  ret void
+}
+`);
+  }
   if (runtime.used.has("objectValues")) {
     definitions.push(`define ptr @objectValues(ptr %object) {
 entry:
@@ -2947,10 +3032,91 @@ exit:
 
 define ptr @arrayOwnPropertyNames(ptr %array) {
 entry:
-  %keys = call ptr @arrayKeys(ptr %array)
+  %length = call i64 @arrayLength(ptr %array)
+  br label %count.scan
+count.scan:
+  %count.i = phi i64 [ 0, %entry ], [ %count.next, %count.advance ]
+  %key.count = phi i64 [ 0, %entry ], [ %key.count.next, %count.advance ]
+  %count.done = icmp eq i64 %count.i, %length
+  br i1 %count.done, label %alloc, label %count.check
+count.check:
+  %has.own = call i1 @arrayHasOwnIndex(ptr %array, i64 %count.i)
+  br i1 %has.own, label %count.include, label %count.skip
+count.include:
+  %included.count = add i64 %key.count, 1
+  br label %count.advance
+count.skip:
+  br label %count.advance
+count.advance:
+  %key.count.next = phi i64 [ %included.count, %count.include ], [ %key.count, %count.skip ]
+  %count.next = add i64 %count.i, 1
+  br label %count.scan
+alloc:
+  %keys = call ptr @arrayNew(i64 %key.count)
+  br label %fill.scan
+fill.scan:
+  %fill.i = phi i64 [ 0, %alloc ], [ %fill.next, %fill.advance ]
+  %out.i = phi i64 [ 0, %alloc ], [ %out.next, %fill.advance ]
+  %fill.done = icmp eq i64 %fill.i, %length
+  br i1 %fill.done, label %push.length.key, label %fill.check
+fill.check:
+  %fill.has.own = call i1 @arrayHasOwnIndex(ptr %array, i64 %fill.i)
+  br i1 %fill.has.own, label %fill.include, label %fill.skip
+fill.include:
+  %key.ptr = call ptr @indexToString(i64 %fill.i)
+  br label %digit.count
+digit.count:
+  %digit.value = phi i64 [ %fill.i, %fill.include ], [ %digit.next.value, %digit.more ]
+  %digit.len = phi i64 [ 1, %fill.include ], [ %digit.len.next, %digit.more ]
+  %digit.more.check = icmp uge i64 %digit.value, 10
+  br i1 %digit.more.check, label %digit.more, label %box.key
+digit.more:
+  %digit.next.value = udiv i64 %digit.value, 10
+  %digit.len.next = add i64 %digit.len, 1
+  br label %digit.count
+box.key:
+  %key.value = call i64 @valueBoxString(ptr %key.ptr, i64 %digit.len)
+  call void @arraySet(ptr %keys, i64 %out.i, i64 %key.value)
+  %included.out = add i64 %out.i, 1
+  br label %fill.advance
+fill.skip:
+  br label %fill.advance
+fill.advance:
+  %out.next = phi i64 [ %included.out, %box.key ], [ %out.i, %fill.skip ]
+  %fill.next = add i64 %fill.i, 1
+  br label %fill.scan
+push.length.key:
   %length.key = call i64 @valueBoxString(ptr @.array.name.length, i64 6)
   call i64 @arrayPush(ptr %keys, i64 %length.key)
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named.keys = call ptr @objectOwnPropertyNames(ptr %properties)
+  call void @arrayAppendElements(ptr %keys, ptr %named.keys)
   ret ptr %keys
+}
+`);
+  }
+  if (runtime.used.has("arrayAppendElements")) {
+    definitions.push(`define void @arrayAppendElements(ptr %target, ptr %source) {
+entry:
+  %length = call i64 @arrayLength(ptr %source)
+  br label %scan
+scan:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %exit, label %check
+check:
+  %has = call i1 @arrayHasOwnIndex(ptr %source, i64 %i)
+  br i1 %has, label %append, label %advance
+append:
+  %value = call i64 @arrayGet(ptr %source, i64 %i)
+  call i64 @arrayPush(ptr %target, i64 %value)
+  br label %advance
+advance:
+  %next = add i64 %i, 1
+  br label %scan
+exit:
+  ret void
 }
 `);
   }

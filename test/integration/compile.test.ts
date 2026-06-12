@@ -593,10 +593,7 @@ describe("tscn CLI", () => {
 
   test("explains unsupported new runtime built-in boundaries precisely", async () => {
     const expectations = new Map([
-      ["object-define-property-accessor.ts", "Object.defineProperty accessor descriptors are not supported yet"],
-      ["object-define-property-dynamic-boolean.ts", "Object.defineProperty descriptor booleans must be literal true or false"],
-      ["object-assign-fixed.ts", "Object.assign is only supported for runtime dictionary object targets and sources"],
-      ["array-fixed-push.ts", "Array method calls are only supported on runtime arrays"]
+      ["object-define-property-accessor.ts", "Object.defineProperty accessor descriptors are not supported yet"]
     ]);
 
     await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
@@ -605,8 +602,7 @@ describe("tscn CLI", () => {
   test("rejects unsupported expanded runtime roadmap boundaries", async () => {
     const fixtures = [
       "object-define-properties-accessor.ts",
-      "object-define-properties-method.ts",
-      "object-define-properties-dynamic-boolean.ts"
+      "object-define-properties-method.ts"
     ];
 
     await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
@@ -2728,7 +2724,62 @@ describe("tscn expanded runtime roadmap", () => {
       ["array-runtime-string-key-negative.ts", "undefined\n"],
       ["array-runtime-string-key-fraction.ts", "undefined\n"],
       ["array-runtime-named-string-properties.ts", "1\nzero\nleading\nnegative\nfraction\ntrue\nfalse\nundefined\n"],
-      ["array-runtime-named-string-keys-order.ts", "3\n2\nname\n01\n"]
+      ["array-runtime-named-string-keys-order.ts", "3\n2\nname\n01\n"],
+      ["array-runtime-named-string-values-entries.ts", "4\nzero\ntwo\nnamed\nleading\n4\n0\nzero\n2\ntwo\nname\nnamed\n01\nleading\n"],
+      ["array-runtime-named-string-descriptors.ts", "5\n0\n2\nlength\nname\n01\nnamed\ntrue\ntrue\ntrue\nnamed\nleading\n"],
+      ["array-runtime-named-string-delete-introspection.ts", "2\nzero\nkept\n2\nkeep\n3\n0\nlength\nkeep\nundefined\nfalse\ntrue\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("bridges Object.assign sources into runtime object targets", async () => {
+    const cases = [
+      ["object-assign-runtime-from-fixed.ts", "1\nb\n"],
+      ["object-assign-runtime-from-array.ts", "zero\nnamed\nfalse\n"],
+      ["object-assign-runtime-from-boxed-aggregates.ts", "object\nzero\narray\n"],
+      ["object-assign-runtime-source-order.ts", "2\nfirst-b\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("promotes fixed aggregate mutation targets", async () => {
+    const cases = [
+      ["array-fixed-push.ts", "2\n2\n"],
+      ["array-fixed-promoted-unshift.ts", "2\n0\n1\n"],
+      ["object-assign-fixed.ts", "1\n2\n"],
+      ["object-fixed-promoted-assign-overwrite.ts", "3\n2\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports descriptor boolean identifiers", async () => {
+    const cases = [
+      ["object-define-property-dynamic-boolean.ts", "true\n"],
+      ["object-define-properties-dynamic-boolean.ts", "1\nvalue\n"],
+      ["object-define-property-boolean-identifiers.ts", "1\n1\nfalse\ntrue\nfalse\n"],
+      ["object-define-properties-boolean-identifiers.ts", "1\n1\nfalse\ntrue\nfalse\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports array mutation expression return values", async () => {
+    const cases = [
+      ["array-runtime-push-unshift-return-values.ts", "2\n3\nb\nz\n1\n"],
+      ["array-runtime-mutator-chain-return-array.ts", "c\nc\nx\nx\n"],
+      ["array-runtime-pop-shift-return-extra-args.ts", "b\na\n0\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("handles prototype edges for named runtime array properties", async () => {
+    const cases = [
+      ["array-runtime-named-string-prototype-fallback.ts", "proto\nfalse\nown\ntrue\nproto\nfalse\n"],
+      ["array-runtime-named-string-prototype-introspection.ts", "1\n1\n2\nname\n2\nown\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
