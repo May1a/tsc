@@ -1,5 +1,5 @@
 declare function print(value: unknown): void;
 
-const arr: unknown[] = ["a"];
+const arr: any = ["a"];
 arr.reverse("extra");
 print(arr[0]);

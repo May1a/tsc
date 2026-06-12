@@ -45,6 +45,8 @@ export type RuntimeHelper =
   | "arrayLength"
   | "arrayGet"
   | "arrayGetWithKey"
+  | "arraySetNamed"
+  | "arrayDeleteNamed"
   | "arraySet"
   | "arrayDelete"
   | "arraySetLength"
@@ -104,7 +106,7 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["strConcat", ["malloc", "memcpy"]],
   ["strEquals", ["memcmp"]],
   ["valueStrictEquals", ["valueStringLength", "valueStringPtr", "memcmp"]],
-  ["arrayNew", ["malloc"]],
+  ["arrayNew", ["malloc", "objectNew"]],
   ["objectNew", ["malloc"]],
   ["valueBoxString", ["malloc"]],
   ["valuePrint", ["valueStringPtr"]],
@@ -140,6 +142,8 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["indexToString", ["malloc"]],
   ["arrayGet", ["arrayLength"]],
   ["arrayGetWithKey", ["arrayLength", "arrayHasOwnIndex", "objectGet", "objectGetOwn", "memcmp"]],
+  ["arraySetNamed", ["objectSet"]],
+  ["arrayDeleteNamed", ["objectDelete"]],
   ["arraySet", ["arrayLength", "malloc", "memcpy"]],
   ["arrayDelete", ["arrayLength"]],
   ["arraySetLength", ["arrayLength", "malloc", "memcpy"]],
@@ -148,7 +152,7 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["arrayPop", ["arrayLength"]],
   ["arrayShift", ["arrayLength"]],
   ["arrayUnshift", ["arraySetLength", "arrayLength"]],
-  ["arrayKeys", ["arrayNew", "arraySet", "arrayHasOwnIndex", "valueBoxString", "indexToString"]],
+  ["arrayKeys", ["arrayNew", "arraySet", "arrayHasOwnIndex", "valueBoxString", "indexToString", "objectKeys", "arrayConcat"]],
   ["arrayValues", ["arrayNew", "arraySet", "arrayHasOwnIndex"]],
   ["arrayOwnPropertyDescriptor", ["arrayHasOwnIndex", "arrayGet", "objectNew", "objectSet", "valueBoxObject"]],
   ["arrayLengthPropertyDescriptor", ["arrayLength", "objectNew", "objectSet", "valueBoxObject"]],
@@ -835,7 +839,8 @@ capacity.initial:
   br label %alloc
 alloc:
   %capacity = phi i64 [ 1, %capacity.empty ], [ %length, %capacity.initial ]
-  %array = call ptr @malloc(i64 32)
+  %array = call ptr @malloc(i64 40)
+  %properties = call ptr @objectNew(i64 0)
   %payload.bytes = mul i64 %capacity, 8
   %elements = call ptr @malloc(i64 %payload.bytes)
   store i64 %length, ptr %array
@@ -845,6 +850,8 @@ alloc:
   store ptr %elements, ptr %elements.slot
   %prototype.slot = getelementptr i8, ptr %array, i64 24
   store ptr null, ptr %prototype.slot
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  store ptr %properties, ptr %properties.slot
   br label %fill.cond
 fill.cond:
   %i = phi i64 [ 0, %alloc ], [ %next, %fill.body ]
@@ -903,6 +910,14 @@ own:
   %value = load i64, ptr %slot
   ret i64 %value
 check.prototype:
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named = call i64 @objectGet(ptr %properties, i64 %key.len, ptr %key.ptr)
+  %has.named = icmp ne i64 %named, 9222246136947933184
+  br i1 %has.named, label %array.named, label %prototype.check
+array.named:
+  ret i64 %named
+prototype.check:
   %prototype.slot = getelementptr i8, ptr %array, i64 24
   %prototype = load ptr, ptr %prototype.slot
   %has.prototype = icmp ne ptr %prototype, null
@@ -912,6 +927,26 @@ prototype.lookup:
   ret i64 %prototype.value
 missing:
   ret i64 9222246136947933184
+}
+`);
+  }
+  if (runtime.used.has("arraySetNamed")) {
+    definitions.push(`define void @arraySetNamed(ptr %array, i64 %key.len, ptr %key.ptr, i64 %value) {
+entry:
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  call void @objectSet(ptr %properties, i64 %key.len, ptr %key.ptr, i64 %value)
+  ret void
+}
+`);
+  }
+  if (runtime.used.has("arrayDeleteNamed")) {
+    definitions.push(`define void @arrayDeleteNamed(ptr %array, i64 %key.len, ptr %key.ptr) {
+entry:
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  call void @objectDelete(ptr %properties, i64 %key.len, ptr %key.ptr)
+  ret void
 }
 `);
   }
@@ -1109,6 +1144,11 @@ entry:
 found:
   ret i1 true
 check.prototype:
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named.own = call i1 @objectHasOwn(ptr %properties, i64 %key.len, ptr %key.ptr)
+  br i1 %named.own, label %found, label %prototype.check
+prototype.check:
   %prototype.slot = getelementptr i8, ptr %array, i64 24
   %prototype = load ptr, ptr %prototype.slot
   %has.prototype = icmp ne ptr %prototype, null
@@ -1178,7 +1218,11 @@ fill.advance:
   %fill.next = add i64 %fill.i, 1
   br label %fill.scan
 exit:
-  ret ptr %out
+  %properties.slot = getelementptr i8, ptr %array, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named.keys = call ptr @objectKeys(ptr %properties)
+  %combined = call ptr @arrayConcat(ptr %out, ptr %named.keys)
+  ret ptr %combined
 }
 `);
   }
@@ -1558,14 +1602,21 @@ entry:
   %count = select i1 %room.less, i64 %room, i64 %positive.available
   %elements.slot = getelementptr i8, ptr %array, i64 16
   %elements = load ptr, ptr %elements.slot
+  %source.end = add i64 %from, %count
+  %target.after.source.start = icmp sgt i64 %to, %from
+  %target.before.source.end = icmp slt i64 %to, %source.end
+  %copy.backward = and i1 %target.after.source.start, %target.before.source.end
   br label %scan
 scan:
   %i = phi i64 [ 0, %entry ], [ %next, %advance ]
   %done = icmp eq i64 %i, %count
   br i1 %done, label %exit, label %copy
 copy:
-  %from.index = add i64 %from, %i
-  %to.index = add i64 %to, %i
+  %reverse.base = sub i64 %count, 1
+  %reverse.offset = sub i64 %reverse.base, %i
+  %offset = select i1 %copy.backward, i64 %reverse.offset, i64 %i
+  %from.index = add i64 %from, %offset
+  %to.index = add i64 %to, %offset
   %from.has = call i1 @arrayHasOwnIndex(ptr %array, i64 %from.index)
   br i1 %from.has, label %copy.present, label %copy.hole
 copy.present:

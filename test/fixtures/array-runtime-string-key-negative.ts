@@ -1,4 +1,4 @@
 declare function print(value: unknown): void;
 
-const arr: unknown[] = ["x"];
+const arr: any = ["x"];
 print(arr["-1"]);

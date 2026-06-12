@@ -254,6 +254,25 @@ const expectLlvmAsVerificationIfAvailable = async (result: CompileResult): Promi
   expect(verifier.status, verifier.stderr).toBe(0);
 };
 
+const expectNativeFixtures = async (
+  cases: readonly (readonly [fixture: string, stdout: string])[],
+  options: { readonly verifyLlvm?: boolean } = {}
+): Promise<void> => {
+  await Promise.all(
+    cases.map(async ([fixture, stdout]) => {
+      const result = await expectSuccessfulCompile(fixture, { link: true });
+      try {
+        await expectNativeBehaviorIfAvailable(result, { status: 0, stdout, stderr: "" });
+        if (options.verifyLlvm === true) {
+          await expectLlvmAsVerificationIfAvailable(result);
+        }
+      } finally {
+        await result.cleanup();
+      }
+    })
+  );
+};
+
 const countOccurrences = (value: string, needle: string): number => value.split(needle).length - 1;
 
 // eslint-disable-next-line max-statements -- CLI coverage intentionally groups diagnostics and smoke tests.
@@ -558,20 +577,6 @@ describe("tscn CLI", () => {
     }
   });
 
-  test("rejects unsupported array runtime boundaries", async () => {
-    const fixtures = ["array-spread.ts"];
-
-    await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
-  });
-
-  test("explains unsupported array runtime boundaries precisely", async () => {
-    const expectations = new Map([
-      ["array-spread.ts", "Array spread elements are not supported"]
-    ]);
-
-    await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
-  });
-
   test("rejects unsupported object runtime boundaries", async () => {
     const fixtures = ["object-method.ts"];
 
@@ -590,10 +595,6 @@ describe("tscn CLI", () => {
     const expectations = new Map([
       ["object-define-property-accessor.ts", "Object.defineProperty accessor descriptors are not supported yet"],
       ["object-define-property-dynamic-boolean.ts", "Object.defineProperty descriptor booleans must be literal true or false"],
-      ["object-keys-fixed.ts", "Object.keys is only supported for runtime dictionary objects and runtime arrays"],
-      ["array-runtime-string-key-leading-zero.ts", "Runtime array string key \"01\" is not supported"],
-      ["array-runtime-string-key-negative.ts", "Runtime array string key \"-1\" is not supported"],
-      ["array-runtime-string-key-fraction.ts", "Runtime array string key \"1.5\" is not supported"],
       ["object-assign-fixed.ts", "Object.assign is only supported for runtime dictionary object targets and sources"],
       ["array-fixed-push.ts", "Array method calls are only supported on runtime arrays"]
     ]);
@@ -603,16 +604,9 @@ describe("tscn CLI", () => {
 
   test("rejects unsupported expanded runtime roadmap boundaries", async () => {
     const fixtures = [
-      "object-values-fixed.ts",
-      "array-is-array-number.ts",
-      "array-is-array-string.ts",
-      "array-is-array-fixed.ts",
       "object-define-properties-accessor.ts",
-      "object-define-properties-spread.ts",
-      "object-define-properties-shorthand.ts",
       "object-define-properties-method.ts",
-      "object-define-properties-dynamic-boolean.ts",
-      "runtime-object-truthiness.ts"
+      "object-define-properties-dynamic-boolean.ts"
     ];
 
     await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
@@ -621,9 +615,7 @@ describe("tscn CLI", () => {
   test("rejects unsupported aggregate expansion boundaries", async () => {
     const fixtures = [
       "object-from-entries-non-array.ts",
-      "object-from-entries-entry-non-array.ts",
-      "array-runtime-concat-fixed.ts",
-      "array-runtime-reverse-extra-arg.ts"
+      "object-from-entries-entry-non-array.ts"
     ];
 
     await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
@@ -2133,6 +2125,7 @@ describe("tscn JSValue ABI", () => {
   });
 });
 
+// eslint-disable-next-line max-statements -- Expanded runtime roadmap coverage intentionally groups many vertical fixtures.
 describe("tscn expanded runtime roadmap", () => {
   test("materializes multi-digit runtime array keys", async () => {
     const result = await expectSuccessfulCompile("array-runtime-keys-multi-digit.ts", { link: true });
@@ -2683,6 +2676,62 @@ describe("tscn expanded runtime roadmap", () => {
     } finally {
       await numbers.cleanup();
     }
+  });
+
+  test("supports runtime aggregate truthiness and Array.isArray classification", async () => {
+    const cases = [
+      ["runtime-object-truthiness.ts", "object\n"],
+      ["runtime-array-truthiness.ts", "empty array\nfilled array\n"],
+      ["runtime-aggregate-negated-truthiness.ts", "done\n"],
+      ["array-is-array-number.ts", "false\n"],
+      ["array-is-array-string.ts", "false\n"],
+      ["array-is-array-fixed.ts", "true\n"],
+      ["array-is-array-literals.ts", "false\nfalse\nfalse\nfalse\n"],
+      ["array-is-array-runtime-and-fixed.ts", "true\ntrue\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases);
+  });
+
+  test("bridges fixed objects and descriptor maps into runtime helpers", async () => {
+    const cases = [
+      ["object-keys-fixed.ts", ""],
+      ["object-values-fixed.ts", "1\n"],
+      ["object-fixed-keys-values-entries.ts", "2\na\nb\n1\n2\n2\na\n1\n"],
+      ["object-fixed-own-property-descriptor.ts", "1\ntrue\ntrue\ntrue\nundefined\n"],
+      ["object-define-properties-shorthand.ts", ""],
+      ["object-define-properties-spread.ts", ""],
+      ["object-define-properties-spread-overwrite.ts", "new\n"],
+      ["object-define-properties-shorthand-observable.ts", "x\n1\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports defaulted array ranges and fixed-array materialization bridges", async () => {
+    const cases = [
+      ["array-runtime-reverse-extra-arg.ts", "a\n"],
+      ["array-runtime-noarg-extra-arguments.ts", "c\na\n2\nc\n1\n"],
+      ["array-runtime-defaulted-ranges.ts", "3\nundefined\n2\na\nx\nx\na\na\nb\nc\n"],
+      ["array-spread.ts", "1\n"],
+      ["array-fixed-spread-multiple.ts", "5\n0\n1\n2\n3\n4\n"],
+      ["array-runtime-concat-fixed.ts", "4\n"],
+      ["array-runtime-concat-fixed-values.ts", "4\na\n1\n2\ntail\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports runtime array named string properties", async () => {
+    const cases = [
+      ["array-runtime-string-key-leading-zero.ts", "undefined\n"],
+      ["array-runtime-string-key-negative.ts", "undefined\n"],
+      ["array-runtime-string-key-fraction.ts", "undefined\n"],
+      ["array-runtime-named-string-properties.ts", "1\nzero\nleading\nnegative\nfraction\ntrue\nfalse\nundefined\n"],
+      ["array-runtime-named-string-keys-order.ts", "3\n2\nname\n01\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
   });
 
   test("emits nested runtime helper dependencies once", async () => {
