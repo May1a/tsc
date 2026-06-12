@@ -136,6 +136,12 @@ export type JsIrNumberExpression =
       readonly value: number;
     }
   | {
+      readonly kind: "nan";
+    }
+  | {
+      readonly kind: "negatedZero";
+    }
+  | {
       readonly kind: "unary";
       readonly operator: "negate";
       readonly value: JsIrNumberExpression;
@@ -416,6 +422,15 @@ export type JsIrCondition =
       readonly value: boolean | JsIrValueExpression;
     }
   | {
+      readonly kind: "runtimeArrayEvery" | "runtimeArraySome";
+      readonly arrayName: string;
+    }
+  | {
+      readonly kind: "objectIs";
+      readonly left: JsIrValueExpression;
+      readonly right: JsIrValueExpression;
+    }
+  | {
       readonly kind: "valueTruthy";
       readonly value: JsIrValueExpression;
     }
@@ -625,6 +640,27 @@ export type JsIrOperation =
       readonly arrayName: string;
       readonly start: JsIrNumberExpression;
       readonly end?: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "runtimeArraySplice";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly start: JsIrNumberExpression;
+      readonly deleteCount?: JsIrNumberExpression;
+      readonly items: readonly JsIrValueExpression[];
+    }
+  | {
+      readonly kind: "runtimeArraySpliceStatement";
+      readonly arrayName: string;
+      readonly start: JsIrNumberExpression;
+      readonly deleteCount?: JsIrNumberExpression;
+      readonly items: readonly JsIrValueExpression[];
+    }
+  | {
+      readonly kind: "runtimeArrayFlat";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly depth: JsIrNumberExpression;
     }
   | {
       readonly kind: "runtimeArrayConcat";
@@ -922,6 +958,12 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
     return { kind: "runtimeObject", name: operation.name };
   }
   if (operation.kind === "runtimeArraySlice") {
+    return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "runtimeArraySplice") {
+    return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "runtimeArrayFlat") {
     return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeArrayConcat") {
@@ -1859,6 +1901,9 @@ function lowerRuntimeArrayCallStatement(
   if (method === "pop" || method === "shift") {
     return { kind: runtimeArrayRemoveOperationKind(method), arrayName };
   }
+  if (method === "splice") {
+    return lowerRuntimeArraySpliceStatement(arrayName, expression.arguments, bindings);
+  }
   const fill = lowerRuntimeArrayFillCallStatement(arrayName, method, expression.arguments, bindings);
   if (fill !== undefined) {
     return fill;
@@ -2614,6 +2659,14 @@ function lowerRuntimeAggregateExpansionBinding(
   if (concat !== undefined) {
     return concat;
   }
+  const splice = lowerRuntimeArraySpliceBinding(name, initializer, bindings);
+  if (splice !== undefined) {
+    return splice;
+  }
+  const flat = lowerRuntimeArrayFlatBinding(name, initializer, bindings);
+  if (flat !== undefined) {
+    return flat;
+  }
   const mutator = lowerRuntimeArrayMutatorResultBinding(name, initializer, bindings);
   if (mutator !== undefined) {
     return mutator;
@@ -2851,6 +2904,103 @@ function lowerRuntimeArrayConcatBinding(
     values.push({ kind: "value", value });
   }
   return { kind: "runtimeArrayConcat", name, leftName, values };
+}
+
+function lowerRuntimeArraySpliceBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || !ts.isPropertyAccessExpression(initializer.expression) || !ts.isIdentifier(initializer.expression.expression)) {
+    return undefined;
+  }
+  const arrayName = initializer.expression.expression.text;
+  if (initializer.expression.name.text !== "splice" || bindings.get(arrayName)?.kind !== "runtimeArray") {
+    return undefined;
+  }
+  if (initializer.arguments.length === 0) {
+    return undefined;
+  }
+  const start = lowerNumberExpression(initializer.arguments[0], bindings);
+  if (start === undefined) {
+    return undefined;
+  }
+  let deleteCount: JsIrNumberExpression | undefined;
+  const items: JsIrValueExpression[] = [];
+  for (let index = 1; index < initializer.arguments.length; index += 1) {
+    const argument = initializer.arguments[index];
+    if (deleteCount === undefined) {
+      deleteCount = lowerNumberExpression(argument, bindings);
+      if (deleteCount === undefined) {
+        return undefined;
+      }
+      continue;
+    }
+    const value = lowerValueExpression(argument, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    items.push(value);
+  }
+  return { kind: "runtimeArraySplice", name, arrayName, start, deleteCount, items };
+}
+
+function lowerRuntimeArraySpliceStatement(
+  arrayName: string,
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (args.length === 0) {
+    return undefined;
+  }
+  const start = lowerNumberExpression(args[0], bindings);
+  if (start === undefined) {
+    return undefined;
+  }
+  let deleteCount: JsIrNumberExpression | undefined;
+  const items: JsIrValueExpression[] = [];
+  for (let index = 1; index < args.length; index += 1) {
+    const argument = args[index];
+    if (deleteCount === undefined) {
+      deleteCount = lowerNumberExpression(argument, bindings);
+      if (deleteCount === undefined) {
+        return undefined;
+      }
+      continue;
+    }
+    const value = lowerValueExpression(argument, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    items.push(value);
+  }
+  return { kind: "runtimeArraySpliceStatement", arrayName, start, deleteCount, items };
+}
+
+function lowerRuntimeArrayFlatBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || !ts.isPropertyAccessExpression(initializer.expression) || !ts.isIdentifier(initializer.expression.expression)) {
+    return undefined;
+  }
+  const arrayName = initializer.expression.expression.text;
+  if (initializer.expression.name.text !== "flat" || bindings.get(arrayName)?.kind !== "runtimeArray") {
+    return undefined;
+  }
+  if (initializer.arguments.length > 1) {
+    return undefined;
+  }
+  let depth: JsIrNumberExpression = { kind: "literal", value: 1 };
+  if (initializer.arguments.length === 1) {
+    const loweredDepth = lowerNumberExpression(initializer.arguments[0], bindings);
+    if (loweredDepth === undefined) {
+      return undefined;
+    }
+    depth = loweredDepth;
+  }
+  return { kind: "runtimeArrayFlat", name, arrayName, depth };
 }
 
 function lowerUnaryObjectAggregateCall(
@@ -3369,7 +3519,7 @@ function lowerBooleanExpression(expression: ts.Expression, bindings: ReadonlyMap
   return undefined;
 }
 
-// eslint-disable-next-line max-statements -- Condition lowering is still centralized while runtime predicates are introduced.
+// eslint-disable-next-line complexity, max-statements -- Condition lowering is still centralized while runtime predicates are introduced.
 function lowerConditionExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -3410,6 +3560,16 @@ function lowerConditionExpression(
   const isArray = lowerArrayIsArrayConditionExpression(expression, bindings);
   if (isArray !== undefined) {
     return isArray;
+  }
+
+  const everySome = lowerRuntimeArrayEverySomeConditionExpression(expression, bindings);
+  if (everySome !== undefined) {
+    return everySome;
+  }
+
+  const objectIsCondition = lowerObjectIsConditionExpression(expression, bindings);
+  if (objectIsCondition !== undefined) {
+    return objectIsCondition;
   }
 
   const objectStateCondition = lowerRuntimeObjectStateCondition(expression, bindings);
@@ -3663,6 +3823,70 @@ function lowerArrayIsArrayConditionExpression(
     }
   }
   return undefined;
+}
+
+function lowerRuntimeArrayEverySomeConditionExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCondition | undefined {
+  if (!ts.isCallExpression(expression)) {
+    return undefined;
+  }
+  if (expression.arguments.length > 0) {
+    return undefined;
+  }
+  const callee = expression.expression;
+  if (!ts.isPropertyAccessExpression(callee)) {
+    return undefined;
+  }
+  let receiver: ts.Expression = callee.expression;
+  while (ts.isParenthesizedExpression(receiver)) {
+    receiver = receiver.expression;
+  }
+  receiver = unwrapTypeOnlyExpression(receiver);
+  if (!ts.isIdentifier(receiver)) {
+    return undefined;
+  }
+  if (bindings.get(receiver.text)?.kind !== "runtimeArray") {
+    return undefined;
+  }
+  if (callee.name.text === "every") {
+    return { kind: "runtimeArrayEvery", arrayName: receiver.text };
+  }
+  if (callee.name.text === "some") {
+    return { kind: "runtimeArraySome", arrayName: receiver.text };
+  }
+  return undefined;
+}
+
+function lowerObjectIsConditionExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCondition | undefined {
+  if (!ts.isCallExpression(expression) || expression.arguments.length !== 2) {
+    return undefined;
+  }
+  const callee = expression.expression;
+  if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression) || callee.expression.text !== "Object" || callee.name.text !== "is") {
+    return undefined;
+  }
+  const [leftArg, rightArg] = expression.arguments;
+  let left: ts.Expression = leftArg;
+  let right: ts.Expression = rightArg;
+  while (ts.isParenthesizedExpression(left)) {
+    left = left.expression;
+  }
+  while (ts.isParenthesizedExpression(right)) {
+    right = right.expression;
+  }
+  left = unwrapTypeOnlyExpression(left);
+  right = unwrapTypeOnlyExpression(right);
+  const leftValue = lowerValueExpression(left, bindings);
+  const rightValue = lowerValueExpression(right, bindings);
+  if (leftValue === undefined || rightValue === undefined) {
+    return undefined;
+  }
+  return { kind: "objectIs", left: leftValue, right: rightValue };
 }
 
 function lowerComparisonConditionExpression(
@@ -4126,6 +4350,7 @@ function lowerComparisonOperator(kind: ts.SyntaxKind): "===" | "!==" | "<" | "<=
   }
 }
 
+// eslint-disable-next-line complexity -- Numeric literal/identifier/NaN/prefix-unary recognition centralizes the canonical JSValue conversion paths.
 function lowerNumberExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -4138,11 +4363,23 @@ function lowerNumberExpression(
   }
 
   if (ts.isIdentifier(expression)) {
+    if (expression.text === "NaN") {
+      return { kind: "nan" };
+    }
     const binding = bindings.get(expression.text);
     if (binding?.kind !== "number") {
       return undefined;
     }
     return binding.value;
+  }
+
+  if (
+    ts.isPrefixUnaryExpression(expression) &&
+    expression.operator === ts.SyntaxKind.MinusToken &&
+    ts.isNumericLiteral(expression.operand) &&
+    expression.operand.text === "0"
+  ) {
+    return { kind: "negatedZero" };
   }
 
   if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
@@ -4753,6 +4990,9 @@ function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | 
     }
     if (callee.name.text === "push" || callee.name.text === "pop" || callee.name.text === "shift" || callee.name.text === "unshift") {
       return "Array method calls are only supported on runtime arrays";
+    }
+    if (callee.name.text === "every" || callee.name.text === "some") {
+      return "Array.prototype.every and Array.prototype.some are only supported without a callback argument in the current runtime lowering slice";
     }
   }
   return undefined;

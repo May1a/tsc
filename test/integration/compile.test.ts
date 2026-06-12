@@ -2301,6 +2301,26 @@ describe("tscn expanded runtime roadmap", () => {
     }
   });
 
+  test("returns boxed aggregate object keys and values", async () => {
+    const result = await expectSuccessfulCompile("value-runtime-aggregate-object-keys-values.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n1\nvalue\nobject\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("returns boxed aggregate array keys and values", async () => {
+    const result = await expectSuccessfulCompile("value-runtime-aggregate-array-keys-values.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\n3\n0\n1\n2\na\nb\nc\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("reads properties and elements through boxed aggregate JSValues", async () => {
     const result = await expectSuccessfulCompile("value-runtime-aggregate-property-access.ts", { link: true });
     try {
@@ -2613,6 +2633,116 @@ describe("tscn expanded runtime roadmap", () => {
       await expectLlvmAsVerificationIfAvailable(boxed);
     } finally {
       await boxed.cleanup();
+    }
+  });
+
+  test("supports runtime array splice with removal, insertion, and negative start", async () => {
+    const remove = await expectSuccessfulCompile("array-runtime-splice-remove.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(remove, { status: 0, stdout: "2\nb\nc\n2\na\nd\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(remove);
+    } finally {
+      await remove.cleanup();
+    }
+
+    const insert = await expectSuccessfulCompile("array-runtime-splice-insert.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(insert, { status: 0, stdout: "4\na\nx\ny\nb\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(insert);
+    } finally {
+      await insert.cleanup();
+    }
+
+    const negative = await expectSuccessfulCompile("array-runtime-splice-negative-start.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(negative, { status: 0, stdout: "1\nb\n2\na\nc\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(negative);
+    } finally {
+      await negative.cleanup();
+    }
+  });
+
+  test("filters non-enumerable properties from runtime object introspection", async () => {
+    const hasOwn = await expectSuccessfulCompile("object-runtime-has-own-property.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(hasOwn, { status: 0, stdout: "true\ntrue\nfalse\nfalse\n1\n1\n1\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(hasOwn);
+    } finally {
+      await hasOwn.cleanup();
+    }
+
+    const filtering = await expectSuccessfulCompile("object-runtime-non-enumerable-filtering.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(filtering, { status: 0, stdout: "1\n1\n1\nvisible\nv\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(filtering);
+    } finally {
+      await filtering.cleanup();
+    }
+  });
+
+  test("supports callback-free every and some on runtime arrays", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-every-some.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nfalse\nfalse\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports Object.is with NaN, -0, +0, and value identity", async () => {
+    const nanZero = await expectSuccessfulCompile("object-is-nan-zero.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(nanZero, { status: 0, stdout: "true\nfalse\nfalse\ntrue\nfalse\ntrue\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(nanZero);
+    } finally {
+      await nanZero.cleanup();
+    }
+  });
+
+  test("supports runtime array flat with default and zero depth", async () => {
+    const flat = await expectSuccessfulCompile("array-runtime-flat.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(flat, { status: 0, stdout: "5\n1\n2\n3\n[object Array]\n[object Array]\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(flat);
+    } finally {
+      await flat.cleanup();
+    }
+
+    const depthZero = await expectSuccessfulCompile("array-runtime-flat-depth-zero.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(depthZero, { status: 0, stdout: "3\n1\n2\n3\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(depthZero);
+    } finally {
+      await depthZero.cleanup();
+    }
+  });
+
+  test("converts runtime aggregates to strings", async () => {
+    const cases = [
+      ["string-conversion-object.ts", "[object Object]\n"],
+      ["string-conversion-array.ts", "a,b,c\n"],
+      ["string-conversion-nested-array.ts", "a,1,2,true\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases);
+  });
+
+  test("supports Object.freeze, Object.seal, and Object.isExtensible predicates", async () => {
+    const freeze = await expectSuccessfulCompile("object-runtime-freeze.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(freeze, { status: 0, stdout: "true\ntrue\nfalse\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(freeze);
+    } finally {
+      await freeze.cleanup();
+    }
+
+    const seal = await expectSuccessfulCompile("object-runtime-seal.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(seal, { status: 0, stdout: "true\nx\nnew\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(seal);
+    } finally {
+      await seal.cleanup();
     }
   });
 
