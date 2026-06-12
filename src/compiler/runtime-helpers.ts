@@ -37,6 +37,7 @@ export type RuntimeHelper =
   | "arrayOwnPropertyNames"
   | "arrayOwnPropertyDescriptors"
   | "objectOwnPropertyDescriptors"
+  | "objectIs"
   | "valueTruthy"
   | "valuePrint"
   | "valueToString"
@@ -62,6 +63,8 @@ export type RuntimeHelper =
   | "arrayAt"
   | "arrayCopyWithin"
   | "arraySlice"
+  | "arraySplice"
+  | "arrayFlat"
   | "arrayJoin"
   | "arrayConcat"
   | "arrayAppendElements"
@@ -141,6 +144,7 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["objectOwnPropertyNames", ["arrayNew", "arraySet", "valueBoxString"]],
   ["arrayOwnPropertyNames", ["arrayLength", "arrayHasOwnIndex", "arrayNew", "arraySet", "arrayPush", "valueBoxString", "indexToString", "objectOwnPropertyNames", "arrayAppendElements"]],
   ["objectOwnPropertyDescriptors", ["objectNew", "objectOwnPropertyDescriptor", "objectSet"]],
+  ["objectIs", ["valueStringLength", "valueStringPtr", "memcmp", "valueObjectPtr", "valueArrayPtr"]],
   ["valueTruthy", ["valueStringLength"]],
   ["indexToString", ["malloc"]],
   ["arrayGet", ["arrayLength"]],
@@ -166,6 +170,8 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["arrayAt", ["arrayLength"]],
   ["arrayCopyWithin", ["arrayLength", "arrayHasOwnIndex", "arraySet", "arrayDelete"]],
   ["arraySlice", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet"]],
+  ["arraySplice", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet", "arrayGet", "arraySetLength", "arrayDelete"]],
+  ["arrayFlat", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arrayGet", "valueIsArray", "valueArrayPtr", "arraySet"]],
   ["arrayJoin", ["arrayLength", "arrayHasOwnIndex", "valueToString", "malloc", "memcpy"]],
   ["arrayConcat", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet", "arrayGet", "valueIsArray", "valueArrayPtr"]],
   ["arrayAppendElements", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "arrayPush"]],
@@ -1707,6 +1713,176 @@ exit:
 }
 `);
   }
+  if (runtime.used.has("arraySplice")) {
+    definitions.push(`define ptr @arraySplice(ptr %array, i64 %start, i64 %deleteCount, i64 %itemCount, ptr %items) {
+entry:
+  %length = call i64 @arrayLength(ptr %array)
+  %start.negative = icmp slt i64 %start, 0
+  %start.from.end = add i64 %length, %start
+  %start.normalized = select i1 %start.negative, i64 %start.from.end, i64 %start
+  %start.low = icmp slt i64 %start.normalized, 0
+  %start.clamped.low = select i1 %start.low, i64 0, i64 %start.normalized
+  %start.high = icmp sgt i64 %start.clamped.low, %length
+  %from = select i1 %start.high, i64 %length, i64 %start.clamped.low
+  %delete.too.negative = icmp slt i64 %deleteCount, 0
+  %delete.negative = select i1 %delete.too.negative, i64 0, i64 %deleteCount
+  %remaining = sub i64 %length, %from
+  %delete.too.big = icmp sgt i64 %delete.negative, %remaining
+  %actual.delete = select i1 %delete.too.big, i64 %remaining, i64 %delete.negative
+  %removed = call ptr @arrayNew(i64 %actual.delete)
+  br label %removed.scan
+removed.scan:
+  %r.i = phi i64 [ 0, %entry ], [ %r.next, %r.advance ]
+  %r.done = icmp eq i64 %r.i, %actual.delete
+  br i1 %r.done, label %shift, label %r.copy
+r.copy:
+  %src.index = add i64 %from, %r.i
+  %r.has = call i1 @arrayHasOwnIndex(ptr %array, i64 %src.index)
+  br i1 %r.has, label %r.copy.present, label %r.copy.hole
+r.copy.present:
+  %r.value = call i64 @arrayGet(ptr %array, i64 %src.index)
+  br label %r.copy.store
+r.copy.hole:
+  %r.value.hole = call i64 @arrayGet(ptr %array, i64 %src.index)
+  br label %r.copy.store
+r.copy.store:
+  %r.candidate = phi i64 [ %r.value, %r.copy.present ], [ %r.value.hole, %r.copy.hole ]
+  call void @arraySet(ptr %removed, i64 %r.i, i64 %r.candidate)
+  br label %r.advance
+r.advance:
+  %r.next = add i64 %r.i, 1
+  br label %removed.scan
+shift:
+  %tail.count = sub i64 %length, %from
+  %tail.count.sub.delete = sub i64 %tail.count, %actual.delete
+  br label %tail.scan
+tail.scan:
+  %t.i = phi i64 [ 0, %shift ], [ %t.next, %t.advance ]
+  %t.done = icmp eq i64 %t.i, %tail.count.sub.delete
+  br i1 %t.done, label %insert, label %t.body
+t.body:
+  %t.from = add i64 %from, %actual.delete
+  %t.src = add i64 %t.from, %t.i
+  %t.dst = add i64 %from, %t.i
+  %t.has = call i1 @arrayHasOwnIndex(ptr %array, i64 %t.src)
+  br i1 %t.has, label %t.copy, label %t.delete
+t.copy:
+  %t.value = call i64 @arrayGet(ptr %array, i64 %t.src)
+  call void @arraySet(ptr %array, i64 %t.dst, i64 %t.value)
+  br label %t.advance
+t.delete:
+  call void @arrayDelete(ptr %array, i64 %t.dst)
+  br label %t.advance
+t.advance:
+  %t.next = add i64 %t.i, 1
+  br label %tail.scan
+insert:
+  %new.length.base = sub i64 %length, %actual.delete
+  %new.length = add i64 %new.length.base, %itemCount
+  call void @arraySetLength(ptr %array, i64 %new.length)
+  %shift.back.count = sub i64 %new.length.base, %from
+  br label %shift.back.scan
+shift.back.scan:
+  %b.i = phi i64 [ 0, %insert ], [ %b.next, %b.advance ]
+  %b.done = icmp eq i64 %b.i, %shift.back.count
+  br i1 %b.done, label %write.items, label %b.body
+b.body:
+  %b.reverse = sub i64 %shift.back.count, 1
+  %b.offset = sub i64 %b.reverse, %b.i
+  %b.from = add i64 %from, %b.offset
+  %b.to = add i64 %from, %itemCount
+  %b.to.add = add i64 %b.to, %b.offset
+  %b.has = call i1 @arrayHasOwnIndex(ptr %array, i64 %b.from)
+  br i1 %b.has, label %b.copy, label %b.delete
+b.copy:
+  %b.value = call i64 @arrayGet(ptr %array, i64 %b.from)
+  call void @arraySet(ptr %array, i64 %b.to.add, i64 %b.value)
+  br label %b.advance
+b.delete:
+  call void @arrayDelete(ptr %array, i64 %b.to.add)
+  br label %b.advance
+b.advance:
+  %b.next = add i64 %b.i, 1
+  br label %shift.back.scan
+write.items:
+  br label %items.scan
+items.scan:
+  %i.i = phi i64 [ 0, %write.items ], [ %i.next, %i.advance ]
+  %i.done = icmp eq i64 %i.i, %itemCount
+  br i1 %i.done, label %done, label %i.body
+i.body:
+  %i.dst = add i64 %from, %i.i
+  %i.has = call i1 @arrayHasOwnIndex(ptr %items, i64 %i.i)
+  br i1 %i.has, label %i.copy, label %i.advance
+i.copy:
+  %i.value = call i64 @arrayGet(ptr %items, i64 %i.i)
+  call void @arraySet(ptr %array, i64 %i.dst, i64 %i.value)
+  br label %i.advance
+i.advance:
+  %i.next = add i64 %i.i, 1
+  br label %items.scan
+done:
+  ret ptr %removed
+}
+`);
+  }
+  if (runtime.used.has("arrayFlat")) {
+    definitions.push(`define ptr @arrayFlat(ptr %array, i64 %depth) {
+entry:
+  %out = call ptr @arrayNew(i64 0)
+  %out.length = alloca i64
+  store i64 0, ptr %out.length
+  %length = call i64 @arrayLength(ptr %array)
+  br label %outer.scan
+outer.scan:
+  %o.i = phi i64 [ 0, %entry ], [ %o.next, %o.advance ]
+  %o.done = icmp eq i64 %o.i, %length
+  br i1 %o.done, label %exit, label %o.body
+o.body:
+  %o.has = call i1 @arrayHasOwnIndex(ptr %array, i64 %o.i)
+  br i1 %o.has, label %o.present, label %o.advance
+o.present:
+  %o.value = call i64 @arrayGet(ptr %array, i64 %o.i)
+  %o.is.array = call i1 @valueIsArray(i64 %o.value)
+  br i1 %o.is.array, label %o.flatten, label %o.copy
+o.copy:
+  %cur = load i64, ptr %out.length
+  call void @arraySet(ptr %out, i64 %cur, i64 %o.value)
+  %next.cur = add i64 %cur, 1
+  store i64 %next.cur, ptr %out.length
+  br label %o.advance
+o.advance:
+  %o.next = add i64 %o.i, 1
+  br label %outer.scan
+o.flatten:
+  %depth.positive = icmp sgt i64 %depth, 0
+  br i1 %depth.positive, label %o.spread, label %o.copy
+o.spread:
+  %o.inner = call ptr @valueArrayPtr(i64 %o.value)
+  %o.inner.length = call i64 @arrayLength(ptr %o.inner)
+  br label %o.inner.scan
+o.inner.scan:
+  %i.i = phi i64 [ 0, %o.spread ], [ %i.next, %i.advance ]
+  %i.done = icmp eq i64 %i.i, %o.inner.length
+  br i1 %i.done, label %o.advance, label %i.body
+i.body:
+  %i.has = call i1 @arrayHasOwnIndex(ptr %o.inner, i64 %i.i)
+  br i1 %i.has, label %i.copy, label %i.advance
+i.copy:
+  %i.value = call i64 @arrayGet(ptr %o.inner, i64 %i.i)
+  %cur.i = load i64, ptr %out.length
+  call void @arraySet(ptr %out, i64 %cur.i, i64 %i.value)
+  %next.cur.i = add i64 %cur.i, 1
+  store i64 %next.cur.i, ptr %out.length
+  br label %i.advance
+i.advance:
+  %i.next = add i64 %i.i, 1
+  br label %o.inner.scan
+exit:
+  ret ptr %out
+}
+`);
+  }
   if (runtime.used.has("arrayConcat")) {
     definitions.push(`define ptr @arrayConcat(ptr %left, ptr %args) {
 entry:
@@ -3149,6 +3325,73 @@ advance:
   br label %scan
 exit:
   ret ptr %out
+}
+`);
+  }
+  if (runtime.used.has("objectIs")) {
+    definitions.push(`define i1 @objectIs(i64 %left, i64 %right) {
+entry:
+  %left.d = bitcast i64 %left to double
+  %right.d = bitcast i64 %right to double
+  %same.bits = icmp eq i64 %left, %right
+  br i1 %same.bits, label %check.signed.zero, label %check.strings
+check.signed.zero:
+  %is.zero.l = fcmp oeq double %left.d, 0.0
+  %is.zero.r = fcmp oeq double %right.d, 0.0
+  %both.zero = and i1 %is.zero.l, %is.zero.r
+  br i1 %both.zero, label %check.signs, label %true
+check.signs:
+  %left.sign = and i64 %left, -9223372036854775808
+  %right.sign = and i64 %right, -9223372036854775808
+  %same.sign = icmp eq i64 %left.sign, %right.sign
+  br i1 %same.sign, label %true, label %false
+check.strings:
+  %left.tag = and i64 %left, -281474976710656
+  %right.tag = and i64 %right, -281474976710656
+  %left.string = icmp eq i64 %left.tag, 9221683186994511872
+  %right.string = icmp eq i64 %right.tag, 9221683186994511872
+  %both.strings = and i1 %left.string, %right.string
+  br i1 %both.strings, label %string.compare, label %check.objects
+string.compare:
+  %left.len = call i64 @valueStringLength(i64 %left)
+  %right.len = call i64 @valueStringLength(i64 %right)
+  %same.len = icmp eq i64 %left.len, %right.len
+  br i1 %same.len, label %string.bytes, label %false
+string.bytes:
+  %left.ptr = call ptr @valueStringPtr(i64 %left)
+  %right.ptr = call ptr @valueStringPtr(i64 %right)
+  %cmp = call i32 @memcmp(ptr %left.ptr, ptr %right.ptr, i64 %left.len)
+  %same.bytes = icmp eq i32 %cmp, 0
+  br i1 %same.bytes, label %true, label %false
+check.objects:
+  %left.object = icmp eq i64 %left.tag, 9221120237041090560
+  %right.object = icmp eq i64 %right.tag, 9221120237041090560
+  %both.objects = and i1 %left.object, %right.object
+  br i1 %both.objects, label %object.compare, label %check.arrays
+object.compare:
+  %left.obj.ptr = call ptr @valueObjectPtr(i64 %left)
+  %right.obj.ptr = call ptr @valueObjectPtr(i64 %right)
+  %same.obj.ptr = icmp eq ptr %left.obj.ptr, %right.obj.ptr
+  br i1 %same.obj.ptr, label %true, label %false
+check.arrays:
+  %left.array = icmp eq i64 %left.tag, 9221401712017801216
+  %right.array = icmp eq i64 %right.tag, 9221401712017801216
+  %both.arrays = and i1 %left.array, %right.array
+  br i1 %both.arrays, label %array.compare, label %check.nan
+array.compare:
+  %left.arr.ptr = call ptr @valueArrayPtr(i64 %left)
+  %right.arr.ptr = call ptr @valueArrayPtr(i64 %right)
+  %same.arr.ptr = icmp eq ptr %left.arr.ptr, %right.arr.ptr
+  br i1 %same.arr.ptr, label %true, label %false
+check.nan:
+  %left.nan = fcmp uno double %left.d, 0.0
+  %right.nan = fcmp uno double %right.d, 0.0
+  %both.nan = and i1 %left.nan, %right.nan
+  br i1 %both.nan, label %true, label %false
+true:
+  ret i1 true
+false:
+  ret i1 false
 }
 `);
   }

@@ -618,6 +618,18 @@ function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitCo
     return emitRuntimeArraySliceOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeArraySplice") {
+    return emitRuntimeArraySpliceOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArraySpliceStatement") {
+    return emitRuntimeArraySpliceStatementOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArrayFlat") {
+    return emitRuntimeArrayFlatOperation(operation, context);
+  }
+
   if (operation.kind === "runtimeArrayConcat") {
     return emitRuntimeArrayConcatOperation(operation, context);
   }
@@ -1069,6 +1081,96 @@ function emitRuntimeArraySliceOperation(
   return [`  ${pointerName} = alloca ptr`, ...array.lines, ...start.lines, ...end.lines, `  ${result} = call ptr @arraySlice(ptr ${array.value}, i64 ${start.value}, i64 ${end.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
+function emitRuntimeArraySpliceOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArraySplice" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  const start = emitArrayIndex(operation.start, context);
+  const lines = [`  ${pointerName} = alloca ptr`, ...array.lines, ...start.lines];
+  let deleteCountArg: string;
+  if (operation.deleteCount === undefined) {
+    const length = `%arr.len.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "arrayLength");
+    lines.push(`  ${length} = call i64 @arrayLength(ptr ${array.value})`);
+    deleteCountArg = length;
+  } else {
+    const deleteCount = emitArrayIndex(operation.deleteCount, context);
+    lines.push(...deleteCount.lines);
+    deleteCountArg = deleteCount.value;
+  }
+  const items = operation.items.map((item) => emitValueExpression(item, context));
+  const itemsName = `%arr.splice.items.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  lines.push(`  ${itemsName} = call ptr @arrayNew(i64 ${items.length})`);
+  for (let index = 0; index < items.length; index += 1) {
+    const value = items[index];
+    lines.push(...value.lines, `  call void @arraySet(ptr ${itemsName}, i64 ${index}, i64 ${value.value})`);
+  }
+  const result = `%arr.rt.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  useRuntimeHelper(context.runtime, "arraySplice");
+  return [
+    ...lines,
+    `  ${result} = call ptr @arraySplice(ptr ${array.value}, i64 ${start.value}, i64 ${deleteCountArg}, i64 ${items.length}, ptr ${itemsName})`,
+    `  store ptr ${result}, ptr ${pointerName}`
+  ];
+}
+
+function emitRuntimeArraySpliceStatementOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArraySpliceStatement" }>,
+  context: EmitContext
+): string[] {
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  const start = emitArrayIndex(operation.start, context);
+  const lines = [...array.lines, ...start.lines];
+  let deleteCountArg: string;
+  if (operation.deleteCount === undefined) {
+    const length = `%arr.len.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "arrayLength");
+    lines.push(`  ${length} = call i64 @arrayLength(ptr ${array.value})`);
+    deleteCountArg = length;
+  } else {
+    const deleteCount = emitArrayIndex(operation.deleteCount, context);
+    lines.push(...deleteCount.lines);
+    deleteCountArg = deleteCount.value;
+  }
+  const items = operation.items.map((item) => emitValueExpression(item, context));
+  const itemsName = `%arr.splice.items.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  lines.push(`  ${itemsName} = call ptr @arrayNew(i64 ${items.length})`);
+  for (let index = 0; index < items.length; index += 1) {
+    const value = items[index];
+    lines.push(...value.lines, `  call void @arraySet(ptr ${itemsName}, i64 ${index}, i64 ${value.value})`);
+  }
+  useRuntimeHelper(context.runtime, "arraySplice");
+  return [...lines, `  call ptr @arraySplice(ptr ${array.value}, i64 ${start.value}, i64 ${deleteCountArg}, i64 ${items.length}, ptr ${itemsName})`];
+}
+
+function emitRuntimeArrayFlatOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFlat" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  const depth = emitArrayIndex(operation.depth, context);
+  const result = `%arr.rt.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  useRuntimeHelper(context.runtime, "arrayFlat");
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...array.lines,
+    ...depth.lines,
+    `  ${result} = call ptr @arrayFlat(ptr ${array.value}, i64 ${depth.value})`,
+    `  store ptr ${result}, ptr ${pointerName}`
+  ];
+}
+
 function emitRuntimeArrayConcatOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayConcat" }>,
   context: EmitContext
@@ -1081,7 +1183,7 @@ function emitRuntimeArrayConcatOperation(
       return [emitValueExpression(value.value, context)];
     }
     const elements: JsValue[] = [];
-    for (let index = 0; index < value.length; index++) {
+    for (let index = 0; index < value.length; index += 1) {
       elements.push(emitValueExpression({ kind: "number", value: { kind: "arrayAccess", arrayName: value.arrayName, index: { kind: "literal", value: index } } }, context));
     }
     return elements;
@@ -1091,7 +1193,7 @@ function emitRuntimeArrayConcatOperation(
   const result = `%arr.rt.${context.arrayIndex}`;
   context.arrayIndex += 1;
   const lines = [`  ${pointerName} = alloca ptr`, ...left.lines, `  ${argsName} = call ptr @arrayNew(i64 ${values.length})`];
-  for (let index = 0; index < values.length; index++) {
+  for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
     lines.push(...value.lines, `  call void @arraySet(ptr ${argsName}, i64 ${index}, i64 ${value.value})`);
   }
@@ -2411,6 +2513,29 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     return { lines: [...value.lines, `  ${name} = call i1 @valueTruthy(i64 ${value.value})`], value: name };
   }
 
+  if (condition.kind === "runtimeArrayEvery" || condition.kind === "runtimeArraySome") {
+    const array = emitRuntimeArrayPointer(condition.arrayName, context);
+    const length = `%arr.len.${context.numIndex}`;
+    context.numIndex += 1;
+    const isEmpty = `%cmp.${context.cmpIndex}`;
+    context.cmpIndex += 1;
+    useRuntimeHelper(context.runtime, "arrayLength");
+    const lines = [...array.lines, `  ${length} = call i64 @arrayLength(ptr ${array.value})`, `  ${isEmpty} = icmp eq i64 ${length}, 0`];
+    if (condition.kind === "runtimeArrayEvery") {
+      return { lines, value: isEmpty };
+    }
+    return { lines, value: "false" };
+  }
+
+  if (condition.kind === "objectIs") {
+    const left = emitValueExpression(condition.left, context);
+    const right = emitValueExpression(condition.right, context);
+    const name = `%cmp.${context.cmpIndex}`;
+    context.cmpIndex += 1;
+    useRuntimeHelper(context.runtime, "objectIs");
+    return { lines: [...left.lines, ...right.lines, `  ${name} = call i1 @objectIs(i64 ${left.value}, i64 ${right.value})`], value: name };
+  }
+
   return undefined;
 }
 
@@ -2852,6 +2977,20 @@ function emitSimpleNumberExpression(
     return {
       lines: [],
       value: llvmDoubleLiteral(expression.value)
+    };
+  }
+
+  if (expression.kind === "nan") {
+    return {
+      lines: [],
+      value: "0x7FF8000000000000"
+    };
+  }
+
+  if (expression.kind === "negatedZero") {
+    return {
+      lines: [],
+      value: "0x8000000000000000"
     };
   }
 
