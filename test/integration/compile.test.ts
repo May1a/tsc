@@ -573,15 +573,13 @@ describe("tscn CLI", () => {
   });
 
   test("rejects unsupported object runtime boundaries", async () => {
-    const fixtures = ["object-spread.ts", "object-shorthand.ts", "object-method.ts"];
+    const fixtures = ["object-method.ts"];
 
     await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 
   test("explains unsupported object runtime boundaries precisely", async () => {
     const expectations = new Map([
-      ["object-spread.ts", "Object spread properties are not supported"],
-      ["object-shorthand.ts", "Object shorthand properties are not supported"],
       ["object-method.ts", "Object methods are not supported"]
     ]);
 
@@ -614,7 +612,6 @@ describe("tscn CLI", () => {
       "object-define-properties-shorthand.ts",
       "object-define-properties-method.ts",
       "object-define-properties-dynamic-boolean.ts",
-      "array-runtime-slice-negative-start.ts",
       "runtime-object-truthiness.ts"
     ];
 
@@ -623,17 +620,9 @@ describe("tscn CLI", () => {
 
   test("rejects unsupported aggregate expansion boundaries", async () => {
     const fixtures = [
-      "object-keys-unknown-primitive.ts",
-      "object-values-unknown-primitive.ts",
-      "object-entries-unknown-primitive.ts",
-      "object-get-own-property-descriptor-unknown-primitive.ts",
-      "object-get-own-property-names-unknown-primitive.ts",
-      "object-get-own-property-descriptors-primitive.ts",
       "object-from-entries-non-array.ts",
       "object-from-entries-entry-non-array.ts",
       "array-runtime-concat-fixed.ts",
-      "array-runtime-fill-negative-start.ts",
-      "array-runtime-copy-within-negative-target.ts",
       "array-runtime-reverse-extra-arg.ts"
     ];
 
@@ -2387,6 +2376,53 @@ describe("tscn expanded runtime roadmap", () => {
     }
   });
 
+  test("normalizes negative runtime array ranges", async () => {
+    const sliceStart = await expectSuccessfulCompile("array-runtime-slice-negative-start.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(sliceStart, { status: 0, stdout: "1\nx\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(sliceStart);
+    } finally {
+      await sliceStart.cleanup();
+    }
+
+    const sliceRange = await expectSuccessfulCompile("array-runtime-slice-negative-range.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(sliceRange, { status: 0, stdout: "1\nb\n", stderr: "" });
+    } finally {
+      await sliceRange.cleanup();
+    }
+
+    const fillStart = await expectSuccessfulCompile("array-runtime-fill-negative-start.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(fillStart, { status: 0, stdout: "x\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(fillStart);
+    } finally {
+      await fillStart.cleanup();
+    }
+
+    const fillRange = await expectSuccessfulCompile("array-runtime-fill-negative-range.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(fillRange, { status: 0, stdout: "a\nx\nc\n", stderr: "" });
+    } finally {
+      await fillRange.cleanup();
+    }
+
+    const copyTarget = await expectSuccessfulCompile("array-runtime-copy-within-negative-target.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(copyTarget, { status: 0, stdout: "a\na\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(copyTarget);
+    } finally {
+      await copyTarget.cleanup();
+    }
+
+    const copyRange = await expectSuccessfulCompile("array-runtime-copy-within-negative-range.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(copyRange, { status: 0, stdout: "a\nb\na\nb\n", stderr: "" });
+    } finally {
+      await copyRange.cleanup();
+    }
+  });
+
   test("converts supported JSValues to strings and joins mixed values", async () => {
     const conversion = await expectSuccessfulCompile("value-string-conversion.ts", { link: true });
     try {
@@ -2441,6 +2477,48 @@ describe("tscn expanded runtime roadmap", () => {
     }
   });
 
+  test("safely introspects primitive Object receivers", async () => {
+    const cases = [
+      ["object-keys-unknown-primitive.ts", "0\n"],
+      ["object-values-unknown-primitive.ts", "0\n"],
+      ["object-entries-unknown-primitive.ts", "0\n"],
+      ["object-get-own-property-descriptor-unknown-primitive.ts", "undefined\n"],
+      ["object-get-own-property-names-unknown-primitive.ts", "0\n"],
+      ["object-get-own-property-descriptors-primitive.ts", "0\n"],
+      ["object-values-boolean-primitive.ts", "0\n"],
+      ["object-get-own-property-names-boolean-primitive.ts", "0\n"],
+      ["object-get-own-property-descriptors-number-empty.ts", "0\n"]
+    ] as const;
+
+    await Promise.all(cases.map(async ([fixture, stdout]) => {
+      const result = await expectSuccessfulCompile(fixture, { link: true });
+      try {
+        await expectNativeBehaviorIfAvailable(result, { status: 0, stdout, stderr: "" });
+        await expectLlvmAsVerificationIfAvailable(result);
+      } finally {
+        await result.cleanup();
+      }
+    }));
+  });
+
+  test("introspects boxed aggregate own property names and descriptors", async () => {
+    const names = await expectSuccessfulCompile("value-runtime-aggregate-own-property-names.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(names, { status: 0, stdout: "2\nvisible\nhidden\n3\n0\n2\nlength\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(names);
+    } finally {
+      await names.cleanup();
+    }
+
+    const descriptors = await expectSuccessfulCompile("value-runtime-aggregate-own-property-descriptors.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(descriptors, { status: 0, stdout: "yes\ntrue\ntrue\ntrue\nsecret\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(descriptors);
+    } finally {
+      await descriptors.cleanup();
+    }
+  });
+
   test("returns own property names and descriptor maps", async () => {
     const objectNames = await expectSuccessfulCompile("object-runtime-get-own-property-names.ts", { link: true });
     try {
@@ -2464,6 +2542,45 @@ describe("tscn expanded runtime roadmap", () => {
       await expectLlvmAsVerificationIfAvailable(descriptors);
     } finally {
       await descriptors.cleanup();
+    }
+  });
+
+  test("supports runtime object literal shorthand and spread", async () => {
+    const shorthand = await expectSuccessfulCompile("object-shorthand.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(shorthand, { status: 0, stdout: "1\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(shorthand);
+    } finally {
+      await shorthand.cleanup();
+    }
+
+    const spread = await expectSuccessfulCompile("object-spread.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(spread, { status: 0, stdout: "2\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(spread);
+    } finally {
+      await spread.cleanup();
+    }
+
+    const runtimeShorthand = await expectSuccessfulCompile("object-runtime-shorthand.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(runtimeShorthand, { status: 0, stdout: "x\n", stderr: "" });
+    } finally {
+      await runtimeShorthand.cleanup();
+    }
+
+    const overwrite = await expectSuccessfulCompile("object-runtime-spread-overwrite.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(overwrite, { status: 0, stdout: "new\n", stderr: "" });
+    } finally {
+      await overwrite.cleanup();
+    }
+
+    const nonenumerable = await expectSuccessfulCompile("object-runtime-spread-nonenumerable.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(nonenumerable, { status: 0, stdout: "1\nyes\nundefined\n", stderr: "" });
+    } finally {
+      await nonenumerable.cleanup();
     }
   });
 
@@ -2507,6 +2624,30 @@ describe("tscn expanded runtime roadmap", () => {
       await expectLlvmAsVerificationIfAvailable(boxed);
     } finally {
       await boxed.cleanup();
+    }
+  });
+
+  test("supports runtime array literal spread", async () => {
+    const spread = await expectSuccessfulCompile("array-runtime-spread.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(spread, { status: 0, stdout: "2\na\nb\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(spread);
+    } finally {
+      await spread.cleanup();
+    }
+
+    const holes = await expectSuccessfulCompile("array-runtime-spread-holes.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(holes, { status: 0, stdout: "4\nundefined\n3\n", stderr: "" });
+    } finally {
+      await holes.cleanup();
+    }
+
+    const mixed = await expectSuccessfulCompile("array-runtime-spread-mixed.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(mixed, { status: 0, stdout: "5\n0\na\nb\ntail\nc\n", stderr: "" });
+    } finally {
+      await mixed.cleanup();
     }
   });
 

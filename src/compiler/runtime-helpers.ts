@@ -28,11 +28,14 @@ export type RuntimeHelper =
   | "valueObjectValues"
   | "valueObjectEntries"
   | "valueObjectOwnPropertyDescriptor"
+  | "valueObjectOwnPropertyNames"
+  | "valueObjectOwnPropertyDescriptors"
   | "objectEntries"
   | "objectFromEntries"
   | "arrayEntries"
   | "objectOwnPropertyNames"
   | "arrayOwnPropertyNames"
+  | "arrayOwnPropertyDescriptors"
   | "objectOwnPropertyDescriptors"
   | "valueTruthy"
   | "valuePrint"
@@ -121,10 +124,12 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["valueObjectDelete", ["valueObjectPtr", "objectDelete"]],
   ["valueArrayDelete", ["valueArrayPtr", "arrayDelete"]],
   ["valueObjectHasOwn", ["valueObjectPtr", "valueArrayPtr", "objectHasOwn", "arrayHasOwnIndex"]],
-  ["valueObjectKeys", ["valueObjectPtr", "valueArrayPtr", "objectKeys", "arrayKeys"]],
-  ["valueObjectValues", ["valueObjectPtr", "valueArrayPtr", "objectValues", "arrayValues"]],
-  ["valueObjectEntries", ["valueObjectPtr", "valueArrayPtr", "objectEntries", "arrayEntries"]],
+  ["valueObjectKeys", ["valueObjectPtr", "valueArrayPtr", "objectKeys", "arrayKeys", "arrayNew"]],
+  ["valueObjectValues", ["valueObjectPtr", "valueArrayPtr", "objectValues", "arrayValues", "arrayNew"]],
+  ["valueObjectEntries", ["valueObjectPtr", "valueArrayPtr", "objectEntries", "arrayEntries", "arrayNew"]],
   ["valueObjectOwnPropertyDescriptor", ["valueObjectPtr", "valueArrayPtr", "objectOwnPropertyDescriptor", "arrayOwnPropertyDescriptor", "arrayLengthPropertyDescriptor", "memcmp"]],
+  ["valueObjectOwnPropertyNames", ["valueObjectPtr", "valueArrayPtr", "objectOwnPropertyNames", "arrayOwnPropertyNames", "arrayNew"]],
+  ["valueObjectOwnPropertyDescriptors", ["valueObjectPtr", "valueArrayPtr", "objectOwnPropertyDescriptors", "arrayOwnPropertyDescriptors", "objectNew"]],
   ["objectEntries", ["arrayNew", "arraySet", "valueBoxString", "valueBoxArray"]],
   ["objectFromEntries", ["objectNew", "objectSet", "arrayLength", "arrayHasOwnIndex", "valueArrayPtr", "arrayGet", "valueStringPtr", "valueStringLength", "valueIsArray"]],
   ["arrayEntries", ["arrayLength", "arrayHasOwnIndex", "arrayNew", "arraySet", "indexToString", "valueBoxString", "valueBoxArray"]],
@@ -147,11 +152,12 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["arrayValues", ["arrayNew", "arraySet", "arrayHasOwnIndex"]],
   ["arrayOwnPropertyDescriptor", ["arrayHasOwnIndex", "arrayGet", "objectNew", "objectSet", "valueBoxObject"]],
   ["arrayLengthPropertyDescriptor", ["arrayLength", "objectNew", "objectSet", "valueBoxObject"]],
+  ["arrayOwnPropertyDescriptors", ["arrayLength", "arrayHasOwnIndex", "arrayOwnPropertyDescriptor", "arrayLengthPropertyDescriptor", "indexToString", "objectNew", "objectSet"]],
   ["arrayIncludes", ["arrayLength", "arrayHasOwnIndex", "valueStrictEquals", "valueStringLength", "valueStringPtr", "memcmp"]],
   ["arrayIndexOf", ["arrayLength", "arrayHasOwnIndex", "valueStrictEquals", "valueStringLength", "valueStringPtr", "memcmp"]],
   ["arrayLastIndexOf", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "valueStrictEquals"]],
   ["arrayAt", ["arrayLength"]],
-  ["arrayCopyWithin", ["arrayLength"]],
+  ["arrayCopyWithin", ["arrayLength", "arrayHasOwnIndex", "arraySet", "arrayDelete"]],
   ["arraySlice", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet"]],
   ["arrayJoin", ["arrayLength", "arrayHasOwnIndex", "valueToString", "malloc", "memcpy"]],
   ["arrayConcat", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet", "arrayGet", "valueIsArray", "valueArrayPtr"]],
@@ -494,15 +500,21 @@ missing:
 entry:
   %tag = and i64 %value, -281474976710656
   %is.object = icmp eq i64 %tag, 9221120237041090560
-  br i1 %is.object, label %object, label %array
+  br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.keys = call ptr @objectKeys(ptr %object.ptr)
   ret ptr %object.keys
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %primitive
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
   %array.keys = call ptr @arrayKeys(ptr %array.ptr)
   ret ptr %array.keys
+primitive:
+  %empty = call ptr @arrayNew(i64 0)
+  ret ptr %empty
 }
 `);
   }
@@ -511,15 +523,21 @@ array:
 entry:
   %tag = and i64 %value, -281474976710656
   %is.object = icmp eq i64 %tag, 9221120237041090560
-  br i1 %is.object, label %object, label %array
+  br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.values = call ptr @objectValues(ptr %object.ptr)
   ret ptr %object.values
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %primitive
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
   %array.values = call ptr @arrayValues(ptr %array.ptr)
   ret ptr %array.values
+primitive:
+  %empty = call ptr @arrayNew(i64 0)
+  ret ptr %empty
 }
 `);
   }
@@ -528,15 +546,21 @@ array:
 entry:
   %tag = and i64 %value, -281474976710656
   %is.object = icmp eq i64 %tag, 9221120237041090560
-  br i1 %is.object, label %object, label %array
+  br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.entries = call ptr @objectEntries(ptr %object.ptr)
   ret ptr %object.entries
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %primitive
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
   %array.entries = call ptr @arrayEntries(ptr %array.ptr)
   ret ptr %array.entries
+primitive:
+  %empty = call ptr @arrayNew(i64 0)
+  ret ptr %empty
 }
 `);
   }
@@ -553,6 +577,9 @@ object:
   %object.desc = call i64 @objectOwnPropertyDescriptor(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
   ret i64 %object.desc
 check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %primitive
+array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
   br i1 %is.length, label %array.length, label %array.index
 array.length:
@@ -561,6 +588,54 @@ array.length:
 array.index:
   %array.desc = call i64 @arrayOwnPropertyDescriptor(ptr %array.ptr, i64 %index)
   ret i64 %array.desc
+primitive:
+  ret i64 9222246136947933184
+}
+`);
+  }
+  if (runtime.used.has("valueObjectOwnPropertyNames")) {
+    definitions.push(`define ptr @valueObjectOwnPropertyNames(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  br i1 %is.object, label %object, label %check.array
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %object.names = call ptr @objectOwnPropertyNames(ptr %object.ptr)
+  ret ptr %object.names
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %primitive
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %array.names = call ptr @arrayOwnPropertyNames(ptr %array.ptr)
+  ret ptr %array.names
+primitive:
+  %empty = call ptr @arrayNew(i64 0)
+  ret ptr %empty
+}
+`);
+  }
+  if (runtime.used.has("valueObjectOwnPropertyDescriptors")) {
+    definitions.push(`define ptr @valueObjectOwnPropertyDescriptors(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  br i1 %is.object, label %object, label %check.array
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %object.descriptors = call ptr @objectOwnPropertyDescriptors(ptr %object.ptr)
+  ret ptr %object.descriptors
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %empty
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %array.descriptors = call ptr @arrayOwnPropertyDescriptors(ptr %array.ptr)
+  ret ptr %array.descriptors
+empty:
+  %empty.descriptors = call ptr @objectNew(i64 0)
+  ret ptr %empty.descriptors
 }
 `);
   }
@@ -1265,6 +1340,36 @@ entry:
 }
 `);
   }
+  if (runtime.used.has("arrayOwnPropertyDescriptors")) {
+    definitions.push(`@.array.desc.length = private unnamed_addr constant [7 x i8] c"length\\00"
+
+define ptr @arrayOwnPropertyDescriptors(ptr %array) {
+entry:
+  %length = call i64 @arrayLength(ptr %array)
+  %out = call ptr @objectNew(i64 0)
+  br label %scan
+scan:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %length.desc, label %check
+check:
+  %has = call i1 @arrayHasOwnIndex(ptr %array, i64 %i)
+  br i1 %has, label %copy, label %advance
+copy:
+  %key = call ptr @indexToString(i64 %i)
+  %desc = call i64 @arrayOwnPropertyDescriptor(ptr %array, i64 %i)
+  call void @objectSet(ptr %out, i64 1, ptr %key, i64 %desc)
+  br label %advance
+advance:
+  %next = add i64 %i, 1
+  br label %scan
+length.desc:
+  %length.desc.value = call i64 @arrayLengthPropertyDescriptor(ptr %array)
+  call void @objectSet(ptr %out, i64 6, ptr @.array.desc.length, i64 %length.desc.value)
+  ret ptr %out
+}
+`);
+  }
   if (runtime.used.has("arrayIncludes")) {
     definitions.push(`define i1 @arrayIncludes(ptr %array, i64 %needle) {
 entry:
@@ -1423,17 +1528,44 @@ missing:
   if (runtime.used.has("arrayCopyWithin")) {
     definitions.push(`define void @arrayCopyWithin(ptr %array, i64 %target, i64 %start, i64 %end) {
 entry:
+  %length = call i64 @arrayLength(ptr %array)
+  %target.negative = icmp slt i64 %target, 0
+  %target.from.end = add i64 %length, %target
+  %target.normalized = select i1 %target.negative, i64 %target.from.end, i64 %target
+  %target.low = icmp slt i64 %target.normalized, 0
+  %target.clamped.low = select i1 %target.low, i64 0, i64 %target.normalized
+  %target.high = icmp sgt i64 %target.clamped.low, %length
+  %to = select i1 %target.high, i64 %length, i64 %target.clamped.low
+  %start.negative = icmp slt i64 %start, 0
+  %start.from.end = add i64 %length, %start
+  %start.normalized = select i1 %start.negative, i64 %start.from.end, i64 %start
+  %start.low = icmp slt i64 %start.normalized, 0
+  %start.clamped.low = select i1 %start.low, i64 0, i64 %start.normalized
+  %start.high = icmp sgt i64 %start.clamped.low, %length
+  %from = select i1 %start.high, i64 %length, i64 %start.clamped.low
+  %end.negative = icmp slt i64 %end, 0
+  %end.from.end = add i64 %length, %end
+  %end.normalized = select i1 %end.negative, i64 %end.from.end, i64 %end
+  %end.low = icmp slt i64 %end.normalized, 0
+  %end.clamped.low = select i1 %end.low, i64 0, i64 %end.normalized
+  %end.high = icmp sgt i64 %end.clamped.low, %length
+  %final = select i1 %end.high, i64 %length, i64 %end.clamped.low
+  %available = sub i64 %final, %from
+  %available.negative = icmp slt i64 %available, 0
+  %positive.available = select i1 %available.negative, i64 0, i64 %available
+  %room = sub i64 %length, %to
+  %room.less = icmp slt i64 %room, %positive.available
+  %count = select i1 %room.less, i64 %room, i64 %positive.available
   %elements.slot = getelementptr i8, ptr %array, i64 16
   %elements = load ptr, ptr %elements.slot
-  %count = sub i64 %end, %start
   br label %scan
 scan:
   %i = phi i64 [ 0, %entry ], [ %next, %advance ]
   %done = icmp eq i64 %i, %count
   br i1 %done, label %exit, label %copy
 copy:
-  %from.index = add i64 %start, %i
-  %to.index = add i64 %target, %i
+  %from.index = add i64 %from, %i
+  %to.index = add i64 %to, %i
   %from.has = call i1 @arrayHasOwnIndex(ptr %array, i64 %from.index)
   br i1 %from.has, label %copy.present, label %copy.hole
 copy.present:
@@ -1456,7 +1588,24 @@ exit:
   if (runtime.used.has("arraySlice")) {
     definitions.push(`define ptr @arraySlice(ptr %array, i64 %start, i64 %end) {
 entry:
-  %out.length = sub i64 %end, %start
+  %length = call i64 @arrayLength(ptr %array)
+  %start.negative = icmp slt i64 %start, 0
+  %start.from.end = add i64 %length, %start
+  %start.normalized = select i1 %start.negative, i64 %start.from.end, i64 %start
+  %start.low = icmp slt i64 %start.normalized, 0
+  %start.clamped.low = select i1 %start.low, i64 0, i64 %start.normalized
+  %start.high = icmp sgt i64 %start.clamped.low, %length
+  %from = select i1 %start.high, i64 %length, i64 %start.clamped.low
+  %end.negative = icmp slt i64 %end, 0
+  %end.from.end = add i64 %length, %end
+  %end.normalized = select i1 %end.negative, i64 %end.from.end, i64 %end
+  %end.low = icmp slt i64 %end.normalized, 0
+  %end.clamped.low = select i1 %end.low, i64 0, i64 %end.normalized
+  %end.high = icmp sgt i64 %end.clamped.low, %length
+  %final = select i1 %end.high, i64 %length, i64 %end.clamped.low
+  %raw.out.length = sub i64 %final, %from
+  %empty.range = icmp slt i64 %raw.out.length, 0
+  %out.length = select i1 %empty.range, i64 0, i64 %raw.out.length
   %out = call ptr @arrayNew(i64 %out.length)
   %elements.slot = getelementptr i8, ptr %array, i64 16
   %elements = load ptr, ptr %elements.slot
@@ -1466,7 +1615,7 @@ scan:
   %done = icmp eq i64 %i, %out.length
   br i1 %done, label %exit, label %check
 check:
-  %source.index = add i64 %start, %i
+  %source.index = add i64 %from, %i
   %has = call i1 @arrayHasOwnIndex(ptr %array, i64 %source.index)
   br i1 %has, label %copy, label %advance
 copy:
@@ -1551,10 +1700,25 @@ exit:
   if (runtime.used.has("arrayFill")) {
     definitions.push(`define void @arrayFill(ptr %array, i64 %value, i64 %start, i64 %end) {
 entry:
+  %length = call i64 @arrayLength(ptr %array)
+  %start.negative = icmp slt i64 %start, 0
+  %start.from.end = add i64 %length, %start
+  %start.normalized = select i1 %start.negative, i64 %start.from.end, i64 %start
+  %start.low = icmp slt i64 %start.normalized, 0
+  %start.clamped.low = select i1 %start.low, i64 0, i64 %start.normalized
+  %start.high = icmp sgt i64 %start.clamped.low, %length
+  %from = select i1 %start.high, i64 %length, i64 %start.clamped.low
+  %end.negative = icmp slt i64 %end, 0
+  %end.from.end = add i64 %length, %end
+  %end.normalized = select i1 %end.negative, i64 %end.from.end, i64 %end
+  %end.low = icmp slt i64 %end.normalized, 0
+  %end.clamped.low = select i1 %end.low, i64 0, i64 %end.normalized
+  %end.high = icmp sgt i64 %end.clamped.low, %length
+  %final = select i1 %end.high, i64 %length, i64 %end.clamped.low
   br label %scan
 scan:
-  %i = phi i64 [ %start, %entry ], [ %next, %body ]
-  %done = icmp uge i64 %i, %end
+  %i = phi i64 [ %from, %entry ], [ %next, %body ]
+  %done = icmp uge i64 %i, %final
   br i1 %done, label %exit, label %body
 body:
   call void @arraySet(ptr %array, i64 %i, i64 %value)

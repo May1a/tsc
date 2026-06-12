@@ -1,7 +1,7 @@
 declare function print(value: unknown): void;
 
 const wrapper: { value?: unknown } = {};
-wrapper.value = 1;
+wrapper.value = true;
 const value: any = wrapper.value;
-const keys: unknown[] = Object.keys(value);
-print(keys.length);
+const names: unknown[] = Object.getOwnPropertyNames(value);
+print(names.length);

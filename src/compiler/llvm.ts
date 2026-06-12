@@ -10,6 +10,7 @@ import {
   type JsIrNumberOperator,
   type JsIrObjectValue,
   type JsIrOperation,
+  type JsIrRuntimeArrayElement,
   type JsIrRuntimeObjectValue,
   type JsIrStringExpression,
   type JsIrValueExpression
@@ -754,23 +755,50 @@ function emitRuntimeArrayLiteralOperation(
 ): string[] {
   useRuntimeHelper(context.runtime, "arrayNew");
   useRuntimeHelper(context.runtime, "arraySet");
+  useRuntimeHelper(context.runtime, "arrayPush");
+  useRuntimeHelper(context.runtime, "arrayConcat");
+  useRuntimeHelper(context.runtime, "valueBoxArray");
   const pointerName = variablePointerName(operation.name);
   const arrayValue: RuntimeArrayValue = { pointerName };
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   const lines = [
     `  ${pointerName} = alloca ptr`,
-    `  %${operation.name}.arr = call ptr @arrayNew(i64 ${operation.elements.length})`,
+    `  %${operation.name}.arr = call ptr @arrayNew(i64 ${runtimeArrayLiteralInitialLength(operation.elements)})`,
     `  store ptr %${operation.name}.arr, ptr ${arrayValue.pointerName}`
   ];
+  let fixedIndex = 0;
   for (let i = 0; i < operation.elements.length; i++) {
     const element = operation.elements[i];
     if (element.kind === "hole") {
+      fixedIndex += 1;
+      continue;
+    }
+    if (element.kind === "spread") {
+      const current = `%${operation.name}.spread.current.${i}`;
+      const source = emitRuntimeArrayPointer(element.arrayName, context);
+      const boxed = `%${operation.name}.spread.boxed.${i}`;
+      const args = `%${operation.name}.spread.args.${i}`;
+      const next = `%${operation.name}.spread.next.${i}`;
+      lines.push(...source.lines, `  ${current} = load ptr, ptr ${arrayValue.pointerName}`, `  ${boxed} = call i64 @valueBoxArray(ptr ${source.value})`, `  ${args} = call ptr @arrayNew(i64 1)`, `  call void @arraySet(ptr ${args}, i64 0, i64 ${boxed})`, `  ${next} = call ptr @arrayConcat(ptr ${current}, ptr ${args})`, `  store ptr ${next}, ptr ${arrayValue.pointerName}`);
       continue;
     }
     const value = emitValueExpression(element.value, context);
-    lines.push(...value.lines, `  call void @arraySet(ptr %${operation.name}.arr, i64 ${i}, i64 ${value.value})`);
+    if (operation.elements.some((candidate) => candidate.kind === "spread")) {
+      const current = `%${operation.name}.value.current.${i}`;
+      lines.push(...value.lines, `  ${current} = load ptr, ptr ${arrayValue.pointerName}`, `  call i64 @arrayPush(ptr ${current}, i64 ${value.value})`);
+    } else {
+      lines.push(...value.lines, `  call void @arraySet(ptr %${operation.name}.arr, i64 ${fixedIndex}, i64 ${value.value})`);
+      fixedIndex += 1;
+    }
   }
   return lines;
+}
+
+function runtimeArrayLiteralInitialLength(elements: readonly JsIrRuntimeArrayElement[]): number {
+  if (elements.some((element) => element.kind === "spread")) {
+    return 0;
+  }
+  return elements.length;
 }
 
 function emitObjectLiteralOperation(
@@ -959,6 +987,11 @@ function emitRuntimeObjectOwnPropertyNamesOperation(
     useRuntimeHelper(context.runtime, "arrayOwnPropertyNames");
     return [`  ${pointerName} = alloca ptr`, ...array.lines, `  ${result} = call ptr @arrayOwnPropertyNames(ptr ${array.value})`, `  store ptr ${result}, ptr ${pointerName}`];
   }
+  if (operation.targetKind === "value") {
+    const value = emitNamedValueBinding(operation.targetName, context);
+    useRuntimeHelper(context.runtime, "valueObjectOwnPropertyNames");
+    return [`  ${pointerName} = alloca ptr`, ...value.lines, `  ${result} = call ptr @valueObjectOwnPropertyNames(i64 ${value.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+  }
   const object = emitRuntimeObjectPointer(operation.targetName, context);
   useRuntimeHelper(context.runtime, "objectOwnPropertyNames");
   return [`  ${pointerName} = alloca ptr`, ...object.lines, `  ${result} = call ptr @objectOwnPropertyNames(ptr ${object.value})`, `  store ptr ${result}, ptr ${pointerName}`];
@@ -970,9 +1003,19 @@ function emitRuntimeObjectOwnPropertyDescriptorsOperation(
 ): string[] {
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
-  const object = emitRuntimeObjectPointer(operation.targetName, context);
   const result = `%obj.rt.${context.objectIndex}`;
   context.objectIndex += 1;
+  if (operation.targetKind === "value") {
+    const value = emitNamedValueBinding(operation.targetName, context);
+    useRuntimeHelper(context.runtime, "valueObjectOwnPropertyDescriptors");
+    return [`  ${pointerName} = alloca ptr`, ...value.lines, `  ${result} = call ptr @valueObjectOwnPropertyDescriptors(i64 ${value.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+  }
+  if (operation.targetKind === "array") {
+    const array = emitRuntimeArrayPointer(operation.targetName, context);
+    useRuntimeHelper(context.runtime, "arrayOwnPropertyDescriptors");
+    return [`  ${pointerName} = alloca ptr`, ...array.lines, `  ${result} = call ptr @arrayOwnPropertyDescriptors(ptr ${array.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+  }
+  const object = emitRuntimeObjectPointer(operation.targetName, context);
   useRuntimeHelper(context.runtime, "objectOwnPropertyDescriptors");
   return [`  ${pointerName} = alloca ptr`, ...object.lines, `  ${result} = call ptr @objectOwnPropertyDescriptors(ptr ${object.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
@@ -1113,7 +1156,7 @@ function knownShapeObjectToRuntimeValue(value: JsIrObjectValue): JsIrRuntimeObje
         if (field.value.kind === "object") {
           throw new Error("Nested known-shape object fields cannot be converted to runtime JSValue dictionaries yet");
         }
-        return [{ key: { kind: "literal" as const, value: field.name }, value: { kind: "number" as const, value: field.value.value } }];
+        return [{ kind: "field" as const, key: { kind: "literal" as const, value: field.name }, value: { kind: "number" as const, value: field.value.value } }];
       })
   };
 }
@@ -1127,8 +1170,15 @@ function emitRuntimeObjectLiteralStorage(
   useRuntimeHelper(context.runtime, "objectSet");
   const objectName = `%obj.rt.${context.objectIndex}`;
   context.objectIndex += 1;
-  const lines = [`  ${pointerName} = alloca ptr`, `  ${objectName} = call ptr @objectNew(i64 ${value.fields.length})`, `  store ptr ${objectName}, ptr ${pointerName}`];
+  const ownFieldCount = value.fields.filter((field) => field.kind === "field").length;
+  const lines = [`  ${pointerName} = alloca ptr`, `  ${objectName} = call ptr @objectNew(i64 ${ownFieldCount})`, `  store ptr ${objectName}, ptr ${pointerName}`];
   for (const field of value.fields) {
+    if (field.kind === "spread") {
+      const source = emitRuntimeObjectPointer(field.sourceName, context);
+      useRuntimeHelper(context.runtime, "objectAssign");
+      lines.push(...source.lines, `  call void @objectAssign(ptr ${objectName}, ptr ${source.value})`);
+      continue;
+    }
     const key = emitStringExpression(field.key, context);
     const fieldValue = emitValueExpression(field.value, context);
     lines.push(...key.lines, ...fieldValue.lines, `  call void @objectSet(ptr ${objectName}, i64 ${key.length}, ptr ${key.value}, i64 ${fieldValue.value})`);
