@@ -277,6 +277,10 @@ export type JsIrStringExpression =
       readonly kind: "stringMethod";
       readonly method: "trim" | "trimStart" | "trimEnd";
       readonly receiver: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "errorToString";
+      readonly objectName: string;
     };
 
 export type JsIrObjectFieldValue =
@@ -373,6 +377,7 @@ export type JsIrBindingValue =
       readonly kind: "runtimeObject";
       readonly name: string;
       readonly value?: JsIrRuntimeObjectValue;
+      readonly errorName?: string;
     }
   | {
       readonly kind: "closure";
@@ -645,6 +650,12 @@ export type JsIrOperation =
       readonly kind: "runtimeObjectCreate";
       readonly name: string;
       readonly prototypeName?: string;
+    }
+  | {
+      readonly kind: "runtimeErrorLiteral";
+      readonly name: string;
+      readonly errorName: string;
+      readonly message: JsIrValueExpression;
     }
   | {
       readonly kind: "runtimeObjectKeys";
@@ -1001,6 +1012,9 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   if (operation.kind === "runtimeObjectCreate") {
     return { kind: "runtimeObject", name: operation.name };
   }
+  if (operation.kind === "runtimeErrorLiteral") {
+    return { kind: "runtimeObject", name: operation.name, errorName: operation.errorName };
+  }
   if (operation.kind === "runtimeObjectKeys") {
     return { kind: "runtimeArray", name: operation.name };
   }
@@ -1248,6 +1262,9 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
   if (operation.kind === "constValue" || operation.kind === "throwValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore") {
     collectValueExpressionObjectNames(operation.value, names);
   }
+  if (operation.kind === "runtimeErrorLiteral") {
+    collectValueExpressionObjectNames(operation.message, names);
+  }
   if (operation.kind === "block") {
     for (const nested of operation.operations) {
       collectRuntimeShadowObjectNames(nested, names);
@@ -1435,9 +1452,16 @@ function lowerTryCatchStatement(
   if (!ts.isThrowStatement(throwStatement)) {
     return undefined;
   }
-  const thrown = lowerValueExpression(throwStatement.expression, bindings);
   const variable = statement.catchClause.variableDeclaration?.name;
-  if (thrown === undefined || variable === undefined || !ts.isIdentifier(variable)) {
+  if (variable === undefined || !ts.isIdentifier(variable)) {
+    return undefined;
+  }
+  const errorCatch = lowerErrorTryCatchStatement(statement, throwStatement, variable, bindings);
+  if (errorCatch !== undefined) {
+    return errorCatch;
+  }
+  const thrown = lowerValueExpression(throwStatement.expression, bindings);
+  if (thrown === undefined) {
     return undefined;
   }
   const catchBindings = new Map(bindings);
@@ -1447,6 +1471,93 @@ function lowerTryCatchStatement(
     return undefined;
   }
   return { kind: "block", operations: [{ kind: "constValue", name: variable.text, value: thrown }, ...operations] };
+}
+
+function lowerErrorTryCatchStatement(
+  statement: ts.TryStatement,
+  throwStatement: ts.ThrowStatement,
+  variable: ts.Identifier,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (statement.catchClause === undefined) {
+    return undefined;
+  }
+  const thrownExpression = unwrapTypeOnlyExpression(throwStatement.expression);
+  const errorOperation = lowerRuntimeErrorLiteral(`${variable.text}.thrown.${statement.pos}`, thrownExpression, bindings);
+  if (errorOperation !== undefined) {
+    const catchBindings = new Map(bindings);
+    catchBindings.set(variable.text, { kind: "runtimeObject", name: errorOperation.name, errorName: errorOperation.errorName });
+    const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
+    if (operations === undefined) {
+      return undefined;
+    }
+    return { kind: "block", operations: [errorOperation, ...operations] };
+  }
+  if (!ts.isIdentifier(thrownExpression)) {
+    return undefined;
+  }
+  const thrownBinding = bindings.get(thrownExpression.text);
+  if (thrownBinding?.kind !== "runtimeObject" && thrownBinding?.kind !== "runtimeArray") {
+    return undefined;
+  }
+  const catchBindings = new Map(bindings);
+  catchBindings.set(variable.text, thrownBinding);
+  const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
+  if (operations === undefined) {
+    return undefined;
+  }
+  return { kind: "block", operations: [...operations] };
+}
+
+const errorConstructorNames: ReadonlySet<string> = new Set(["Error"]);
+
+function lowerRuntimeErrorLiteral(
+  name: string,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Extract<JsIrOperation, { readonly kind: "runtimeErrorLiteral" }> | undefined {
+  let call: ts.NewExpression | ts.CallExpression | undefined;
+  if (ts.isNewExpression(expression) || ts.isCallExpression(expression)) {
+    call = expression;
+  }
+  if (call === undefined || !ts.isIdentifier(call.expression)) {
+    return undefined;
+  }
+  const errorName = call.expression.text;
+  if (!errorConstructorNames.has(errorName) || bindings.has(errorName)) {
+    return undefined;
+  }
+  const callArguments = call.arguments ?? [];
+  if (callArguments.length > 1) {
+    return undefined;
+  }
+  if (callArguments.length === 0) {
+    return { kind: "runtimeErrorLiteral", name, errorName, message: { kind: "string", value: { kind: "literal", value: "" } } };
+  }
+  const message = lowerErrorMessageValue(callArguments[0], bindings);
+  if (message === undefined) {
+    return undefined;
+  }
+  return { kind: "runtimeErrorLiteral", name, errorName, message };
+}
+
+function lowerErrorMessageValue(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  const argument = unwrapTypeOnlyExpression(expression);
+  if (ts.isIdentifier(argument) && argument.text === "undefined" && !bindings.has("undefined")) {
+    return { kind: "string", value: { kind: "literal", value: "" } };
+  }
+  const stringValue = lowerStringRuntimeExpression(argument, bindings);
+  if (stringValue !== undefined) {
+    return { kind: "string", value: stringValue };
+  }
+  const value = lowerValueExpression(argument, bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+  return { kind: "string", value: { kind: "stringConversion", value } };
 }
 
 function lowerExpressionStatement(
@@ -2720,6 +2831,10 @@ function lowerConstAggregateBinding(
   if (objectLiteral?.kind === "runtime") {
     return { kind: "runtimeObjectLiteral", name, value: objectLiteral.value };
   }
+  const errorLiteral = lowerRuntimeErrorLiteral(name, initializer, bindings);
+  if (errorLiteral !== undefined) {
+    return errorLiteral;
+  }
   const objectCreate = lowerRuntimeObjectCreateBinding(name, initializer, bindings);
   if (objectCreate !== undefined) {
     return objectCreate;
@@ -3514,6 +3629,12 @@ function lowerStringRuntimeExpression(
     const runtimeStringMethod = lowerRuntimeStringMethodExpression(expression, bindings);
     if (runtimeStringMethod !== undefined) {
       return runtimeStringMethod;
+    }
+    if (expression.expression.name.text === "toString" && expression.arguments.length === 0) {
+      const receiverBinding = bindings.get(expression.expression.expression.text);
+      if (receiverBinding?.kind === "runtimeObject" && receiverBinding.errorName !== undefined) {
+        return { kind: "errorToString", objectName: receiverBinding.name };
+      }
     }
     const arrayName = expression.expression.expression.text;
     if (expression.expression.name.text === "join" && bindings.get(arrayName)?.kind === "runtimeArray" && expression.arguments.length === 1) {
@@ -4313,7 +4434,7 @@ function lowerAggregateValueExpression(
   if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
     const binding = bindings.get(expression.expression.text);
     if (binding?.kind === "runtimeObject") {
-      return { kind: "objectDynamicAccess", objectName: expression.expression.text, key: { kind: "literal", value: expression.name.text } };
+      return { kind: "objectDynamicAccess", objectName: binding.name, key: { kind: "literal", value: expression.name.text } };
     }
     if (isBoxedAggregateCandidateBinding(binding)) {
       const value = lowerValueExpression(expression.expression, bindings);
@@ -4326,10 +4447,10 @@ function lowerAggregateValueExpression(
   if (ts.isIdentifier(expression)) {
     const binding = bindings.get(expression.text);
     if (binding?.kind === "runtimeObject") {
-      return { kind: "objectRef", name: expression.text };
+      return { kind: "objectRef", name: binding.name };
     }
     if (binding?.kind === "runtimeArray") {
-      return { kind: "arrayRef", name: expression.text };
+      return { kind: "arrayRef", name: binding.name };
     }
   }
 

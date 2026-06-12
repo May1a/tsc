@@ -3067,6 +3067,18 @@ describe("tscn expanded runtime roadmap", () => {
     }
   });
 
+  test("supports Error constructor objects with message, name, and toString", async () => {
+    const cases = [
+      ["error-constructor-message.ts", "boom\nError\ncall form\nError\n\nError\n"],
+      ["error-constructor-nonstring-message.ts", "42\nnull\ntrue\n"],
+      ["error-to-string.ts", "Error: boom\n"],
+      ["error-to-string-empty-message.ts", "Error\n"],
+      ["error-throw-and-recatch.ts", "boom\nError\nError: boom\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  }, roadmapIntegrationTimeoutMs);
+
   test("emits nested runtime helper dependencies once", async () => {
     const result = await expectSuccessfulCompile("value-string-conversion-array.ts");
     try {

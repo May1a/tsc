@@ -577,7 +577,7 @@ function emitObjectMutationOperation(operation: JsIrOperation, context: EmitCont
 }
 
 // eslint-disable-next-line max-statements -- Aggregate built-in emission stays centralized during runtime-shape transition.
-function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+function emitAggregateLiteralBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
   if (operation.kind === "arrayLiteral") {
     return emitArrayLiteralOperation(operation, context);
   }
@@ -596,6 +596,19 @@ function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitCo
 
   if (operation.kind === "runtimeObjectCreate") {
     return emitRuntimeObjectCreateOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeErrorLiteral") {
+    return emitRuntimeErrorLiteralOperation(operation, context);
+  }
+
+  return undefined;
+}
+
+function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+  const literalLines = emitAggregateLiteralBindingOperation(operation, context);
+  if (literalLines !== undefined) {
+    return literalLines;
   }
 
   if (operation.kind === "runtimeObjectKeys") {
@@ -626,6 +639,10 @@ function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitCo
     return emitRuntimeObjectOwnPropertyDescriptorsOperation(operation, context);
   }
 
+  return emitRuntimeArrayExpansionBindingOperation(operation, context);
+}
+
+function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
   if (operation.kind === "runtimeArraySlice") {
     return emitRuntimeArraySliceOperation(operation, context);
   }
@@ -903,6 +920,29 @@ function emitRuntimeObjectCreateOperation(
     `  ${pointerName} = alloca ptr`,
     ...prototypeLines,
     `  ${objectName} = call ptr @objectCreate(ptr ${prototype})`,
+    `  store ptr ${objectName}, ptr ${pointerName}`
+  ];
+}
+
+const errorClassIds = new Map<string, number>([["Error", 1]]);
+
+function emitRuntimeErrorLiteralOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeErrorLiteral" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name, errorName: operation.errorName });
+  const classId = errorClassIds.get(operation.errorName) ?? 0;
+  const nameConstant = addStringConstant(operation.errorName, context);
+  const nameLength = utf8ByteLength(operation.errorName);
+  const message = emitValueExpression(operation.message, context);
+  const objectName = `%obj.rt.${context.objectIndex}`;
+  context.objectIndex += 1;
+  useRuntimeHelper(context.runtime, "errorNew");
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...message.lines,
+    `  ${objectName} = call ptr @errorNew(i64 ${classId}, i64 ${nameLength}, ptr ${nameConstant}, i64 ${message.value})`,
     `  store ptr ${objectName}, ptr ${pointerName}`
   ];
 }
@@ -3349,6 +3389,26 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
 
   if (expression.kind === "stringConversion") {
     return emitStringConversionExpression(expression, context);
+  }
+
+  if (expression.kind === "errorToString") {
+    const object = emitRuntimeObjectPointer(expression.objectName, context);
+    const index = context.stringIndex;
+    context.stringIndex += 1;
+    const raw = `%str.result.${index}`;
+    const value = `%str.${index}`;
+    const length = `%str.len.${index}`;
+    useRuntimeHelper(context.runtime, "errorToString");
+    return {
+      lines: [
+        ...object.lines,
+        `  ${raw} = call { ptr, i64 } @errorToString(ptr ${object.value})`,
+        `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
+        `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+      ],
+      value,
+      length
+    };
   }
 
   if (expression.kind === "stringMethod") {
