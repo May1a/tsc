@@ -3714,9 +3714,13 @@ function lowerTypeOfResult(expression: ts.Expression, bindings: ReadonlyMap<stri
       if (binding.value.kind === "boolean") return "boolean";
       if (binding.value.kind === "number") return "number";
       if (binding.value.kind === "string") return "string";
+      if (binding.value.kind === "objectRef" || binding.value.kind === "arrayRef" || binding.value.kind === "objectLiteralValue") return "object";
     }
-    if (binding?.kind === "runtimeObject" || binding?.kind === "runtimeArray") {
+    if (binding?.kind === "runtimeObject" || binding?.kind === "runtimeArray" || binding?.kind === "object" || binding?.kind === "array") {
       return "object";
+    }
+    if (binding?.kind === "function" || binding?.kind === "closure" || binding?.kind === "closureFactory") {
+      return "function";
     }
     if (binding?.kind === "string" || binding?.kind === "stringExpression" || binding?.kind === "stringVariable") return "string";
     if (binding?.kind === "number") return "number";
@@ -3801,6 +3805,38 @@ function lowerBooleanExpression(expression: ts.Expression, bindings: ReadonlyMap
   return undefined;
 }
 
+function lowerInstanceOfCondition(
+  expression: ts.BinaryExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCondition | undefined {
+  const right = unwrapTypeOnlyExpression(expression.right);
+  if (!ts.isIdentifier(right) || !errorConstructorNames.has(right.text) || bindings.has(right.text)) {
+    return undefined;
+  }
+  const left = unwrapTypeOnlyExpression(expression.left);
+  if (!ts.isIdentifier(left)) {
+    return undefined;
+  }
+  const binding = bindings.get(left.text);
+  if (binding?.kind === "runtimeObject") {
+    return { kind: "boolean", value: errorInstanceMatches(binding.errorName, right.text) };
+  }
+  if (binding?.kind === "runtimeArray" || binding?.kind === "object" || binding?.kind === "array") {
+    return { kind: "boolean", value: false };
+  }
+  return undefined;
+}
+
+function errorInstanceMatches(errorName: string | undefined, constructorName: string): boolean {
+  if (errorName === undefined) {
+    return false;
+  }
+  if (constructorName === "Error") {
+    return true;
+  }
+  return errorName === constructorName;
+}
+
 // eslint-disable-next-line complexity, max-statements -- Condition lowering is still centralized while runtime predicates are introduced.
 function lowerConditionExpression(
   expression: ts.Expression,
@@ -3824,6 +3860,9 @@ function lowerConditionExpression(
   }
 
   if (ts.isBinaryExpression(expression)) {
+    if (expression.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+      return lowerInstanceOfCondition(expression, bindings);
+    }
     const logicalCondition = lowerLogicalConditionExpression(expression, bindings);
     if (logicalCondition !== undefined) {
       return logicalCondition;
@@ -5700,6 +5739,9 @@ function unsupportedExpressionMessage(expression: ts.Expression): string | undef
   if (runtimeBoundary !== undefined) {
     return runtimeBoundary;
   }
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+    return unsupportedInstanceOfMessage(expression);
+  }
   if (ts.isArrayLiteralExpression(expression)) {
     return unsupportedArrayLiteralMessage(expression);
   }
@@ -5760,6 +5802,14 @@ function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | 
     }
   }
   return undefined;
+}
+
+function unsupportedInstanceOfMessage(expression: ts.BinaryExpression): string {
+  const right = unwrapTypeOnlyExpression(expression.right);
+  if (!ts.isIdentifier(right) || !errorConstructorNames.has(right.text)) {
+    return "instanceof right-hand sides are only supported for built-in error constructors";
+  }
+  return "instanceof on primitive values is not supported; JavaScript would throw a TypeError for non-object left-hand sides";
 }
 
 function unsupportedDefinePropertyMessage(expression: ts.CallExpression): string | undefined {

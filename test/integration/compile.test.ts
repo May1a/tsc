@@ -3079,6 +3079,30 @@ describe("tscn expanded runtime roadmap", () => {
     await expectNativeFixtures(cases, { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
+  test("supports instanceof for runtime error objects", async () => {
+    const cases = [
+      ["instanceof-error-positive.ts", "true\ntrue\n"],
+      ["instanceof-error-negative.ts", "false\nfalse\nfalse\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    await Promise.all([
+      expectUnsupportedMessage("instanceof-primitive-unsupported.ts", "instanceof on primitive values is not supported"),
+      expectUnsupportedMessage("instanceof-non-constructor-unsupported.ts", "instanceof right-hand sides are only supported for built-in error constructors")
+    ]);
+  }, roadmapIntegrationTimeoutMs);
+
+  test("supports typeof for bound identifiers across supported value kinds", async () => {
+    const cases = [
+      ["typeof-primitives.ts", "undefined\nboolean\nnumber\nstring\nfunction\nobject\n"],
+      ["typeof-runtime-aggregates.ts", "object\nobject\nobject\nobject\nobject\n"],
+      ["typeof-function.ts", "function\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  }, roadmapIntegrationTimeoutMs);
+
   test("emits nested runtime helper dependencies once", async () => {
     const result = await expectSuccessfulCompile("value-string-conversion-array.ts");
     try {
