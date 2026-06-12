@@ -2770,6 +2770,84 @@ describe("tscn expanded runtime roadmap", () => {
     }
   });
 
+  test("supports package V runtime array slice ranges", async () => {
+    const cases = [
+      ["array-runtime-slice-range.ts", "2\nb\nc\n4\na\n"],
+      ["array-runtime-slice-holes.ts", "3\nundefined\nc\n"],
+      ["array-runtime-slice-negative.ts", "2\nb\nb\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports package W variadic runtime array concat", async () => {
+    const cases = [
+      ["array-runtime-concat-multiple-runtime.ts", "6\n1\n2\n3\n4\n5\n6\n"],
+      ["array-runtime-concat-mixed-fixed-runtime.ts", "5\n1\n7\n9\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports package X runtime array indexOf and lastIndexOf", async () => {
+    const cases = [
+      ["array-runtime-index-of.ts", "1\n-1\n3\n4\n5\n"],
+      ["array-runtime-index-of-from-index.ts", "3\n-1\n1\n3\n"],
+      ["array-runtime-index-of-holes.ts", "-1\n-1\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports package Y and Z callback-free runtime array methods", async () => {
+    const cases = [
+      ["array-runtime-find.ts", "first\nundefined\n"],
+      ["array-runtime-find-index.ts", "1\n-1\n"],
+      ["array-runtime-for-each.ts", "undefined\n3\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+    await expectUnsupportedDiagnostic("array-runtime-find-unsupported-callback.ts");
+    await expectUnsupportedDiagnostic("array-runtime-for-each-unsupported-callback.ts");
+  });
+
+  test("supports package AA boxed string single-character methods", async () => {
+    const cases = [
+      ["string-boxed-char-at.ts", "h\no\n\n"],
+      ["string-boxed-char-code-at.ts", "104\n111\nnan\n"],
+      ["string-boxed-code-point-at.ts", "104\n111\nundefined\n"],
+      ["string-boxed-at.ts", "h\no\nundefined\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports package AB boxed string range and search methods", async () => {
+    const cases = [
+      ["string-boxed-slice.ts", "hello\nworld\nworld\n"],
+      ["string-boxed-substring.ts", "world\nworld\nhello\n"],
+      ["string-boxed-substr.ts", "world\nworld\n\n"],
+      ["string-boxed-includes.ts", "true\nfalse\ntrue\n"],
+      ["string-boxed-index-of.ts", "4\n7\n-1\n11\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
+  test("supports package AC Number coercion edge cases", async () => {
+    const cases = [
+      ["number-coercion-empty-string.ts", "0\n"],
+      ["number-coercion-whitespace.ts", "0\n3\n3.14\n"],
+      ["number-coercion-radix-prefixes.ts", "31\n2\n7\n"],
+      ["number-coercion-infinity-nan-string.ts", "inf\n-inf\nnan\nnan\n"],
+      ["number-coercion-primitives.ts", "0\nnan\n1\n0\n0\nnan\ninf\n"],
+      ["number-coercion-aggregates.ts", "nan\n0\n1\nnan\n"],
+      ["number-coercion-signed-zero.ts", "-0\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  });
+
   test("hardens Object.fromEntries malformed entries", async () => {
     const duplicates = await expectSuccessfulCompile("object-runtime-from-entries-duplicate-keys.ts", { link: true });
     try {

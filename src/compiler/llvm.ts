@@ -1894,6 +1894,18 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines: [...array.lines, ...atIndex.lines, `  ${value} = call i64 @arrayAt(ptr ${array.value}, i64 ${atIndex.value})`], value };
   }
 
+  if (expression.kind === "arrayFind") {
+    const array = emitRuntimeArrayPointer(expression.arrayName, context);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "arrayFind");
+    return { lines: [...array.lines, `  ${value} = call i64 @arrayFind(ptr ${array.value})`], value };
+  }
+
+  if (expression.kind === "arrayForEach") {
+    return { lines: [], value: jsValueUndefined };
+  }
+
   if (expression.kind === "objectRef") {
     const object = emitRuntimeObjectPointer(expression.name, context);
     const value = `%value.${context.numIndex}`;
@@ -2076,6 +2088,12 @@ function llvmDoubleBitcastOperand(value: string): string {
 }
 
 function llvmDoubleLiteral(value: number): string {
+  if (value === Number.POSITIVE_INFINITY) {
+    return "0x7FF0000000000000";
+  }
+  if (value === Number.NEGATIVE_INFINITY) {
+    return "0xFFF0000000000000";
+  }
   return llvmDoubleBitcastOperand(String(value));
 }
 
@@ -2781,6 +2799,13 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
   if (expression.kind === "arrayIndexOf") {
     const array = emitRuntimeArrayPointer(expression.arrayName, context);
     const needle = emitValueExpression(expression.value, context);
+    let fromIndex: NumberValue = { lines: [], value: "0" };
+    if (expression.fromEnd === true) {
+      fromIndex = { lines: [], value: "9223372036854775807" };
+    }
+    if (expression.fromIndex !== undefined) {
+      fromIndex = emitArrayIndex(expression.fromIndex, context);
+    }
     const raw = `%arr.index.${context.arrayIndex}`;
     context.arrayIndex += 1;
     const number = `%num.${context.numIndex}`;
@@ -2790,7 +2815,17 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
       helper = "arrayLastIndexOf";
     }
     useRuntimeHelper(context.runtime, helper);
-    return { lines: [...array.lines, ...needle.lines, `  ${raw} = call i64 @${helper}(ptr ${array.value}, i64 ${needle.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
+    return { lines: [...array.lines, ...needle.lines, ...fromIndex.lines, `  ${raw} = call i64 @${helper}(ptr ${array.value}, i64 ${needle.value}, i64 ${fromIndex.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
+  }
+
+  if (expression.kind === "arrayFindIndex") {
+    const array = emitRuntimeArrayPointer(expression.arrayName, context);
+    const raw = `%arr.index.${context.arrayIndex}`;
+    context.arrayIndex += 1;
+    const number = `%num.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "arrayFindIndex");
+    return { lines: [...array.lines, `  ${raw} = call i64 @arrayFindIndex(ptr ${array.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
   }
 
   if (expression.kind === "ternary") {
@@ -2983,7 +3018,7 @@ function emitSimpleNumberExpression(
   if (expression.kind === "nan") {
     return {
       lines: [],
-      value: "0x7FF8000000000000"
+      value: "0x7FF4000000000000"
     };
   }
 

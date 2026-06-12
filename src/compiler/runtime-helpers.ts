@@ -60,6 +60,8 @@ export type RuntimeHelper =
   | "arrayIncludes"
   | "arrayIndexOf"
   | "arrayLastIndexOf"
+  | "arrayFind"
+  | "arrayFindIndex"
   | "arrayAt"
   | "arrayCopyWithin"
   | "arraySlice"
@@ -165,8 +167,10 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["arrayLengthPropertyDescriptor", ["arrayLength", "objectNew", "objectSet", "valueBoxObject"]],
   ["arrayOwnPropertyDescriptors", ["arrayLength", "arrayHasOwnIndex", "arrayOwnPropertyDescriptor", "arrayLengthPropertyDescriptor", "indexToString", "objectNew", "objectSet", "objectOwnPropertyDescriptors", "objectAssign"]],
   ["arrayIncludes", ["arrayLength", "arrayHasOwnIndex", "valueStrictEquals", "valueStringLength", "valueStringPtr", "memcmp"]],
-  ["arrayIndexOf", ["arrayLength", "arrayHasOwnIndex", "valueStrictEquals", "valueStringLength", "valueStringPtr", "memcmp"]],
+  ["arrayIndexOf", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "valueStrictEquals"]],
   ["arrayLastIndexOf", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "valueStrictEquals"]],
+  ["arrayFind", ["arrayLength", "arrayHasOwnIndex", "arrayGet"]],
+  ["arrayFindIndex", ["arrayLength", "arrayHasOwnIndex"]],
   ["arrayAt", ["arrayLength"]],
   ["arrayCopyWithin", ["arrayLength", "arrayHasOwnIndex", "arraySet", "arrayDelete"]],
   ["arraySlice", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet"]],
@@ -1498,43 +1502,25 @@ missing:
 `);
   }
   if (runtime.used.has("arrayIndexOf")) {
-    definitions.push(`define i64 @arrayIndexOf(ptr %array, i64 %needle) {
+    definitions.push(`define i64 @arrayIndexOf(ptr %array, i64 %needle, i64 %fromIndex) {
 entry:
   %length = call i64 @arrayLength(ptr %array)
+  %from.negative = icmp slt i64 %fromIndex, 0
+  %from.low = select i1 %from.negative, i64 0, i64 %fromIndex
+  %from.high = icmp sgt i64 %from.low, %length
+  %from = select i1 %from.high, i64 %length, i64 %from.low
   br label %scan
 scan:
-  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %i = phi i64 [ %from, %entry ], [ %next, %advance ]
   %done = icmp eq i64 %i, %length
   br i1 %done, label %missing, label %check
 check:
   %has = call i1 @arrayHasOwnIndex(ptr %array, i64 %i)
   br i1 %has, label %load, label %advance
 load:
-  %elements.slot = getelementptr i8, ptr %array, i64 16
-  %elements = load ptr, ptr %elements.slot
-  %slot.bytes = mul i64 %i, 8
-  %slot = getelementptr i8, ptr %elements, i64 %slot.bytes
-  %value = load i64, ptr %slot
+  %value = call i64 @arrayGet(ptr %array, i64 %i)
   %same = call i1 @valueStrictEquals(i64 %value, i64 %needle)
-  br i1 %same, label %found, label %string.check
-string.check:
-  %value.tag = and i64 %value, -281474976710656
-  %needle.tag = and i64 %needle, -281474976710656
-  %value.string = icmp eq i64 %value.tag, 9221683186994511872
-  %needle.string = icmp eq i64 %needle.tag, 9221683186994511872
-  %both.strings = and i1 %value.string, %needle.string
-  br i1 %both.strings, label %string.compare, label %advance
-string.compare:
-  %value.len = call i64 @valueStringLength(i64 %value)
-  %needle.len = call i64 @valueStringLength(i64 %needle)
-  %same.len = icmp eq i64 %value.len, %needle.len
-  br i1 %same.len, label %string.bytes, label %advance
-string.bytes:
-  %value.ptr = call ptr @valueStringPtr(i64 %value)
-  %needle.ptr = call ptr @valueStringPtr(i64 %needle)
-  %string.cmp = call i32 @memcmp(ptr %value.ptr, ptr %needle.ptr, i64 %value.len)
-  %same.string = icmp eq i32 %string.cmp, 0
-  br i1 %same.string, label %found, label %advance
+  br i1 %same, label %found, label %advance
 advance:
   %next = add i64 %i, 1
   br label %scan
@@ -1546,12 +1532,21 @@ missing:
 `);
   }
   if (runtime.used.has("arrayLastIndexOf")) {
-    definitions.push(`define i64 @arrayLastIndexOf(ptr %array, i64 %needle) {
+    definitions.push(`define i64 @arrayLastIndexOf(ptr %array, i64 %needle, i64 %fromIndex) {
 entry:
   %length = call i64 @arrayLength(ptr %array)
+  %empty = icmp eq i64 %length, 0
+  br i1 %empty, label %missing, label %bounds
+bounds:
+  %last = sub i64 %length, 1
+  %from.negative = icmp slt i64 %fromIndex, 0
+  %from.low = select i1 %from.negative, i64 0, i64 %fromIndex
+  %from.high = icmp sgt i64 %from.low, %last
+  %from = select i1 %from.high, i64 %last, i64 %from.low
+  %initial = add i64 %from, 1
   br label %scan
 scan:
-  %i = phi i64 [ %length, %entry ], [ %prev, %advance ]
+  %i = phi i64 [ %initial, %bounds ], [ %prev, %advance ]
   %done = icmp eq i64 %i, 0
   br i1 %done, label %missing, label %check
 check:
@@ -1567,6 +1562,51 @@ advance:
   br label %scan
 found:
   ret i64 %index
+missing:
+  ret i64 -1
+}
+`);
+  }
+  if (runtime.used.has("arrayFind")) {
+    definitions.push(`define i64 @arrayFind(ptr %array) {
+entry:
+  %length = call i64 @arrayLength(ptr %array)
+  br label %scan
+scan:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %missing, label %check
+check:
+  %has = call i1 @arrayHasOwnIndex(ptr %array, i64 %i)
+  br i1 %has, label %found, label %advance
+advance:
+  %next = add i64 %i, 1
+  br label %scan
+found:
+  %value = call i64 @arrayGet(ptr %array, i64 %i)
+  ret i64 %value
+missing:
+  ret i64 9222246136947933184
+}
+`);
+  }
+  if (runtime.used.has("arrayFindIndex")) {
+    definitions.push(`define i64 @arrayFindIndex(ptr %array) {
+entry:
+  %length = call i64 @arrayLength(ptr %array)
+  br label %scan
+scan:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %missing, label %check
+check:
+  %has = call i1 @arrayHasOwnIndex(ptr %array, i64 %i)
+  br i1 %has, label %found, label %advance
+advance:
+  %next = add i64 %i, 1
+  br label %scan
+found:
+  ret i64 %i
 missing:
   ret i64 -1
 }
