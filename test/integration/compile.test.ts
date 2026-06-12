@@ -2357,6 +2357,14 @@ describe("tscn expanded runtime roadmap", () => {
     } finally {
       await result.cleanup();
     }
+
+    const holes = await expectSuccessfulCompile("object-runtime-from-entries-holes.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(holes, { status: 0, stdout: "1\na\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(holes);
+    } finally {
+      await holes.cleanup();
+    }
   });
 
   test("supports runtime array concat, fill, and reverse", async () => {
@@ -2382,6 +2390,14 @@ describe("tscn expanded runtime roadmap", () => {
       await expectLlvmAsVerificationIfAvailable(reverse);
     } finally {
       await reverse.cleanup();
+    }
+
+    const reverseHoles = await expectSuccessfulCompile("array-runtime-reverse-holes.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(reverseHoles, { status: 0, stdout: "c\nundefined\na\nfalse\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(reverseHoles);
+    } finally {
+      await reverseHoles.cleanup();
     }
   });
 
