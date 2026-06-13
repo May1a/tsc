@@ -3103,6 +3103,27 @@ describe("tscn expanded runtime roadmap", () => {
     await expectNativeFixtures(cases, { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
+  test("supports optional chaining and nullish coalescing", async () => {
+    const cases = [
+      ["nullish-coalesce.ts", "fallback\n7\n0\ndefault\n"],
+      ["nullish-coalesce-lazy.ts", "value\nevaluated\nfb\n"],
+      ["optional-chain-member.ts", "x\nundefined\nundefined\n"],
+      ["optional-chain-short-circuit.ts", "undefined\ndeep\nundefined\n"],
+      ["optional-chain-element.ts", "a\nundefined\nv\n"],
+      ["optional-chain-call.ts", "undefined\nError: boom\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    const write = await compileFixture("optional-chain-write-unsupported.ts");
+    try {
+      expect(write.status).not.toBe(0);
+      expect(write.stderr).toContain("error TS");
+    } finally {
+      await write.cleanup();
+    }
+  }, roadmapIntegrationTimeoutMs);
+
   test("emits nested runtime helper dependencies once", async () => {
     const result = await expectSuccessfulCompile("value-string-conversion-array.ts");
     try {

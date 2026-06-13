@@ -44,6 +44,7 @@ type EmitContext = {
   stringIndex: number;
   arrayIndex: number;
   objectIndex: number;
+  readonly optionalTargets: string[];
 };
 
 type ObjectLayout = ObjectValue;
@@ -163,7 +164,8 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     boolIndex: 0,
     stringIndex: 0,
     arrayIndex: 0,
-    objectIndex: 0
+    objectIndex: 0,
+    optionalTargets: []
   };
   const functionDefs: FunctionDef[] = [];
   const mainOps: JsIrOperation[] = [];
@@ -311,7 +313,8 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     boolIndex: 0,
     stringIndex: 0,
     arrayIndex: context.arrayIndex,
-    objectIndex: context.objectIndex
+    objectIndex: context.objectIndex,
+    optionalTargets: []
   };
   for (let i = 0; i < fn.parameters.length; i++) {
     const parameter = fn.parameters[i];
@@ -1959,6 +1962,22 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return emitLogicalValueExpression(expression, context);
   }
 
+  if (expression.kind === "nullishCoalesce") {
+    return emitNullishCoalesceValueExpression(expression, context);
+  }
+
+  if (expression.kind === "optionalChain") {
+    return emitOptionalChainValueExpression(expression, context);
+  }
+
+  if (expression.kind === "optionalTarget") {
+    const target = context.optionalTargets.at(-1);
+    if (target === undefined) {
+      throw new Error("Optional chain target referenced outside an optional chain");
+    }
+    return { lines: [], value: target };
+  }
+
   if (expression.kind === "arrayFind") {
     const array = emitRuntimeArrayPointer(expression.arrayName, context);
     const value = `%value.${context.numIndex}`;
@@ -2217,6 +2236,98 @@ function emitLogicalValueExpression(
       `  br label %${endLabel}`,
       `${endLabel}:`,
       `  ${value} = phi i64 [ ${left.value}, %${leftLabel} ], [ ${right.value}, %${rhsLabel} ]`
+    ],
+    value
+  };
+}
+
+function emitNullishTest(value: string, context: EmitContext): { readonly lines: readonly string[]; readonly value: string } {
+  const nullIndex = context.cmpIndex;
+  context.cmpIndex += 3;
+  const isUndefined = `%cmp.${nullIndex}`;
+  const isNull = `%cmp.${nullIndex + 1}`;
+  const isNullish = `%cmp.${nullIndex + 2}`;
+  return {
+    lines: [
+      `  ${isUndefined} = icmp eq i64 ${value}, ${jsValueUndefined}`,
+      `  ${isNull} = icmp eq i64 ${value}, ${jsValueNull}`,
+      `  ${isNullish} = or i1 ${isUndefined}, ${isNull}`
+    ],
+    value: isNullish
+  };
+}
+
+function emitNullishCoalesceValueExpression(
+  expression: Extract<JsIrValueExpression, { readonly kind: "nullishCoalesce" }>,
+  context: EmitContext
+): JsValue {
+  const index = context.logicIndex;
+  context.logicIndex += 1;
+  const leftLabel = `nullish.left.${index}`;
+  const checkLabel = `nullish.check.${index}`;
+  const rightLabel = `nullish.right.${index}`;
+  const joinLabel = `nullish.join.${index}`;
+  const endLabel = `nullish.end.${index}`;
+  const left = emitValueExpression(expression.left, context);
+  const nullish = emitNullishTest(left.value, context);
+  const right = emitValueExpression(expression.right, context);
+  const value = `%value.${context.numIndex}`;
+  context.numIndex += 1;
+  return {
+    lines: [
+      `  br label %${leftLabel}`,
+      `${leftLabel}:`,
+      ...left.lines,
+      `  br label %${checkLabel}`,
+      `${checkLabel}:`,
+      ...nullish.lines,
+      `  br i1 ${nullish.value}, label %${rightLabel}, label %${endLabel}`,
+      `${rightLabel}:`,
+      ...right.lines,
+      `  br label %${joinLabel}`,
+      `${joinLabel}:`,
+      `  br label %${endLabel}`,
+      `${endLabel}:`,
+      `  ${value} = phi i64 [ ${left.value}, %${checkLabel} ], [ ${right.value}, %${joinLabel} ]`
+    ],
+    value
+  };
+}
+
+function emitOptionalChainValueExpression(
+  expression: Extract<JsIrValueExpression, { readonly kind: "optionalChain" }>,
+  context: EmitContext
+): JsValue {
+  const index = context.logicIndex;
+  context.logicIndex += 1;
+  const guardLabel = `optional.guard.${index}`;
+  const checkLabel = `optional.check.${index}`;
+  const accessLabel = `optional.access.${index}`;
+  const joinLabel = `optional.join.${index}`;
+  const endLabel = `optional.end.${index}`;
+  const guard = emitValueExpression(expression.guard, context);
+  const nullish = emitNullishTest(guard.value, context);
+  context.optionalTargets.push(guard.value);
+  const access = emitValueExpression(expression.access, context);
+  context.optionalTargets.pop();
+  const value = `%value.${context.numIndex}`;
+  context.numIndex += 1;
+  return {
+    lines: [
+      `  br label %${guardLabel}`,
+      `${guardLabel}:`,
+      ...guard.lines,
+      `  br label %${checkLabel}`,
+      `${checkLabel}:`,
+      ...nullish.lines,
+      `  br i1 ${nullish.value}, label %${endLabel}, label %${accessLabel}`,
+      `${accessLabel}:`,
+      ...access.lines,
+      `  br label %${joinLabel}`,
+      `${joinLabel}:`,
+      `  br label %${endLabel}`,
+      `${endLabel}:`,
+      `  ${value} = phi i64 [ ${jsValueUndefined}, %${checkLabel} ], [ ${access.value}, %${joinLabel} ]`
     ],
     value
   };

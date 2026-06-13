@@ -130,6 +130,19 @@ export type JsIrValueExpression =
       readonly value: JsIrValueExpression;
       readonly index: JsIrNumberExpression;
       readonly key: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "nullishCoalesce";
+      readonly left: JsIrValueExpression;
+      readonly right: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "optionalChain";
+      readonly guard: JsIrValueExpression;
+      readonly access: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "optionalTarget";
     };
 
 export type JsIrRuntimeArrayElement =
@@ -1340,6 +1353,14 @@ function collectValueExpressionObjectNames(expression: JsIrValueExpression, name
         collectValueExpressionObjectNames(argument.value, names);
       }
     }
+  }
+  if (expression.kind === "nullishCoalesce" || expression.kind === "logicalValue" || expression.kind === "valuePlus") {
+    collectValueExpressionObjectNames(expression.left, names);
+    collectValueExpressionObjectNames(expression.right, names);
+  }
+  if (expression.kind === "optionalChain") {
+    collectValueExpressionObjectNames(expression.guard, names);
+    collectValueExpressionObjectNames(expression.access, names);
   }
 }
 
@@ -2793,7 +2814,7 @@ function lowerConstVariableBinding(
 }
 
 function unwrapTypeOnlyExpression(expression: ts.Expression): ts.Expression {
-  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression) || ts.isNonNullExpression(expression)) {
+  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression) || ts.isNonNullExpression(expression) || ts.isParenthesizedExpression(expression)) {
     return unwrapTypeOnlyExpression(expression.expression);
   }
   return expression;
@@ -4615,6 +4636,20 @@ function lowerDirectValueExpression(
         return { kind: "logicalValue", operator, left, right };
       }
     }
+    if (expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      const left = lowerValueExpression(expression.left, bindings);
+      const right = lowerValueExpression(expression.right, bindings);
+      if (left !== undefined && right !== undefined) {
+        return { kind: "nullishCoalesce", left, right };
+      }
+    }
+  }
+
+  if (ts.isOptionalChain(expression) && !ts.isNonNullChain(expression)) {
+    const optionalChain = lowerOptionalChainValueExpression(expression, bindings);
+    if (optionalChain !== undefined) {
+      return optionalChain;
+    }
   }
 
   if (expression.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(expression) && expression.text === "undefined")) {
@@ -4651,6 +4686,77 @@ function lowerDirectValueExpression(
     return lowerStringValueMethodCall(expression, bindings);
   }
 
+  return undefined;
+}
+
+function lowerOptionalChainValueExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.name)) {
+    const receiver = lowerValueExpression(expression.expression, bindings);
+    if (receiver === undefined) {
+      return undefined;
+    }
+    const key: JsIrStringExpression = { kind: "literal", value: expression.name.text };
+    const makeAccess = (value: JsIrValueExpression): JsIrValueExpression => ({ kind: "valueObjectDynamicAccess", value, key });
+    return buildOptionalChainLink(receiver, makeAccess, expression.questionDotToken !== undefined);
+  }
+  if (ts.isElementAccessExpression(expression)) {
+    const receiver = lowerValueExpression(expression.expression, bindings);
+    if (receiver === undefined) {
+      return undefined;
+    }
+    const makeAccess = optionalElementAccessFactory(expression, bindings);
+    if (makeAccess === undefined) {
+      return undefined;
+    }
+    return buildOptionalChainLink(receiver, makeAccess, expression.questionDotToken !== undefined);
+  }
+  if (ts.isCallExpression(expression) && expression.questionDotToken !== undefined) {
+    const callee = lowerValueExpression(expression.expression, bindings);
+    if (callee !== undefined && (callee.kind === "undefined" || callee.kind === "null")) {
+      return { kind: "undefined" };
+    }
+  }
+  return undefined;
+}
+
+function buildOptionalChainLink(
+  receiver: JsIrValueExpression,
+  makeAccess: (value: JsIrValueExpression) => JsIrValueExpression,
+  isOptionalLink: boolean
+): JsIrValueExpression {
+  if (isOptionalLink) {
+    return { kind: "optionalChain", guard: receiver, access: makeAccess({ kind: "optionalTarget" }) };
+  }
+  if (receiver.kind === "optionalChain") {
+    return { ...receiver, access: makeAccess(receiver.access) };
+  }
+  return makeAccess(receiver);
+}
+
+function optionalElementAccessFactory(
+  expression: ts.ElementAccessExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): ((value: JsIrValueExpression) => JsIrValueExpression) | undefined {
+  let index = lowerNumberExpression(expression.argumentExpression, bindings);
+  const stringIndex = lowerCanonicalArrayIndexString(expression.argumentExpression);
+  if (stringIndex !== undefined) {
+    index = { kind: "literal", value: stringIndex };
+  }
+  if (index !== undefined) {
+    const resolvedIndex = index;
+    let keyValue = "0";
+    if (resolvedIndex.kind === "literal") {
+      keyValue = String(resolvedIndex.value);
+    }
+    return (value) => ({ kind: "valueArrayAccess", value, index: resolvedIndex, key: { kind: "literal", value: keyValue } });
+  }
+  const key = lowerPropertyKeyExpression(expression.argumentExpression, bindings);
+  if (key !== undefined) {
+    return (value) => ({ kind: "valueObjectDynamicAccess", value, key });
+  }
   return undefined;
 }
 
