@@ -3351,7 +3351,15 @@ function lowerAssignmentStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if (!ts.isBinaryExpression(expression) || expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+  if (!ts.isBinaryExpression(expression)) {
+    return undefined;
+  }
+
+  if (expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken) {
+    return lowerNullishAssignmentStatement(expression, bindings);
+  }
+
+  if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
     return undefined;
   }
 
@@ -3408,6 +3416,31 @@ function lowerAssignmentStatement(
     name: expression.left.text,
     value
   };
+}
+
+function lowerNullishAssignmentStatement(
+  expression: ts.BinaryExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const currentValue = lowerValueExpression(expression.left, bindings);
+  if (currentValue === undefined) {
+    return undefined;
+  }
+  let store: JsIrOperation | undefined;
+  if (ts.isElementAccessExpression(expression.left)) {
+    store = lowerElementAssignment(expression.left, expression.right, bindings);
+  } else if (ts.isPropertyAccessExpression(expression.left)) {
+    store = lowerObjectPropertyAssignment(expression.left, expression.right, bindings);
+  }
+  if (store === undefined) {
+    return undefined;
+  }
+  const condition: JsIrCondition = {
+    kind: "or",
+    left: { kind: "valueComparison", operator: "===", left: currentValue, right: { kind: "null" } },
+    right: { kind: "valueComparison", operator: "===", left: currentValue, right: { kind: "undefined" } }
+  };
+  return { kind: "if", condition, thenOperations: [store], elseOperations: [] };
 }
 
 // eslint-disable-next-line complexity, max-statements -- Element assignment handles fixed, runtime, and boxed aggregate targets.

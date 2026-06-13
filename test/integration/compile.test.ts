@@ -3124,6 +3124,18 @@ describe("tscn expanded runtime roadmap", () => {
     }
   }, roadmapIntegrationTimeoutMs);
 
+  test("supports computed property names and dynamic object keys", async () => {
+    const cases = [
+      ["object-computed-key-literal.ts", "v1\nv2\n"],
+      ["object-computed-key-expression.ts", "v1\nv2\nv3\n"],
+      ["object-bracket-assign-dynamic.ts", "v1\nv2\nfilled\norig\nten\n"],
+      ["object-bracket-delete-dynamic.ts", "undefined\n2\n"],
+      ["object-define-property-dynamic-key.ts", "dv\ndv2\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  }, roadmapIntegrationTimeoutMs);
+
   test("emits nested runtime helper dependencies once", async () => {
     const result = await expectSuccessfulCompile("value-string-conversion-array.ts");
     try {
