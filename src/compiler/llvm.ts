@@ -413,6 +413,10 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
     return emitOperationsWithScopedBindings(operation.operations, context);
   }
 
+  if (operation.kind === "bindingGroup") {
+    return emitOperations(operation.operations, context);
+  }
+
   if (operation.kind === "if") {
     return emitIfOperation(operation, context);
   }

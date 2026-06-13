@@ -3136,6 +3136,22 @@ describe("tscn expanded runtime roadmap", () => {
     await expectNativeFixtures(cases, { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
+  test("supports array and object destructuring patterns", async () => {
+    const cases = [
+      ["destructure-array-literal.ts", "a\nb\nc\ndirect\n10\n20\n"],
+      ["destructure-object-literal.ts", "ex\nwhy\n1\n2\n"],
+      ["destructure-array-rest.ts", "a\n3\nb\nd\n"],
+      ["destructure-object-rest.ts", "1\n2\n2\n3\n"],
+      ["destructure-defaults.ts", "1\nhello\n7\nset\nused\n"],
+      ["destructure-rename.ts", "val\no\n"],
+      ["destructure-nested.ts", "deep\nt\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    await expectUnsupportedDiagnostic("destructure-computed-key-unsupported.ts");
+  }, roadmapIntegrationTimeoutMs);
+
   test("emits nested runtime helper dependencies once", async () => {
     const result = await expectSuccessfulCompile("value-string-conversion-array.ts");
     try {

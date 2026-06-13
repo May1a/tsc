@@ -920,6 +920,10 @@ export type JsIrOperation =
       readonly operations: readonly JsIrOperation[];
     }
   | {
+      readonly kind: "bindingGroup";
+      readonly operations: readonly JsIrOperation[];
+    }
+  | {
       readonly kind: "if";
       readonly condition: JsIrCondition;
       readonly thenOperations: readonly JsIrOperation[];
@@ -1136,7 +1140,7 @@ function lowerStatements(
   return { operations: markRuntimeObjectShadows(operations), diagnostics: Chunk.fromIterable(diagnostics) };
 }
 
-function updateBindings(
+function updateConstBindings(
   operation: JsIrOperation,
   bindings: Map<string, JsIrBindingValue>
 ): void {
@@ -1160,6 +1164,18 @@ function updateBindings(
   }
   if (operation.kind === "constClosure") {
     bindings.set(operation.name, { kind: "closure", value: operation.value });
+  }
+}
+
+function updateBindings(
+  operation: JsIrOperation,
+  bindings: Map<string, JsIrBindingValue>
+): void {
+  updateConstBindings(operation, bindings);
+  if (operation.kind === "bindingGroup") {
+    for (const nested of operation.operations) {
+      updateBindings(nested, bindings);
+    }
   }
   if (operation.kind === "letNumber") {
     bindings.set(operation.name, { kind: "number", value: { kind: "variable", name: operation.name } });
@@ -1230,6 +1246,9 @@ function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObjects: Read
   if (operation.kind === "while" || operation.kind === "doWhile") {
     return { ...operation, body: markRuntimeObjectShadows(operation.body) };
   }
+  if (operation.kind === "bindingGroup") {
+    return { ...operation, operations: operation.operations.map((nested) => markRuntimeObjectShadow(nested, shadowedObjects)) };
+  }
   if (operation.kind === "for") {
     return {
       ...operation,
@@ -1278,7 +1297,7 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
   if (operation.kind === "runtimeErrorLiteral") {
     collectValueExpressionObjectNames(operation.message, names);
   }
-  if (operation.kind === "block") {
+  if (operation.kind === "block" || operation.kind === "bindingGroup") {
     for (const nested of operation.operations) {
       collectRuntimeShadowObjectNames(nested, names);
     }
@@ -2647,12 +2666,23 @@ function lowerVariableBinding(
   }
 
   const [declaration] = statement.declarationList.declarations;
-  if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+  if (!declaration.initializer) {
     return undefined;
   }
 
   const isConst = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
   const isLet = (statement.declarationList.flags & ts.NodeFlags.Let) !== 0;
+
+  if (ts.isArrayBindingPattern(declaration.name) || ts.isObjectBindingPattern(declaration.name)) {
+    if (!isConst) {
+      return undefined;
+    }
+    return lowerDestructuringBinding(declaration.name, declaration.initializer, bindings);
+  }
+
+  if (!ts.isIdentifier(declaration.name)) {
+    return undefined;
+  }
 
   if (isLet) {
     return lowerLetVariableBinding(declaration.name.text, declaration.initializer, bindings);
@@ -2670,6 +2700,308 @@ function lowerVariableBinding(
     isRuntimeArrayTypeHint(declaration.type) || promotedAggregates.has(declaration.name.text),
     promotedAggregates.has(declaration.name.text)
   );
+}
+
+function lowerDestructuringBinding(
+  pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const operations: JsIrOperation[] = [];
+  const working = new Map(bindings);
+  const source = resolveDestructuringSource(initializer, working, operations, pattern.pos);
+  if (source === undefined) {
+    return undefined;
+  }
+  let lowered: boolean;
+  if (ts.isArrayBindingPattern(pattern)) {
+    lowered = lowerArrayDestructuringElements(pattern, source, working, operations);
+  } else {
+    lowered = lowerObjectDestructuringElements(pattern, source, working, operations);
+  }
+  if (!lowered) {
+    return undefined;
+  }
+  return { kind: "bindingGroup", operations };
+}
+
+type DestructuringSource = {
+  readonly name: string;
+  readonly binding: JsIrBindingValue;
+};
+
+function resolveDestructuringSource(
+  initializer: ts.Expression,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[],
+  position: number
+): DestructuringSource | undefined {
+  const unwrapped = unwrapTypeOnlyExpression(initializer);
+  if (ts.isIdentifier(unwrapped)) {
+    const binding = working.get(unwrapped.text);
+    if (binding?.kind === "runtimeArray" || binding?.kind === "array" || binding?.kind === "runtimeObject") {
+      return { name: binding.name, binding };
+    }
+    if (binding?.kind === "object") {
+      return { name: unwrapped.text, binding };
+    }
+    return undefined;
+  }
+  const temporaryName = `destructure.source.${position}`;
+  const operation = lowerConstAggregateBinding(temporaryName, unwrapped, working);
+  if (operation === undefined) {
+    return undefined;
+  }
+  operations.push(operation);
+  updateBindings(operation, working);
+  const binding = working.get(temporaryName);
+  if (binding === undefined) {
+    return undefined;
+  }
+  return { name: temporaryName, binding };
+}
+
+// eslint-disable-next-line complexity, max-statements -- Array destructuring routes fixed and runtime sources plus rest and default shapes.
+function lowerArrayDestructuringElements(
+  pattern: ts.ArrayBindingPattern,
+  source: DestructuringSource,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): boolean {
+  const sourceBinding = source.binding;
+  if (sourceBinding.kind !== "runtimeArray" && sourceBinding.kind !== "array") {
+    return false;
+  }
+  for (let index = 0; index < pattern.elements.length; index += 1) {
+    const element = pattern.elements[index];
+    if (ts.isOmittedExpression(element)) {
+      continue;
+    }
+    if (!ts.isIdentifier(element.name)) {
+      return false;
+    }
+    const name = element.name.text;
+    if (element.dotDotDotToken !== undefined) {
+      if (sourceBinding.kind !== "runtimeArray" || index !== pattern.elements.length - 1) {
+        return false;
+      }
+      const operation: JsIrOperation = { kind: "runtimeArraySlice", name, arrayName: source.name, start: { kind: "literal", value: index } };
+      operations.push(operation);
+      updateBindings(operation, working);
+      continue;
+    }
+    if (sourceBinding.kind === "array") {
+      if (!lowerFixedArrayDestructuredElement(name, sourceBinding, index, element.initializer, working, operations)) {
+        return false;
+      }
+      continue;
+    }
+    const access: JsIrValueExpression = {
+      kind: "arrayAccess",
+      arrayName: source.name,
+      index: { kind: "literal", value: index },
+      key: { kind: "literal", value: String(index) }
+    };
+    const operation = lowerDestructuredValueBinding(name, access, element.initializer, working);
+    if (operation === undefined) {
+      return false;
+    }
+    operations.push(operation);
+    updateBindings(operation, working);
+  }
+  return true;
+}
+
+function lowerFixedArrayDestructuredElement(
+  name: string,
+  sourceBinding: Extract<JsIrBindingValue, { readonly kind: "array" }>,
+  index: number,
+  defaultInitializer: ts.Expression | undefined,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): boolean {
+  const operation = lowerDestructuredFallbackOperation(
+    name,
+    index < sourceBinding.length,
+    { kind: "constNumber", name, value: { kind: "arrayAccess", arrayName: sourceBinding.name, index: { kind: "literal", value: index } } },
+    defaultInitializer,
+    working
+  );
+  if (operation === undefined) {
+    return false;
+  }
+  operations.push(operation);
+  updateBindings(operation, working);
+  return true;
+}
+
+function lowerDestructuredValueBinding(
+  name: string,
+  access: JsIrValueExpression,
+  defaultInitializer: ts.Expression | undefined,
+  working: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  let value: JsIrValueExpression = access;
+  if (defaultInitializer !== undefined) {
+    const defaultValue = lowerValueExpression(defaultInitializer, working);
+    if (defaultValue === undefined) {
+      return undefined;
+    }
+    value = {
+      kind: "ternary",
+      condition: { kind: "valueComparison", operator: "===", left: access, right: { kind: "undefined" } },
+      consequent: defaultValue,
+      alternate: access
+    };
+  }
+  return { kind: "constValue", name, value };
+}
+
+// eslint-disable-next-line complexity, max-statements -- Object destructuring routes fixed and runtime sources plus rest, rename, default, and nested shapes.
+function lowerObjectDestructuringElements(
+  pattern: ts.ObjectBindingPattern,
+  source: DestructuringSource,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): boolean {
+  const sourceBinding = source.binding;
+  if (sourceBinding.kind !== "runtimeObject" && sourceBinding.kind !== "object") {
+    return false;
+  }
+  const extractedKeys: string[] = [];
+  for (const element of pattern.elements) {
+    if (element.dotDotDotToken !== undefined) {
+      if (sourceBinding.kind !== "runtimeObject" || !ts.isIdentifier(element.name)) {
+        return false;
+      }
+      lowerObjectDestructuredRest(element.name.text, source.name, extractedKeys, working, operations);
+      continue;
+    }
+    const key = destructuredPropertyKey(element);
+    if (key === undefined) {
+      return false;
+    }
+    extractedKeys.push(key);
+    if (ts.isObjectBindingPattern(element.name)) {
+      if (sourceBinding.kind !== "runtimeObject" || !lowerNestedObjectDestructuring(element.name, source.name, key, working, operations)) {
+        return false;
+      }
+      continue;
+    }
+    if (!ts.isIdentifier(element.name)) {
+      return false;
+    }
+    if (sourceBinding.kind === "object") {
+      if (!lowerFixedObjectDestructuredElement(element.name.text, source.name, sourceBinding.value, key, element.initializer, working, operations)) {
+        return false;
+      }
+      continue;
+    }
+    const access: JsIrValueExpression = { kind: "objectDynamicAccess", objectName: source.name, key: { kind: "literal", value: key } };
+    const operation = lowerDestructuredValueBinding(element.name.text, access, element.initializer, working);
+    if (operation === undefined) {
+      return false;
+    }
+    operations.push(operation);
+    updateBindings(operation, working);
+  }
+  return true;
+}
+
+function destructuredPropertyKey(element: ts.BindingElement): string | undefined {
+  if (element.propertyName !== undefined) {
+    if (ts.isIdentifier(element.propertyName) || ts.isStringLiteral(element.propertyName)) {
+      return element.propertyName.text;
+    }
+    return undefined;
+  }
+  if (ts.isIdentifier(element.name)) {
+    return element.name.text;
+  }
+  return undefined;
+}
+
+function lowerObjectDestructuredRest(
+  name: string,
+  sourceName: string,
+  extractedKeys: readonly string[],
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): void {
+  const literal: JsIrOperation = { kind: "runtimeObjectLiteral", name, value: { fields: [] } };
+  operations.push(literal);
+  updateBindings(literal, working);
+  operations.push({ kind: "runtimeObjectAssign", targetName: name, sources: [{ kind: "runtimeObject", name: sourceName }] });
+  for (const key of extractedKeys) {
+    operations.push({ kind: "runtimeObjectDelete", objectName: name, key: { kind: "literal", value: key } });
+  }
+}
+
+function lowerFixedObjectDestructuredElement(
+  name: string,
+  sourceName: string,
+  objectValue: JsIrObjectValue,
+  key: string,
+  defaultInitializer: ts.Expression | undefined,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): boolean {
+  const operation = lowerDestructuredFallbackOperation(
+    name,
+    objectPathExists(objectValue, [key]),
+    { kind: "constNumber", name, value: { kind: "objectAccess", objectName: sourceName, path: [key] } },
+    defaultInitializer,
+    working
+  );
+  if (operation === undefined) {
+    return false;
+  }
+  operations.push(operation);
+  updateBindings(operation, working);
+  return true;
+}
+
+function lowerDestructuredFallbackOperation(
+  name: string,
+  hasValue: boolean,
+  accessOperation: JsIrOperation,
+  defaultInitializer: ts.Expression | undefined,
+  working: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (hasValue) {
+    return accessOperation;
+  }
+  if (defaultInitializer !== undefined) {
+    return lowerConstVariableBinding(name, defaultInitializer, working);
+  }
+  return { kind: "constValue", name, value: { kind: "undefined" } };
+}
+
+function lowerNestedObjectDestructuring(
+  pattern: ts.ObjectBindingPattern,
+  sourceName: string,
+  parentKey: string,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): boolean {
+  const parentAccess: JsIrValueExpression = { kind: "objectDynamicAccess", objectName: sourceName, key: { kind: "literal", value: parentKey } };
+  for (const element of pattern.elements) {
+    if (element.dotDotDotToken !== undefined || !ts.isIdentifier(element.name)) {
+      return false;
+    }
+    const key = destructuredPropertyKey(element);
+    if (key === undefined) {
+      return false;
+    }
+    const access: JsIrValueExpression = { kind: "valueObjectDynamicAccess", value: parentAccess, key: { kind: "literal", value: key } };
+    const operation = lowerDestructuredValueBinding(element.name.text, access, element.initializer, working);
+    if (operation === undefined) {
+      return false;
+    }
+    operations.push(operation);
+    updateBindings(operation, working);
+  }
+  return true;
 }
 
 function isRuntimeArrayTypeHint(type: ts.TypeNode | undefined): boolean {
