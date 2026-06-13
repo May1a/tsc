@@ -1549,7 +1549,7 @@ function lowerErrorTryCatchStatement(
   return { kind: "block", operations: [...operations] };
 }
 
-const errorConstructorNames: ReadonlySet<string> = new Set(["Error"]);
+const errorConstructorNames: ReadonlySet<string> = new Set(["Error", "TypeError", "RangeError", "EvalError", "URIError", "SyntaxError"]);
 
 function lowerRuntimeErrorLiteral(
   name: string,
@@ -4857,16 +4857,7 @@ function lowerAggregateValueExpression(
   }
 
   if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
-    const binding = bindings.get(expression.expression.text);
-    if (binding?.kind === "runtimeObject") {
-      return { kind: "objectDynamicAccess", objectName: binding.name, key: { kind: "literal", value: expression.name.text } };
-    }
-    if (isBoxedAggregateCandidateBinding(binding)) {
-      const value = lowerValueExpression(expression.expression, bindings);
-      if (value !== undefined) {
-        return { kind: "valueObjectDynamicAccess", value, key: { kind: "literal", value: expression.name.text } };
-      }
-    }
+    return lowerAggregatePropertyValueAccess(expression, bindings);
   }
 
   if (ts.isIdentifier(expression)) {
@@ -4879,6 +4870,29 @@ function lowerAggregateValueExpression(
     }
   }
 
+  return undefined;
+}
+
+function lowerAggregatePropertyValueAccess(
+  expression: ts.PropertyAccessExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (!ts.isIdentifier(expression.expression)) {
+    return undefined;
+  }
+  const binding = bindings.get(expression.expression.text);
+  if (binding?.kind === "runtimeObject" && binding.errorName !== undefined && expression.name.text === "stack") {
+    return undefined;
+  }
+  if (binding?.kind === "runtimeObject") {
+    return { kind: "objectDynamicAccess", objectName: binding.name, key: { kind: "literal", value: expression.name.text } };
+  }
+  if (isBoxedAggregateCandidateBinding(binding)) {
+    const value = lowerValueExpression(expression.expression, bindings);
+    if (value !== undefined) {
+      return { kind: "valueObjectDynamicAccess", value, key: { kind: "literal", value: expression.name.text } };
+    }
+  }
   return undefined;
 }
 

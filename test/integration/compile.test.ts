@@ -3152,6 +3152,19 @@ describe("tscn expanded runtime roadmap", () => {
     await expectUnsupportedDiagnostic("destructure-computed-key-unsupported.ts");
   }, roadmapIntegrationTimeoutMs);
 
+  test("supports built-in error subclass constructors", async () => {
+    const cases = [
+      ["error-type-error.ts", "wrong type\nTypeError\nTypeError: wrong type\n"],
+      ["error-range-error.ts", "out of range\nRangeError\nEvalError\nURIError\n"],
+      ["error-instanceof-subclass.ts", "true\ntrue\nfalse\nfalse\ntrue\n"],
+      ["error-subclass-throw-catch.ts", "true\ntrue\nnope\nTypeError: nope\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    await expectUnsupportedDiagnostic("error-stack-unsupported.ts");
+  }, roadmapIntegrationTimeoutMs);
+
   test("emits nested runtime helper dependencies once", async () => {
     const result = await expectSuccessfulCompile("value-string-conversion-array.ts");
     try {

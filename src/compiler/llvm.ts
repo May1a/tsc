@@ -931,7 +931,8 @@ function emitRuntimeObjectCreateOperation(
   ];
 }
 
-const errorClassIds = new Map<string, number>([["Error", 1]]);
+const errorConstructorOrder = ["Error", "TypeError", "RangeError", "EvalError", "URIError", "SyntaxError"] as const;
+const errorClassIds = new Map<string, number>(errorConstructorOrder.map((name, index) => [name, index + 1]));
 
 function emitRuntimeErrorLiteralOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeErrorLiteral" }>,
