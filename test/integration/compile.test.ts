@@ -3165,6 +3165,58 @@ describe("tscn expanded runtime roadmap", () => {
     await expectUnsupportedDiagnostic("error-stack-unsupported.ts");
   }, roadmapIntegrationTimeoutMs);
 
+  test("supports JSON.stringify for primitives, arrays, and objects", async () => {
+    const cases = [
+      ["json-stringify-primitives.ts", '"a"\n1\ntrue\nnull\nnull\nnull\nundefined\n'],
+      ["json-stringify-array.ts", '[1,"two",true,null]\n[]\n["a",null,"c"]\n'],
+      [
+        "json-stringify-object.ts",
+        '{"a":1,"b":"x","c":true,"d":null}\n{"inner":{"k":"v"},"num":2}\n{"k":"v"}\n{}\n{"text":"say \\"hi\\"\\n"}\n'
+      ],
+      ["json-stringify-replacer-array.ts", '{"keep":"yes","n":1}\n'],
+      ["json-stringify-indent.ts", '{\n  "a": 1,\n  "c": {\n    "d": "v"\n  }\n}\n[\n  1,\n  "x"\n]\n']
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    const cycle = await expectSuccessfulCompile("json-stringify-cycle-throws.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(cycle, {
+        status: 1,
+        stdout: "TypeError: Converting circular structure to JSON\n",
+        stderr: ""
+      });
+    } finally {
+      await cycle.cleanup();
+    }
+  }, roadmapIntegrationTimeoutMs);
+
+  test("supports JSON.parse for compile-time string inputs", async () => {
+    const cases = [
+      ["json-parse-primitives.ts", "text\n42\n-1.5\ntrue\nnull\n"],
+      ["json-parse-array.ts", "4\na\n2\nfalse\nnull\n"],
+      ["json-parse-object.ts", "v\n7\ntrue\ntwo\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    const malformed = await expectSuccessfulCompile("json-parse-malformed-throws.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(malformed, {
+        status: 1,
+        stdout: "SyntaxError: Unexpected token in JSON\n",
+        stderr: ""
+      });
+    } finally {
+      await malformed.cleanup();
+    }
+
+    await expectUnsupportedMessage(
+      "json-parse-dynamic-unsupported.ts",
+      "JSON.parse is only supported for compile-time string arguments"
+    );
+  }, roadmapIntegrationTimeoutMs);
+
   test("emits nested runtime helper dependencies once", async () => {
     const result = await expectSuccessfulCompile("value-string-conversion-array.ts");
     try {

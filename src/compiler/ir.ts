@@ -137,6 +137,12 @@ export type JsIrValueExpression =
       readonly right: JsIrValueExpression;
     }
   | {
+      readonly kind: "jsonStringify";
+      readonly value: JsIrValueExpression;
+      readonly replacerName?: string;
+      readonly indent: number;
+    }
+  | {
       readonly kind: "optionalChain";
       readonly guard: JsIrValueExpression;
       readonly access: JsIrValueExpression;
@@ -1380,6 +1386,9 @@ function collectValueExpressionObjectNames(expression: JsIrValueExpression, name
   if (expression.kind === "optionalChain") {
     collectValueExpressionObjectNames(expression.guard, names);
     collectValueExpressionObjectNames(expression.access, names);
+  }
+  if (expression.kind === "jsonStringify") {
+    collectValueExpressionObjectNames(expression.value, names);
   }
 }
 
@@ -3188,6 +3197,10 @@ function lowerConstAggregateBinding(
   if (errorLiteral !== undefined) {
     return errorLiteral;
   }
+  const jsonParse = lowerJsonParseBinding(name, initializer, bindings);
+  if (jsonParse !== undefined) {
+    return jsonParse;
+  }
   const objectCreate = lowerRuntimeObjectCreateBinding(name, initializer, bindings);
   if (objectCreate !== undefined) {
     return objectCreate;
@@ -3221,6 +3234,91 @@ function lowerConstAggregateBinding(
     return objectPrototype;
   }
   return undefined;
+}
+
+function lowerJsonParseBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || initializer.arguments.length !== 1) {
+    return undefined;
+  }
+  const callee = initializer.expression;
+  if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression)) {
+    return undefined;
+  }
+  if (callee.expression.text !== "JSON" || callee.name.text !== "parse" || bindings.has("JSON")) {
+    return undefined;
+  }
+  const text = lowerStringExpression(initializer.arguments[0], bindings);
+  if (text === undefined) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return {
+      kind: "bindingGroup",
+      operations: [
+        { kind: "throwValue", value: { kind: "string", value: { kind: "literal", value: "SyntaxError: Unexpected token in JSON" } } },
+        { kind: "constValue", name, value: { kind: "undefined" } }
+      ]
+    };
+  }
+  const operations: JsIrOperation[] = [];
+  lowerParsedJsonBinding(name, parsed, operations);
+  return { kind: "bindingGroup", operations };
+}
+
+function lowerParsedJsonBinding(name: string, parsed: unknown, operations: JsIrOperation[]): void {
+  if (Array.isArray(parsed)) {
+    const elements: JsIrRuntimeArrayElement[] = parsed.map((element, index) => ({
+      kind: "value",
+      value: lowerParsedJsonValueExpression(`${name}.json${index}`, element, operations)
+    }));
+    operations.push({ kind: "runtimeArrayLiteral", name, elements });
+    return;
+  }
+  if (typeof parsed === "object" && parsed !== null) {
+    const fields: JsIrRuntimeObjectField[] = Object.entries(parsed).map(([key, value], index) => ({
+      kind: "field",
+      key: { kind: "literal", value: key },
+      value: lowerParsedJsonValueExpression(`${name}.json${index}`, value, operations)
+    }));
+    operations.push({ kind: "runtimeObjectLiteral", name, value: { fields } });
+    return;
+  }
+  operations.push({ kind: "constValue", name, value: lowerParsedJsonPrimitive(parsed) });
+}
+
+function lowerParsedJsonValueExpression(temporaryName: string, value: unknown, operations: JsIrOperation[]): JsIrValueExpression {
+  if (Array.isArray(value)) {
+    lowerParsedJsonBinding(temporaryName, value, operations);
+    return { kind: "arrayRef", name: temporaryName };
+  }
+  if (typeof value === "object" && value !== null) {
+    lowerParsedJsonBinding(temporaryName, value, operations);
+    return { kind: "objectRef", name: temporaryName };
+  }
+  return lowerParsedJsonPrimitive(value);
+}
+
+function lowerParsedJsonPrimitive(value: unknown): JsIrValueExpression {
+  if (value === null) {
+    return { kind: "null" };
+  }
+  if (typeof value === "string") {
+    return { kind: "string", value: { kind: "literal", value } };
+  }
+  if (typeof value === "boolean") {
+    return { kind: "boolean", value: { kind: "boolean", value } };
+  }
+  if (typeof value === "number") {
+    return { kind: "number", value: numberExpressionFromNumber(value) };
+  }
+  throw new Error("Unsupported JSON.parse primitive value");
 }
 
 function lowerRuntimeAggregateExpansionBinding(
@@ -5058,6 +5156,10 @@ function lowerDirectValueExpression(
   }
 
   if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
+    const jsonStringify = lowerJsonStringifyCall(expression, bindings);
+    if (jsonStringify !== undefined) {
+      return jsonStringify;
+    }
     const arrayMethod = lowerArrayValueMethodCall(expression, bindings);
     if (arrayMethod !== undefined) {
       return arrayMethod;
@@ -5066,6 +5168,56 @@ function lowerDirectValueExpression(
   }
 
   return undefined;
+}
+
+const jsonMaxIndent = 10;
+const jsonStringifyMaxArgumentCount = 3;
+
+// eslint-disable-next-line complexity -- JSON.stringify routes value, replacer, and indent argument shapes in one place.
+function lowerJsonStringifyCall(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression)) {
+    return undefined;
+  }
+  if (expression.expression.expression.text !== "JSON" || expression.expression.name.text !== "stringify" || bindings.has("JSON")) {
+    return undefined;
+  }
+  if (expression.arguments.length === 0 || expression.arguments.length > jsonStringifyMaxArgumentCount) {
+    return undefined;
+  }
+  const value = lowerValueExpression(expression.arguments[0], bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+  let replacerName: string | undefined;
+  if (expression.arguments.length >= 2) {
+    const replacer = unwrapTypeOnlyExpression(expression.arguments[1]);
+    const isNullish = replacer.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(replacer) && replacer.text === "undefined");
+    if (!isNullish) {
+      if (!ts.isIdentifier(replacer)) {
+        return undefined;
+      }
+      const binding = bindings.get(replacer.text);
+      if (binding?.kind !== "runtimeArray") {
+        return undefined;
+      }
+      replacerName = binding.name;
+    }
+  }
+  let indent = 0;
+  if (expression.arguments.length === jsonStringifyMaxArgumentCount) {
+    const indentExpression = unwrapTypeOnlyExpression(expression.arguments[2]);
+    if (!ts.isNumericLiteral(indentExpression)) {
+      return undefined;
+    }
+    indent = Math.min(Math.trunc(Number(indentExpression.text)), jsonMaxIndent);
+    if (indent < 0 || Number.isNaN(indent)) {
+      return undefined;
+    }
+  }
+  return { kind: "jsonStringify", value, replacerName, indent };
 }
 
 function lowerOptionalChainValueExpression(
@@ -6268,6 +6420,10 @@ function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | 
   }
   const callee = expression.expression;
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
+    const jsonMessage = unsupportedJsonMessage(callee);
+    if (jsonMessage !== undefined) {
+      return jsonMessage;
+    }
     if (callee.expression.text === "Object") {
       if (callee.name.text === "defineProperty") {
         return unsupportedDefinePropertyMessage(expression);
@@ -6285,6 +6441,19 @@ function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | 
     if (callee.name.text === "every" || callee.name.text === "some") {
       return "Array.prototype.every and Array.prototype.some are only supported without a callback argument in the current runtime lowering slice";
     }
+  }
+  return undefined;
+}
+
+function unsupportedJsonMessage(callee: ts.PropertyAccessExpression): string | undefined {
+  if (!ts.isIdentifier(callee.expression) || callee.expression.text !== "JSON") {
+    return undefined;
+  }
+  if (callee.name.text === "parse") {
+    return "JSON.parse is only supported for compile-time string arguments in the current runtime lowering slice";
+  }
+  if (callee.name.text === "stringify") {
+    return "JSON.stringify replacers must be string-array bindings and indents must be numeric literals between 0 and 10";
   }
   return undefined;
 }

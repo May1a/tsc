@@ -1971,6 +1971,22 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return emitNullishCoalesceValueExpression(expression, context);
   }
 
+  if (expression.kind === "jsonStringify") {
+    const source = emitValueExpression(expression.value, context);
+    const lines = [...source.lines];
+    let filter = "null";
+    if (expression.replacerName !== undefined) {
+      const filterArray = emitRuntimeArrayPointer(expression.replacerName, context);
+      lines.push(...filterArray.lines);
+      filter = filterArray.value;
+    }
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "jsonStringify");
+    lines.push(`  ${value} = call i64 @jsonStringify(i64 ${source.value}, ptr ${filter}, i64 ${expression.indent})`);
+    return { lines, value };
+  }
+
   if (expression.kind === "optionalChain") {
     return emitOptionalChainValueExpression(expression, context);
   }

@@ -106,6 +106,13 @@ export type RuntimeHelper =
   | "objectNew"
   | "errorNew"
   | "errorToString"
+  | "jsonQuote"
+  | "jsonPad"
+  | "jsonFilterHas"
+  | "jsonStringifyValue"
+  | "jsonStringifyArray"
+  | "jsonStringifyObject"
+  | "jsonStringify"
   | "objectCreate"
   | "objectGetOwn"
   | "objectGet"
@@ -238,6 +245,13 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["objectCreate", ["objectNew"]],
   ["errorNew", ["objectNew", "valueBoxString", "objectDefineDataProperty"]],
   ["errorToString", ["objectGet", "valueToString", "malloc", "memcpy"]],
+  ["jsonQuote", ["malloc"]],
+  ["jsonPad", ["malloc"]],
+  ["jsonFilterHas", ["arrayLength", "arrayGet", "valueStringPtr", "valueStringLength", "memcmp"]],
+  ["jsonStringifyValue", ["jsonQuote", "jsonStringifyArray", "jsonStringifyObject", "valueStringPtr", "valueStringLength", "valueObjectPtr", "valueArrayPtr", "malloc", "sprintf"]],
+  ["jsonStringifyArray", ["arrayLength", "arrayGet", "jsonStringifyValue", "jsonPad", "strConcat"]],
+  ["jsonStringifyObject", ["jsonStringifyValue", "jsonQuote", "jsonPad", "jsonFilterHas", "strConcat"]],
+  ["jsonStringify", ["jsonStringifyValue", "valueBoxString"]],
   ["objectGet", ["objectGetOwn"]],
   ["objectHasOwn", ["objectGetOwn"]],
   ["objectHas", ["objectHasOwn", "objectGetOwn", "memcmp"]],
@@ -2921,6 +2935,477 @@ joined:
   %joined.0 = insertvalue { ptr, i64 } undef, ptr %buffer, 0
   %joined.1 = insertvalue { ptr, i64 } %joined.0, i64 %total, 1
   ret { ptr, i64 } %joined.1
+}
+`);
+  }
+  if (runtime.used.has("jsonQuote")) {
+    definitions.push(`define { ptr, i64 } @jsonQuote(i64 %len, ptr %p) {
+entry:
+  %worst = mul i64 %len, 6
+  %alloc = add i64 %worst, 3
+  %out = call ptr @malloc(i64 %alloc)
+  store i8 34, ptr %out
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %advance ]
+  %o = phi i64 [ 1, %entry ], [ %o.next, %advance ]
+  %done = icmp eq i64 %i, %len
+  br i1 %done, label %close, label %body
+body:
+  %c.ptr = getelementptr i8, ptr %p, i64 %i
+  %c = load i8, ptr %c.ptr
+  switch i8 %c, label %check.control [
+    i8 34, label %escape.quote
+    i8 92, label %escape.backslash
+    i8 10, label %escape.n
+    i8 13, label %escape.r
+    i8 9, label %escape.t
+    i8 8, label %escape.b
+    i8 12, label %escape.f
+  ]
+escape.quote:
+  br label %two.char
+escape.backslash:
+  br label %two.char
+escape.n:
+  br label %two.char
+escape.r:
+  br label %two.char
+escape.t:
+  br label %two.char
+escape.b:
+  br label %two.char
+escape.f:
+  br label %two.char
+two.char:
+  %escaped = phi i8 [ 34, %escape.quote ], [ 92, %escape.backslash ], [ 110, %escape.n ], [ 114, %escape.r ], [ 116, %escape.t ], [ 98, %escape.b ], [ 102, %escape.f ]
+  %two.slot = getelementptr i8, ptr %out, i64 %o
+  store i8 92, ptr %two.slot
+  %two.o1 = add i64 %o, 1
+  %two.slot1 = getelementptr i8, ptr %out, i64 %two.o1
+  store i8 %escaped, ptr %two.slot1
+  %two.o.next = add i64 %o, 2
+  br label %advance
+check.control:
+  %is.control = icmp ult i8 %c, 32
+  br i1 %is.control, label %unicode, label %plain
+unicode:
+  %u.slot0 = getelementptr i8, ptr %out, i64 %o
+  store i8 92, ptr %u.slot0
+  %u.o1 = add i64 %o, 1
+  %u.slot1 = getelementptr i8, ptr %out, i64 %u.o1
+  store i8 117, ptr %u.slot1
+  %u.o2 = add i64 %o, 2
+  %u.slot2 = getelementptr i8, ptr %out, i64 %u.o2
+  store i8 48, ptr %u.slot2
+  %u.o3 = add i64 %o, 3
+  %u.slot3 = getelementptr i8, ptr %out, i64 %u.o3
+  store i8 48, ptr %u.slot3
+  %hi = lshr i8 %c, 4
+  %hi.small = icmp ult i8 %hi, 10
+  %hi.digit.base = select i1 %hi.small, i8 48, i8 87
+  %hi.digit = add i8 %hi.digit.base, %hi
+  %u.o4 = add i64 %o, 4
+  %u.slot4 = getelementptr i8, ptr %out, i64 %u.o4
+  store i8 %hi.digit, ptr %u.slot4
+  %lo = and i8 %c, 15
+  %lo.small = icmp ult i8 %lo, 10
+  %lo.digit.base = select i1 %lo.small, i8 48, i8 87
+  %lo.digit = add i8 %lo.digit.base, %lo
+  %u.o5 = add i64 %o, 5
+  %u.slot5 = getelementptr i8, ptr %out, i64 %u.o5
+  store i8 %lo.digit, ptr %u.slot5
+  %u.o.next = add i64 %o, 6
+  br label %advance
+plain:
+  %plain.slot = getelementptr i8, ptr %out, i64 %o
+  store i8 %c, ptr %plain.slot
+  %plain.o.next = add i64 %o, 1
+  br label %advance
+advance:
+  %o.next = phi i64 [ %two.o.next, %two.char ], [ %u.o.next, %unicode ], [ %plain.o.next, %plain ]
+  %i.next = add i64 %i, 1
+  br label %loop
+close:
+  %close.slot = getelementptr i8, ptr %out, i64 %o
+  store i8 34, ptr %close.slot
+  %total = add i64 %o, 1
+  %nul.slot = getelementptr i8, ptr %out, i64 %total
+  store i8 0, ptr %nul.slot
+  %result.0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %result.1 = insertvalue { ptr, i64 } %result.0, i64 %total, 1
+  ret { ptr, i64 } %result.1
+}
+`);
+  }
+  if (runtime.used.has("jsonPad")) {
+    definitions.push(`define { ptr, i64 } @jsonPad(i64 %indent, i64 %depth) {
+entry:
+  %count = mul i64 %indent, %depth
+  %alloc = add i64 %count, 1
+  %out = call ptr @malloc(i64 %alloc)
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %body ]
+  %done = icmp eq i64 %i, %count
+  br i1 %done, label %exit, label %body
+body:
+  %slot = getelementptr i8, ptr %out, i64 %i
+  store i8 32, ptr %slot
+  %next = add i64 %i, 1
+  br label %loop
+exit:
+  %nul.slot = getelementptr i8, ptr %out, i64 %count
+  store i8 0, ptr %nul.slot
+  %result.0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %result.1 = insertvalue { ptr, i64 } %result.0, i64 %count, 1
+  ret { ptr, i64 } %result.1
+}
+`);
+  }
+  if (runtime.used.has("jsonFilterHas")) {
+    definitions.push(`define i1 @jsonFilterHas(ptr %filter, i64 %key.len, ptr %key.ptr) {
+entry:
+  %length = call i64 @arrayLength(ptr %filter)
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %missing, label %body
+body:
+  %entry.value = call i64 @arrayGet(ptr %filter, i64 %i)
+  %tagged = and i64 %entry.value, -281474976710656
+  %is.string = icmp eq i64 %tagged, 9221683186994511872
+  br i1 %is.string, label %compare.len, label %advance
+compare.len:
+  %entry.len = call i64 @valueStringLength(i64 %entry.value)
+  %same.len = icmp eq i64 %entry.len, %key.len
+  br i1 %same.len, label %compare, label %advance
+compare:
+  %entry.ptr = call ptr @valueStringPtr(i64 %entry.value)
+  %cmp = call i32 @memcmp(ptr %entry.ptr, ptr %key.ptr, i64 %key.len)
+  %same = icmp eq i32 %cmp, 0
+  br i1 %same, label %found, label %advance
+found:
+  ret i1 true
+advance:
+  %next = add i64 %i, 1
+  br label %loop
+missing:
+  ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("jsonStringifyValue")) {
+    definitions.push(`@.json.null = private unnamed_addr constant [5 x i8] c"null\\00"
+@.json.true = private unnamed_addr constant [5 x i8] c"true\\00"
+@.json.false = private unnamed_addr constant [6 x i8] c"false\\00"
+@.json.cycle = private unnamed_addr constant [49 x i8] c"TypeError: Converting circular structure to JSON\\00"
+@.json.fmt.number = private unnamed_addr constant [3 x i8] c"%g\\00"
+
+define { ptr, i64 } @jsonStringifyValue(i64 %value, ptr %filter, i64 %indent, i64 %depth) {
+entry:
+  %too.deep = icmp ugt i64 %depth, 256
+  br i1 %too.deep, label %cycle, label %check.undefined
+cycle:
+  call i32 @puts(ptr @.json.cycle)
+  call void @exit(i32 1)
+  unreachable
+check.undefined:
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  br i1 %is.undefined, label %skip, label %check.null
+skip:
+  %skip.0 = insertvalue { ptr, i64 } undef, ptr null, 0
+  %skip.1 = insertvalue { ptr, i64 } %skip.0, i64 0, 1
+  ret { ptr, i64 } %skip.1
+check.null:
+  %is.null = icmp eq i64 %value, 9222246136947933187
+  br i1 %is.null, label %null, label %check.true
+null:
+  %null.0 = insertvalue { ptr, i64 } undef, ptr @.json.null, 0
+  %null.1 = insertvalue { ptr, i64 } %null.0, i64 4, 1
+  ret { ptr, i64 } %null.1
+check.true:
+  %is.true = icmp eq i64 %value, 9222246136947933186
+  br i1 %is.true, label %true, label %check.false
+true:
+  %true.0 = insertvalue { ptr, i64 } undef, ptr @.json.true, 0
+  %true.1 = insertvalue { ptr, i64 } %true.0, i64 4, 1
+  ret { ptr, i64 } %true.1
+check.false:
+  %is.false = icmp eq i64 %value, 9222246136947933185
+  br i1 %is.false, label %false, label %check.string
+false:
+  %false.0 = insertvalue { ptr, i64 } undef, ptr @.json.false, 0
+  %false.1 = insertvalue { ptr, i64 } %false.0, i64 5, 1
+  ret { ptr, i64 } %false.1
+check.string:
+  %tagged = and i64 %value, -281474976710656
+  %is.string = icmp eq i64 %tagged, 9221683186994511872
+  br i1 %is.string, label %string, label %check.object
+string:
+  %string.len = call i64 @valueStringLength(i64 %value)
+  %string.ptr = call ptr @valueStringPtr(i64 %value)
+  %quoted = call { ptr, i64 } @jsonQuote(i64 %string.len, ptr %string.ptr)
+  ret { ptr, i64 } %quoted
+check.object:
+  %is.object = icmp eq i64 %tagged, 9221120237041090560
+  br i1 %is.object, label %object, label %check.array
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %next.depth.obj = add i64 %depth, 1
+  %object.json = call { ptr, i64 } @jsonStringifyObject(ptr %object.ptr, ptr %filter, i64 %indent, i64 %next.depth.obj)
+  ret { ptr, i64 } %object.json
+check.array:
+  %is.array = icmp eq i64 %tagged, 9221401712017801216
+  br i1 %is.array, label %array, label %number
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %next.depth.arr = add i64 %depth, 1
+  %array.json = call { ptr, i64 } @jsonStringifyArray(ptr %array.ptr, ptr %filter, i64 %indent, i64 %next.depth.arr)
+  ret { ptr, i64 } %array.json
+number:
+  %number.value = bitcast i64 %value to double
+  %is.nan = fcmp uno double %number.value, %number.value
+  br i1 %is.nan, label %null, label %check.infinite
+check.infinite:
+  %abs.bits = and i64 %value, 9223372036854775807
+  %is.infinite = icmp eq i64 %abs.bits, 9218868437227405312
+  br i1 %is.infinite, label %null, label %finite
+finite:
+  %buffer = call ptr @malloc(i64 32)
+  %written = call i32 (ptr, ptr, ...) @sprintf(ptr %buffer, ptr @.json.fmt.number, double %number.value)
+  %written.len = sext i32 %written to i64
+  %finite.0 = insertvalue { ptr, i64 } undef, ptr %buffer, 0
+  %finite.1 = insertvalue { ptr, i64 } %finite.0, i64 %written.len, 1
+  ret { ptr, i64 } %finite.1
+}
+`);
+  }
+  if (runtime.used.has("jsonStringifyArray")) {
+    definitions.push(`@.json.arr.null = private unnamed_addr constant [5 x i8] c"null\\00"
+@.json.arr.open = private unnamed_addr constant [2 x i8] c"[\\00"
+@.json.arr.close = private unnamed_addr constant [2 x i8] c"]\\00"
+@.json.arr.comma = private unnamed_addr constant [2 x i8] c",\\00"
+@.json.arr.newline = private unnamed_addr constant [2 x i8] c"\\0A\\00"
+
+define { ptr, i64 } @jsonStringifyArray(ptr %array, ptr %filter, i64 %indent, i64 %depth) {
+entry:
+  %length = call i64 @arrayLength(ptr %array)
+  %empty = icmp eq i64 %length, 0
+  br i1 %empty, label %empty.result, label %setup
+empty.result:
+  %empty.str = call ptr @strConcat(i64 1, ptr @.json.arr.open, i64 1, ptr @.json.arr.close)
+  %empty.0 = insertvalue { ptr, i64 } undef, ptr %empty.str, 0
+  %empty.1 = insertvalue { ptr, i64 } %empty.0, i64 2, 1
+  ret { ptr, i64 } %empty.1
+setup:
+  %pretty = icmp ugt i64 %indent, 0
+  %pad = call { ptr, i64 } @jsonPad(i64 %indent, i64 %depth)
+  %pad.ptr = extractvalue { ptr, i64 } %pad, 0
+  %pad.len = extractvalue { ptr, i64 } %pad, 1
+  %parent.depth = sub i64 %depth, 1
+  %close.pad = call { ptr, i64 } @jsonPad(i64 %indent, i64 %parent.depth)
+  %close.pad.ptr = extractvalue { ptr, i64 } %close.pad, 0
+  %close.pad.len = extractvalue { ptr, i64 } %close.pad, 1
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %setup ], [ %i.next, %append ]
+  %acc.ptr = phi ptr [ @.json.arr.open, %setup ], [ %next.acc.ptr, %append ]
+  %acc.len = phi i64 [ 1, %setup ], [ %next.acc.len, %append ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %finish, label %element
+element:
+  %elem.value = call i64 @arrayGet(ptr %array, i64 %i)
+  %elem.json = call { ptr, i64 } @jsonStringifyValue(i64 %elem.value, ptr %filter, i64 %indent, i64 %depth)
+  %elem.ptr.raw = extractvalue { ptr, i64 } %elem.json, 0
+  %elem.len.raw = extractvalue { ptr, i64 } %elem.json, 1
+  %elem.skipped = icmp eq ptr %elem.ptr.raw, null
+  %elem.ptr = select i1 %elem.skipped, ptr @.json.arr.null, ptr %elem.ptr.raw
+  %elem.len = select i1 %elem.skipped, i64 4, i64 %elem.len.raw
+  %first = icmp eq i64 %i, 0
+  br i1 %first, label %separator.done, label %separator
+separator:
+  %with.comma = call ptr @strConcat(i64 %acc.len, ptr %acc.ptr, i64 1, ptr @.json.arr.comma)
+  %with.comma.len = add i64 %acc.len, 1
+  br label %separator.done
+separator.done:
+  %sep.ptr = phi ptr [ %acc.ptr, %element ], [ %with.comma, %separator ]
+  %sep.len = phi i64 [ %acc.len, %element ], [ %with.comma.len, %separator ]
+  br i1 %pretty, label %pad.element, label %plain.element
+pad.element:
+  %with.nl = call ptr @strConcat(i64 %sep.len, ptr %sep.ptr, i64 1, ptr @.json.arr.newline)
+  %with.nl.len = add i64 %sep.len, 1
+  %with.pad = call ptr @strConcat(i64 %with.nl.len, ptr %with.nl, i64 %pad.len, ptr %pad.ptr)
+  %with.pad.len = add i64 %with.nl.len, %pad.len
+  br label %emit
+plain.element:
+  br label %emit
+emit:
+  %emit.ptr = phi ptr [ %with.pad, %pad.element ], [ %sep.ptr, %plain.element ]
+  %emit.len = phi i64 [ %with.pad.len, %pad.element ], [ %sep.len, %plain.element ]
+  %appended = call ptr @strConcat(i64 %emit.len, ptr %emit.ptr, i64 %elem.len, ptr %elem.ptr)
+  %appended.len = add i64 %emit.len, %elem.len
+  br label %append
+append:
+  %next.acc.ptr = phi ptr [ %appended, %emit ]
+  %next.acc.len = phi i64 [ %appended.len, %emit ]
+  %i.next = add i64 %i, 1
+  br label %loop
+finish:
+  br i1 %pretty, label %finish.pretty, label %finish.plain
+finish.pretty:
+  %final.nl = call ptr @strConcat(i64 %acc.len, ptr %acc.ptr, i64 1, ptr @.json.arr.newline)
+  %final.nl.len = add i64 %acc.len, 1
+  %final.pad = call ptr @strConcat(i64 %final.nl.len, ptr %final.nl, i64 %close.pad.len, ptr %close.pad.ptr)
+  %final.pad.len = add i64 %final.nl.len, %close.pad.len
+  br label %close
+finish.plain:
+  br label %close
+close:
+  %close.in.ptr = phi ptr [ %final.pad, %finish.pretty ], [ %acc.ptr, %finish.plain ]
+  %close.in.len = phi i64 [ %final.pad.len, %finish.pretty ], [ %acc.len, %finish.plain ]
+  %closed = call ptr @strConcat(i64 %close.in.len, ptr %close.in.ptr, i64 1, ptr @.json.arr.close)
+  %closed.len = add i64 %close.in.len, 1
+  %result.0 = insertvalue { ptr, i64 } undef, ptr %closed, 0
+  %result.1 = insertvalue { ptr, i64 } %result.0, i64 %closed.len, 1
+  ret { ptr, i64 } %result.1
+}
+`);
+  }
+  if (runtime.used.has("jsonStringifyObject")) {
+    definitions.push(`@.json.obj.open = private unnamed_addr constant [2 x i8] c"{\\00"
+@.json.obj.close = private unnamed_addr constant [2 x i8] c"}\\00"
+@.json.obj.comma = private unnamed_addr constant [2 x i8] c",\\00"
+@.json.obj.newline = private unnamed_addr constant [2 x i8] c"\\0A\\00"
+@.json.obj.colon = private unnamed_addr constant [2 x i8] c":\\00"
+@.json.obj.colon.space = private unnamed_addr constant [3 x i8] c": \\00"
+
+define { ptr, i64 } @jsonStringifyObject(ptr %object, ptr %filter, i64 %indent, i64 %depth) {
+entry:
+  %count = load i64, ptr %object
+  %entries.slot = getelementptr i8, ptr %object, i64 16
+  %entries = load ptr, ptr %entries.slot
+  %pretty = icmp ugt i64 %indent, 0
+  %pad = call { ptr, i64 } @jsonPad(i64 %indent, i64 %depth)
+  %pad.ptr = extractvalue { ptr, i64 } %pad, 0
+  %pad.len = extractvalue { ptr, i64 } %pad, 1
+  %parent.depth = sub i64 %depth, 1
+  %close.pad = call { ptr, i64 } @jsonPad(i64 %indent, i64 %parent.depth)
+  %close.pad.ptr = extractvalue { ptr, i64 } %close.pad, 0
+  %close.pad.len = extractvalue { ptr, i64 } %close.pad, 1
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %advance ]
+  %acc.ptr = phi ptr [ @.json.obj.open, %entry ], [ %next.acc.ptr, %advance ]
+  %acc.len = phi i64 [ 1, %entry ], [ %next.acc.len, %advance ]
+  %emitted = phi i64 [ 0, %entry ], [ %next.emitted, %advance ]
+  %done = icmp eq i64 %i, %count
+  br i1 %done, label %finish, label %body
+body:
+  %entry.bytes = mul i64 %i, 32
+  %entry.ptr = getelementptr i8, ptr %entries, i64 %entry.bytes
+  %descriptor.slot = getelementptr i8, ptr %entry.ptr, i64 24
+  %descriptor = load i64, ptr %descriptor.slot
+  %enumerable.bit = and i64 %descriptor, 2
+  %is.enumerable = icmp ne i64 %enumerable.bit, 0
+  br i1 %is.enumerable, label %check.filter, label %skip
+check.filter:
+  %key.len = load i64, ptr %entry.ptr
+  %key.slot = getelementptr i8, ptr %entry.ptr, i64 8
+  %key.ptr = load ptr, ptr %key.slot
+  %no.filter = icmp eq ptr %filter, null
+  br i1 %no.filter, label %stringify, label %filter.check
+filter.check:
+  %in.filter = call i1 @jsonFilterHas(ptr %filter, i64 %key.len, ptr %key.ptr)
+  br i1 %in.filter, label %stringify, label %skip
+stringify:
+  %value.slot = getelementptr i8, ptr %entry.ptr, i64 16
+  %entry.value = load i64, ptr %value.slot
+  %value.json = call { ptr, i64 } @jsonStringifyValue(i64 %entry.value, ptr %filter, i64 %indent, i64 %depth)
+  %value.ptr = extractvalue { ptr, i64 } %value.json, 0
+  %value.len = extractvalue { ptr, i64 } %value.json, 1
+  %value.skipped = icmp eq ptr %value.ptr, null
+  br i1 %value.skipped, label %skip, label %emit.pair
+emit.pair:
+  %first = icmp eq i64 %emitted, 0
+  br i1 %first, label %separator.done, label %separator
+separator:
+  %with.comma = call ptr @strConcat(i64 %acc.len, ptr %acc.ptr, i64 1, ptr @.json.obj.comma)
+  %with.comma.len = add i64 %acc.len, 1
+  br label %separator.done
+separator.done:
+  %sep.ptr = phi ptr [ %acc.ptr, %emit.pair ], [ %with.comma, %separator ]
+  %sep.len = phi i64 [ %acc.len, %emit.pair ], [ %with.comma.len, %separator ]
+  br i1 %pretty, label %pad.pair, label %plain.pair
+pad.pair:
+  %with.nl = call ptr @strConcat(i64 %sep.len, ptr %sep.ptr, i64 1, ptr @.json.obj.newline)
+  %with.nl.len = add i64 %sep.len, 1
+  %with.pad = call ptr @strConcat(i64 %with.nl.len, ptr %with.nl, i64 %pad.len, ptr %pad.ptr)
+  %with.pad.len = add i64 %with.nl.len, %pad.len
+  br label %emit.key
+plain.pair:
+  br label %emit.key
+emit.key:
+  %base.ptr = phi ptr [ %with.pad, %pad.pair ], [ %sep.ptr, %plain.pair ]
+  %base.len = phi i64 [ %with.pad.len, %pad.pair ], [ %sep.len, %plain.pair ]
+  %quoted.key = call { ptr, i64 } @jsonQuote(i64 %key.len, ptr %key.ptr)
+  %quoted.key.ptr = extractvalue { ptr, i64 } %quoted.key, 0
+  %quoted.key.len = extractvalue { ptr, i64 } %quoted.key, 1
+  %with.key = call ptr @strConcat(i64 %base.len, ptr %base.ptr, i64 %quoted.key.len, ptr %quoted.key.ptr)
+  %with.key.len = add i64 %base.len, %quoted.key.len
+  %colon.ptr = select i1 %pretty, ptr @.json.obj.colon.space, ptr @.json.obj.colon
+  %colon.len = select i1 %pretty, i64 2, i64 1
+  %with.colon = call ptr @strConcat(i64 %with.key.len, ptr %with.key, i64 %colon.len, ptr %colon.ptr)
+  %with.colon.len = add i64 %with.key.len, %colon.len
+  %with.value = call ptr @strConcat(i64 %with.colon.len, ptr %with.colon, i64 %value.len, ptr %value.ptr)
+  %with.value.len = add i64 %with.colon.len, %value.len
+  br label %advance
+skip:
+  br label %advance
+advance:
+  %next.acc.ptr = phi ptr [ %with.value, %emit.key ], [ %acc.ptr, %skip ]
+  %next.acc.len = phi i64 [ %with.value.len, %emit.key ], [ %acc.len, %skip ]
+  %emitted.increment = phi i64 [ 1, %emit.key ], [ 0, %skip ]
+  %next.emitted = add i64 %emitted, %emitted.increment
+  %i.next = add i64 %i, 1
+  br label %loop
+finish:
+  %has.pairs = icmp ugt i64 %emitted, 0
+  %wants.pretty.close = and i1 %pretty, %has.pairs
+  br i1 %wants.pretty.close, label %finish.pretty, label %finish.plain
+finish.pretty:
+  %final.nl = call ptr @strConcat(i64 %acc.len, ptr %acc.ptr, i64 1, ptr @.json.obj.newline)
+  %final.nl.len = add i64 %acc.len, 1
+  %final.pad = call ptr @strConcat(i64 %final.nl.len, ptr %final.nl, i64 %close.pad.len, ptr %close.pad.ptr)
+  %final.pad.len = add i64 %final.nl.len, %close.pad.len
+  br label %close
+finish.plain:
+  br label %close
+close:
+  %close.in.ptr = phi ptr [ %final.pad, %finish.pretty ], [ %acc.ptr, %finish.plain ]
+  %close.in.len = phi i64 [ %final.pad.len, %finish.pretty ], [ %acc.len, %finish.plain ]
+  %closed = call ptr @strConcat(i64 %close.in.len, ptr %close.in.ptr, i64 1, ptr @.json.obj.close)
+  %closed.len = add i64 %close.in.len, 1
+  %result.0 = insertvalue { ptr, i64 } undef, ptr %closed, 0
+  %result.1 = insertvalue { ptr, i64 } %result.0, i64 %closed.len, 1
+  ret { ptr, i64 } %result.1
+}
+`);
+  }
+  if (runtime.used.has("jsonStringify")) {
+    definitions.push(`define i64 @jsonStringify(i64 %value, ptr %filter, i64 %indent) {
+entry:
+  %json = call { ptr, i64 } @jsonStringifyValue(i64 %value, ptr %filter, i64 %indent, i64 0)
+  %json.ptr = extractvalue { ptr, i64 } %json, 0
+  %json.len = extractvalue { ptr, i64 } %json, 1
+  %skipped = icmp eq ptr %json.ptr, null
+  br i1 %skipped, label %undefined, label %boxed
+undefined:
+  ret i64 9222246136947933184
+boxed:
+  %result = call i64 @valueBoxString(ptr %json.ptr, i64 %json.len)
+  ret i64 %result
 }
 `);
   }
