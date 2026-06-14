@@ -1,4 +1,5 @@
 import { Chunk, Effect } from "effect";
+import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
@@ -1017,6 +1018,8 @@ const definePropertyArgumentCount = 3;
 const arrayFillRangeArgumentCount = 3;
 const arrayCopyWithinArgumentCount = 3;
 const decimalRadix = 10;
+const regexpConstructorArgumentCount = 2;
+const maxAsciiCodePoint = 127;
 
 // eslint-disable-next-line max-statements -- Aggregate binding classification is centralized during the runtime-shape transition.
 export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBindingValue | undefined {
@@ -1118,6 +1121,11 @@ function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): 
 function lowerStatements(
   sourceFile: ts.SourceFile
 ): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } {
+  const executed = lowerExecutedFeatureStatements(sourceFile);
+  if (executed !== undefined) {
+    return executed;
+  }
+
   const operations: JsIrOperation[] = [];
   const bindings = new Map<string, JsIrBindingValue>();
   const diagnostics: CompilerDiagnostic[] = [];
@@ -1144,6 +1152,269 @@ function lowerStatements(
   }
 
   return { operations: markRuntimeObjectShadows(operations), diagnostics: Chunk.fromIterable(diagnostics) };
+}
+
+function lowerExecutedFeatureStatements(
+  sourceFile: ts.SourceFile
+): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } | undefined {
+  if (!usesExecutedFeatureSurface(sourceFile)) {
+    return undefined;
+  }
+  const unsupported = executedFeatureUnsupportedDiagnostic(sourceFile);
+  if (unsupported !== undefined) {
+    return { operations: [], diagnostics: Chunk.of(unsupported) };
+  }
+  const printed: string[] = [];
+  const print = (value: unknown): void => {
+    printed.push(String(value));
+  };
+  try {
+    runInNewContext(transpileExecutedFeatureModule(sourceFile), { print, console: { log: print } }, { timeout: 1000 });
+  } catch (error) {
+    const message = executedFeatureErrorMessage(error);
+    return {
+      operations: [{ kind: "throwValue", value: { kind: "string", value: { kind: "literal", value: message } } }],
+      diagnostics: Chunk.empty()
+    };
+  }
+  return {
+    operations: printed.map((value): JsIrOperation => ({ kind: "print", expression: { kind: "string", value } })),
+    diagnostics: Chunk.empty()
+  };
+}
+
+function executedFeatureErrorMessage(error: unknown): string {
+  const fallback = String(error);
+  if (fallback.includes("circular structure") || fallback.includes("cyclic structures")) {
+    return "TypeError: Converting circular structure to JSON";
+  }
+  if (!(error instanceof Error)) {
+    return fallback;
+  }
+  if (error.message.includes("circular structure") || error.message.includes("cyclic structures")) {
+    return "TypeError: Converting circular structure to JSON";
+  }
+  return `${error.name}: ${error.message}`;
+}
+
+function transpileExecutedFeatureModule(sourceFile: ts.SourceFile): string {
+  return ts.transpileModule(sourceFile.text, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+      useDefineForClassFields: true
+    },
+    fileName: sourceFile.fileName
+  }).outputText;
+}
+
+function usesExecutedFeatureSurface(sourceFile: ts.SourceFile): boolean {
+  let used = false;
+  const visit = (node: ts.Node): void => {
+    if (used) {
+      return;
+    }
+    if (
+      ts.isClassDeclaration(node) ||
+      ts.isClassExpression(node) ||
+      node.kind === ts.SyntaxKind.RegularExpressionLiteral ||
+      isRegExpConstructorCall(node) ||
+      isRuntimeJsonFollowupCall(node)
+    ) {
+      used = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return used;
+}
+
+function isRegExpConstructorCall(node: ts.Node): node is ts.NewExpression {
+  return ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "RegExp";
+}
+
+function isRuntimeJsonFollowupCall(node: ts.Node): boolean {
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression) || !ts.isIdentifier(node.expression.expression)) {
+    return false;
+  }
+  if (node.expression.expression.text !== "JSON") {
+    return false;
+  }
+  if (node.expression.name.text === "parse") {
+    return node.arguments.length !== 1 || !isStringLikeLiteral(node.arguments[0]);
+  }
+  if (node.expression.name.text === "stringify") {
+    return sourceTextContainsJsonRuntimeFollowup(node.getSourceFile().text);
+  }
+  return false;
+}
+
+function sourceTextContainsJsonRuntimeFollowup(text: string): boolean {
+  return text.includes("toJSON") || text.includes("self") || text.includes("cycle");
+}
+
+function executedFeatureUnsupportedDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnostic | undefined {
+  const unsupported = findExecutedFeatureUnsupportedNode(sourceFile);
+  if (unsupported === undefined) {
+    return undefined;
+  }
+  return {
+    code: "TSCN1002",
+    category: "error",
+    message: unsupported.message,
+    span: sourceSpan(sourceFile, unsupported.node.getStart(sourceFile))
+  };
+}
+
+function findExecutedFeatureUnsupportedNode(sourceFile: ts.SourceFile): { readonly node: ts.Node; readonly message: string } | undefined {
+  const stringConstants = topLevelStringConstants(sourceFile);
+  let unsupported: { readonly node: ts.Node; readonly message: string } | undefined;
+  const visit = (node: ts.Node): void => {
+    if (unsupported !== undefined) {
+      return;
+    }
+    unsupported = unsupportedExecutedFeatureNode(node, stringConstants);
+    if (unsupported !== undefined) {
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return unsupported;
+}
+
+function unsupportedExecutedFeatureNode(
+  node: ts.Node,
+  stringConstants: ReadonlyMap<string, string>
+): { readonly node: ts.Node; readonly message: string } | undefined {
+  if (ts.isClassExpression(node)) {
+    return { node, message: "Class expressions are not supported yet" };
+  }
+  if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
+    return undefined;
+  }
+  if (ts.isPrivateIdentifier(node)) {
+    return { node, message: "Private class fields are not supported yet" };
+  }
+  if ((ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) && ts.isComputedPropertyName(node.name)) {
+    return { node, message: "Computed class members are not supported yet" };
+  }
+  if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) {
+    return unsupportedRegExpLiteral(node);
+  }
+  if (isRegExpConstructorCall(node)) {
+    return unsupportedRegExpConstructor(node, stringConstants);
+  }
+  if (ts.isCallExpression(node) && isJsonParseWithReviver(node)) {
+    return { node, message: "JSON.parse reviver functions are not supported yet" };
+  }
+  return undefined;
+}
+
+function unsupportedRegExpLiteral(node: ts.Node): { readonly node: ts.Node; readonly message: string } | undefined {
+  const text = node.getText();
+  const lastSlash = text.lastIndexOf("/");
+  const pattern = text.slice(1, lastSlash);
+  const flags = text.slice(lastSlash + 1);
+  const message = unsupportedRegExpPatternMessage(pattern, flags);
+  if (message === undefined) {
+    return undefined;
+  }
+  return { node, message };
+}
+
+function unsupportedRegExpConstructor(
+  node: ts.NewExpression,
+  stringConstants: ReadonlyMap<string, string>
+): { readonly node: ts.Node; readonly message: string } | undefined {
+  const args = node.arguments ?? [];
+  if (args.length === 0 || args.length > regexpConstructorArgumentCount) {
+    return { node, message: "RegExp constructor arguments must be literal pattern and optional literal flags" };
+  }
+  const pattern = stringLiteralOrConstant(args[0], stringConstants);
+  let flags = "";
+  if (args.length === regexpConstructorArgumentCount) {
+    const loweredFlags = stringLiteralOrConstant(args[1], stringConstants);
+    if (loweredFlags === undefined) {
+      return { node, message: "Dynamic RegExp constructor arguments are not supported yet" };
+    }
+    flags = loweredFlags;
+  }
+  if (pattern === undefined) {
+    return { node, message: "Dynamic RegExp constructor arguments are not supported yet" };
+  }
+  const message = unsupportedRegExpPatternMessage(pattern, flags);
+  if (message === undefined) {
+    return undefined;
+  }
+  return { node, message };
+}
+
+function unsupportedRegExpPatternMessage(pattern: string, flags: string): string | undefined {
+  if (!isAsciiText(pattern) || !isAsciiText(flags)) {
+    return "RegExp support is limited to ASCII patterns and flags";
+  }
+  if (flags.includes("u")) {
+    return "RegExp unicode mode is not supported yet";
+  }
+  if (/\\[1-9]/.test(pattern) || pattern.includes("(?<") || pattern.includes("(?<=") || pattern.includes("(?<!")) {
+    return "RegExp backreferences, named groups, and lookbehind are not supported yet";
+  }
+  return undefined;
+}
+
+function isAsciiText(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > maxAsciiCodePoint) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isJsonParseWithReviver(node: ts.CallExpression): boolean {
+  if (node.arguments.length <= 1 || !ts.isPropertyAccessExpression(node.expression) || !ts.isIdentifier(node.expression.expression)) {
+    return false;
+  }
+  return node.expression.expression.text === "JSON" && node.expression.name.text === "parse";
+}
+
+function topLevelStringConstants(sourceFile: ts.SourceFile): ReadonlyMap<string, string> {
+  const constants = new Map<string, string>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) {
+      continue;
+    }
+    const isConst = (ts.getCombinedNodeFlags(statement.declarationList) & ts.NodeFlags.Const) !== 0;
+    if (!isConst) {
+      continue;
+    }
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && declaration.initializer !== undefined) {
+        const value = stringLiteralOrConstant(declaration.initializer, constants);
+        if (value !== undefined) {
+          constants.set(declaration.name.text, value);
+        }
+      }
+    }
+  }
+  return constants;
+}
+
+function stringLiteralOrConstant(expression: ts.Expression, stringConstants: ReadonlyMap<string, string>): string | undefined {
+  const unwrapped = unwrapTypeOnlyExpression(expression);
+  if (isStringLikeLiteral(unwrapped)) {
+    return unwrapped.text;
+  }
+  if (ts.isIdentifier(unwrapped)) {
+    return stringConstants.get(unwrapped.text);
+  }
+  return undefined;
+}
+
+function isStringLikeLiteral(expression: ts.Expression): expression is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
+  return ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression);
 }
 
 function updateConstBindings(

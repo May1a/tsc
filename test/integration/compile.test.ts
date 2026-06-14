@@ -3211,10 +3211,80 @@ describe("tscn expanded runtime roadmap", () => {
       await malformed.cleanup();
     }
 
-    await expectUnsupportedMessage(
-      "json-parse-dynamic-unsupported.ts",
-      "JSON.parse is only supported for compile-time string arguments"
-    );
+    const dynamic = await expectSuccessfulCompile("json-parse-dynamic-unsupported.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(dynamic, { status: 0, stdout: "[object Object]\n", stderr: "" });
+    } finally {
+      await dynamic.cleanup();
+    }
+  }, roadmapIntegrationTimeoutMs);
+
+  test("supports RegExp literals and literal-only RegExp construction", async () => {
+    const cases = [
+      ["regex-literal-test.ts", "true\nfalse\ntrue\n"],
+      ["regex-literal-exec.ts", "a-b\n2\ntrue\n"],
+      ["regex-literal-global-last-index.ts", "true\n2\ntrue\n4\n"],
+      ["regex-string-match.ts", "123\n"],
+      ["regex-flags-and-source.ts", "foo\ngi\ntrue\ntrue\nfalse\nfalse\n0\n"],
+      ["regex-constructor-literal.ts", "true\nfoo\ni\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    await Promise.all([
+      expectUnsupportedMessage("regex-constructor-dynamic-unsupported.ts", "Dynamic RegExp constructor arguments are not supported"),
+      expectUnsupportedMessage("regex-nonascii-unsupported.ts", "RegExp support is limited to ASCII")
+    ]);
+  }, roadmapIntegrationTimeoutMs);
+
+  test("supports minimal class declarations, prototype identity, fields, and accessors", async () => {
+    const cases = [
+      ["class-basic-method.ts", "42\n"],
+      ["class-constructor.ts", "7\n"],
+      ["class-instance-method-call.ts", "7\nhi\n"],
+      ["class-static-method.ts", "hi\n"],
+      ["class-extends-super-constructor.ts", "9\n"],
+      ["class-instanceof-basic.ts", "true\n"],
+      ["class-instanceof-inheritance.ts", "true\ntrue\nfalse\n"],
+      ["class-prototype-method-lookup.ts", "5\nfalse\n"],
+      ["class-prototype-identity.ts", "true\ntrue\n"],
+      ["class-instanceof-plain-object.ts", "false\nfalse\nfalse\n"],
+      ["class-public-field.ts", "3\n"],
+      ["class-field-order.ts", "ab\n"],
+      ["class-static-field.ts", "4\n"],
+      ["class-getter-setter.ts", "3\n8\n"],
+      ["class-accessor-prototype-lookup.ts", "6\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    await Promise.all([
+      expectUnsupportedMessage("class-expression-unsupported.ts", "Class expressions are not supported"),
+      expectUnsupportedMessage("class-private-field-unsupported.ts", "Private class fields are not supported"),
+      expectUnsupportedMessage("class-computed-field-unsupported.ts", "Computed class members are not supported")
+    ]);
+
+    const nonConstructor = await expectSuccessfulCompile("class-instanceof-non-constructor-unsupported.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(nonConstructor, { status: 1, stdout: "TypeError: notConstructor is not a function. (evaluating 'new C() instanceof notConstructor')\n", stderr: "" });
+    } finally {
+      await nonConstructor.cleanup();
+    }
+  }, roadmapIntegrationTimeoutMs);
+
+  test("supports runtime JSON parse, catchable JSON errors, and toJSON", async () => {
+    const cases = [
+      ["json-parse-runtime-string.ts", "tsc\n"],
+      ["json-parse-runtime-object.ts", "1\ntrue\n"],
+      ["json-parse-runtime-array.ts", "1\ntwo\nnull\n"],
+      ["json-parse-runtime-malformed-catch.ts", "SyntaxError\ntrue\n"],
+      ["json-stringify-cycle-catch.ts", "TypeError\ntrue\n"],
+      ["json-stringify-to-json.ts", '{"x":2}\n']
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    await expectUnsupportedMessage("json-parse-reviver-unsupported.ts", "JSON.parse reviver functions are not supported");
   }, roadmapIntegrationTimeoutMs);
 
   test("emits nested runtime helper dependencies once", async () => {
