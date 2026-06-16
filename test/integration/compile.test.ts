@@ -2843,6 +2843,19 @@ describe("tscn expanded runtime roadmap", () => {
     await expectUnsupportedDiagnostic("array-runtime-map-thisarg-unsupported.ts");
   });
 
+  test("supports package BP minimal Date builtin", async () => {
+    const cases = [
+      ["date-now-basic.ts", "true\n"],
+      ["date-constructor-get-time.ts", "1234\n"],
+      ["date-value-of.ts", "5678\n"],
+      ["date-to-iso-string-epoch.ts", "1970-01-01T00:00:00.000Z\n"],
+      ["date-parse-iso-literal.ts", "0\nnan\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+    await expectUnsupportedDiagnostic("date-local-getters-unsupported.ts");
+  });
+
   test("supports package AA boxed string single-character methods", async () => {
     const cases = [
       ["string-boxed-char-at.ts", "h\no\n\n"],

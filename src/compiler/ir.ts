@@ -5216,7 +5216,14 @@ function lowerStringRuntimeExpression(
     return lowerStringCallExpression(expression, bindings);
   }
 
-  if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression) && ts.isIdentifier(expression.expression.expression)) {
+  if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
+    const dateIsoString = lowerDateIsoStringExpression(expression, bindings);
+    if (dateIsoString !== undefined) {
+      return dateIsoString;
+    }
+    if (!ts.isIdentifier(expression.expression.expression)) {
+      return undefined;
+    }
     const runtimeStringMethod = lowerRuntimeStringMethodExpression(expression, bindings);
     if (runtimeStringMethod !== undefined) {
       return runtimeStringMethod;
@@ -5376,6 +5383,20 @@ function lowerStringCallExpression(
     return undefined;
   }
   return { kind: "call", name: expression.expression.text, arguments: args };
+}
+
+function lowerDateIsoStringExpression(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrStringExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression) || expression.expression.name.text !== "toISOString" || expression.arguments.length > 0) {
+    return undefined;
+  }
+  const millis = lowerDateConstructorMilliseconds(expression.expression.expression, bindings);
+  if (millis === undefined || numericLiteralValue(millis) !== 0) {
+    return undefined;
+  }
+  return { kind: "literal", value: "1970-01-01T00:00:00.000Z" };
 }
 
 function lowerBooleanExpression(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean | undefined {
@@ -6823,6 +6844,10 @@ function lowerNumericBuiltinCall(
   if (!ts.isCallExpression(expression)) {
     return undefined;
   }
+  const dateNumber = lowerDateNumberCall(expression, bindings);
+  if (dateNumber !== undefined) {
+    return dateNumber;
+  }
   if (ts.isIdentifier(expression.expression)) {
     if (expression.expression.text === "Number" && expression.arguments.length === 1) {
       const string = lowerStringRuntimeExpression(expression.arguments[0], bindings);
@@ -6872,6 +6897,47 @@ function lowerNumericBuiltinCall(
     args.push(lowered);
   }
   return { kind: "mathCall", method, arguments: args };
+}
+
+function lowerDateNumberCall(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrNumberExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression)) {
+    return undefined;
+  }
+  const receiver = expression.expression.expression;
+  const method = expression.expression.name.text;
+  if (ts.isIdentifier(receiver) && receiver.text === "Date" && !bindings.has("Date")) {
+    if (method === "now" && expression.arguments.length === 0) {
+      return { kind: "literal", value: 0 };
+    }
+    if (method === "parse" && expression.arguments.length === 1) {
+      const value = lowerStringExpression(expression.arguments[0], bindings);
+      if (value === undefined) {
+        return undefined;
+      }
+      return numberExpressionFromNumber(Date.parse(value));
+    }
+  }
+  if ((method === "getTime" || method === "valueOf") && expression.arguments.length === 0) {
+    return lowerDateConstructorMilliseconds(receiver, bindings);
+  }
+  return undefined;
+}
+
+function lowerDateConstructorMilliseconds(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrNumberExpression | undefined {
+  if (!ts.isNewExpression(expression) || !ts.isIdentifier(expression.expression) || expression.expression.text !== "Date" || bindings.has("Date")) {
+    return undefined;
+  }
+  const args = expression.arguments ?? [];
+  if (args.length !== 1) {
+    return undefined;
+  }
+  return lowerNumberExpression(args[0], bindings);
 }
 
 function isMathMethod(method: string): method is Extract<JsIrNumberExpression, { readonly kind: "mathCall" }>["method"] {
