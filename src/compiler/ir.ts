@@ -749,6 +749,22 @@ export type JsIrOperation =
       readonly depth: JsIrNumberExpression;
     }
   | {
+      readonly kind: "runtimeArrayMapCallback";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly callbackName: string;
+      readonly callbackParameters: readonly JsIrFunctionParameter[];
+      readonly callbackReturnKind: JsIrValueKind;
+    }
+  | {
+      readonly kind: "runtimeArrayFilterCallback";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly callbackName: string;
+      readonly callbackParameters: readonly JsIrFunctionParameter[];
+      readonly callbackReturnKind: JsIrValueKind;
+    }
+  | {
       readonly kind: "runtimeArrayConcat";
       readonly name: string;
       readonly leftName: string;
@@ -832,6 +848,38 @@ export type JsIrOperation =
   | {
       readonly kind: "runtimeArrayReverse";
       readonly arrayName: string;
+    }
+  | {
+      readonly kind: "runtimeArrayForEachCallback";
+      readonly arrayName: string;
+      readonly callbackName: string;
+      readonly callbackParameters: readonly JsIrFunctionParameter[];
+      readonly callbackReturnKind: JsIrValueKind | "void";
+    }
+  | {
+      readonly kind: "runtimeArrayFindCallback";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly callbackName: string;
+      readonly callbackParameters: readonly JsIrFunctionParameter[];
+      readonly callbackReturnKind: JsIrValueKind;
+    }
+  | {
+      readonly kind: "runtimeArrayFindIndexCallback";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly callbackName: string;
+      readonly callbackParameters: readonly JsIrFunctionParameter[];
+      readonly callbackReturnKind: JsIrValueKind;
+    }
+  | {
+      readonly kind: "runtimeArrayReduceCallback";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly callbackName: string;
+      readonly callbackParameters: readonly JsIrFunctionParameter[];
+      readonly callbackReturnKind: JsIrValueKind;
+      readonly initialValue?: JsIrValueExpression;
     }
   | {
       readonly kind: "runtimeArrayCopyWithin";
@@ -1016,11 +1064,13 @@ type ObjectLiteralClassification =
 const definePropertyArgumentCount = 3;
 const arrayFillRangeArgumentCount = 3;
 const arrayCopyWithinArgumentCount = 3;
+const arrayCallbackArgumentCount = 3;
+const reduceCallbackArgumentCount = 4;
 const decimalRadix = 10;
 const regexpConstructorArgumentCount = 2;
 const maxAsciiCodePoint = 127;
 
-// eslint-disable-next-line max-statements -- Aggregate binding classification is centralized during the runtime-shape transition.
+// eslint-disable-next-line complexity, max-statements -- Aggregate binding classification is centralized during the runtime-shape transition.
 export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBindingValue | undefined {
   if (operation.kind === "arrayLiteral") {
     return { kind: "array", name: operation.name, length: operation.elements.length };
@@ -1068,6 +1118,12 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
     return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeArrayFlat") {
+    return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "runtimeArrayMapCallback") {
+    return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "runtimeArrayFilterCallback") {
     return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeArrayConcat") {
@@ -2148,6 +2204,12 @@ function updateBindings(
       });
     }
   }
+  if (operation.kind === "runtimeArrayFindCallback" || operation.kind === "runtimeArrayReduceCallback") {
+    bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
+  }
+  if (operation.kind === "runtimeArrayFindIndexCallback") {
+    bindings.set(operation.name, { kind: "number", value: { kind: "variable", name: operation.name } });
+  }
 }
 
 function updateAggregateBindings(
@@ -3090,7 +3152,7 @@ function lowerRuntimeObjectAssignCall(
   return { kind: "runtimeObjectAssign", targetName: target.text, sources: loweredSources };
 }
 
-// eslint-disable-next-line complexity -- Runtime array statement methods are centralized while the method surface is small.
+// eslint-disable-next-line complexity, max-statements -- Runtime array statement methods are centralized while the method surface is small.
 function lowerRuntimeArrayCallStatement(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -3122,6 +3184,9 @@ function lowerRuntimeArrayCallStatement(
   }
   if (method === "reverse") {
     return { kind: "runtimeArrayReverse", arrayName };
+  }
+  if (method === "forEach") {
+    return lowerRuntimeArrayForEachCallbackStatement(arrayName, expression.arguments, bindings);
   }
   if (method === "copyWithin" && (expression.arguments.length === 2 || expression.arguments.length === arrayCopyWithinArgumentCount)) {
     const target = lowerNumberExpression(expression.arguments[0], bindings);
@@ -4285,11 +4350,118 @@ function lowerRuntimeAggregateExpansionBinding(
   if (flat !== undefined) {
     return flat;
   }
+  const callback = lowerRuntimeArrayCallbackBinding(name, initializer, bindings);
+  if (callback !== undefined) {
+    return callback;
+  }
   const mutator = lowerRuntimeArrayMutatorResultBinding(name, initializer, bindings);
   if (mutator !== undefined) {
     return mutator;
   }
   return undefined;
+}
+
+function lowerRuntimeArrayCallbackBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || !ts.isPropertyAccessExpression(initializer.expression) || !ts.isIdentifier(initializer.expression.expression)) {
+    return undefined;
+  }
+  const arrayName = initializer.expression.expression.text;
+  if (bindings.get(arrayName)?.kind !== "runtimeArray") {
+    return undefined;
+  }
+  const method = initializer.expression.name.text;
+  if (method === "reduce") {
+    return lowerRuntimeArrayReduceCallbackBinding(name, arrayName, initializer.arguments, bindings);
+  }
+  if (method !== "map" && method !== "filter" && method !== "find" && method !== "findIndex") {
+    return undefined;
+  }
+  if (initializer.arguments.length !== 1) {
+    return undefined;
+  }
+  const [callback] = initializer.arguments;
+  if (!ts.isIdentifier(callback)) {
+    return undefined;
+  }
+  const callbackBinding = lowerArrayCallbackBinding(callback.text, bindings, arrayCallbackArgumentCount);
+  if (callbackBinding === undefined || callbackBinding.returnKind === "void") {
+    return undefined;
+  }
+  if (method === "map") {
+    return { kind: "runtimeArrayMapCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind };
+  }
+  if (method === "filter") {
+    return { kind: "runtimeArrayFilterCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind };
+  }
+  if (method === "find") {
+    return { kind: "runtimeArrayFindCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind };
+  }
+  return { kind: "runtimeArrayFindIndexCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind };
+}
+
+function lowerRuntimeArrayReduceCallbackBinding(
+  name: string,
+  arrayName: string,
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (args.length !== 1 && args.length !== 2) {
+    return undefined;
+  }
+  const [callback] = args;
+  if (!ts.isIdentifier(callback)) {
+    return undefined;
+  }
+  const callbackBinding = lowerArrayCallbackBinding(callback.text, bindings, reduceCallbackArgumentCount);
+  if (callbackBinding === undefined || callbackBinding.returnKind === "void") {
+    return undefined;
+  }
+  let initialValue: JsIrValueExpression | undefined;
+  if (args.length === 2) {
+    initialValue = lowerValueExpression(args[1], bindings);
+    if (initialValue === undefined) {
+      return undefined;
+    }
+  }
+  return { kind: "runtimeArrayReduceCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind, initialValue };
+}
+
+function lowerRuntimeArrayForEachCallbackStatement(
+  arrayName: string,
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (args.length !== 1) {
+    return undefined;
+  }
+  const [callback] = args;
+  if (!ts.isIdentifier(callback)) {
+    return undefined;
+  }
+  const callbackBinding = lowerArrayCallbackBinding(callback.text, bindings, arrayCallbackArgumentCount);
+  if (callbackBinding === undefined) {
+    return undefined;
+  }
+  return { kind: "runtimeArrayForEachCallback", arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind };
+}
+
+function lowerArrayCallbackBinding(
+  callbackName: string,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  maxParameters: number
+): Extract<JsIrBindingValue, { readonly kind: "function" }> | undefined {
+  const callbackBinding = bindings.get(callbackName);
+  if (callbackBinding?.kind !== "function" || callbackBinding.parameters.length > maxParameters || callbackBinding.parameters.some((parameter) => parameter.valueKind === "string")) {
+    return undefined;
+  }
+  if (callbackBinding.parameters.some((parameter, index) => index >= 2 && parameter.valueKind !== "value")) {
+    return undefined;
+  }
+  return callbackBinding;
 }
 
 function lowerRuntimeArrayMutatorResultBinding(

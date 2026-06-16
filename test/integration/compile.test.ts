@@ -2828,6 +2828,21 @@ describe("tscn expanded runtime roadmap", () => {
     await expectUnsupportedDiagnostic("array-runtime-for-each-unsupported-callback.ts");
   });
 
+  test("supports package BO callback-driven runtime array methods", async () => {
+    const cases = [
+      ["array-runtime-map-callback.ts", "3\n2\n4\n6\n"],
+      ["array-runtime-filter-callback.ts", "2\n2\n4\n"],
+      ["array-runtime-for-each-callback.ts", "2\n5\n8\ndone\n"],
+      ["array-runtime-find-callback.ts", "2\nundefined\n"],
+      ["array-runtime-find-index-callback.ts", "1\n-1\n"],
+      ["array-runtime-reduce-callback.ts", "16\n"],
+      ["array-runtime-reduce-no-initial.ts", "6\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+    await expectUnsupportedDiagnostic("array-runtime-map-thisarg-unsupported.ts");
+  });
+
   test("supports package AA boxed string single-character methods", async () => {
     const cases = [
       ["string-boxed-char-at.ts", "h\no\n\n"],
