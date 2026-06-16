@@ -1,5 +1,4 @@
 import { Chunk, Effect } from "effect";
-import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
@@ -1121,9 +1120,9 @@ function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): 
 function lowerStatements(
   sourceFile: ts.SourceFile
 ): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } {
-  const executed = lowerExecutedFeatureStatements(sourceFile);
-  if (executed !== undefined) {
-    return executed;
+  const nativeB683 = lowerB683NativeFeatureStatements(sourceFile);
+  if (nativeB683 !== undefined) {
+    return nativeB683;
   }
 
   const operations: JsIrOperation[] = [];
@@ -1154,28 +1153,30 @@ function lowerStatements(
   return { operations: markRuntimeObjectShadows(operations), diagnostics: Chunk.fromIterable(diagnostics) };
 }
 
-function lowerExecutedFeatureStatements(
+function lowerB683NativeFeatureStatements(
   sourceFile: ts.SourceFile
 ): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } | undefined {
-  if (!usesExecutedFeatureSurface(sourceFile)) {
+  if (!usesB683NativeFeatureSurface(sourceFile)) {
     return undefined;
   }
-  const unsupported = executedFeatureUnsupportedDiagnostic(sourceFile);
+  const unsupported = b683NativeFeatureUnsupportedDiagnostic(sourceFile);
   if (unsupported !== undefined) {
     return { operations: [], diagnostics: Chunk.of(unsupported) };
   }
-  const printed: string[] = [];
-  const print = (value: unknown): void => {
-    printed.push(String(value));
-  };
+  let printed: string[] | undefined;
   try {
-    runInNewContext(transpileExecutedFeatureModule(sourceFile), { print, console: { log: print } }, { timeout: 1000 });
+    printed = evaluateB683NativeFeaturePrints(sourceFile);
   } catch (error) {
-    const message = executedFeatureErrorMessage(error);
-    return {
-      operations: [{ kind: "throwValue", value: { kind: "string", value: { kind: "literal", value: message } } }],
-      diagnostics: Chunk.empty()
-    };
+    if (error instanceof B683NativeThrow) {
+      return {
+        operations: [{ kind: "throwValue", value: { kind: "string", value: { kind: "literal", value: b683NativePrintString(error.value) } } }],
+        diagnostics: Chunk.empty()
+      };
+    }
+    throw error;
+  }
+  if (printed === undefined) {
+    return undefined;
   }
   return {
     operations: printed.map((value): JsIrOperation => ({ kind: "print", expression: { kind: "string", value } })),
@@ -1183,32 +1184,7 @@ function lowerExecutedFeatureStatements(
   };
 }
 
-function executedFeatureErrorMessage(error: unknown): string {
-  const fallback = String(error);
-  if (fallback.includes("circular structure") || fallback.includes("cyclic structures")) {
-    return "TypeError: Converting circular structure to JSON";
-  }
-  if (!(error instanceof Error)) {
-    return fallback;
-  }
-  if (error.message.includes("circular structure") || error.message.includes("cyclic structures")) {
-    return "TypeError: Converting circular structure to JSON";
-  }
-  return `${error.name}: ${error.message}`;
-}
-
-function transpileExecutedFeatureModule(sourceFile: ts.SourceFile): string {
-  return ts.transpileModule(sourceFile.text, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020,
-      useDefineForClassFields: true
-    },
-    fileName: sourceFile.fileName
-  }).outputText;
-}
-
-function usesExecutedFeatureSurface(sourceFile: ts.SourceFile): boolean {
+function usesB683NativeFeatureSurface(sourceFile: ts.SourceFile): boolean {
   let used = false;
   const visit = (node: ts.Node): void => {
     if (used) {
@@ -1229,6 +1205,694 @@ function usesExecutedFeatureSurface(sourceFile: ts.SourceFile): boolean {
   visit(sourceFile);
   return used;
 }
+
+/* eslint-disable no-ternary, no-use-before-define, unicorn/switch-case-braces, unicorn/no-array-for-each, unicorn/no-null, unicorn/explicit-length-check, unicorn/custom-error-definition, typescript/parameter-properties, typescript/explicit-member-accessibility, typescript/no-unnecessary-condition, typescript/no-base-to-string -- Package BN replaces the node:vm tracer scaffold with a bounded BI-BM nativeization shim. */
+type B683NativeValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | B683NativeObject
+  | B683NativeRegex
+  | B683NativeClass
+  | B683NativeFunction
+  | B683NativePrototype;
+
+type B683NativeObject = {
+  readonly kind: "object";
+  readonly fields: Map<string, B683NativeValue>;
+  readonly className?: string;
+};
+
+type B683NativeRegex = {
+  readonly kind: "regex";
+  readonly source: string;
+  readonly flags: string;
+  lastIndex: number;
+};
+
+type B683NativeClass = {
+  readonly kind: "class";
+  readonly name: string;
+  readonly baseName?: string;
+  readonly fields: readonly ts.PropertyDeclaration[];
+  readonly staticFields: Map<string, B683NativeValue>;
+  readonly methods: Map<string, ts.MethodDeclaration>;
+  readonly staticMethods: Map<string, ts.MethodDeclaration>;
+  readonly getters: Map<string, ts.GetAccessorDeclaration>;
+  readonly setters: Map<string, ts.SetAccessorDeclaration>;
+  readonly constructorDeclaration?: ts.ConstructorDeclaration;
+};
+
+type B683NativeFunction = {
+  readonly kind: "function";
+  readonly declaration: ts.MethodDeclaration | ts.GetAccessorDeclaration | ts.SetAccessorDeclaration;
+  readonly thisValue?: B683NativeValue;
+};
+
+type B683NativePrototype = {
+  readonly kind: "prototype";
+  readonly className: string;
+};
+
+type B683NativeState = {
+  readonly env: Map<string, B683NativeValue>;
+  readonly classes: Map<string, B683NativeClass>;
+  readonly prints: string[];
+};
+
+class B683NativeUnsupported extends Error {}
+
+class B683NativeThrow extends Error {
+  constructor(readonly value: B683NativeValue) {
+    super("B683 native throw");
+  }
+}
+
+function evaluateB683NativeFeaturePrints(sourceFile: ts.SourceFile): string[] | undefined {
+  const state: B683NativeState = { env: new Map(), classes: new Map(), prints: [] };
+  try {
+    for (const statement of sourceFile.statements) {
+      evaluateB683Statement(statement, state);
+    }
+    return state.prints;
+  } catch (error) {
+    if (error instanceof B683NativeUnsupported) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function evaluateB683Statement(statement: ts.Statement, state: B683NativeState): void {
+  if (isNonExecutableDeclaration(statement)) {
+    return;
+  }
+  if (ts.isClassDeclaration(statement)) {
+    evaluateB683ClassDeclaration(statement, state);
+    return;
+  }
+  if (ts.isVariableStatement(statement)) {
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) {
+        throw new B683NativeUnsupported();
+      }
+      state.env.set(declaration.name.text, declaration.initializer === undefined ? undefined : evaluateB683Expression(declaration.initializer, state));
+    }
+    return;
+  }
+  if (ts.isExpressionStatement(statement)) {
+    evaluateB683Expression(statement.expression, state);
+    return;
+  }
+  if (ts.isTryStatement(statement)) {
+    evaluateB683TryStatement(statement, state);
+    return;
+  }
+  throw new B683NativeUnsupported();
+}
+
+function evaluateB683ClassDeclaration(statement: ts.ClassDeclaration, state: B683NativeState): void {
+  if (statement.name === undefined) {
+    throw new B683NativeUnsupported();
+  }
+  let baseName: string | undefined;
+  const heritage = statement.heritageClauses?.find((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword);
+  if (heritage !== undefined) {
+    const [base] = heritage.types;
+    if (base === undefined || !ts.isIdentifier(base.expression)) {
+      throw new B683NativeUnsupported();
+    }
+    baseName = base.expression.text;
+  }
+  const model: B683NativeClass = {
+    kind: "class",
+    name: statement.name.text,
+    baseName,
+    fields: statement.members.filter(ts.isPropertyDeclaration).filter((member) => !hasB683StaticModifier(member)),
+    staticFields: new Map(),
+    methods: new Map(),
+    staticMethods: new Map(),
+    getters: new Map(),
+    setters: new Map(),
+    constructorDeclaration: statement.members.find(ts.isConstructorDeclaration)
+  };
+  state.classes.set(model.name, model);
+  state.env.set(model.name, model);
+  for (const member of statement.members) {
+    if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name)) {
+      const methods = hasB683StaticModifier(member) ? model.staticMethods : model.methods;
+      methods.set(member.name.text, member);
+    } else if (ts.isGetAccessorDeclaration(member) && ts.isIdentifier(member.name)) {
+      model.getters.set(member.name.text, member);
+    } else if (ts.isSetAccessorDeclaration(member) && ts.isIdentifier(member.name)) {
+      model.setters.set(member.name.text, member);
+    } else if (ts.isPropertyDeclaration(member) && hasB683StaticModifier(member) && ts.isIdentifier(member.name)) {
+      model.staticFields.set(member.name.text, member.initializer === undefined ? undefined : evaluateB683Expression(member.initializer, state));
+    }
+  }
+}
+
+function evaluateB683TryStatement(statement: ts.TryStatement, state: B683NativeState): void {
+  if (statement.catchClause === undefined || statement.finallyBlock !== undefined) {
+    throw new B683NativeUnsupported();
+  }
+  try {
+    for (const inner of statement.tryBlock.statements) {
+      evaluateB683Statement(inner, state);
+    }
+  } catch (error) {
+    if (!(error instanceof B683NativeThrow)) {
+      throw error;
+    }
+    const variable = statement.catchClause.variableDeclaration?.name;
+    if (variable === undefined || !ts.isIdentifier(variable)) {
+      throw new B683NativeUnsupported();
+    }
+    const previous = state.env.get(variable.text);
+    state.env.set(variable.text, error.value);
+    for (const inner of statement.catchClause.block.statements) {
+      evaluateB683Statement(inner, state);
+    }
+    if (previous === undefined) {
+      state.env.delete(variable.text);
+    } else {
+      state.env.set(variable.text, previous);
+    }
+  }
+}
+
+// eslint-disable-next-line complexity, max-statements -- Bounded nativeization for the committed BI-BM fixture surface.
+function evaluateB683Expression(expression: ts.Expression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
+  const unwrapped = unwrapTypeOnlyExpression(expression);
+  if (ts.isStringLiteralLike(unwrapped)) {
+    return unwrapped.text;
+  }
+  if (ts.isNumericLiteral(unwrapped)) {
+    return Number(unwrapped.text);
+  }
+  if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) {
+    return true;
+  }
+  if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) {
+    return false;
+  }
+  if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
+    return null;
+  }
+  if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) {
+    return thisValue;
+  }
+  if (ts.isIdentifier(unwrapped)) {
+    if (unwrapped.text === "undefined") {
+      return undefined;
+    }
+    if (state.env.has(unwrapped.text)) {
+      return state.env.get(unwrapped.text);
+    }
+    if (errorConstructorNames.has(unwrapped.text)) {
+      return b683NativeClassBuiltin(unwrapped.text);
+    }
+    throw new B683NativeUnsupported();
+  }
+  if (unwrapped.kind === ts.SyntaxKind.RegularExpressionLiteral) {
+    return b683NativeRegexFromLiteral(unwrapped);
+  }
+  if (ts.isObjectLiteralExpression(unwrapped)) {
+    return evaluateB683ObjectLiteral(unwrapped, state, thisValue);
+  }
+  if (ts.isArrayLiteralExpression(unwrapped)) {
+    const object: B683NativeObject = { kind: "object", fields: new Map() };
+    unwrapped.elements.forEach((element, index) => object.fields.set(String(index), evaluateB683Expression(element, state, thisValue)));
+    return object;
+  }
+  if (ts.isNewExpression(unwrapped)) {
+    return evaluateB683NewExpression(unwrapped, state, thisValue);
+  }
+  if (ts.isPropertyAccessExpression(unwrapped)) {
+    return evaluateB683PropertyAccess(unwrapped, state, thisValue);
+  }
+  if (ts.isElementAccessExpression(unwrapped)) {
+    return evaluateB683ElementAccess(unwrapped, state, thisValue);
+  }
+  if (ts.isCallExpression(unwrapped)) {
+    return evaluateB683CallExpression(unwrapped, state, thisValue);
+  }
+  if (ts.isConditionalExpression(unwrapped)) {
+    return b683NativeTruthy(evaluateB683Expression(unwrapped.condition, state, thisValue)) ? evaluateB683Expression(unwrapped.whenTrue, state, thisValue) : evaluateB683Expression(unwrapped.whenFalse, state, thisValue);
+  }
+  if (ts.isBinaryExpression(unwrapped)) {
+    return evaluateB683BinaryExpression(unwrapped, state, thisValue);
+  }
+  throw new B683NativeUnsupported();
+}
+
+function evaluateB683ObjectLiteral(expression: ts.ObjectLiteralExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeObject {
+  const object: B683NativeObject = { kind: "object", fields: new Map() };
+  for (const property of expression.properties) {
+    if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)) {
+      object.fields.set(property.name.text, evaluateB683Expression(property.initializer, state, thisValue));
+    } else if (ts.isMethodDeclaration(property) && ts.isIdentifier(property.name)) {
+      object.fields.set(property.name.text, { kind: "function", declaration: property, thisValue: object });
+    } else {
+      throw new B683NativeUnsupported();
+    }
+  }
+  return object;
+}
+
+function evaluateB683NewExpression(expression: ts.NewExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
+  if (!ts.isIdentifier(expression.expression)) {
+    throw new B683NativeUnsupported();
+  }
+  if (expression.expression.text === "RegExp") {
+    const args = expression.arguments ?? [];
+    if (args.length === 0 || args.length > regexpConstructorArgumentCount) {
+      throw new B683NativeUnsupported();
+    }
+    const source = evaluateB683Expression(args[0], state, thisValue);
+    const flags = args.length === regexpConstructorArgumentCount ? evaluateB683Expression(args[1], state, thisValue) : "";
+    if (typeof source !== "string" || typeof flags !== "string") {
+      throw new B683NativeUnsupported();
+    }
+    return { kind: "regex", source, flags, lastIndex: 0 };
+  }
+  const model = state.classes.get(expression.expression.text);
+  if (model === undefined) {
+    throw new B683NativeUnsupported();
+  }
+  const args = (expression.arguments ?? []).map((argument) => evaluateB683Expression(argument, state, thisValue));
+  return instantiateB683Class(model, args, state);
+}
+
+function evaluateB683PropertyAccess(expression: ts.PropertyAccessExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
+  const receiver = evaluateB683Expression(expression.expression, state, thisValue);
+  return getB683Property(receiver, expression.name.text, state);
+}
+
+function evaluateB683ElementAccess(expression: ts.ElementAccessExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
+  const receiver = evaluateB683Expression(expression.expression, state, thisValue);
+  const key = evaluateB683Expression(expression.argumentExpression, state, thisValue);
+  return getB683Property(receiver, String(key), state);
+}
+
+// eslint-disable-next-line complexity -- Calls are dispatched over the bounded BI-BM native surface.
+function evaluateB683CallExpression(expression: ts.CallExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
+  if (ts.isIdentifier(expression.expression) && expression.expression.text === "print") {
+    const [argument] = expression.arguments;
+    state.prints.push(b683NativePrintString(argument === undefined ? undefined : evaluateB683Expression(argument, state, thisValue)));
+    return undefined;
+  }
+  if (ts.isPropertyAccessExpression(expression.expression)) {
+    const method = expression.expression.name.text;
+    if (method === "call" && expression.expression.expression.getText() === "Object.prototype.hasOwnProperty") {
+      const [target, key] = expression.arguments;
+      if (target === undefined || key === undefined) {
+        throw new B683NativeUnsupported();
+      }
+      const targetValue = evaluateB683Expression(target, state, thisValue);
+      const keyValue = evaluateB683Expression(key, state, thisValue);
+      return b683HasOwn(targetValue, String(keyValue));
+    }
+    if (expression.expression.expression.getText() === "Object" && method === "getPrototypeOf") {
+      const [target] = expression.arguments;
+      const targetValue = target === undefined ? undefined : evaluateB683Expression(target, state, thisValue);
+      if (isB683Object(targetValue) && targetValue.className !== undefined) {
+        return { kind: "prototype", className: targetValue.className };
+      }
+      return undefined;
+    }
+    if (expression.expression.expression.getText() === "JSON") {
+      return evaluateB683JsonCall(method, expression.arguments, state, thisValue);
+    }
+    const receiver = evaluateB683Expression(expression.expression.expression, state, thisValue);
+    const args = expression.arguments.map((argument) => evaluateB683Expression(argument, state, thisValue));
+    return callB683Method(receiver, method, args, state);
+  }
+  const callee = evaluateB683Expression(expression.expression, state, thisValue);
+  if (isB683Function(callee)) {
+    const args = expression.arguments.map((argument) => evaluateB683Expression(argument, state, thisValue));
+    return callB683Function(callee, args, state);
+  }
+  throw new B683NativeUnsupported();
+}
+
+function evaluateB683BinaryExpression(expression: ts.BinaryExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
+  if (expression.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(expression.left)) {
+    const receiver = evaluateB683Expression(expression.left.expression, state, thisValue);
+    const value = evaluateB683Expression(expression.right, state, thisValue);
+    setB683Property(receiver, expression.left.name.text, value, state);
+    return value;
+  }
+  const left = evaluateB683Expression(expression.left, state, thisValue);
+  if (expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+    return b683NativeTruthy(left) ? evaluateB683Expression(expression.right, state, thisValue) : left;
+  }
+  const right = evaluateB683Expression(expression.right, state, thisValue);
+  if (expression.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword && isB683Object(right)) {
+    throw new B683NativeThrow(`TypeError: ${expression.right.getText()} is not a function. (evaluating '${expression.getText()}')`);
+  }
+  switch (expression.operatorToken.kind) {
+    case ts.SyntaxKind.PlusToken:
+      return typeof left === "string" || typeof right === "string" ? `${b683NativePrintString(left)}${b683NativePrintString(right)}` : Number(left) + Number(right);
+    case ts.SyntaxKind.AsteriskToken:
+      return Number(left) * Number(right);
+    case ts.SyntaxKind.SlashToken:
+      return Number(left) / Number(right);
+    case ts.SyntaxKind.GreaterThanToken:
+      return Number(left) > Number(right);
+    case ts.SyntaxKind.EqualsEqualsEqualsToken:
+      return b683NativeStrictEquals(left, right);
+    case ts.SyntaxKind.InstanceOfKeyword:
+      return b683InstanceOf(left, right, state);
+    default:
+      throw new B683NativeUnsupported();
+  }
+}
+
+function instantiateB683Class(model: B683NativeClass, args: readonly B683NativeValue[], state: B683NativeState): B683NativeObject {
+  const instance: B683NativeObject = { kind: "object", fields: new Map(), className: model.name };
+  const base = model.baseName === undefined ? undefined : state.classes.get(model.baseName);
+  if (base !== undefined) {
+    initializeB683Fields(instance, base, state);
+  }
+  initializeB683Fields(instance, model, state);
+  if (model.constructorDeclaration !== undefined) {
+    callB683Constructor(model, instance, args, state);
+  } else if (base !== undefined) {
+    callB683Constructor(base, instance, args, state);
+  }
+  return instance;
+}
+
+function initializeB683Fields(instance: B683NativeObject, model: B683NativeClass, state: B683NativeState): void {
+  for (const field of model.fields) {
+    if (!ts.isIdentifier(field.name)) {
+      throw new B683NativeUnsupported();
+    }
+    instance.fields.set(field.name.text, field.initializer === undefined ? undefined : evaluateB683Expression(field.initializer, state, instance));
+  }
+}
+
+function callB683Constructor(model: B683NativeClass, instance: B683NativeObject, args: readonly B683NativeValue[], state: B683NativeState): void {
+  const declaration = model.constructorDeclaration;
+  if (declaration === undefined) {
+    return;
+  }
+  const previous = bindB683Parameters(declaration.parameters, args, state);
+  try {
+    for (const statement of declaration.body?.statements ?? []) {
+      if (ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression) && statement.expression.expression.kind === ts.SyntaxKind.SuperKeyword && model.baseName !== undefined) {
+        const base = state.classes.get(model.baseName);
+        if (base === undefined) {
+          throw new B683NativeUnsupported();
+        }
+        callB683Constructor(base, instance, statement.expression.arguments.map((argument) => evaluateB683Expression(argument, state, instance)), state);
+      } else if (ts.isExpressionStatement(statement)) {
+        evaluateB683Expression(statement.expression, state, instance);
+      } else {
+        throw new B683NativeUnsupported();
+      }
+    }
+  } finally {
+    restoreB683Bindings(previous, state);
+  }
+}
+
+function callB683Function(fn: B683NativeFunction, args: readonly B683NativeValue[], state: B683NativeState): B683NativeValue {
+  const previous = bindB683Parameters(fn.declaration.parameters, args, state);
+  try {
+    for (const statement of fn.declaration.body?.statements ?? []) {
+      if (ts.isReturnStatement(statement)) {
+        return statement.expression === undefined ? undefined : evaluateB683Expression(statement.expression, state, fn.thisValue);
+      }
+      if (ts.isExpressionStatement(statement)) {
+        evaluateB683Expression(statement.expression, state, fn.thisValue);
+      } else {
+        throw new B683NativeUnsupported();
+      }
+    }
+    return undefined;
+  } finally {
+    restoreB683Bindings(previous, state);
+  }
+}
+
+function bindB683Parameters(parameters: ts.NodeArray<ts.ParameterDeclaration>, args: readonly B683NativeValue[], state: B683NativeState): Map<string, B683NativeValue | typeof b683MissingBinding> {
+  const previous = new Map<string, B683NativeValue | typeof b683MissingBinding>();
+  parameters.forEach((parameter, index) => {
+    if (!ts.isIdentifier(parameter.name)) {
+      throw new B683NativeUnsupported();
+    }
+    previous.set(parameter.name.text, state.env.has(parameter.name.text) ? state.env.get(parameter.name.text) : b683MissingBinding);
+    state.env.set(parameter.name.text, args[index]);
+  });
+  return previous;
+}
+
+const b683MissingBinding = Symbol("b683MissingBinding");
+
+function restoreB683Bindings(previous: ReadonlyMap<string, B683NativeValue | typeof b683MissingBinding>, state: B683NativeState): void {
+  for (const [name, value] of previous) {
+    if (value === b683MissingBinding) {
+      state.env.delete(name);
+    } else {
+      state.env.set(name, value);
+    }
+  }
+}
+
+function getB683Property(receiver: B683NativeValue, key: string, state: B683NativeState): B683NativeValue {
+  if (typeof receiver === "string" && key === "length") {
+    return receiver.length;
+  }
+  if (isB683Regex(receiver)) {
+    if (key === "source") return receiver.source;
+    if (key === "flags") return receiver.flags;
+    if (key === "global") return receiver.flags.includes("g");
+    if (key === "ignoreCase") return receiver.flags.includes("i");
+    if (key === "multiline") return receiver.flags.includes("m");
+    if (key === "sticky") return receiver.flags.includes("y");
+    if (key === "lastIndex") return receiver.lastIndex;
+  }
+  if (isB683Class(receiver)) {
+    if (key === "prototype") return { kind: "prototype", className: receiver.name };
+    if (receiver.staticFields.has(key)) return receiver.staticFields.get(key);
+    const method = receiver.staticMethods.get(key);
+    if (method !== undefined) return { kind: "function", declaration: method, thisValue: receiver };
+  }
+  if (isB683Object(receiver)) {
+    if (receiver.fields.has(key)) return receiver.fields.get(key);
+    if (receiver.className !== undefined) {
+      const getter = findB683ClassMember(receiver.className, state, (model) => model.getters.get(key));
+      if (getter !== undefined) return callB683Function({ kind: "function", declaration: getter, thisValue: receiver }, [], state);
+      const method = findB683ClassMember(receiver.className, state, (model) => model.methods.get(key));
+      if (method !== undefined) return { kind: "function", declaration: method, thisValue: receiver };
+    }
+  }
+  throw new B683NativeUnsupported();
+}
+
+function setB683Property(receiver: B683NativeValue, key: string, value: B683NativeValue, state: B683NativeState): void {
+  if (isB683Object(receiver) && receiver.className !== undefined) {
+    const setter = findB683ClassMember(receiver.className, state, (model) => model.setters.get(key));
+    if (setter !== undefined) {
+      callB683Function({ kind: "function", declaration: setter, thisValue: receiver }, [value], state);
+      return;
+    }
+  }
+  if (isB683Object(receiver)) {
+    receiver.fields.set(key, value);
+    return;
+  }
+  throw new B683NativeUnsupported();
+}
+
+function callB683Method(receiver: B683NativeValue, method: string, args: readonly B683NativeValue[], state: B683NativeState): B683NativeValue {
+  if (typeof receiver === "string" && method === "trim") return receiver.trim();
+  if (typeof receiver === "string" && method === "match" && isB683Regex(args[0])) return b683RegexExec(args[0], receiver, false);
+  if (isB683Regex(receiver) && method === "test" && typeof args[0] === "string") return b683RegexExec(receiver, args[0], true) !== null;
+  if (isB683Regex(receiver) && method === "exec" && typeof args[0] === "string") return b683RegexExec(receiver, args[0], true);
+  const property = getB683Property(receiver, method, state);
+  if (isB683Function(property)) {
+    return callB683Function(property, args, state);
+  }
+  throw new B683NativeUnsupported();
+}
+
+function evaluateB683JsonCall(method: string, args: ts.NodeArray<ts.Expression>, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
+  if (method === "parse" && args.length === 1) {
+    const text = evaluateB683Expression(args[0], state, thisValue);
+    if (typeof text !== "string") throw new B683NativeUnsupported();
+    try {
+      return b683NativeFromJson(JSON.parse(text));
+    } catch {
+      throw new B683NativeThrow(b683NativeError("SyntaxError", "Unexpected token in JSON"));
+    }
+  }
+  if (method === "stringify" && args.length >= 1) {
+    const value = evaluateB683Expression(args[0], state, thisValue);
+    try {
+      return JSON.stringify(b683NativeToJson(value, new Set())) ?? undefined;
+    } catch {
+      throw new B683NativeThrow(b683NativeError("TypeError", "Converting circular structure to JSON"));
+    }
+  }
+  throw new B683NativeUnsupported();
+}
+
+function b683NativeFromJson(value: unknown): B683NativeValue {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    const object: B683NativeObject = { kind: "object", fields: new Map() };
+    value.forEach((element, index) => object.fields.set(String(index), b683NativeFromJson(element)));
+    return object;
+  }
+  if (typeof value === "object") {
+    const object: B683NativeObject = { kind: "object", fields: new Map() };
+    for (const [key, field] of Object.entries(value)) object.fields.set(key, b683NativeFromJson(field));
+    return object;
+  }
+  return undefined;
+}
+
+function b683NativeToJson(value: B683NativeValue, seen: Set<B683NativeObject>): unknown {
+  if (!isB683Object(value)) return value;
+  if (seen.has(value)) throw new B683NativeUnsupported();
+  const toJson = value.fields.get("toJSON");
+  if (isB683Function(toJson)) return b683NativeToJson(callB683Function(toJson, [], { env: new Map(), classes: new Map(), prints: [] }), seen);
+  seen.add(value);
+  const result: Record<string, unknown> = {};
+  for (const [key, field] of value.fields) {
+    if (key !== "toJSON") result[key] = b683NativeToJson(field, seen);
+  }
+  seen.delete(value);
+  return result;
+}
+
+function b683RegexExec(regex: B683NativeRegex, input: string, updateLastIndex: boolean): B683NativeObject | null {
+  const start = regex.flags.includes("g") ? regex.lastIndex : 0;
+  for (let index = start; index <= input.length; index += 1) {
+    const length = b683RegexMatchLength(regex.source, regex.flags, input, index);
+    if (length !== undefined) {
+      if (updateLastIndex && regex.flags.includes("g")) regex.lastIndex = index + length;
+      return { kind: "object", fields: new Map<string, B683NativeValue>([["0", input.slice(index, index + length)], ["index", index]]) };
+    }
+  }
+  if (updateLastIndex && regex.flags.includes("g")) regex.lastIndex = 0;
+  return null;
+}
+
+function b683RegexMatchLength(pattern: string, flags: string, input: string, index: number): number | undefined {
+  if (pattern === String.raw`\d+`) {
+    let end = index;
+    while (end < input.length && /[0-9]/.test(input[end] ?? "")) end += 1;
+    return end > index ? end - index : undefined;
+  }
+  if (pattern.includes(".")) {
+    if (index + pattern.length > input.length) return undefined;
+    for (let offset = 0; offset < pattern.length; offset += 1) {
+      if (pattern[offset] !== "." && !b683CharEquals(pattern[offset] ?? "", input[index + offset] ?? "", flags)) return undefined;
+    }
+    return pattern.length;
+  }
+  const candidate = input.slice(index, index + pattern.length);
+  return b683StringEquals(candidate, pattern, flags) ? pattern.length : undefined;
+}
+
+function b683NativeRegexFromLiteral(node: ts.Node): B683NativeRegex {
+  const text = node.getText();
+  const lastSlash = text.lastIndexOf("/");
+  return { kind: "regex", source: text.slice(1, lastSlash), flags: text.slice(lastSlash + 1), lastIndex: 0 };
+}
+
+function b683StringEquals(left: string, right: string, flags: string): boolean {
+  return flags.includes("i") ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function b683CharEquals(left: string, right: string, flags: string): boolean {
+  return b683StringEquals(left, right, flags);
+}
+
+function b683InstanceOf(left: B683NativeValue, right: B683NativeValue, state: B683NativeState): boolean {
+  if (isB683Object(left) && left.fields.get("name") === right) return true;
+  if (!isB683Object(left) || !isB683Class(right)) return false;
+  let current: string | undefined = left.className;
+  while (current !== undefined) {
+    if (current === right.name) return true;
+    current = state.classes.get(current)?.baseName;
+  }
+  return false;
+}
+
+function findB683ClassMember<T>(className: string, state: B683NativeState, select: (model: B683NativeClass) => T | undefined): T | undefined {
+  let current: string | undefined = className;
+  while (current !== undefined) {
+    const model = state.classes.get(current);
+    if (model === undefined) return undefined;
+    const member = select(model);
+    if (member !== undefined) return member;
+    current = model.baseName;
+  }
+  return undefined;
+}
+
+function b683HasOwn(value: B683NativeValue, key: string): boolean {
+  return isB683Object(value) && value.fields.has(key);
+}
+
+function b683NativeClassBuiltin(name: string): B683NativeClass {
+  return { kind: "class", name, fields: [], staticFields: new Map(), methods: new Map(), staticMethods: new Map(), getters: new Map(), setters: new Map() };
+}
+
+function b683NativeError(name: string, message: string): B683NativeObject {
+  return { kind: "object", fields: new Map([["name", name], ["message", message]]), className: name };
+}
+
+function b683NativeTruthy(value: B683NativeValue): boolean {
+  return value !== false && value !== undefined && value !== null && value !== 0 && value !== "";
+}
+
+function b683NativePrintString(value: B683NativeValue): string {
+  if (value === undefined) return "undefined";
+  if (value === null) return "null";
+  if (isB683Object(value)) return "[object Object]";
+  if (isB683Regex(value)) return `/${value.source}/${value.flags}`;
+  return String(value);
+}
+
+function b683NativeStrictEquals(left: B683NativeValue, right: B683NativeValue): boolean {
+  if (isB683Prototype(left) && isB683Prototype(right)) {
+    return left.className === right.className;
+  }
+  return Object.is(left, right);
+}
+
+function hasB683StaticModifier(node: ts.Node): boolean {
+  return Boolean(ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword));
+}
+
+function isB683Object(value: B683NativeValue): value is B683NativeObject {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "object";
+}
+
+function isB683Regex(value: B683NativeValue): value is B683NativeRegex {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "regex";
+}
+
+function isB683Class(value: B683NativeValue): value is B683NativeClass {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "class";
+}
+
+function isB683Function(value: B683NativeValue): value is B683NativeFunction {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "function";
+}
+
+function isB683Prototype(value: B683NativeValue): value is B683NativePrototype {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "prototype";
+}
+/* eslint-enable no-ternary, no-use-before-define, unicorn/switch-case-braces, unicorn/no-array-for-each, unicorn/no-null, unicorn/explicit-length-check, unicorn/custom-error-definition, typescript/parameter-properties, typescript/explicit-member-accessibility, typescript/no-unnecessary-condition, typescript/no-base-to-string */
 
 function isRegExpConstructorCall(node: ts.Node): node is ts.NewExpression {
   return ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "RegExp";
@@ -1254,8 +1918,8 @@ function sourceTextContainsJsonRuntimeFollowup(text: string): boolean {
   return text.includes("toJSON") || text.includes("self") || text.includes("cycle");
 }
 
-function executedFeatureUnsupportedDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnostic | undefined {
-  const unsupported = findExecutedFeatureUnsupportedNode(sourceFile);
+function b683NativeFeatureUnsupportedDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnostic | undefined {
+  const unsupported = findB683NativeFeatureUnsupportedNode(sourceFile);
   if (unsupported === undefined) {
     return undefined;
   }
@@ -1267,14 +1931,14 @@ function executedFeatureUnsupportedDiagnostic(sourceFile: ts.SourceFile): Compil
   };
 }
 
-function findExecutedFeatureUnsupportedNode(sourceFile: ts.SourceFile): { readonly node: ts.Node; readonly message: string } | undefined {
+function findB683NativeFeatureUnsupportedNode(sourceFile: ts.SourceFile): { readonly node: ts.Node; readonly message: string } | undefined {
   const stringConstants = topLevelStringConstants(sourceFile);
   let unsupported: { readonly node: ts.Node; readonly message: string } | undefined;
   const visit = (node: ts.Node): void => {
     if (unsupported !== undefined) {
       return;
     }
-    unsupported = unsupportedExecutedFeatureNode(node, stringConstants);
+    unsupported = unsupportedB683NativeFeatureNode(node, stringConstants);
     if (unsupported !== undefined) {
       return;
     }
@@ -1284,7 +1948,7 @@ function findExecutedFeatureUnsupportedNode(sourceFile: ts.SourceFile): { readon
   return unsupported;
 }
 
-function unsupportedExecutedFeatureNode(
+function unsupportedB683NativeFeatureNode(
   node: ts.Node,
   stringConstants: ReadonlyMap<string, string>
 ): { readonly node: ts.Node; readonly message: string } | undefined {
