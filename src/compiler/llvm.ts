@@ -476,6 +476,10 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
     return emitRuntimeCollectionResultOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeIteratorNew" || operation.kind === "runtimeIteratorNext") {
+    return emitRuntimeIteratorOperation(operation, context);
+  }
+
   return emitMutationOperation(operation, context);
 }
 
@@ -773,6 +777,22 @@ function emitLoopControlOperation(operation: JsIrOperation, context: EmitContext
     return emitForOperation(operation, context);
   }
 
+  if (operation.kind === "forOfArray") {
+    return emitForOfArrayOperation(operation, context);
+  }
+
+  if (operation.kind === "forOfString") {
+    return emitForOfStringOperation(operation, context);
+  }
+
+  if (operation.kind === "forOfSet") {
+    return emitForOfSetOperation(operation, context);
+  }
+
+  if (operation.kind === "forOfMap") {
+    return emitForOfMapOperation(operation, context);
+  }
+
   if (operation.kind === "break") {
     return emitBreakOperation(context);
   }
@@ -957,6 +977,177 @@ function emitRuntimeCollectionResultOperation(
   }
   context.bindings.set(operation.name, { kind: bindingKind, name: operation.name });
   return lines;
+}
+
+function emitRuntimeIteratorOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeIteratorNew" | "runtimeIteratorNext" }>,
+  context: EmitContext
+): string[] {
+  if (operation.kind === "runtimeIteratorNew") {
+    return emitRuntimeIteratorNewOperation(operation, context);
+  }
+  return emitRuntimeIteratorNextOperation(operation, context);
+}
+
+function emitRuntimeIteratorNewOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeIteratorNew" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  const collection = emitRuntimeCollectionPointer(operation.collectionName, context);
+  const iterator = `%${operation.name}.iterator`;
+  const indexSlot = `%${operation.name}.iterator.index.slot`;
+  const modeSlot = `%${operation.name}.iterator.mode.slot`;
+  const sourceSlot = `%${operation.name}.iterator.source.slot`;
+  const modeCode = runtimeIteratorKindCode(operation.iterationKind);
+  let sourceCode = 1;
+  if (operation.sourceKind === "map") {
+    sourceCode = 0;
+  }
+  context.bindings.set(operation.name, { kind: "runtimeIterator", name: operation.name, sourceKind: operation.sourceKind, iterationKind: operation.iterationKind });
+  useRuntimeHelper(context.runtime, "malloc");
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...collection.lines,
+    `  ${iterator} = call ptr @malloc(i64 32)`,
+    `  store ptr ${collection.value}, ptr ${iterator}`,
+    `  ${indexSlot} = getelementptr i8, ptr ${iterator}, i64 8`,
+    `  store i64 0, ptr ${indexSlot}`,
+    `  ${modeSlot} = getelementptr i8, ptr ${iterator}, i64 16`,
+    `  store i64 ${modeCode}, ptr ${modeSlot}`,
+    `  ${sourceSlot} = getelementptr i8, ptr ${iterator}, i64 24`,
+    `  store i64 ${sourceCode}, ptr ${sourceSlot}`,
+    `  store ptr ${iterator}, ptr ${pointerName}`
+  ];
+}
+
+function runtimeIteratorKindCode(kind: "keys" | "values" | "entries"): number {
+  if (kind === "keys") {
+    return 0;
+  }
+  if (kind === "values") {
+    return 1;
+  }
+  return 2;
+}
+
+// eslint-disable-next-line max-statements -- Iterator .next() emission builds the scan loop and result object in one LLVM block.
+function emitRuntimeIteratorNextOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeIteratorNext" }>,
+  context: EmitContext
+): string[] {
+  const index = context.objectIndex;
+  context.objectIndex += 1;
+  const pointerName = variablePointerName(operation.name);
+  const iterator = emitRuntimeIteratorPointer(operation.iteratorName, context);
+  const collection = `%iterator.collection.${index}`;
+  const indexSlot = `%iterator.index.slot.${index}`;
+  const currentIndex = `%iterator.index.${index}`;
+  const usedSlot = `%iterator.used.slot.${index}`;
+  const used = `%iterator.used.${index}`;
+  const inRange = `%iterator.in.range.${index}`;
+  const entriesSlot = `%iterator.entries.slot.${index}`;
+  const entries = `%iterator.entries.${index}`;
+  const entryBytes = `%iterator.entry.bytes.${index}`;
+  const entryPointer = `%iterator.entry.${index}`;
+  const active = `%iterator.active.${index}`;
+  const isActive = `%iterator.is.active.${index}`;
+  const nextIndex = `%iterator.next.index.${index}`;
+  const resultValue = emitRuntimeIteratorResultValue(operation, entryPointer, context);
+  const foundObject = `%iterator.result.object.${index}`;
+  const exhaustedObject = `%iterator.exhausted.object.${index}`;
+  const valueKey = addStringConstant("value", context);
+  const doneKey = addStringConstant("done", context);
+  const condLabel = `iterator.cond.${index}`;
+  const checkLabel = `iterator.check.${index}`;
+  const advanceLabel = `iterator.advance.${index}`;
+  const foundLabel = `iterator.found.${index}`;
+  const exhaustedLabel = `iterator.exhausted.${index}`;
+  const endLabel = `iterator.end.${index}`;
+  context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
+  useRuntimeHelper(context.runtime, "objectNew");
+  useRuntimeHelper(context.runtime, "objectSet");
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...iterator.lines,
+    `  ${collection} = load ptr, ptr ${iterator.value}`,
+    `  ${indexSlot} = getelementptr i8, ptr ${iterator.value}, i64 8`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  ${currentIndex} = load i64, ptr ${indexSlot}`,
+    `  ${usedSlot} = getelementptr i8, ptr ${collection}, i64 8`,
+    `  ${used} = load i64, ptr ${usedSlot}`,
+    `  ${inRange} = icmp ult i64 ${currentIndex}, ${used}`,
+    `  br i1 ${inRange}, label %${checkLabel}, label %${exhaustedLabel}`,
+    `${checkLabel}:`,
+    `  ${entriesSlot} = getelementptr i8, ptr ${collection}, i64 24`,
+    `  ${entries} = load ptr, ptr ${entriesSlot}`,
+    `  ${entryBytes} = mul i64 ${currentIndex}, 24`,
+    `  ${entryPointer} = getelementptr i8, ptr ${entries}, i64 ${entryBytes}`,
+    `  ${active} = load i64, ptr ${entryPointer}`,
+    `  ${isActive} = icmp ne i64 ${active}, 0`,
+    `  br i1 ${isActive}, label %${foundLabel}, label %${advanceLabel}`,
+    `${advanceLabel}:`,
+    `  ${nextIndex} = add i64 ${currentIndex}, 1`,
+    `  store i64 ${nextIndex}, ptr ${indexSlot}`,
+    `  br label %${condLabel}`,
+    `${foundLabel}:`,
+    `  ${nextIndex}.found = add i64 ${currentIndex}, 1`,
+    `  store i64 ${nextIndex}.found, ptr ${indexSlot}`,
+    ...resultValue.lines,
+    `  ${foundObject} = call ptr @objectNew(i64 2)`,
+    `  call void @objectSet(ptr ${foundObject}, i64 5, ptr ${valueKey}, i64 ${resultValue.value})`,
+    `  call void @objectSet(ptr ${foundObject}, i64 4, ptr ${doneKey}, i64 ${jsValueFalse})`,
+    `  store ptr ${foundObject}, ptr ${pointerName}`,
+    `  br label %${endLabel}`,
+    `${exhaustedLabel}:`,
+    `  store i64 ${used}, ptr ${indexSlot}`,
+    `  ${exhaustedObject} = call ptr @objectNew(i64 2)`,
+    `  call void @objectSet(ptr ${exhaustedObject}, i64 5, ptr ${valueKey}, i64 ${jsValueUndefined})`,
+    `  call void @objectSet(ptr ${exhaustedObject}, i64 4, ptr ${doneKey}, i64 ${jsValueTrue})`,
+    `  store ptr ${exhaustedObject}, ptr ${pointerName}`,
+    `  br label %${endLabel}`,
+    `${endLabel}:`
+  ];
+}
+
+function emitRuntimeIteratorResultValue(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeIteratorNext" }>,
+  entryPointer: string,
+  context: EmitContext
+): JsValue {
+  const index = context.objectIndex;
+  context.objectIndex += 1;
+  const keySlot = `%iterator.key.slot.${index}`;
+  const key = `%iterator.key.${index}`;
+  const valueSlot = `%iterator.value.slot.${index}`;
+  const storedValue = `%iterator.value.${index}`;
+  const lines = [`  ${keySlot} = getelementptr i8, ptr ${entryPointer}, i64 8`, `  ${key} = load i64, ptr ${keySlot}`];
+  if (operation.iterationKind === "keys") {
+    return { lines, value: key };
+  }
+  if (operation.sourceKind === "map") {
+    lines.push(`  ${valueSlot} = getelementptr i8, ptr ${entryPointer}, i64 16`, `  ${storedValue} = load i64, ptr ${valueSlot}`);
+  }
+  let value = key;
+  if (operation.sourceKind === "map") {
+    value = storedValue;
+  }
+  if (operation.iterationKind === "values") {
+    return { lines, value };
+  }
+  const pair = `%iterator.pair.${index}`;
+  const boxed = `%iterator.pair.boxed.${index}`;
+  useRuntimeHelper(context.runtime, "arrayNew");
+  useRuntimeHelper(context.runtime, "arraySet");
+  useRuntimeHelper(context.runtime, "valueBoxArray");
+  lines.push(
+    `  ${pair} = call ptr @arrayNew(i64 2)`,
+    `  call void @arraySet(ptr ${pair}, i64 0, i64 ${key})`,
+    `  call void @arraySet(ptr ${pair}, i64 1, i64 ${value})`,
+    `  ${boxed} = call i64 @valueBoxArray(ptr ${pair})`
+  );
+  return { lines, value: boxed };
 }
 
 function runtimeArrayLiteralInitialLength(elements: readonly JsIrRuntimeArrayElement[]): number {
@@ -3024,6 +3215,245 @@ function emitForOperation(operation: Extract<JsIrOperation, { readonly kind: "fo
   ];
 }
 
+function emitForOfArrayOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfArray" }>, context: EmitContext): string[] {
+  const { loopIndex } = context;
+  context.loopIndex += 1;
+  const condLabel = `for.of.cond.${loopIndex}`;
+  const bodyLabel = `for.of.body.${loopIndex}`;
+  const stepLabel = `for.of.step.${loopIndex}`;
+  const endLabel = `for.of.end.${loopIndex}`;
+  const indexPointer = `%for.of.index.${loopIndex}.addr`;
+  const itemPointer = variablePointerName(operation.itemName);
+  const bodyBindings = new Map(context.bindings);
+  bodyBindings.set(operation.itemName, { kind: "number", value: { kind: "variable", name: itemPointer } });
+  const previousBindings = new Map(context.bindings);
+  const arrayBinding = context.bindings.get(operation.arrayName);
+  let arrayLength = 0;
+  if (arrayBinding?.kind === "array") {
+    arrayLength = arrayBinding.length;
+  }
+  context.bindings.clear();
+  for (const [name, value] of bodyBindings) {
+    context.bindings.set(name, value);
+  }
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  const bodyLines = emitOperations(operation.body, context);
+  context.loopLabels.pop();
+  context.bindings.clear();
+  for (const [name, value] of previousBindings) {
+    context.bindings.set(name, value);
+  }
+  const currentIndex = `%for.of.index.${loopIndex}`;
+  const inRange = `%for.of.in.range.${loopIndex}`;
+  const element = emitNumberExpression({ kind: "arrayAccess", arrayName: operation.arrayName, index: { kind: "variable", name: indexPointer } }, context);
+  const nextIndex = `%for.of.next.${loopIndex}`;
+
+  return [
+    `  ${indexPointer} = alloca double`,
+    `  ${itemPointer} = alloca double`,
+    `  store double 0.0, ptr ${indexPointer}`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  ${currentIndex} = load double, ptr ${indexPointer}`,
+    `  ${inRange} = fcmp olt double ${currentIndex}, ${llvmDoubleLiteral(arrayLength)}`,
+    `  br i1 ${inRange}, label %${bodyLabel}, label %${endLabel}`,
+    `${bodyLabel}:`,
+    ...element.lines,
+    `  store double ${element.value}, ptr ${itemPointer}`,
+    ...bodyLines,
+    `  br label %${stepLabel}`,
+    `${stepLabel}:`,
+    `  ${nextIndex} = fadd double ${currentIndex}, 1.0`,
+    `  store double ${nextIndex}, ptr ${indexPointer}`,
+    `  br label %${condLabel}`,
+    `${endLabel}:`
+  ];
+}
+
+// eslint-disable-next-line max-statements -- String for...of emission materializes byte-sized string elements and scoped loop bindings together.
+function emitForOfStringOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfString" }>, context: EmitContext): string[] {
+  const { loopIndex } = context;
+  context.loopIndex += 1;
+  const condLabel = `for.of.cond.${loopIndex}`;
+  const bodyLabel = `for.of.body.${loopIndex}`;
+  const stepLabel = `for.of.step.${loopIndex}`;
+  const endLabel = `for.of.end.${loopIndex}`;
+  const indexPointer = `%for.of.index.${loopIndex}.addr`;
+  const itemPointer = variablePointerName(operation.itemName);
+  const itemLengthPointer = stringLengthPointerName(operation.itemName);
+  const source = emitStringExpression(operation.source, context);
+  const bodyBindings = new Map(context.bindings);
+  bodyBindings.set(operation.itemName, { kind: "stringVariable", name: operation.itemName });
+  const previousBindings = new Map(context.bindings);
+  context.bindings.clear();
+  for (const [name, value] of bodyBindings) {
+    context.bindings.set(name, value);
+  }
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  const bodyLines = emitOperations(operation.body, context);
+  context.loopLabels.pop();
+  context.bindings.clear();
+  for (const [name, value] of previousBindings) {
+    context.bindings.set(name, value);
+  }
+  const currentIndex = `%for.of.index.${loopIndex}`;
+  const inRange = `%for.of.in.range.${loopIndex}`;
+  const charSource = `%for.of.char.src.${loopIndex}`;
+  const charValue = `%for.of.char.${loopIndex}`;
+  const charString = `%for.of.char.string.${loopIndex}`;
+  const charStringNul = `%for.of.char.string.nul.${loopIndex}`;
+  const nextIndex = `%for.of.next.${loopIndex}`;
+  useRuntimeHelper(context.runtime, "malloc");
+
+  return [
+    ...source.lines,
+    `  ${indexPointer} = alloca i64`,
+    `  ${itemPointer} = alloca ptr`,
+    `  ${itemLengthPointer} = alloca i64`,
+    `  store i64 0, ptr ${indexPointer}`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  ${currentIndex} = load i64, ptr ${indexPointer}`,
+    `  ${inRange} = icmp ult i64 ${currentIndex}, ${source.length}`,
+    `  br i1 ${inRange}, label %${bodyLabel}, label %${endLabel}`,
+    `${bodyLabel}:`,
+    `  ${charSource} = getelementptr i8, ptr ${source.value}, i64 ${currentIndex}`,
+    `  ${charValue} = load i8, ptr ${charSource}`,
+    `  ${charString} = call ptr @malloc(i64 2)`,
+    `  store i8 ${charValue}, ptr ${charString}`,
+    `  ${charStringNul} = getelementptr i8, ptr ${charString}, i64 1`,
+    `  store i8 0, ptr ${charStringNul}`,
+    `  store ptr ${charString}, ptr ${itemPointer}`,
+    `  store i64 1, ptr ${itemLengthPointer}`,
+    ...bodyLines,
+    `  br label %${stepLabel}`,
+    `${stepLabel}:`,
+    `  ${nextIndex} = add i64 ${currentIndex}, 1`,
+    `  store i64 ${nextIndex}, ptr ${indexPointer}`,
+    `  br label %${condLabel}`,
+    `${endLabel}:`
+  ];
+}
+
+function emitForOfSetOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfSet" }>, context: EmitContext): string[] {
+  const itemPointer = variablePointerName(operation.itemName);
+  return emitForOfCollectionValueOperation(operation.setName, operation.itemName, itemPointer, "i64", operation.body, context, (entryPointer) => {
+    const valueSlot = `%for.of.collection.value.slot.${context.objectIndex}`;
+    const value = `%for.of.collection.value.${context.objectIndex}`;
+    context.objectIndex += 1;
+    return {
+      lines: [`  ${valueSlot} = getelementptr i8, ptr ${entryPointer}, i64 8`, `  ${value} = load i64, ptr ${valueSlot}`, `  store i64 ${value}, ptr ${itemPointer}`],
+      binding: { kind: "valueVariable", name: operation.itemName }
+    };
+  });
+}
+
+function emitForOfMapOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfMap" }>, context: EmitContext): string[] {
+  const itemPointer = variablePointerName(operation.itemName);
+  return emitForOfCollectionValueOperation(operation.mapName, operation.itemName, itemPointer, "ptr", operation.body, context, (entryPointer) => {
+    const index = context.objectIndex;
+    context.objectIndex += 1;
+    const keySlot = `%for.of.map.key.slot.${index}`;
+    const key = `%for.of.map.key.${index}`;
+    const valueSlot = `%for.of.map.value.slot.${index}`;
+    const value = `%for.of.map.value.${index}`;
+    const pair = `%for.of.map.pair.${index}`;
+    useRuntimeHelper(context.runtime, "arrayNew");
+    useRuntimeHelper(context.runtime, "arraySet");
+    return {
+      lines: [
+        `  ${keySlot} = getelementptr i8, ptr ${entryPointer}, i64 8`,
+        `  ${key} = load i64, ptr ${keySlot}`,
+        `  ${valueSlot} = getelementptr i8, ptr ${entryPointer}, i64 16`,
+        `  ${value} = load i64, ptr ${valueSlot}`,
+        `  ${pair} = call ptr @arrayNew(i64 2)`,
+        `  call void @arraySet(ptr ${pair}, i64 0, i64 ${key})`,
+        `  call void @arraySet(ptr ${pair}, i64 1, i64 ${value})`,
+        `  store ptr ${pair}, ptr ${itemPointer}`
+      ],
+      binding: { kind: "runtimeArray", name: operation.itemName }
+    };
+  });
+}
+
+// eslint-disable-next-line max-statements -- Collection for...of emission owns the active-slot scan and loop-control labels.
+function emitForOfCollectionValueOperation(
+  collectionName: string,
+  itemName: string,
+  itemPointer: string,
+  itemPointerType: "i64" | "ptr",
+  body: readonly JsIrOperation[],
+  context: EmitContext,
+  emitItemStore: (entryPointer: string) => { readonly lines: readonly string[]; readonly binding: JsIrBindingValue }
+): string[] {
+  const { loopIndex } = context;
+  context.loopIndex += 1;
+  const condLabel = `for.of.cond.${loopIndex}`;
+  const checkLabel = `for.of.check.${loopIndex}`;
+  const bodyLabel = `for.of.body.${loopIndex}`;
+  const stepLabel = `for.of.step.${loopIndex}`;
+  const endLabel = `for.of.end.${loopIndex}`;
+  const indexPointer = `%for.of.index.${loopIndex}.addr`;
+  const collection = emitRuntimeCollectionPointer(collectionName, context);
+  const bodyBindings = new Map(context.bindings);
+  const previousBindings = new Map(context.bindings);
+  const currentIndex = `%for.of.index.${loopIndex}`;
+  const usedSlot = `%for.of.collection.used.slot.${loopIndex}`;
+  const used = `%for.of.collection.used.${loopIndex}`;
+  const inRange = `%for.of.in.range.${loopIndex}`;
+  const entriesSlot = `%for.of.collection.entries.slot.${loopIndex}`;
+  const entries = `%for.of.collection.entries.${loopIndex}`;
+  const entryBytes = `%for.of.collection.entry.bytes.${loopIndex}`;
+  const entryPointer = `%for.of.collection.entry.${loopIndex}`;
+  const active = `%for.of.collection.active.${loopIndex}`;
+  const isActive = `%for.of.collection.is.active.${loopIndex}`;
+  const item = emitItemStore(entryPointer);
+  bodyBindings.set(itemName, item.binding);
+  context.bindings.clear();
+  for (const [name, value] of bodyBindings) {
+    context.bindings.set(name, value);
+  }
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  const bodyLines = emitOperations(body, context);
+  context.loopLabels.pop();
+  context.bindings.clear();
+  for (const [name, value] of previousBindings) {
+    context.bindings.set(name, value);
+  }
+  const nextIndex = `%for.of.next.${loopIndex}`;
+
+  return [
+    ...collection.lines,
+    `  ${indexPointer} = alloca i64`,
+    `  ${itemPointer} = alloca ${itemPointerType}`,
+    `  store i64 0, ptr ${indexPointer}`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  ${currentIndex} = load i64, ptr ${indexPointer}`,
+    `  ${usedSlot} = getelementptr i8, ptr ${collection.value}, i64 8`,
+    `  ${used} = load i64, ptr ${usedSlot}`,
+    `  ${inRange} = icmp ult i64 ${currentIndex}, ${used}`,
+    `  br i1 ${inRange}, label %${checkLabel}, label %${endLabel}`,
+    `${checkLabel}:`,
+    `  ${entriesSlot} = getelementptr i8, ptr ${collection.value}, i64 24`,
+    `  ${entries} = load ptr, ptr ${entriesSlot}`,
+    `  ${entryBytes} = mul i64 ${currentIndex}, 24`,
+    `  ${entryPointer} = getelementptr i8, ptr ${entries}, i64 ${entryBytes}`,
+    `  ${active} = load i64, ptr ${entryPointer}`,
+    `  ${isActive} = icmp ne i64 ${active}, 0`,
+    `  br i1 ${isActive}, label %${bodyLabel}, label %${stepLabel}`,
+    `${bodyLabel}:`,
+    ...item.lines,
+    ...bodyLines,
+    `  br label %${stepLabel}`,
+    `${stepLabel}:`,
+    `  ${nextIndex} = add i64 ${currentIndex}, 1`,
+    `  store i64 ${nextIndex}, ptr ${indexPointer}`,
+    `  br label %${condLabel}`,
+    `${endLabel}:`
+  ];
+}
+
 function emitBreakOperation(context: EmitContext): string[] {
   const labels = context.loopLabels.at(-1);
   if (labels === undefined) {
@@ -3887,6 +4317,13 @@ function emitRuntimeCollectionPointer(collectionName: string, context: EmitConte
   context.objectIndex += 1;
   const value = `%collection.ptr.${index}`;
   return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(collectionName)}`], value };
+}
+
+function emitRuntimeIteratorPointer(iteratorName: string, context: EmitContext): NumberValue {
+  const index = context.objectIndex;
+  context.objectIndex += 1;
+  const value = `%iterator.ptr.${index}`;
+  return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(iteratorName)}`], value };
 }
 
 function emitRuntimeObjectPointer(objectName: string, context: EmitContext): NumberValue {

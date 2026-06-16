@@ -402,6 +402,12 @@ export type JsIrBindingValue =
       readonly name: string;
     }
   | {
+      readonly kind: "runtimeIterator";
+      readonly name: string;
+      readonly sourceKind: "map" | "set";
+      readonly iterationKind: "keys" | "values" | "entries";
+    }
+  | {
       readonly kind: "object";
       readonly value: JsIrObjectValue;
     }
@@ -934,6 +940,20 @@ export type JsIrOperation =
       readonly value: JsIrValueExpression;
     }
   | {
+      readonly kind: "runtimeIteratorNew";
+      readonly name: string;
+      readonly collectionName: string;
+      readonly sourceKind: "map" | "set";
+      readonly iterationKind: "keys" | "values" | "entries";
+    }
+  | {
+      readonly kind: "runtimeIteratorNext";
+      readonly name: string;
+      readonly iteratorName: string;
+      readonly sourceKind: "map" | "set";
+      readonly iterationKind: "keys" | "values" | "entries";
+    }
+  | {
       readonly kind: "runtimeArrayCopyWithin";
       readonly arrayName: string;
       readonly target: JsIrNumberExpression;
@@ -1050,6 +1070,30 @@ export type JsIrOperation =
       readonly initializer: JsIrOperation;
       readonly condition: JsIrCondition;
       readonly increment: JsIrOperation;
+      readonly body: readonly JsIrOperation[];
+    }
+  | {
+      readonly kind: "forOfArray";
+      readonly itemName: string;
+      readonly arrayName: string;
+      readonly body: readonly JsIrOperation[];
+    }
+  | {
+      readonly kind: "forOfString";
+      readonly itemName: string;
+      readonly source: JsIrStringExpression;
+      readonly body: readonly JsIrOperation[];
+    }
+  | {
+      readonly kind: "forOfSet";
+      readonly itemName: string;
+      readonly setName: string;
+      readonly body: readonly JsIrOperation[];
+    }
+  | {
+      readonly kind: "forOfMap";
+      readonly itemName: string;
+      readonly mapName: string;
       readonly body: readonly JsIrOperation[];
     }
   | {
@@ -1189,6 +1233,12 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   }
   if (operation.kind === "runtimeSetNew" || operation.kind === "runtimeSetAddResult") {
     return { kind: "runtimeSet", name: operation.name };
+  }
+  if (operation.kind === "runtimeIteratorNew") {
+    return { kind: "runtimeIterator", name: operation.name, sourceKind: operation.sourceKind, iterationKind: operation.iterationKind };
+  }
+  if (operation.kind === "runtimeIteratorNext") {
+    return { kind: "runtimeObject", name: operation.name };
   }
   if (operation.kind === "runtimeObjectGetPrototype") {
     return { kind: "runtimeObject", name: operation.name };
@@ -2499,6 +2549,10 @@ function lowerStatement(
     return lowerForStatement(statement, bindings);
   }
 
+  if (ts.isForOfStatement(statement)) {
+    return lowerForOfStatement(statement, bindings);
+  }
+
   if (ts.isDoStatement(statement)) {
     return lowerDoWhileStatement(statement, bindings);
   }
@@ -2845,6 +2899,63 @@ function lowerForStatement(
     increment,
     body
   };
+}
+
+// eslint-disable-next-line max-statements -- for...of lowering dispatches supported source kinds explicitly while unsupported iterables stay diagnostic-only.
+function lowerForOfStatement(
+  statement: ts.ForOfStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1 || !ts.isBlock(statement.statement)) {
+    return undefined;
+  }
+  const [declaration] = statement.initializer.declarations;
+  if (!ts.isIdentifier(declaration.name) || declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
+    return undefined;
+  }
+  const sourceString = lowerStringRuntimeExpression(statement.expression, bindings);
+  if (sourceString !== undefined) {
+    const bodyBindings = new Map(bindings);
+    bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
+    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    if (body === undefined) {
+      return undefined;
+    }
+    return { kind: "forOfString", itemName: declaration.name.text, source: sourceString, body };
+  }
+  if (!ts.isIdentifier(statement.expression)) {
+    return undefined;
+  }
+  const sourceName = statement.expression.text;
+  const sourceBinding = bindings.get(sourceName);
+  if (sourceBinding?.kind === "runtimeSet") {
+    const bodyBindings = new Map(bindings);
+    bodyBindings.set(declaration.name.text, { kind: "valueVariable", name: declaration.name.text });
+    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    if (body === undefined) {
+      return undefined;
+    }
+    return { kind: "forOfSet", itemName: declaration.name.text, setName: sourceBinding.name, body };
+  }
+  if (sourceBinding?.kind === "runtimeMap") {
+    const bodyBindings = new Map(bindings);
+    bodyBindings.set(declaration.name.text, { kind: "runtimeArray", name: declaration.name.text });
+    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    if (body === undefined) {
+      return undefined;
+    }
+    return { kind: "forOfMap", itemName: declaration.name.text, mapName: sourceBinding.name, body };
+  }
+  if (sourceBinding?.kind !== "array") {
+    return undefined;
+  }
+  const bodyBindings = new Map(bindings);
+  bodyBindings.set(declaration.name.text, { kind: "number", value: { kind: "variable", name: declaration.name.text } });
+  const body = lowerBlockStatements(statement.statement, bodyBindings);
+  if (body === undefined) {
+    return undefined;
+  }
+  return { kind: "forOfArray", itemName: declaration.name.text, arrayName: sourceName, body };
 }
 
 function lowerForInitializer(
@@ -4324,6 +4435,36 @@ function lowerConstAggregateBinding(
   const collection = lowerRuntimeCollectionBinding(name, initializer, bindings);
   if (collection !== undefined) {
     return collection;
+  }
+  const iterator = lowerRuntimeIteratorBinding(name, initializer, bindings);
+  if (iterator !== undefined) {
+    return iterator;
+  }
+  return undefined;
+}
+
+function lowerRuntimeIteratorBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || initializer.arguments.length > 0 || !ts.isPropertyAccessExpression(initializer.expression) || !ts.isIdentifier(initializer.expression.expression)) {
+    return undefined;
+  }
+  const receiver = initializer.expression.expression.text;
+  const binding = bindings.get(receiver);
+  const method = initializer.expression.name.text;
+  if (binding?.kind === "runtimeIterator" && method === "next") {
+    return { kind: "runtimeIteratorNext", name, iteratorName: binding.name, sourceKind: binding.sourceKind, iterationKind: binding.iterationKind };
+  }
+  if (method !== "keys" && method !== "values" && method !== "entries") {
+    return undefined;
+  }
+  if (binding?.kind === "runtimeMap") {
+    return { kind: "runtimeIteratorNew", name, collectionName: binding.name, sourceKind: "map", iterationKind: method };
+  }
+  if (binding?.kind === "runtimeSet") {
+    return { kind: "runtimeIteratorNew", name, collectionName: binding.name, sourceKind: "set", iterationKind: method };
   }
   return undefined;
 }

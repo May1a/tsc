@@ -2804,6 +2804,7 @@ describe("tscn expanded runtime roadmap", () => {
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
+    await expectUnsupportedDiagnostic("for-of-user-iterator-unsupported.ts");
   });
 
   test("supports package X runtime array indexOf and lastIndexOf", async () => {
@@ -2871,6 +2872,21 @@ describe("tscn expanded runtime roadmap", () => {
     await expectUnsupportedDiagnostic("map-constructor-iterable-unsupported.ts");
     await expectUnsupportedDiagnostic("weak-map-unsupported.ts");
     await expectUnsupportedDiagnostic("weak-set-unsupported.ts");
+  });
+
+  test("supports package BR iteration and for...of", async () => {
+    const cases = [
+      ["for-of-array.ts", "1\n2\n3\n"],
+      ["for-of-array-break-continue.ts", "1\n3\ndone\n"],
+      ["for-of-string.ts", "a\nb\nc\n"],
+      ["for-of-set.ts", "true\nfirst\nthird\nfourth\n"],
+      ["for-of-map.ts", "true\nfirst\n1\nthird\n3\nfourth\n4\n"],
+      ["iterator-next-basic.ts", "only\nfalse\nundefined\ntrue\n"],
+      ["map-keys-values-entries.ts", "a\nfalse\nb\nfalse\ntrue\n1\nfalse\n2\nfalse\na\n1\nfalse\nb\n2\nfalse\ntrue\n"],
+      ["set-keys-values-entries.ts", "x\nfalse\ny\nfalse\ntrue\nx\nfalse\ny\nfalse\nx\nx\nfalse\ny\ny\nfalse\ntrue\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
   });
 
   test("supports package AA boxed string single-character methods", async () => {
