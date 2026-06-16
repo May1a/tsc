@@ -2856,6 +2856,23 @@ describe("tscn expanded runtime roadmap", () => {
     await expectUnsupportedDiagnostic("date-local-getters-unsupported.ts");
   });
 
+  test("supports package BQ minimal Map and Set", async () => {
+    const cases = [
+      ["map-basic-set-get.ts", "0\ntrue\n1\n42\nundefined\n"],
+      ["map-size-delete-has.ts", "2\ntrue\n3\ntrue\nfalse\n1\nfalse\n"],
+      ["map-same-value-zero.ts", "nan\nzero\n2\nnegzero\n"],
+      ["map-object-identity-keys.ts", "object\nfalse\narray\n"],
+      ["set-basic-add-has.ts", "0\ntrue\n2\ntrue\nfalse\n"],
+      ["set-size-delete.ts", "2\ntrue\ntrue\ntrue\nfalse\n1\n"],
+      ["set-object-identity-values.ts", "true\nfalse\ntrue\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+    await expectUnsupportedDiagnostic("map-constructor-iterable-unsupported.ts");
+    await expectUnsupportedDiagnostic("weak-map-unsupported.ts");
+    await expectUnsupportedDiagnostic("weak-set-unsupported.ts");
+  });
+
   test("supports package AA boxed string single-character methods", async () => {
     const cases = [
       ["string-boxed-char-at.ts", "h\no\n\n"],

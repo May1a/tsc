@@ -12,6 +12,7 @@ export type RuntimeHelper =
   | "stringTrimStart"
   | "stringTrimEnd"
   | "valueStrictEquals"
+  | "valueSameValueZero"
   | "valueLooseEquals"
   | "valueRelationalCompare"
   | "valueToNumber"
@@ -103,6 +104,13 @@ export type RuntimeHelper =
   | "arrayShift"
   | "arraySetPrototype"
   | "arrayGetPrototype"
+  | "collectionNew"
+  | "collectionSize"
+  | "collectionFind"
+  | "collectionSet"
+  | "collectionGet"
+  | "collectionHas"
+  | "collectionDelete"
   | "objectNew"
   | "errorNew"
   | "errorToString"
@@ -154,6 +162,7 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["stringTrimStart", ["malloc", "memcpy"]],
   ["stringTrimEnd", ["malloc", "memcpy"]],
   ["valueStrictEquals", ["valueStringLength", "valueStringPtr", "memcmp"]],
+  ["valueSameValueZero", ["valueStrictEquals", "valueStringLength", "valueStringPtr", "memcmp"]],
   ["valueLooseEquals", ["valueStrictEquals", "valueToNumber", "valueStringPtr", "valueStringLength", "memcmp"]],
   ["valueRelationalCompare", ["valueToNumber", "valueStringPtr", "valueStringLength", "memcmp"]],
   ["valueToNumber", ["valueStringPtr"]],
@@ -242,6 +251,13 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["arrayReverse", ["arrayLength"]],
   ["arrayHas", ["arrayHasOwnIndex", "objectHas", "objectHasOwn", "objectGetOwn", "memcmp"]],
   ["arrayGetPrototype", ["arrayLength"]],
+  ["collectionNew", ["malloc"]],
+  ["collectionSize", []],
+  ["collectionFind", ["valueSameValueZero"]],
+  ["collectionSet", ["collectionFind", "malloc", "memcpy"]],
+  ["collectionGet", ["collectionFind"]],
+  ["collectionHas", ["collectionFind"]],
+  ["collectionDelete", ["collectionFind"]],
   ["objectCreate", ["objectNew"]],
   ["errorNew", ["objectNew", "valueBoxString", "objectDefineDataProperty"]],
   ["errorToString", ["objectGet", "valueToString", "malloc", "memcpy"]],
@@ -529,6 +545,63 @@ string.bytes:
 equal:
   ret i1 true
 not.equal:
+  ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("valueSameValueZero")) {
+    definitions.push(`define i1 @valueIsNumberForSameValueZero(i64 %value) {
+entry:
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  br i1 %is.undefined, label %false, label %check.false
+check.false:
+  %is.false = icmp eq i64 %value, 9222246136947933185
+  br i1 %is.false, label %false, label %check.true
+check.true:
+  %is.true = icmp eq i64 %value, 9222246136947933186
+  br i1 %is.true, label %false, label %check.null
+check.null:
+  %is.null = icmp eq i64 %value, 9222246136947933187
+  br i1 %is.null, label %false, label %check.hole
+check.hole:
+  %is.hole = icmp eq i64 %value, 9222246136947933191
+  br i1 %is.hole, label %false, label %check.tag
+check.tag:
+  %tag = and i64 %value, -281474976710656
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.string = icmp eq i64 %tag, 9221683186994511872
+  %is.object.or.array = or i1 %is.object, %is.array
+  %is.boxed = or i1 %is.object.or.array, %is.string
+  br i1 %is.boxed, label %false, label %true
+true:
+  ret i1 true
+false:
+  ret i1 false
+}
+
+define i1 @valueSameValueZero(i64 %left, i64 %right) {
+entry:
+  %strict = call i1 @valueStrictEquals(i64 %left, i64 %right)
+  br i1 %strict, label %true, label %number.guard
+number.guard:
+  %left.number = call i1 @valueIsNumberForSameValueZero(i64 %left)
+  %right.number = call i1 @valueIsNumberForSameValueZero(i64 %right)
+  %both.number = and i1 %left.number, %right.number
+  br i1 %both.number, label %number.compare, label %false
+number.compare:
+  %left.d = bitcast i64 %left to double
+  %right.d = bitcast i64 %right to double
+  %numeric.equal = fcmp oeq double %left.d, %right.d
+  br i1 %numeric.equal, label %true, label %nan.compare
+nan.compare:
+  %left.nan = fcmp uno double %left.d, %left.d
+  %right.nan = fcmp uno double %right.d, %right.d
+  %both.nan = and i1 %left.nan, %right.nan
+  br i1 %both.nan, label %true, label %false
+true:
+  ret i1 true
+false:
   ret i1 false
 }
 `);
@@ -2857,6 +2930,162 @@ entry:
   %prototype.slot = getelementptr i8, ptr %array, i64 24
   %prototype = load ptr, ptr %prototype.slot
   ret ptr %prototype
+}
+`);
+  }
+  if (runtime.used.has("collectionNew")) {
+    definitions.push(`define ptr @collectionNew() {
+entry:
+  %collection = call ptr @malloc(i64 32)
+  %entries = call ptr @malloc(i64 96)
+  store i64 0, ptr %collection
+  %used.slot = getelementptr i8, ptr %collection, i64 8
+  store i64 0, ptr %used.slot
+  %capacity.slot = getelementptr i8, ptr %collection, i64 16
+  store i64 4, ptr %capacity.slot
+  %entries.slot = getelementptr i8, ptr %collection, i64 24
+  store ptr %entries, ptr %entries.slot
+  ret ptr %collection
+}
+`);
+  }
+  if (runtime.used.has("collectionSize")) {
+    definitions.push(`define i64 @collectionSize(ptr %collection) {
+entry:
+  %size = load i64, ptr %collection
+  ret i64 %size
+}
+`);
+  }
+  if (runtime.used.has("collectionFind")) {
+    definitions.push(`define i64 @collectionFind(ptr %collection, i64 %key) {
+entry:
+  %used.slot = getelementptr i8, ptr %collection, i64 8
+  %used = load i64, ptr %used.slot
+  %entries.slot = getelementptr i8, ptr %collection, i64 24
+  %entries = load ptr, ptr %entries.slot
+  br label %scan
+scan:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %done = icmp eq i64 %i, %used
+  br i1 %done, label %missing, label %check
+check:
+  %entry.bytes = mul i64 %i, 24
+  %entry.ptr = getelementptr i8, ptr %entries, i64 %entry.bytes
+  %active = load i64, ptr %entry.ptr
+  %is.active = icmp ne i64 %active, 0
+  br i1 %is.active, label %compare, label %advance
+compare:
+  %key.slot = getelementptr i8, ptr %entry.ptr, i64 8
+  %stored.key = load i64, ptr %key.slot
+  %same = call i1 @valueSameValueZero(i64 %stored.key, i64 %key)
+  br i1 %same, label %found, label %advance
+advance:
+  %next = add i64 %i, 1
+  br label %scan
+found:
+  ret i64 %i
+missing:
+  ret i64 -1
+}
+`);
+  }
+  if (runtime.used.has("collectionSet")) {
+    definitions.push(`define void @collectionSet(ptr %collection, i64 %key, i64 %value) {
+entry:
+  %found = call i64 @collectionFind(ptr %collection, i64 %key)
+  %has = icmp sge i64 %found, 0
+  br i1 %has, label %update, label %append
+update:
+  %entries.slot.u = getelementptr i8, ptr %collection, i64 24
+  %entries.u = load ptr, ptr %entries.slot.u
+  %entry.bytes.u = mul i64 %found, 24
+  %entry.ptr.u = getelementptr i8, ptr %entries.u, i64 %entry.bytes.u
+  %value.slot.u = getelementptr i8, ptr %entry.ptr.u, i64 16
+  store i64 %value, ptr %value.slot.u
+  ret void
+append:
+  %used.slot = getelementptr i8, ptr %collection, i64 8
+  %used = load i64, ptr %used.slot
+  %capacity.slot = getelementptr i8, ptr %collection, i64 16
+  %capacity = load i64, ptr %capacity.slot
+  %entries.slot = getelementptr i8, ptr %collection, i64 24
+  %entries = load ptr, ptr %entries.slot
+  %has.capacity = icmp ult i64 %used, %capacity
+  br i1 %has.capacity, label %store, label %grow
+grow:
+  %new.capacity = mul i64 %capacity, 2
+  %new.bytes = mul i64 %new.capacity, 24
+  %new.entries = call ptr @malloc(i64 %new.bytes)
+  %old.bytes = mul i64 %used, 24
+  call ptr @memcpy(ptr %new.entries, ptr %entries, i64 %old.bytes)
+  store i64 %new.capacity, ptr %capacity.slot
+  store ptr %new.entries, ptr %entries.slot
+  br label %store
+store:
+  %active.entries = phi ptr [ %entries, %append ], [ %new.entries, %grow ]
+  %entry.bytes = mul i64 %used, 24
+  %entry.ptr = getelementptr i8, ptr %active.entries, i64 %entry.bytes
+  store i64 1, ptr %entry.ptr
+  %key.slot = getelementptr i8, ptr %entry.ptr, i64 8
+  store i64 %key, ptr %key.slot
+  %value.slot = getelementptr i8, ptr %entry.ptr, i64 16
+  store i64 %value, ptr %value.slot
+  %next.used = add i64 %used, 1
+  store i64 %next.used, ptr %used.slot
+  %size = load i64, ptr %collection
+  %next.size = add i64 %size, 1
+  store i64 %next.size, ptr %collection
+  ret void
+}
+`);
+  }
+  if (runtime.used.has("collectionGet")) {
+    definitions.push(`define i64 @collectionGet(ptr %collection, i64 %key) {
+entry:
+  %found = call i64 @collectionFind(ptr %collection, i64 %key)
+  %has = icmp sge i64 %found, 0
+  br i1 %has, label %load, label %missing
+load:
+  %entries.slot = getelementptr i8, ptr %collection, i64 24
+  %entries = load ptr, ptr %entries.slot
+  %entry.bytes = mul i64 %found, 24
+  %entry.ptr = getelementptr i8, ptr %entries, i64 %entry.bytes
+  %value.slot = getelementptr i8, ptr %entry.ptr, i64 16
+  %value = load i64, ptr %value.slot
+  ret i64 %value
+missing:
+  ret i64 9222246136947933184
+}
+`);
+  }
+  if (runtime.used.has("collectionHas")) {
+    definitions.push(`define i1 @collectionHas(ptr %collection, i64 %key) {
+entry:
+  %found = call i64 @collectionFind(ptr %collection, i64 %key)
+  %has = icmp sge i64 %found, 0
+  ret i1 %has
+}
+`);
+  }
+  if (runtime.used.has("collectionDelete")) {
+    definitions.push(`define i1 @collectionDelete(ptr %collection, i64 %key) {
+entry:
+  %found = call i64 @collectionFind(ptr %collection, i64 %key)
+  %has = icmp sge i64 %found, 0
+  br i1 %has, label %delete, label %missing
+delete:
+  %entries.slot = getelementptr i8, ptr %collection, i64 24
+  %entries = load ptr, ptr %entries.slot
+  %entry.bytes = mul i64 %found, 24
+  %entry.ptr = getelementptr i8, ptr %entries, i64 %entry.bytes
+  store i64 0, ptr %entry.ptr
+  %size = load i64, ptr %collection
+  %next.size = sub i64 %size, 1
+  store i64 %next.size, ptr %collection
+  ret i1 true
+missing:
+  ret i1 false
 }
 `);
   }

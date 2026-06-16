@@ -143,6 +143,11 @@ export type JsIrValueExpression =
       readonly indent: number;
     }
   | {
+      readonly kind: "runtimeMapGet";
+      readonly mapName: string;
+      readonly key: JsIrValueExpression;
+    }
+  | {
       readonly kind: "optionalChain";
       readonly guard: JsIrValueExpression;
       readonly access: JsIrValueExpression;
@@ -234,6 +239,10 @@ export type JsIrNumberExpression =
   | {
       readonly kind: "arrayFindIndex";
       readonly arrayName: string;
+    }
+  | {
+      readonly kind: "runtimeCollectionSize";
+      readonly collectionName: string;
     }
   | {
       readonly kind: "objectAccess";
@@ -389,6 +398,10 @@ export type JsIrBindingValue =
       readonly name: string;
     }
   | {
+      readonly kind: "runtimeMap" | "runtimeSet";
+      readonly name: string;
+    }
+  | {
       readonly kind: "object";
       readonly value: JsIrObjectValue;
     }
@@ -492,6 +505,17 @@ export type JsIrCondition =
       readonly kind: "objectIs";
       readonly left: JsIrValueExpression;
       readonly right: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "runtimeCollectionHas" | "runtimeCollectionDelete";
+      readonly collectionName: string;
+      readonly key: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "runtimeCollectionIdentity";
+      readonly operator: "===" | "!==";
+      readonly leftName: string;
+      readonly rightName: string;
     }
   | {
       readonly kind: "valueTruthy";
@@ -882,6 +906,34 @@ export type JsIrOperation =
       readonly initialValue?: JsIrValueExpression;
     }
   | {
+      readonly kind: "runtimeMapNew" | "runtimeSetNew";
+      readonly name: string;
+    }
+  | {
+      readonly kind: "runtimeMapSet";
+      readonly mapName: string;
+      readonly key: JsIrValueExpression;
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "runtimeSetAdd";
+      readonly setName: string;
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "runtimeMapSetResult";
+      readonly name: string;
+      readonly mapName: string;
+      readonly key: JsIrValueExpression;
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "runtimeSetAddResult";
+      readonly name: string;
+      readonly setName: string;
+      readonly value: JsIrValueExpression;
+    }
+  | {
       readonly kind: "runtimeArrayCopyWithin";
       readonly arrayName: string;
       readonly target: JsIrNumberExpression;
@@ -1131,6 +1183,12 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   }
   if (operation.kind === "runtimeArrayMutatorResult") {
     return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "runtimeMapNew" || operation.kind === "runtimeMapSetResult") {
+    return { kind: "runtimeMap", name: operation.name };
+  }
+  if (operation.kind === "runtimeSetNew" || operation.kind === "runtimeSetAddResult") {
+    return { kind: "runtimeSet", name: operation.name };
   }
   if (operation.kind === "runtimeObjectGetPrototype") {
     return { kind: "runtimeObject", name: operation.name };
@@ -2621,6 +2679,10 @@ function lowerExpressionStatement(
   }
 
   if (ts.isCallExpression(expression)) {
+    const runtimeCollectionCall = lowerRuntimeCollectionCallStatement(expression, bindings);
+    if (runtimeCollectionCall !== undefined) {
+      return runtimeCollectionCall;
+    }
     const runtimeObjectCall = lowerRuntimeObjectCallStatement(expression, bindings);
     if (runtimeObjectCall !== undefined) {
       return runtimeObjectCall;
@@ -2653,6 +2715,32 @@ function lowerExpressionStatement(
     };
   }
 
+  return undefined;
+}
+
+function lowerRuntimeCollectionCallStatement(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression)) {
+    return undefined;
+  }
+  const receiver = expression.expression.expression.text;
+  const binding = bindings.get(receiver);
+  const method = expression.expression.name.text;
+  if (binding?.kind === "runtimeMap" && method === "set" && expression.arguments.length === 2) {
+    const key = lowerValueExpression(expression.arguments[0], bindings);
+    const value = lowerValueExpression(expression.arguments[1], bindings);
+    if (key !== undefined && value !== undefined) {
+      return { kind: "runtimeMapSet", mapName: binding.name, key, value };
+    }
+  }
+  if (binding?.kind === "runtimeSet" && method === "add" && expression.arguments.length === 1) {
+    const value = lowerValueExpression(expression.arguments[0], bindings);
+    if (value !== undefined) {
+      return { kind: "runtimeSetAdd", setName: binding.name, value };
+    }
+  }
   return undefined;
 }
 
@@ -4233,6 +4321,58 @@ function lowerConstAggregateBinding(
   if (objectPrototype !== undefined) {
     return objectPrototype;
   }
+  const collection = lowerRuntimeCollectionBinding(name, initializer, bindings);
+  if (collection !== undefined) {
+    return collection;
+  }
+  return undefined;
+}
+
+function lowerRuntimeCollectionBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const constructed = lowerRuntimeCollectionConstructorBinding(name, initializer, bindings);
+  if (constructed !== undefined) {
+    return constructed;
+  }
+  if (!ts.isCallExpression(initializer) || !ts.isPropertyAccessExpression(initializer.expression) || !ts.isIdentifier(initializer.expression.expression)) {
+    return undefined;
+  }
+  const receiver = initializer.expression.expression.text;
+  const binding = bindings.get(receiver);
+  const method = initializer.expression.name.text;
+  if (binding?.kind === "runtimeMap" && method === "set" && initializer.arguments.length === 2) {
+    const key = lowerValueExpression(initializer.arguments[0], bindings);
+    const value = lowerValueExpression(initializer.arguments[1], bindings);
+    if (key !== undefined && value !== undefined) {
+      return { kind: "runtimeMapSetResult", name, mapName: binding.name, key, value };
+    }
+  }
+  if (binding?.kind === "runtimeSet" && method === "add" && initializer.arguments.length === 1) {
+    const value = lowerValueExpression(initializer.arguments[0], bindings);
+    if (value !== undefined) {
+      return { kind: "runtimeSetAddResult", name, setName: binding.name, value };
+    }
+  }
+  return undefined;
+}
+
+function lowerRuntimeCollectionConstructorBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isNewExpression(initializer) || initializer.arguments?.length !== 0 || !ts.isIdentifier(initializer.expression)) {
+    return undefined;
+  }
+  if (initializer.expression.text === "Map" && !bindings.has("Map")) {
+    return { kind: "runtimeMapNew", name };
+  }
+  if (initializer.expression.text === "Set" && !bindings.has("Set")) {
+    return { kind: "runtimeSetNew", name };
+  }
   return undefined;
 }
 
@@ -5483,6 +5623,10 @@ function lowerConditionExpression(
     if (presenceCondition !== undefined) {
       return presenceCondition;
     }
+    const collectionIdentity = lowerRuntimeCollectionIdentityCondition(expression, bindings);
+    if (collectionIdentity !== undefined) {
+      return collectionIdentity;
+    }
   }
 
   const hasOwnCondition = lowerHasOwnConditionExpression(expression, bindings);
@@ -5525,6 +5669,11 @@ function lowerConditionExpression(
     return stringSearch;
   }
 
+  const collectionHas = lowerRuntimeCollectionHasCondition(expression, bindings);
+  if (collectionHas !== undefined) {
+    return collectionHas;
+  }
+
   if (ts.isIdentifier(expression)) {
     const binding = bindings.get(expression.text);
     if (binding?.kind === "booleanExpression") {
@@ -5553,6 +5702,48 @@ function lowerConditionExpression(
   }
 
   return lowerComparisonConditionExpression(expression, bindings);
+}
+
+function lowerRuntimeCollectionIdentityCondition(
+  expression: ts.BinaryExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCondition | undefined {
+  const operator = lowerComparisonOperator(expression.operatorToken.kind);
+  if (operator !== "===" && operator !== "!==" || !ts.isIdentifier(expression.left) || !ts.isIdentifier(expression.right)) {
+    return undefined;
+  }
+  const left = bindings.get(expression.left.text);
+  const right = bindings.get(expression.right.text);
+  if ((left?.kind !== "runtimeMap" && left?.kind !== "runtimeSet") || left.kind !== right?.kind) {
+    return undefined;
+  }
+  return { kind: "runtimeCollectionIdentity", operator, leftName: left.name, rightName: right.name };
+}
+
+function lowerRuntimeCollectionHasCondition(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCondition | undefined {
+  if (!ts.isCallExpression(expression) || !ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression) || expression.arguments.length !== 1) {
+    return undefined;
+  }
+  const receiver = expression.expression.expression.text;
+  const binding = bindings.get(receiver);
+  if (binding?.kind !== "runtimeMap" && binding?.kind !== "runtimeSet") {
+    return undefined;
+  }
+  const method = expression.expression.name.text;
+  if (method !== "has" && method !== "delete") {
+    return undefined;
+  }
+  const key = lowerValueExpression(expression.arguments[0], bindings);
+  if (key === undefined) {
+    return undefined;
+  }
+  if (method === "has") {
+    return { kind: "runtimeCollectionHas", collectionName: binding.name, key };
+  }
+  return { kind: "runtimeCollectionDelete", collectionName: binding.name, key };
 }
 
 function lowerRuntimeStringSearchCondition(
@@ -6292,10 +6483,33 @@ function lowerDirectValueExpression(
     if (arrayMethod !== undefined) {
       return arrayMethod;
     }
+    const collectionMethod = lowerRuntimeCollectionValueMethodCall(expression, bindings);
+    if (collectionMethod !== undefined) {
+      return collectionMethod;
+    }
     return lowerStringValueMethodCall(expression, bindings);
   }
 
   return undefined;
+}
+
+function lowerRuntimeCollectionValueMethodCall(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression) || expression.arguments.length !== 1) {
+    return undefined;
+  }
+  const receiver = expression.expression.expression.text;
+  const binding = bindings.get(receiver);
+  if (binding?.kind !== "runtimeMap" || expression.expression.name.text !== "get") {
+    return undefined;
+  }
+  const key = lowerValueExpression(expression.arguments[0], bindings);
+  if (key === undefined) {
+    return undefined;
+  }
+  return { kind: "runtimeMapGet", mapName: binding.name, key };
 }
 
 const jsonMaxIndent = 10;
@@ -6812,6 +7026,11 @@ function lowerNumberExpression(
     return access;
   }
 
+  const collectionSize = lowerRuntimeCollectionSizeExpression(expression, bindings);
+  if (collectionSize !== undefined) {
+    return collectionSize;
+  }
+
   if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.MinusToken) {
     const value = lowerNumberExpression(expression.operand, bindings);
     if (value === undefined) {
@@ -6834,6 +7053,20 @@ function lowerNumberExpression(
   }
 
   return lowerNumberBinaryExpression(expression, bindings);
+}
+
+function lowerRuntimeCollectionSizeExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrNumberExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression) || !ts.isIdentifier(expression.expression) || expression.name.text !== "size") {
+    return undefined;
+  }
+  const binding = bindings.get(expression.expression.text);
+  if (binding?.kind !== "runtimeMap" && binding?.kind !== "runtimeSet") {
+    return undefined;
+  }
+  return { kind: "runtimeCollectionSize", collectionName: binding.name };
 }
 
 // eslint-disable-next-line complexity, max-statements -- Scoped numeric built-in routing is centralized during roadmap package AQ/AR.

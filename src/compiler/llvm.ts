@@ -472,6 +472,10 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
     return emitRuntimeArrayScalarCallbackOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeMapSetResult" || operation.kind === "runtimeSetAddResult") {
+    return emitRuntimeCollectionResultOperation(operation, context);
+  }
+
   return emitMutationOperation(operation, context);
 }
 
@@ -493,7 +497,29 @@ function emitMutationOperation(operation: JsIrOperation, context: EmitContext): 
     return arrayMutation;
   }
 
+  const collectionMutation = emitRuntimeCollectionMutationOperation(operation, context);
+  if (collectionMutation !== undefined) {
+    return collectionMutation;
+  }
+
   return emitObjectMutationOperation(operation, context);
+}
+
+function emitRuntimeCollectionMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+  if (operation.kind === "runtimeMapSet") {
+    const collection = emitRuntimeCollectionPointer(operation.mapName, context);
+    const key = emitValueExpression(operation.key, context);
+    const value = emitValueExpression(operation.value, context);
+    useRuntimeHelper(context.runtime, "collectionSet");
+    return [...collection.lines, ...key.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${key.value}, i64 ${value.value})`];
+  }
+  if (operation.kind === "runtimeSetAdd") {
+    const collection = emitRuntimeCollectionPointer(operation.setName, context);
+    const value = emitValueExpression(operation.value, context);
+    useRuntimeHelper(context.runtime, "collectionSet");
+    return [...collection.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${value.value}, i64 ${jsValueTrue})`];
+  }
+  return undefined;
 }
 
 function emitArrayMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
@@ -616,6 +642,10 @@ function emitAggregateLiteralBindingOperation(operation: JsIrOperation, context:
 
   if (operation.kind === "runtimeErrorLiteral") {
     return emitRuntimeErrorLiteralOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeMapNew" || operation.kind === "runtimeSetNew") {
+    return emitRuntimeCollectionNewOperation(operation, context);
   }
 
   return undefined;
@@ -881,6 +911,51 @@ function emitRuntimeArrayLiteralOperation(
       fixedIndex += 1;
     }
   }
+  return lines;
+}
+
+function emitRuntimeCollectionNewOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeMapNew" | "runtimeSetNew" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  let bindingKind: "runtimeMap" | "runtimeSet" = "runtimeSet";
+  if (operation.kind === "runtimeMapNew") {
+    bindingKind = "runtimeMap";
+  }
+  context.bindings.set(operation.name, { kind: bindingKind, name: operation.name });
+  useRuntimeHelper(context.runtime, "collectionNew");
+  return [`  ${pointerName} = alloca ptr`, `  %${operation.name}.collection = call ptr @collectionNew()`, `  store ptr %${operation.name}.collection, ptr ${pointerName}`];
+}
+
+function emitRuntimeCollectionResultOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeMapSetResult" | "runtimeSetAddResult" }>,
+  context: EmitContext
+): string[] {
+  let sourceName: string;
+  if (operation.kind === "runtimeMapSetResult") {
+    sourceName = operation.mapName;
+  } else {
+    sourceName = operation.setName;
+  }
+  const collection = emitRuntimeCollectionPointer(sourceName, context);
+  const pointerName = variablePointerName(operation.name);
+  const lines = [`  ${pointerName} = alloca ptr`, ...collection.lines];
+  useRuntimeHelper(context.runtime, "collectionSet");
+  if (operation.kind === "runtimeMapSetResult") {
+    const key = emitValueExpression(operation.key, context);
+    const value = emitValueExpression(operation.value, context);
+    lines.push(...key.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${key.value}, i64 ${value.value})`);
+  } else {
+    const value = emitValueExpression(operation.value, context);
+    lines.push(...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${value.value}, i64 ${jsValueTrue})`);
+  }
+  lines.push(`  store ptr ${collection.value}, ptr ${pointerName}`);
+  let bindingKind: "runtimeMap" | "runtimeSet" = "runtimeSet";
+  if (operation.kind === "runtimeMapSetResult") {
+    bindingKind = "runtimeMap";
+  }
+  context.bindings.set(operation.name, { kind: bindingKind, name: operation.name });
   return lines;
 }
 
@@ -2366,6 +2441,15 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines, value };
   }
 
+  if (expression.kind === "runtimeMapGet") {
+    const collection = emitRuntimeCollectionPointer(expression.mapName, context);
+    const key = emitValueExpression(expression.key, context);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "collectionGet");
+    return { lines: [...collection.lines, ...key.lines, `  ${value} = call i64 @collectionGet(ptr ${collection.value}, i64 ${key.value})`], value };
+  }
+
   if (expression.kind === "optionalChain") {
     return emitOptionalChainValueExpression(expression, context);
   }
@@ -3132,6 +3216,22 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     return emitRuntimeObjectHasCondition(condition, context);
   }
 
+  if (condition.kind === "runtimeCollectionHas" || condition.kind === "runtimeCollectionDelete") {
+    return emitRuntimeCollectionCondition(condition, context);
+  }
+
+  if (condition.kind === "runtimeCollectionIdentity") {
+    const left = emitRuntimeCollectionPointer(condition.leftName, context);
+    const right = emitRuntimeCollectionPointer(condition.rightName, context);
+    const name = `%cmp.${context.cmpIndex}`;
+    context.cmpIndex += 1;
+    let predicate = "ne";
+    if (condition.operator === "===") {
+      predicate = "eq";
+    }
+    return { lines: [...left.lines, ...right.lines, `  ${name} = icmp ${predicate} ptr ${left.value}, ${right.value}`], value: name };
+  }
+
   if (condition.kind === "runtimeArrayHas") {
     return emitRuntimeArrayHasCondition(condition, context);
   }
@@ -3221,6 +3321,22 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
   }
 
   return undefined;
+}
+
+function emitRuntimeCollectionCondition(
+  condition: Extract<JsIrCondition, { readonly kind: "runtimeCollectionHas" | "runtimeCollectionDelete" }>,
+  context: EmitContext
+): NumberValue {
+  const collection = emitRuntimeCollectionPointer(condition.collectionName, context);
+  const key = emitValueExpression(condition.key, context);
+  const name = `%cmp.${context.cmpIndex}`;
+  context.cmpIndex += 1;
+  let helper: RuntimeHelper = "collectionDelete";
+  if (condition.kind === "runtimeCollectionHas") {
+    helper = "collectionHas";
+  }
+  useRuntimeHelper(context.runtime, helper);
+  return { lines: [...collection.lines, ...key.lines, `  ${name} = call i1 @${helper}(ptr ${collection.value}, i64 ${key.value})`], value: name };
 }
 
 function valueComparisonOperatorCode(operator: "==" | "!=" | "<" | "<=" | ">" | ">="): number {
@@ -3526,6 +3642,16 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     return { lines: [...array.lines, `  ${raw} = call i64 @arrayFindIndex(ptr ${array.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
   }
 
+  if (expression.kind === "runtimeCollectionSize") {
+    const collection = emitRuntimeCollectionPointer(expression.collectionName, context);
+    const raw = `%collection.size.${context.arrayIndex}`;
+    context.arrayIndex += 1;
+    const number = `%num.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "collectionSize");
+    return { lines: [...collection.lines, `  ${raw} = call i64 @collectionSize(ptr ${collection.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
+  }
+
   if (expression.kind === "valueToNumber") {
     const value = emitValueExpression(expression.value, context);
     const number = `%num.${context.numIndex}`;
@@ -3754,6 +3880,13 @@ function emitRuntimeArrayPointer(arrayName: string, context: EmitContext): Numbe
   context.arrayIndex += 1;
   const value = `%arr.ptr.${index}`;
   return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(arrayName)}`], value };
+}
+
+function emitRuntimeCollectionPointer(collectionName: string, context: EmitContext): NumberValue {
+  const index = context.objectIndex;
+  context.objectIndex += 1;
+  const value = `%collection.ptr.${index}`;
+  return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(collectionName)}`], value };
 }
 
 function emitRuntimeObjectPointer(objectName: string, context: EmitContext): NumberValue {
