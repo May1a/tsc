@@ -3151,6 +3151,22 @@ describe("tscn expanded runtime roadmap", () => {
     ].map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 
+  test("supports switch statements with fall-through and break", async () => {
+    const cases = [
+      ["switch-basic.ts", "20\n"],
+      ["switch-fall-through.ts", "3\n"],
+      ["switch-default.ts", "30\n"],
+      ["switch-no-match.ts", "7\n"],
+      ["switch-default-not-last.ts", "5\n"],
+      ["switch-break.ts", "1\n"],
+      ["switch-nested.ts", "12\n"],
+      ["switch-expression-cases.ts", "31\n"],
+      ["switch-empty-case.ts", "2\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  }, roadmapIntegrationTimeoutMs);
+
   test("supports first explicit throw and catch groundwork", async () => {
     const caught = await expectSuccessfulCompile("try-catch-throw-primitives.ts", { link: true });
     try {

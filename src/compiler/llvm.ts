@@ -12,6 +12,7 @@ import {
   type JsIrOperation,
   type JsIrRuntimeArrayElement,
   type JsIrRuntimeObjectValue,
+  type JsIrSwitchClause,
   type JsIrStringExpression,
   type JsIrValueKind,
   type JsIrValueExpression
@@ -89,7 +90,7 @@ type RuntimeObjectValue = {
 
 type LoopLabels = {
   readonly breakLabel: string;
-  readonly continueLabel: string;
+  readonly continueLabel?: string;
 };
 
 type FunctionDef = {
@@ -769,6 +770,10 @@ function emitConstBindingOperation(operation: JsIrOperation, context: EmitContex
 }
 
 function emitLoopControlOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+  if (operation.kind === "switch") {
+    return emitSwitchOperation(operation, context);
+  }
+
   if (operation.kind === "while") {
     return emitWhileOperation(operation, context);
   }
@@ -3174,6 +3179,79 @@ function emitIfOperation(operation: Extract<JsIrOperation, { readonly kind: "if"
   return lines;
 }
 
+// eslint-disable-next-line max-statements -- Switch emission owns dispatch labels plus source-order fall-through labels.
+function emitSwitchOperation(operation: Extract<JsIrOperation, { readonly kind: "switch" }>, context: EmitContext): string[] {
+  const { loopIndex } = context;
+  context.loopIndex += 1;
+  const endLabel = `switch.end.${loopIndex}`;
+  const clauseLabels = operation.clauses.map((_, index) => `switch.case.${loopIndex}.${index}`);
+  const caseIndexes: number[] = [];
+  for (let index = 0; index < operation.clauses.length; index++) {
+    if (operation.clauses[index].test !== undefined) {
+      caseIndexes.push(index);
+    }
+  }
+  const defaultIndex = operation.clauses.findIndex((clause) => clause.test === undefined);
+  let noMatchLabel = endLabel;
+  if (defaultIndex !== -1) {
+    noMatchLabel = clauseLabels[defaultIndex];
+  }
+  const discriminant = emitValueExpression(operation.expression, context);
+  const firstCompareLabel = switchCompareLabel(loopIndex, caseIndexes[0]);
+  let firstDispatchLabel = noMatchLabel;
+  if (firstCompareLabel !== undefined) {
+    firstDispatchLabel = firstCompareLabel;
+  }
+  const lines = [...discriminant.lines, `  br label %${firstDispatchLabel}`];
+
+  useRuntimeHelper(context.runtime, "valueStrictEquals");
+  for (let index = 0; index < caseIndexes.length; index++) {
+    const clauseIndex = caseIndexes[index];
+    const clause = operation.clauses[clauseIndex];
+    const test = emitValueExpression(clause.test ?? { kind: "undefined" }, context);
+    const compare = `%switch.cmp.${loopIndex}.${index}`;
+    const currentCompareLabel = `switch.test.${loopIndex}.${clauseIndex}`;
+    const nextCompareLabel = switchCompareLabel(loopIndex, caseIndexes[index + 1]);
+    let failedLabel = noMatchLabel;
+    if (nextCompareLabel !== undefined) {
+      failedLabel = nextCompareLabel;
+    }
+    lines.push(
+      `${currentCompareLabel}:`,
+      ...test.lines,
+      `  ${compare} = call i1 @valueStrictEquals(i64 ${discriminant.value}, i64 ${test.value})`,
+      `  br i1 ${compare}, label %${clauseLabels[clauseIndex]}, label %${failedLabel}`
+    );
+  }
+
+  context.loopLabels.push({ breakLabel: endLabel });
+  for (let index = 0; index < operation.clauses.length; index++) {
+    const clause = operation.clauses[index];
+    const nextLabel = clauseLabels[index + 1] ?? endLabel;
+    const bodyLines = emitOperationsWithScopedBindings(clause.operations, context);
+    lines.push(`${clauseLabels[index]}:`, ...bodyLines);
+    if (!switchClauseTerminates(clause)) {
+      lines.push(`  br label %${nextLabel}`);
+    }
+  }
+  context.loopLabels.pop();
+
+  lines.push(`${endLabel}:`);
+  return lines;
+}
+
+function switchCompareLabel(loopIndex: number, clauseIndex: number | undefined): string | undefined {
+  if (clauseIndex === undefined) {
+    return undefined;
+  }
+  return `switch.test.${loopIndex}.${clauseIndex}`;
+}
+
+function switchClauseTerminates(clause: JsIrSwitchClause): boolean {
+  const last = clause.operations.at(-1);
+  return last?.kind === "break" || last?.kind === "continue" || last?.kind === "returnNumber" || last?.kind === "returnString" || last?.kind === "returnValue" || last?.kind === "throwValue";
+}
+
 function emitWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "while" }>, context: EmitContext): string[] {
   const { loopIndex } = context;
   context.loopIndex += 1;
@@ -3499,12 +3577,23 @@ function emitBreakOperation(context: EmitContext): string[] {
 }
 
 function emitContinueOperation(context: EmitContext): string[] {
-  const labels = context.loopLabels.at(-1);
+  let labels: LoopLabels | undefined;
+  for (let index = context.loopLabels.length - 1; index >= 0; index--) {
+    const candidate = context.loopLabels[index];
+    if (candidate.continueLabel !== undefined) {
+      labels = candidate;
+      break;
+    }
+  }
   if (labels === undefined) {
     return [];
   }
+  const { continueLabel } = labels;
+  if (continueLabel === undefined) {
+    return [];
+  }
 
-  return [`  br label %${labels.continueLabel}`];
+  return [`  br label %${continueLabel}`];
 }
 
 function defineObjectType(value: JsIrObjectValue, context: EmitContext): string {

@@ -379,6 +379,11 @@ export type JsIrRuntimeObjectValue = {
   readonly fields: readonly JsIrRuntimeObjectField[];
 };
 
+export type JsIrSwitchClause = {
+  readonly test?: JsIrValueExpression;
+  readonly operations: readonly JsIrOperation[];
+};
+
 export type JsIrClosureValue = {
   readonly functionName: string;
   readonly captures: readonly JsIrNumberExpression[];
@@ -1095,6 +1100,11 @@ export type JsIrOperation =
       readonly condition: JsIrCondition;
       readonly thenOperations: readonly JsIrOperation[];
       readonly elseOperations: readonly JsIrOperation[];
+    }
+  | {
+      readonly kind: "switch";
+      readonly expression: JsIrValueExpression;
+      readonly clauses: readonly JsIrSwitchClause[];
     }
   | {
       readonly kind: "while";
@@ -2401,6 +2411,9 @@ function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObjects: Read
       elseOperations: markRuntimeObjectShadows(operation.elseOperations)
     };
   }
+  if (operation.kind === "switch") {
+    return { ...operation, clauses: operation.clauses.map((clause) => ({ ...clause, operations: markRuntimeObjectShadows(clause.operations) })) };
+  }
   if (operation.kind === "while" || operation.kind === "doWhile") {
     return { ...operation, body: markRuntimeObjectShadows(operation.body) };
   }
@@ -2502,6 +2515,17 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
       collectRuntimeShadowObjectNames(nested, names);
     }
   }
+  if (operation.kind === "switch") {
+    collectValueExpressionObjectNames(operation.expression, names);
+    for (const clause of operation.clauses) {
+      if (clause.test !== undefined) {
+        collectValueExpressionObjectNames(clause.test, names);
+      }
+      for (const nested of clause.operations) {
+        collectRuntimeShadowObjectNames(nested, names);
+      }
+    }
+  }
   if (operation.kind === "while" || operation.kind === "doWhile" || operation.kind === "function") {
     for (const nested of operation.body) {
       collectRuntimeShadowObjectNames(nested, names);
@@ -2545,13 +2569,23 @@ function collectValueExpressionObjectNames(expression: JsIrValueExpression, name
 }
 
 function functionReturnKind(operations: readonly JsIrOperation[]): JsIrValueKind | "void" {
-  if (operations.some((operation) => operation.kind === "returnValue")) {
+  const flattened: JsIrOperation[] = [];
+  for (const operation of operations) {
+    if (operation.kind === "switch") {
+      for (const clause of operation.clauses) {
+        flattened.push(...clause.operations);
+      }
+      continue;
+    }
+    flattened.push(operation);
+  }
+  if (flattened.some((operation) => operation.kind === "returnValue")) {
     return "value";
   }
-  if (operations.some((operation) => operation.kind === "returnString")) {
+  if (flattened.some((operation) => operation.kind === "returnString")) {
     return "string";
   }
-  if (operations.some((operation) => operation.kind === "returnNumber")) {
+  if (flattened.some((operation) => operation.kind === "returnNumber")) {
     return "number";
   }
   return "void";
@@ -2586,6 +2620,10 @@ function lowerStatement(
 
   if (ts.isIfStatement(statement)) {
     return lowerIfStatement(statement, bindings);
+  }
+
+  if (ts.isSwitchStatement(statement)) {
+    return lowerSwitchStatement(statement, bindings);
   }
 
   if (ts.isWhileStatement(statement)) {
@@ -3205,10 +3243,17 @@ function lowerBlockStatements(
   block: ts.Block,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly JsIrOperation[] | undefined {
+  return lowerStatementList(block.statements, bindings);
+}
+
+function lowerStatementList(
+  statements: readonly ts.Statement[],
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrOperation[] | undefined {
   const operations: JsIrOperation[] = [];
   const blockBindings = new Map(bindings);
 
-  for (const statement of block.statements) {
+  for (const statement of statements) {
     if (isNonExecutableDeclaration(statement)) {
       continue;
     }
@@ -3223,6 +3268,36 @@ function lowerBlockStatements(
   }
 
   return operations;
+}
+
+function lowerSwitchStatement(
+  statement: ts.SwitchStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const expression = lowerValueExpression(statement.expression, bindings);
+  if (expression === undefined) {
+    return undefined;
+  }
+  const clauses: JsIrSwitchClause[] = [];
+  const switchBindings = new Map(bindings);
+  for (const clause of statement.caseBlock.clauses) {
+    let test: JsIrValueExpression | undefined;
+    if (ts.isCaseClause(clause)) {
+      test = lowerValueExpression(clause.expression, switchBindings);
+      if (test === undefined) {
+        return undefined;
+      }
+    }
+    const operations = lowerStatementList(clause.statements, switchBindings);
+    if (operations === undefined) {
+      return undefined;
+    }
+    for (const operation of operations) {
+      updateBindings(operation, switchBindings);
+    }
+    clauses.push({ test, operations });
+  }
+  return { kind: "switch", expression, clauses };
 }
 
 function lowerFunctionDeclaration(
