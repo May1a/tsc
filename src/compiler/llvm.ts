@@ -2875,6 +2875,9 @@ function llvmDoubleBitcastOperand(value: string): string {
   if (/^-?\d+$/.test(value)) {
     return `${value}.0`;
   }
+  if (/^-?\d+e[+-]?\d+$/i.test(value)) {
+    return value.replace(/e/i, ".0e");
+  }
   return value;
 }
 
@@ -3737,7 +3740,9 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     const helperByPredicate = {
       globalIsNaN: "globalIsNaN",
       numberIsNaN: "numberIsNaN",
-      numberIsFinite: "numberIsFinite"
+      numberIsFinite: "numberIsFinite",
+      numberIsInteger: "numberIsInteger",
+      numberIsSafeInteger: "numberIsSafeInteger"
     } as const;
     const helper = helperByPredicate[condition.predicate];
     useRuntimeHelper(context.runtime, helper);
@@ -4485,7 +4490,7 @@ function emitTernaryNumberExpression(
   };
 }
 
-// eslint-disable-next-line max-statements -- Runtime string expression emission is centralized during the JSValue transition.
+// eslint-disable-next-line complexity, max-statements -- Runtime string expression emission is centralized during the JSValue transition.
 function emitStringExpression(expression: JsIrStringExpression, context: EmitContext): StringValue {
   if (expression.kind === "literal") {
     return { lines: [], value: addStringConstant(expression.value, context), length: String(utf8ByteLength(expression.value)) };
@@ -4630,7 +4635,46 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     };
   }
 
+  if (expression.kind === "numberFormat") {
+    const receiver = emitNumberExpression(expression.receiver, context);
+    const argument = emitNumberExpression(expression.argument ?? defaultNumberFormatArgument(expression.method), context);
+    const index = context.stringIndex;
+    context.stringIndex += 1;
+    const raw = `%str.result.${index}`;
+    const value = `%str.${index}`;
+    const length = `%str.len.${index}`;
+    const helperByMethod = {
+      toFixed: "numberToFixed",
+      toPrecision: "numberToPrecision",
+      toExponential: "numberToExponential",
+      toString: "numberToStringRadix"
+    } as const;
+    const helper = helperByMethod[expression.method];
+    useRuntimeHelper(context.runtime, helper);
+    return {
+      lines: [
+        ...receiver.lines,
+        ...argument.lines,
+        `  ${raw} = call { ptr, i64 } @${helper}(double ${receiver.value}, double ${argument.value})`,
+        `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
+        `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+      ],
+      value,
+      length
+    };
+  }
+
   return emitTernaryStringExpression(expression, context);
+}
+
+function defaultNumberFormatArgument(method: Extract<JsIrStringExpression, { readonly kind: "numberFormat" }>["method"]): JsIrNumberExpression {
+  if (method === "toPrecision" || method === "toExponential") {
+    return { kind: "literal", value: 6 };
+  }
+  if (method === "toString") {
+    return { kind: "literal", value: 10 };
+  }
+  return { kind: "literal", value: 0 };
 }
 
 function emitStringConversionExpression(

@@ -3121,6 +3121,13 @@ describe("tscn expanded runtime roadmap", () => {
       ["global-is-nan-coercion.ts", "true\nfalse\ntrue\nfalse\n"],
       ["parse-int-decimal.ts", "-42\n17\n5\n"],
       ["parse-float-decimal.ts", "-4.5\n3.25\n"],
+      ["number-to-fixed.ts", "3.14\n3\n"],
+      ["number-to-precision.ts", "12.35\n12\n"],
+      ["number-to-exponential.ts", "1.23e+1\n1.234500e+1\n"],
+      ["number-to-string-radix.ts", "255\nff\n11111111\n"],
+      ["number-parse-int-float.ts", "42\n3.5\n"],
+      ["number-is-integer-safe.ts", "true\nfalse\ntrue\nfalse\nfalse\n"],
+      ["number-constants.ts", "9007199254740991\n-9007199254740991\ntrue\ntrue\ntrue\n"],
       ["string-runtime-search-methods.ts", "true\ntrue\ntrue\n4\n-1\n"],
       ["string-runtime-trim-methods.ts", "hi\nhi  \n  hi\n"]
     ] as const;
@@ -3131,6 +3138,8 @@ describe("tscn expanded runtime roadmap", () => {
   test("preserves unsupported roadmap diagnostics", async () => {
     await Promise.all([
       "boolean-constructor-unsupported.ts",
+      "number-to-fixed-range-error-unsupported.ts",
+      "number-to-locale-string-unsupported.ts",
       "parse-int-radix-unsupported.ts",
       "array-runtime-map-unsupported-callback.ts",
       "array-runtime-filter-unsupported-callback.ts",

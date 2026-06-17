@@ -335,6 +335,12 @@ export type JsIrStringExpression =
       readonly padString?: JsIrStringExpression;
     }
   | {
+      readonly kind: "numberFormat";
+      readonly method: "toFixed" | "toPrecision" | "toExponential" | "toString";
+      readonly receiver: JsIrNumberExpression;
+      readonly argument?: JsIrNumberExpression;
+    }
+  | {
       readonly kind: "errorToString";
       readonly objectName: string;
     };
@@ -563,7 +569,7 @@ export type JsIrCondition =
     }
   | {
       readonly kind: "numberPredicate";
-      readonly predicate: "globalIsNaN" | "numberIsNaN" | "numberIsFinite";
+      readonly predicate: "globalIsNaN" | "numberIsNaN" | "numberIsFinite" | "numberIsInteger" | "numberIsSafeInteger";
       readonly value: JsIrValueExpression;
     }
   | {
@@ -1198,6 +1204,9 @@ const arrayCopyWithinArgumentCount = 3;
 const arrayCallbackArgumentCount = 3;
 const reduceCallbackArgumentCount = 4;
 const decimalRadix = 10;
+const minimumNumberRadix = 2;
+const maximumNumberRadix = 36;
+const maximumToFixedDigits = 100;
 const regexpConstructorArgumentCount = 2;
 const maxAsciiCodePoint = 127;
 
@@ -5570,6 +5579,10 @@ function lowerStringRuntimeExpression(
     if (dateIsoString !== undefined) {
       return dateIsoString;
     }
+    const numberFormatMethod = lowerRuntimeNumberFormatExpression(expression, bindings);
+    if (numberFormatMethod !== undefined) {
+      return numberFormatMethod;
+    }
     if (!ts.isIdentifier(expression.expression.expression)) {
       return undefined;
     }
@@ -5662,6 +5675,38 @@ function lowerRuntimeStringMethodExpression(
     return { kind: "stringMethod", method, receiver, targetLength, padString };
   }
   return undefined;
+}
+
+function lowerRuntimeNumberFormatExpression(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrStringExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression)) {
+    return undefined;
+  }
+  const method = expression.expression.name.text;
+  if (method !== "toFixed" && method !== "toPrecision" && method !== "toExponential" && method !== "toString") {
+    return undefined;
+  }
+  const receiver = lowerNumberExpression(expression.expression.expression, bindings);
+  if (receiver === undefined || expression.arguments.length > 1) {
+    return undefined;
+  }
+  if (expression.arguments.length === 0) {
+    return { kind: "numberFormat", method, receiver };
+  }
+  const argument = lowerNumberExpression(expression.arguments[0], bindings);
+  if (argument === undefined) {
+    return undefined;
+  }
+  const literal = numericLiteralValue(argument);
+  if (method === "toFixed" && literal !== undefined && (literal < 0 || literal > maximumToFixedDigits)) {
+    return undefined;
+  }
+  if (method === "toString" && literal !== undefined && (literal < minimumNumberRadix || literal > maximumNumberRadix)) {
+    return undefined;
+  }
+  return { kind: "numberFormat", method, receiver, argument };
 }
 
 // eslint-disable-next-line complexity -- Mirrors supported typeof cases explicitly while unsupported expressions stay diagnostic-only.
@@ -6002,6 +6047,7 @@ function lowerRuntimeStringSearchCondition(
   return { kind: "stringSearch", method, receiver, search };
 }
 
+// eslint-disable-next-line complexity -- Number predicate routing is centralized with the existing predicate surface.
 function lowerNumberPredicateCondition(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -6030,6 +6076,12 @@ function lowerNumberPredicateCondition(
   }
   if (expression.expression.name.text === "isFinite") {
     return { kind: "numberPredicate", predicate: "numberIsFinite", value };
+  }
+  if (expression.expression.name.text === "isInteger") {
+    return { kind: "numberPredicate", predicate: "numberIsInteger", value };
+  }
+  if (expression.expression.name.text === "isSafeInteger") {
+    return { kind: "numberPredicate", predicate: "numberIsSafeInteger", value };
   }
   return undefined;
 }
@@ -7234,6 +7286,13 @@ function lowerNumberExpression(
     }
   }
 
+  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "Number") {
+    const constant = numberConstantValue(expression.name.text);
+    if (constant !== undefined) {
+      return numberExpressionFromNumber(constant);
+    }
+  }
+
   if (
     ts.isPrefixUnaryExpression(expression) &&
     expression.operator === ts.SyntaxKind.MinusToken &&
@@ -7349,6 +7408,27 @@ function lowerNumericBuiltinCall(
     }
   }
   if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression) || expression.expression.expression.text !== "Math") {
+    if (ts.isPropertyAccessExpression(expression.expression) && ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "Number") {
+      const method = expression.expression.name.text;
+      if (method === "parseInt" && (expression.arguments.length === 1 || expression.arguments.length === 2)) {
+        if (expression.arguments.length === 2) {
+          const radix = lowerNumberExpression(expression.arguments[1], bindings);
+          if (numericLiteralValue(radix ?? { kind: "nan" }) !== decimalRadix) {
+            return undefined;
+          }
+        }
+        const value = lowerStringRuntimeExpression(expression.arguments[0], bindings);
+        if (value !== undefined) {
+          return { kind: "parseInt", value };
+        }
+      }
+      if (method === "parseFloat" && expression.arguments.length === 1) {
+        const value = lowerStringRuntimeExpression(expression.arguments[0], bindings);
+        if (value !== undefined) {
+          return { kind: "parseFloat", value };
+        }
+      }
+    }
     return undefined;
   }
   const method = expression.expression.name.text;
@@ -7684,6 +7764,29 @@ function coerceStringToNumber(value: string): number {
     return 0;
   }
   return Number(trimmed);
+}
+
+function numberConstantValue(name: string): number | undefined {
+  switch (name) {
+    case "MAX_SAFE_INTEGER": {
+      return Number.MAX_SAFE_INTEGER;
+    }
+    case "MIN_SAFE_INTEGER": {
+      return Number.MIN_SAFE_INTEGER;
+    }
+    case "EPSILON": {
+      return Number.EPSILON;
+    }
+    case "MAX_VALUE": {
+      return Number.MAX_VALUE;
+    }
+    case "MIN_VALUE": {
+      return Number.MIN_VALUE;
+    }
+    default: {
+      return undefined;
+    }
+  }
 }
 
 function numberExpressionFromNumber(value: number): JsIrNumberExpression {
