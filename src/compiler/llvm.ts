@@ -4151,7 +4151,7 @@ function llvmComparisonInstruction(operator: "===" | "!==" | "<" | "<=" | ">" | 
   throw new Error("Unsupported comparison operator");
 }
 
-// eslint-disable-next-line max-statements -- Number expression lowering includes temporary runtime array method branches.
+// eslint-disable-next-line complexity, max-statements -- Number expression lowering includes temporary runtime array method branches.
 function emitNumberExpression(expression: JsIrNumberExpression, context: EmitContext): NumberValue {
   const simple = emitSimpleNumberExpression(expression, context);
   if (simple !== undefined) {
@@ -4232,6 +4232,10 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     return emitTernaryNumberExpression(expression, context);
   }
 
+  if (expression.kind === "update") {
+    return emitUpdateNumberExpression(expression, context);
+  }
+
   const aggregate = emitAggregateNumberExpression(expression, context);
   if (aggregate !== undefined) {
     return aggregate;
@@ -4242,6 +4246,14 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     const index = context.numIndex;
     context.numIndex += 1;
     const name = `%num.${index}`;
+    if (expression.operator === "bitNot") {
+      const integer = `%num.i32.${index}`;
+      const inverted = `%num.not.${index}`;
+      return {
+        lines: [...value.lines, `  ${integer} = fptosi double ${value.value} to i32`, `  ${inverted} = xor i32 ${integer}, -1`, `  ${name} = sitofp i32 ${inverted} to double`],
+        value: name
+      };
+    }
 
     return {
       lines: [...value.lines, `  ${name} = fneg double ${value.value}`],
@@ -4258,11 +4270,81 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
   const index = context.numIndex;
   context.numIndex += 1;
   const name = `%num.${index}`;
+  if (isBitwiseNumberOperator(expression.operator)) {
+    return emitBitwiseNumberExpression(expression, left, right, name, index);
+  }
 
   return {
     lines: [...left.lines, ...right.lines, `  ${name} = ${llvmNumberOperator(expression.operator)} double ${left.value}, ${right.value}`],
     value: name
   };
+}
+
+function emitUpdateNumberExpression(
+  expression: Extract<JsIrNumberExpression, { readonly kind: "update" }>,
+  context: EmitContext
+): NumberValue {
+  const index = context.numIndex;
+  context.numIndex += 1;
+  const current = `%num.update.current.${index}`;
+  const next = `%num.update.next.${index}`;
+  const pointer = variablePointerName(expression.name);
+  let instruction = "fadd";
+  if (expression.operator === "decrement") {
+    instruction = "fsub";
+  }
+  let result = current;
+  if (expression.prefix) {
+    result = next;
+  }
+  return {
+    lines: [`  ${current} = load double, ptr ${pointer}`, `  ${next} = ${instruction} double ${current}, 1.0`, `  store double ${next}, ptr ${pointer}`],
+    value: result
+  };
+}
+
+function isBitwiseNumberOperator(operator: JsIrNumberOperator): boolean {
+  return operator === "bitAnd" || operator === "bitOr" || operator === "bitXor" || operator === "shiftLeft" || operator === "shiftRight" || operator === "shiftRightUnsigned";
+}
+
+function emitBitwiseNumberExpression(
+  expression: Extract<JsIrNumberExpression, { readonly kind: "binary" }>,
+  left: NumberValue,
+  right: NumberValue,
+  name: string,
+  index: number
+): NumberValue {
+  const leftInt = `%num.left.i32.${index}`;
+  const rightInt = `%num.right.i32.${index}`;
+  const raw = `%num.bitwise.${index}`;
+  const resultInstruction = bitwiseInstruction(expression.operator);
+  let conversion = `sitofp i32 ${raw} to double`;
+  if (expression.operator === "shiftRightUnsigned") {
+    conversion = `uitofp i32 ${raw} to double`;
+  }
+  return {
+    lines: [
+      ...left.lines,
+      ...right.lines,
+      `  ${leftInt} = fptosi double ${left.value} to i32`,
+      `  ${rightInt} = fptosi double ${right.value} to i32`,
+      `  ${raw} = ${resultInstruction} i32 ${leftInt}, ${rightInt}`,
+      `  ${name} = ${conversion}`
+    ],
+    value: name
+  };
+}
+
+function bitwiseInstruction(operator: JsIrNumberOperator): string {
+  switch (operator) {
+    case "bitAnd": { return "and"; }
+    case "bitOr": { return "or"; }
+    case "bitXor": { return "xor"; }
+    case "shiftLeft": { return "shl"; }
+    case "shiftRight": { return "ashr"; }
+    case "shiftRightUnsigned": { return "lshr"; }
+    default: { throw new Error("Unsupported bitwise operator"); }
+  }
 }
 
 function emitRuntimeArrayAppendNumberExpression(
@@ -4863,6 +4945,17 @@ function llvmNumberOperator(operator: JsIrNumberOperator): string {
     }
     case "divide": {
       return "fdiv";
+    }
+    case "remainder": {
+      return "frem";
+    }
+    case "bitAnd":
+    case "bitOr":
+    case "bitXor":
+    case "shiftLeft":
+    case "shiftRight":
+    case "shiftRightUnsigned": {
+      throw new Error("Bitwise operators are emitted through integer lowering");
     }
   }
 

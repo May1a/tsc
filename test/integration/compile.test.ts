@@ -3167,6 +3167,22 @@ describe("tscn expanded runtime roadmap", () => {
     await expectNativeFixtures(cases, { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
+  test("supports bitwise operators, updates, and compound assignments", async () => {
+    const cases = [
+      ["bitwise-and-or-xor.ts", "2\n5\n4\n"],
+      ["bitwise-not.ts", "-1\n-6\n"],
+      ["bitwise-shift-left-right.ts", "12\n-4\n"],
+      ["bitwise-unsigned-right-shift.ts", "4.29497e+09\n2.14748e+09\n"],
+      ["increment-prefix-postfix.ts", "1\n2\n3\n3\n"],
+      ["decrement-prefix-postfix.ts", "3\n2\n1\n1\n"],
+      ["compound-assign-bitwise.ts", "2\n6\n7\n28\n14\n7\n"],
+      ["compound-assign-arithmetic.ts", "15\n12\n24\n6\n2\n"],
+      ["increment-in-expression.ts", "4\n3\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+  }, roadmapIntegrationTimeoutMs);
+
   test("supports first explicit throw and catch groundwork", async () => {
     const caught = await expectSuccessfulCompile("try-catch-throw-primitives.ts", { link: true });
     try {

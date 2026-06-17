@@ -14,7 +14,7 @@ export type JsIrSourceModule = {
   readonly operations: readonly JsIrOperation[];
 };
 
-export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide";
+export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide" | "remainder" | "bitAnd" | "bitOr" | "bitXor" | "shiftLeft" | "shiftRight" | "shiftRightUnsigned";
 export type JsIrValueComparisonOperator = "==" | "!=" | "<" | "<=" | ">" | ">=";
 
 export type JsIrValueKind = "number" | "string" | "value";
@@ -183,8 +183,14 @@ export type JsIrNumberExpression =
     }
   | {
       readonly kind: "unary";
-      readonly operator: "negate";
+      readonly operator: "negate" | "bitNot";
       readonly value: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "update";
+      readonly name: string;
+      readonly operator: "increment" | "decrement";
+      readonly prefix: boolean;
     }
   | {
       readonly kind: "binary";
@@ -2803,10 +2809,16 @@ function lowerErrorMessageValue(
   return { kind: "string", value: { kind: "stringConversion", value } };
 }
 
+// eslint-disable-next-line max-statements -- Statement expression routing is centralized for the current lowering slice.
 function lowerExpressionStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
+  const update = lowerUpdateExpressionStatement(expression, bindings);
+  if (update !== undefined) {
+    return update;
+  }
+
   const assignment = lowerAssignmentStatement(expression, bindings);
   if (assignment !== undefined) {
     return assignment;
@@ -2855,6 +2867,22 @@ function lowerExpressionStatement(
   }
 
   return undefined;
+}
+
+function lowerUpdateExpressionStatement(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const update = lowerUpdateNumberExpression(expression, bindings);
+  if (update === undefined) {
+    return undefined;
+  }
+  const step: JsIrNumberExpression = { kind: "literal", value: 1 };
+  let operator: JsIrNumberOperator = "add";
+  if (update.operator === "decrement") {
+    operator = "subtract";
+  }
+  return { kind: "assignNumber", name: update.name, value: { kind: "binary", operator, left: { kind: "variable", name: update.name }, right: step } };
 }
 
 function lowerRuntimeCollectionCallStatement(
@@ -5317,6 +5345,7 @@ function lowerRuntimeObjectCreateBinding(
   return { kind: "runtimeObjectCreate", name, prototypeName: prototype.text };
 }
 
+// eslint-disable-next-line max-statements -- Assignment routing handles scalar, aggregate, nullish, and compound stores together.
 function lowerAssignmentStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -5327,6 +5356,11 @@ function lowerAssignmentStatement(
 
   if (expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken) {
     return lowerNullishAssignmentStatement(expression, bindings);
+  }
+
+  const compound = lowerCompoundAssignmentStatement(expression, bindings);
+  if (compound !== undefined) {
+    return compound;
   }
 
   if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
@@ -5386,6 +5420,46 @@ function lowerAssignmentStatement(
     name: expression.left.text,
     value
   };
+}
+
+function lowerCompoundAssignmentStatement(
+  expression: ts.BinaryExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const operator = lowerCompoundAssignmentOperator(expression.operatorToken.kind);
+  if (operator === undefined || !ts.isIdentifier(expression.left)) {
+    return undefined;
+  }
+  const binding = bindings.get(expression.left.text);
+  if (binding?.kind !== "number" || binding.value.kind !== "variable") {
+    return undefined;
+  }
+  const right = lowerNumberExpression(expression.right, bindings);
+  if (right === undefined) {
+    return undefined;
+  }
+  return {
+    kind: "assignNumber",
+    name: expression.left.text,
+    value: { kind: "binary", operator, left: { kind: "variable", name: expression.left.text }, right }
+  };
+}
+
+function lowerCompoundAssignmentOperator(kind: ts.SyntaxKind): JsIrNumberOperator | undefined {
+  switch (kind) {
+    case ts.SyntaxKind.PlusEqualsToken: { return "add"; }
+    case ts.SyntaxKind.MinusEqualsToken: { return "subtract"; }
+    case ts.SyntaxKind.AsteriskEqualsToken: { return "multiply"; }
+    case ts.SyntaxKind.SlashEqualsToken: { return "divide"; }
+    case ts.SyntaxKind.PercentEqualsToken: { return "remainder"; }
+    case ts.SyntaxKind.AmpersandEqualsToken: { return "bitAnd"; }
+    case ts.SyntaxKind.BarEqualsToken: { return "bitOr"; }
+    case ts.SyntaxKind.CaretEqualsToken: { return "bitXor"; }
+    case ts.SyntaxKind.LessThanLessThanEqualsToken: { return "shiftLeft"; }
+    case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken: { return "shiftRight"; }
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken: { return "shiftRightUnsigned"; }
+    default: { return undefined; }
+  }
 }
 
 function lowerNullishAssignmentStatement(
@@ -7415,6 +7489,19 @@ function lowerNumberExpression(
     };
   }
 
+  if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.TildeToken) {
+    const value = lowerNumberExpression(expression.operand, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    return { kind: "unary", operator: "bitNot", value };
+  }
+
+  const update = lowerUpdateNumberExpression(expression, bindings);
+  if (update !== undefined) {
+    return update;
+  }
+
   if (ts.isConditionalExpression(expression)) {
     return lowerNumberConditionalExpression(expression, bindings);
   }
@@ -7424,6 +7511,32 @@ function lowerNumberExpression(
   }
 
   return lowerNumberBinaryExpression(expression, bindings);
+}
+
+function lowerUpdateNumberExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Extract<JsIrNumberExpression, { readonly kind: "update" }> | undefined {
+  if (ts.isPrefixUnaryExpression(expression) && (expression.operator === ts.SyntaxKind.PlusPlusToken || expression.operator === ts.SyntaxKind.MinusMinusToken) && ts.isIdentifier(expression.operand)) {
+    const binding = bindings.get(expression.operand.text);
+    if (binding?.kind === "number" && binding.value.kind === "variable") {
+      return { kind: "update", name: expression.operand.text, operator: updateOperator(expression.operator), prefix: true };
+    }
+  }
+  if (ts.isPostfixUnaryExpression(expression) && ts.isIdentifier(expression.operand)) {
+    const binding = bindings.get(expression.operand.text);
+    if (binding?.kind === "number" && binding.value.kind === "variable") {
+      return { kind: "update", name: expression.operand.text, operator: updateOperator(expression.operator), prefix: false };
+    }
+  }
+  return undefined;
+}
+
+function updateOperator(kind: ts.SyntaxKind.PlusPlusToken | ts.SyntaxKind.MinusMinusToken): "increment" | "decrement" {
+  if (kind === ts.SyntaxKind.PlusPlusToken) {
+    return "increment";
+  }
+  return "decrement";
 }
 
 function lowerRuntimeCollectionSizeExpression(
@@ -7955,6 +8068,27 @@ function lowerNumberOperator(kind: ts.SyntaxKind): JsIrNumberOperator | undefine
     }
     case ts.SyntaxKind.SlashToken: {
       return "divide";
+    }
+    case ts.SyntaxKind.PercentToken: {
+      return "remainder";
+    }
+    case ts.SyntaxKind.AmpersandToken: {
+      return "bitAnd";
+    }
+    case ts.SyntaxKind.BarToken: {
+      return "bitOr";
+    }
+    case ts.SyntaxKind.CaretToken: {
+      return "bitXor";
+    }
+    case ts.SyntaxKind.LessThanLessThanToken: {
+      return "shiftLeft";
+    }
+    case ts.SyntaxKind.GreaterThanGreaterThanToken: {
+      return "shiftRight";
+    }
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken: {
+      return "shiftRightUnsigned";
     }
     default: {
       return undefined;
