@@ -2889,6 +2889,25 @@ describe("tscn expanded runtime roadmap", () => {
     await expectNativeFixtures(cases, { verifyLlvm: true });
   });
 
+  test("supports package BS string method expansion", async () => {
+    const cases = [
+      ["string-upper-lower-case.ts", "MIXED\nmixed\n"],
+      ["string-repeat.ts", "hahaha\n\n"],
+      ["string-replace-literal.ts", "1 two one\none two one\n"],
+      ["string-replace-all-literal.ts", "1 two 1\n"],
+      ["string-split-literal.ts", "3\na\nb\nc\n"],
+      ["string-split-limit.ts", "2\na\nb\n"],
+      ["string-split-empty-separator.ts", "3\na\nb\nc\n"],
+      ["string-pad-start.ts", "007\na7\n"],
+      ["string-pad-end.ts", "700\n7aba\n"],
+      ["string-trim-start-end.ts", "hi  \n  hi\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+    await expectUnsupportedDiagnostic("string-repeat-negative-unsupported.ts");
+    await expectUnsupportedDiagnostic("string-replace-regex-unsupported.ts");
+  }, roadmapIntegrationTimeoutMs);
+
   test("supports package AA boxed string single-character methods", async () => {
     const cases = [
       ["string-boxed-char-at.ts", "h\no\n\n"],

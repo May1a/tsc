@@ -303,8 +303,13 @@ export type JsIrStringExpression =
     }
   | {
       readonly kind: "stringMethod";
-      readonly method: "trim" | "trimStart" | "trimEnd";
+      readonly method: "trim" | "trimStart" | "trimEnd" | "toUpperCase" | "toLowerCase" | "repeat" | "replace" | "replaceAll" | "padStart" | "padEnd";
       readonly receiver: JsIrStringExpression;
+      readonly count?: JsIrNumberExpression;
+      readonly search?: JsIrStringExpression;
+      readonly replacement?: JsIrStringExpression;
+      readonly targetLength?: JsIrNumberExpression;
+      readonly padString?: JsIrStringExpression;
     }
   | {
       readonly kind: "errorToString";
@@ -779,6 +784,13 @@ export type JsIrOperation =
       readonly depth: JsIrNumberExpression;
     }
   | {
+      readonly kind: "runtimeStringSplit";
+      readonly name: string;
+      readonly receiver: JsIrStringExpression;
+      readonly separator: JsIrStringExpression;
+      readonly limit?: JsIrNumberExpression;
+    }
+  | {
       readonly kind: "runtimeArrayMapCallback";
       readonly name: string;
       readonly arrayName: string;
@@ -1214,6 +1226,9 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
     return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeArrayFlat") {
+    return { kind: "runtimeArray", name: operation.name };
+  }
+  if (operation.kind === "runtimeStringSplit") {
     return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeArrayMapCallback") {
@@ -4631,6 +4646,10 @@ function lowerRuntimeAggregateExpansionBinding(
   if (flat !== undefined) {
     return flat;
   }
+  const split = lowerRuntimeStringSplitBinding(name, initializer, bindings);
+  if (split !== undefined) {
+    return split;
+  }
   const callback = lowerRuntimeArrayCallbackBinding(name, initializer, bindings);
   if (callback !== undefined) {
     return callback;
@@ -4640,6 +4659,32 @@ function lowerRuntimeAggregateExpansionBinding(
     return mutator;
   }
   return undefined;
+}
+
+function lowerRuntimeStringSplitBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || !ts.isPropertyAccessExpression(initializer.expression) || initializer.expression.name.text !== "split") {
+    return undefined;
+  }
+  if (initializer.arguments.length !== 1 && initializer.arguments.length !== 2) {
+    return undefined;
+  }
+  const receiver = lowerStringRuntimeExpression(initializer.expression.expression, bindings);
+  const separator = lowerStringRuntimeExpression(initializer.arguments[0], bindings);
+  if (receiver === undefined || separator === undefined) {
+    return undefined;
+  }
+  let limit: JsIrNumberExpression | undefined;
+  if (initializer.arguments.length === 2) {
+    limit = lowerNumberExpression(initializer.arguments[1], bindings);
+    if (limit === undefined) {
+      return undefined;
+    }
+  }
+  return { kind: "runtimeStringSplit", name, receiver, separator, limit };
 }
 
 function lowerRuntimeArrayCallbackBinding(
@@ -5550,22 +5595,50 @@ function lowerStringRuntimeExpression(
   };
 }
 
+// eslint-disable-next-line complexity -- String method argument validation mirrors the supported runtime surface explicitly.
 function lowerRuntimeStringMethodExpression(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrStringExpression | undefined {
-  if (!ts.isPropertyAccessExpression(expression.expression) || expression.arguments.length > 0) {
+  if (!ts.isPropertyAccessExpression(expression.expression)) {
     return undefined;
   }
   const method = expression.expression.name.text;
-  if (method !== "trim" && method !== "trimStart" && method !== "trimEnd") {
-    return undefined;
-  }
   const receiver = lowerStringRuntimeExpression(expression.expression.expression, bindings);
   if (receiver === undefined) {
     return undefined;
   }
-  return { kind: "stringMethod", method, receiver };
+  if ((method === "trim" || method === "trimStart" || method === "trimEnd" || method === "toUpperCase" || method === "toLowerCase") && expression.arguments.length === 0) {
+    return { kind: "stringMethod", method, receiver };
+  }
+  if (method === "repeat" && expression.arguments.length === 1) {
+    const count = lowerNumberExpression(expression.arguments[0], bindings);
+    let literal: number | undefined;
+    if (count !== undefined) {
+      literal = numericLiteralValue(count);
+    }
+    if (count === undefined || (literal !== undefined && literal < 0)) {
+      return undefined;
+    }
+    return { kind: "stringMethod", method, receiver, count };
+  }
+  if ((method === "replace" || method === "replaceAll") && expression.arguments.length === 2) {
+    const search = lowerStringRuntimeExpression(expression.arguments[0], bindings);
+    const replacement = lowerStringRuntimeExpression(expression.arguments[1], bindings);
+    if (search === undefined || replacement === undefined) {
+      return undefined;
+    }
+    return { kind: "stringMethod", method, receiver, search, replacement };
+  }
+  if ((method === "padStart" || method === "padEnd") && expression.arguments.length === 2) {
+    const targetLength = lowerNumberExpression(expression.arguments[0], bindings);
+    const padString = lowerStringRuntimeExpression(expression.arguments[1], bindings);
+    if (targetLength === undefined || padString === undefined) {
+      return undefined;
+    }
+    return { kind: "stringMethod", method, receiver, targetLength, padString };
+  }
+  return undefined;
 }
 
 // eslint-disable-next-line complexity -- Mirrors supported typeof cases explicitly while unsupported expressions stay diagnostic-only.

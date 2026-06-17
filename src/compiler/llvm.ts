@@ -709,6 +709,10 @@ function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, con
     return emitRuntimeArrayFlatOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeStringSplit") {
+    return emitRuntimeStringSplitOperation(operation, context);
+  }
+
   if (operation.kind === "runtimeArrayMapCallback") {
     return emitRuntimeArrayMapCallbackOperation(operation, context);
   }
@@ -1860,6 +1864,34 @@ function emitRuntimeArrayFlatOperation(
     ...array.lines,
     ...depth.lines,
     `  ${result} = call ptr @arrayFlat(ptr ${array.value}, i64 ${depth.value})`,
+    `  store ptr ${result}, ptr ${pointerName}`
+  ];
+}
+
+function emitRuntimeStringSplitOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeStringSplit" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const receiver = emitStringExpression(operation.receiver, context);
+  const separator = emitStringExpression(operation.separator, context);
+  const result = `%arr.rt.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  let limitLines: readonly string[] = [];
+  let limitValue = "-1";
+  if (operation.limit !== undefined) {
+    const limit = emitArrayIndex(operation.limit, context);
+    limitLines = limit.lines;
+    limitValue = limit.value;
+  }
+  useRuntimeHelper(context.runtime, "stringSplit");
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...receiver.lines,
+    ...separator.lines,
+    ...limitLines,
+    `  ${result} = call ptr @stringSplit(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${separator.length}, ptr ${separator.value}, i64 ${limitValue})`,
     `  store ptr ${result}, ptr ${pointerName}`
   ];
 }
@@ -4502,10 +4534,63 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     const helperByMethod = {
       trim: "stringTrim",
       trimStart: "stringTrimStart",
-      trimEnd: "stringTrimEnd"
+      trimEnd: "stringTrimEnd",
+      toUpperCase: "stringToUpperCase",
+      toLowerCase: "stringToLowerCase",
+      repeat: "stringRepeat",
+      replace: "stringReplace",
+      replaceAll: "stringReplaceAll",
+      padStart: "stringPadStart",
+      padEnd: "stringPadEnd"
     } as const;
     const helper = helperByMethod[expression.method];
     useRuntimeHelper(context.runtime, helper);
+    if (expression.method === "repeat") {
+      const count = emitArrayIndex(expression.count ?? { kind: "literal", value: 0 }, context);
+      return {
+        lines: [
+          ...receiver.lines,
+          ...count.lines,
+          `  ${raw} = call { ptr, i64 } @${helper}(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${count.value})`,
+          `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
+          `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+        ],
+        value,
+        length
+      };
+    }
+    if (expression.method === "replace" || expression.method === "replaceAll") {
+      const search = emitStringExpression(expression.search ?? { kind: "literal", value: "" }, context);
+      const replacement = emitStringExpression(expression.replacement ?? { kind: "literal", value: "" }, context);
+      return {
+        lines: [
+          ...receiver.lines,
+          ...search.lines,
+          ...replacement.lines,
+          `  ${raw} = call { ptr, i64 } @${helper}(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value}, i64 ${replacement.length}, ptr ${replacement.value})`,
+          `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
+          `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+        ],
+        value,
+        length
+      };
+    }
+    if (expression.method === "padStart" || expression.method === "padEnd") {
+      const targetLength = emitArrayIndex(expression.targetLength ?? { kind: "literal", value: 0 }, context);
+      const padString = emitStringExpression(expression.padString ?? { kind: "literal", value: "" }, context);
+      return {
+        lines: [
+          ...receiver.lines,
+          ...targetLength.lines,
+          ...padString.lines,
+          `  ${raw} = call { ptr, i64 } @${helper}(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${targetLength.value}, i64 ${padString.length}, ptr ${padString.value})`,
+          `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
+          `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+        ],
+        value,
+        length
+      };
+    }
     return {
       lines: [
         ...receiver.lines,
