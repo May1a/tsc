@@ -931,6 +931,16 @@ describe("tscn function declarations and calls", () => {
       await result.cleanup();
     }
   });
+
+  test("pads trailing defaults independently of the prefix arguments", async () => {
+    const result = await expectSuccessfulCompile("param-default-multiple.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "51\n33\n6\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn loops", () => {
