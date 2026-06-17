@@ -3183,6 +3183,20 @@ describe("tscn expanded runtime roadmap", () => {
     await expectNativeFixtures(cases, { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
+  test("supports expanded runtime array factories and callbacks", async () => {
+    const cases = [
+      ["array-sort-default.ts", "3\n1\n10\n2\n"],
+      ["array-sort-comparator.ts", "3\n2\n1\n"],
+      ["array-flat-map.ts", "4\n1\n1\n2\n2\n"],
+      ["array-from-array-like.ts", "2\na\nb\n"],
+      ["array-of.ts", "3\na\n1\ntrue\n"],
+      ["array-reduce-right.ts", "cba\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+    await expectUnsupportedDiagnostic("array-from-symbol-iterator-unsupported.ts");
+  }, roadmapIntegrationTimeoutMs);
+
   test("supports first explicit throw and catch groundwork", async () => {
     const caught = await expectSuccessfulCompile("try-catch-throw-primitives.ts", { link: true });
     try {

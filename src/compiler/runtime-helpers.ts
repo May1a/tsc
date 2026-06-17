@@ -120,6 +120,9 @@ export type RuntimeHelper =
   | "arraySlice"
   | "arraySplice"
   | "arrayFlat"
+  | "arrayFromArray"
+  | "arrayFromObject"
+  | "arraySortDefault"
   | "arrayJoin"
   | "arrayConcat"
   | "arrayAppendElements"
@@ -298,6 +301,9 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["arraySlice", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet"]],
   ["arraySplice", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet", "arrayGet", "arraySetLength", "arrayDelete"]],
   ["arrayFlat", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arrayGet", "valueIsArray", "valueArrayPtr", "arraySet"]],
+  ["arrayFromArray", ["arrayLength", "arrayNew", "arrayGet", "arraySet"]],
+  ["arrayFromObject", ["arrayNew", "arraySet", "objectGet", "valueToNumber", "indexToString"]],
+  ["arraySortDefault", ["arrayLength", "arrayGet", "arraySet", "valueToString", "memcmp"]],
   ["arrayJoin", ["arrayLength", "arrayHasOwnIndex", "valueToString", "malloc", "memcpy"]],
   ["arrayConcat", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet", "arrayGet", "valueIsArray", "valueArrayPtr"]],
   ["arrayAppendElements", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "arrayPush"]],
@@ -3511,6 +3517,111 @@ swap:
   %left.next = add i64 %left, 1
   %right.next = sub i64 %right, 1
   br label %scan
+exit:
+  ret void
+}
+`);
+  }
+  if (runtime.used.has("arrayFromArray")) {
+    definitions.push(`define ptr @arrayFromArray(ptr %source) {
+entry:
+  %length = call i64 @arrayLength(ptr %source)
+  %out = call ptr @arrayNew(i64 %length)
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %body ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %exit, label %body
+body:
+  %value = call i64 @arrayGet(ptr %source, i64 %i)
+  call void @arraySet(ptr %out, i64 %i, i64 %value)
+  %next = add i64 %i, 1
+  br label %loop
+exit:
+  ret ptr %out
+}
+`);
+  }
+  if (runtime.used.has("arrayFromObject")) {
+    definitions.push(`@.array.from.length = private unnamed_addr constant [7 x i8] c"length\\00"
+
+define ptr @arrayFromObject(ptr %source) {
+entry:
+  %length.value = call i64 @objectGet(ptr %source, i64 6, ptr @.array.from.length)
+  %length.number = call double @valueToNumber(i64 %length.value)
+  %length = fptosi double %length.number to i64
+  %out = call ptr @arrayNew(i64 %length)
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %get ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %exit, label %body
+body:
+  %key = call ptr @indexToString(i64 %i)
+  br label %key.len.loop
+key.len.loop:
+  %key.len = phi i64 [ 0, %body ], [ %key.len.next, %key.len.more ]
+  %key.char.ptr = getelementptr i8, ptr %key, i64 %key.len
+  %key.char = load i8, ptr %key.char.ptr
+  %key.done = icmp eq i8 %key.char, 0
+  br i1 %key.done, label %get, label %key.len.more
+key.len.more:
+  %key.len.next = add i64 %key.len, 1
+  br label %key.len.loop
+get:
+  %value = call i64 @objectGet(ptr %source, i64 %key.len, ptr %key)
+  call void @arraySet(ptr %out, i64 %i, i64 %value)
+  %next = add i64 %i, 1
+  br label %loop
+exit:
+  ret ptr %out
+}
+`);
+  }
+  if (runtime.used.has("arraySortDefault")) {
+    definitions.push(`define void @arraySortDefault(ptr %array) {
+entry:
+  %length = call i64 @arrayLength(ptr %array)
+  br label %outer.cond
+outer.cond:
+  %i = phi i64 [ 0, %entry ], [ %next.i, %outer.advance ]
+  %outer.done = icmp uge i64 %i, %length
+  br i1 %outer.done, label %exit, label %outer.body
+outer.body:
+  br label %inner.cond
+inner.cond:
+  %j = phi i64 [ 0, %outer.body ], [ %next.j, %advance ]
+  %limit = sub i64 %length, 1
+  %inner.done = icmp uge i64 %j, %limit
+  br i1 %inner.done, label %outer.advance, label %inner.body
+inner.body:
+  %next.j = add i64 %j, 1
+  %left = call i64 @arrayGet(ptr %array, i64 %j)
+  %right = call i64 @arrayGet(ptr %array, i64 %next.j)
+  %left.str = call { ptr, i64 } @valueToString(i64 %left)
+  %left.ptr = extractvalue { ptr, i64 } %left.str, 0
+  %left.len = extractvalue { ptr, i64 } %left.str, 1
+  %right.str = call { ptr, i64 } @valueToString(i64 %right)
+  %right.ptr = extractvalue { ptr, i64 } %right.str, 0
+  %right.len = extractvalue { ptr, i64 } %right.str, 1
+  %left.shorter = icmp ult i64 %left.len, %right.len
+  %min.len = select i1 %left.shorter, i64 %left.len, i64 %right.len
+  %cmp = call i32 @memcmp(ptr %left.ptr, ptr %right.ptr, i64 %min.len)
+  %byte.gt = icmp sgt i32 %cmp, 0
+  %bytes.eq = icmp eq i32 %cmp, 0
+  %left.longer = icmp ugt i64 %left.len, %right.len
+  %prefix.gt = and i1 %bytes.eq, %left.longer
+  %swap = or i1 %byte.gt, %prefix.gt
+  br i1 %swap, label %swap.block, label %advance
+swap.block:
+  call void @arraySet(ptr %array, i64 %j, i64 %right)
+  call void @arraySet(ptr %array, i64 %next.j, i64 %left)
+  br label %advance
+advance:
+  br label %inner.cond
+outer.advance:
+  %next.i = add i64 %i, 1
+  br label %outer.cond
 exit:
   ret void
 }

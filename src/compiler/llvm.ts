@@ -718,6 +718,10 @@ function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, con
     return emitRuntimeArrayMapCallbackOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeArrayFlatMapCallback") {
+    return emitRuntimeArrayFlatMapCallbackOperation(operation, context);
+  }
+
   if (operation.kind === "runtimeArrayFilterCallback") {
     return emitRuntimeArrayFilterCallbackOperation(operation, context);
   }
@@ -728,6 +732,14 @@ function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, con
 
   if (operation.kind === "runtimeArrayMutatorResult") {
     return emitRuntimeArrayMutatorResultOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArraySort") {
+    return emitRuntimeArraySortOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArrayFrom") {
+    return emitRuntimeArrayFromOperation(operation, context);
   }
 
   if (operation.kind === "runtimeObjectGetPrototype") {
@@ -1215,6 +1227,48 @@ function emitRuntimeArrayMapCallbackOperation(
   ];
 }
 
+// eslint-disable-next-line max-statements -- flatMap emits callback invocation plus one-level array flattening in one loop.
+function emitRuntimeArrayFlatMapCallbackOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFlatMapCallback" }>,
+  context: EmitContext
+): string[] {
+  useRuntimeHelper(context.runtime, "arrayLength");
+  useRuntimeHelper(context.runtime, "arrayGet");
+  useRuntimeHelper(context.runtime, "arrayNew");
+  useRuntimeHelper(context.runtime, "arrayPush");
+  useRuntimeHelper(context.runtime, "valueIsArray");
+  useRuntimeHelper(context.runtime, "valueArrayPtr");
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const source = emitRuntimeArrayPointer(operation.arrayName, context);
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  const length = `%arr.flatmap.len.${index}`;
+  const output = `%arr.flatmap.out.${index}`;
+  const iPointer = `%arr.flatmap.i.${index}.addr`;
+  const innerPointer = `%arr.flatmap.inner.i.${index}.addr`;
+  const condLabel = `arr.flatmap.cond.${index}`;
+  const bodyLabel = `arr.flatmap.body.${index}`;
+  const flattenLabel = `arr.flatmap.flatten.${index}`;
+  const scalarLabel = `arr.flatmap.scalar.${index}`;
+  const innerCondLabel = `arr.flatmap.inner.cond.${index}`;
+  const innerBodyLabel = `arr.flatmap.inner.body.${index}`;
+  const advanceLabel = `arr.flatmap.advance.${index}`;
+  const endLabel = `arr.flatmap.end.${index}`;
+  const currentIndex = `%arr.flatmap.i.${index}`;
+  const nextIndex = `%arr.flatmap.next.${index}`;
+  const element = `%arr.flatmap.value.${index}`;
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index, context);
+  const isArray = `%arr.flatmap.is.array.${index}`;
+  const innerArray = `%arr.flatmap.inner.array.${index}`;
+  const innerLength = `%arr.flatmap.inner.len.${index}`;
+  const innerIndex = `%arr.flatmap.inner.i.${index}`;
+  const innerNext = `%arr.flatmap.inner.next.${index}`;
+  const innerValue = `%arr.flatmap.inner.value.${index}`;
+  return [`  ${pointerName} = alloca ptr`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${output} = call ptr @arrayNew(i64 0)`, `  store ptr ${output}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  ${innerPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.flatmap.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.flatmap.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  ${isArray} = call i1 @valueIsArray(i64 ${callbackReturn.value})`, `  br i1 ${isArray}, label %${flattenLabel}, label %${scalarLabel}`, `${scalarLabel}:`, `  call i64 @arrayPush(ptr ${output}, i64 ${callbackReturn.value})`, `  br label %${advanceLabel}`, `${flattenLabel}:`, `  ${innerArray} = call ptr @valueArrayPtr(i64 ${callbackReturn.value})`, `  ${innerLength} = call i64 @arrayLength(ptr ${innerArray})`, `  store i64 0, ptr ${innerPointer}`, `  br label %${innerCondLabel}`, `${innerCondLabel}:`, `  ${innerIndex} = load i64, ptr ${innerPointer}`, `  %arr.flatmap.inner.done.${index} = icmp eq i64 ${innerIndex}, ${innerLength}`, `  br i1 %arr.flatmap.inner.done.${index}, label %${advanceLabel}, label %${innerBodyLabel}`, `${innerBodyLabel}:`, `  ${innerValue} = call i64 @arrayGet(ptr ${innerArray}, i64 ${innerIndex})`, `  call i64 @arrayPush(ptr ${output}, i64 ${innerValue})`, `  ${innerNext} = add i64 ${innerIndex}, 1`, `  store i64 ${innerNext}, ptr ${innerPointer}`, `  br label %${innerCondLabel}`, `${advanceLabel}:`, `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
+}
+
 function emitRuntimeArrayFilterCallbackOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFilterCallback" }>,
   context: EmitContext
@@ -1321,6 +1375,7 @@ function emitRuntimeArrayFindCallbackOperation(
   return [...initialStore, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${iPointer} = alloca i64`, `  ${foundPointer} = alloca i1`, `  store i64 0, ptr ${iPointer}`, `  store i1 false, ptr ${foundPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  ${found} = load i1, ptr ${foundPointer}`, `  ${notFound} = xor i1 ${found}, true`, `  %arr.find.inrange.${index} = icmp ult i64 ${currentIndex}, ${length}`, `  ${canContinue} = and i1 %arr.find.inrange.${index}, ${notFound}`, `  br i1 ${canContinue}, label %${bodyLabel}, label %${endLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  ${keep} = call i1 @valueTruthy(i64 ${callbackReturn.value})`, `  br i1 ${keep}, label %${matchLabel}, label %${advanceLabel}`, `${matchLabel}:`, ...matchStore, `  store i1 true, ptr ${foundPointer}`, `  br label %${advanceLabel}`, `${advanceLabel}:`, `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
 
+// eslint-disable-next-line max-statements -- reduce/reduceRight share accumulator setup and directional loop emission.
 function emitRuntimeArrayReduceCallbackOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayReduceCallback" }>,
   context: EmitContext
@@ -1350,9 +1405,20 @@ function emitRuntimeArrayReduceCallbackOperation(
     startIndex = "0";
     initialLines = [...initial.lines, `  %arr.reduce.initial.${index} = add i64 ${initial.value}, 0`];
   }
+  let doneCheck = `%arr.reduce.done.${index} = icmp eq i64 ${currentIndex}, ${length}`;
+  let nextLine = `  ${nextIndex} = add i64 ${currentIndex}, 1`;
+  if (operation.direction === "right") {
+    startIndex = `%arr.reduce.start.${index}`;
+    initialLines = [`  %arr.reduce.last.${index} = sub i64 ${length}, 1`, `  %arr.reduce.initial.${index} = call i64 @arrayGet(ptr ${source.value}, i64 %arr.reduce.last.${index})`, `  ${startIndex} = sub i64 ${length}, 2`];
+    if (initial !== undefined) {
+      initialLines = [...initial.lines, `  %arr.reduce.initial.${index} = add i64 ${initial.value}, 0`, `  ${startIndex} = sub i64 ${length}, 1`];
+    }
+    doneCheck = `%arr.reduce.done.${index} = icmp slt i64 ${currentIndex}, 0`;
+    nextLine = `  ${nextIndex} = sub i64 ${currentIndex}, 1`;
+  }
   const callbackArgs = emitReduceCallbackArguments(operation.callbackParameters, source.value, currentIndex, pointerName, element, index, context);
   const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index, context);
-  return [`  ${pointerName} = alloca i64`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, ...initialLines, `  store i64 %arr.reduce.initial.${index}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 ${startIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.reduce.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.reduce.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  store i64 ${callbackReturn.value}, ptr ${pointerName}`, `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
+  return [`  ${pointerName} = alloca i64`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, ...initialLines, `  store i64 %arr.reduce.initial.${index}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 ${startIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  ${doneCheck}`, `  br i1 %arr.reduce.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  store i64 ${callbackReturn.value}, ptr ${pointerName}`, nextLine, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
 
 function emitArrayCallbackArguments(
@@ -1964,6 +2030,103 @@ function emitRuntimeArrayMutatorResultOperation(
   }
   lines.push(`  store ptr ${array.value}, ptr ${pointerName}`);
   return lines;
+}
+
+function emitRuntimeArrayFromOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFrom" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  let source = emitRuntimeArrayPointer(operation.targetName, context);
+  let helper: RuntimeHelper = "arrayFromArray";
+  if (operation.targetKind === "object") {
+    source = emitRuntimeObjectPointer(operation.targetName, context);
+    helper = "arrayFromObject";
+  }
+  const result = `%arr.from.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  useRuntimeHelper(context.runtime, helper);
+  return [`  ${pointerName} = alloca ptr`, ...source.lines, `  ${result} = call ptr @${helper}(ptr ${source.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+}
+
+function emitRuntimeArraySortOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArraySort" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const array = emitRuntimeArrayPointer(operation.arrayName, context);
+  if (operation.callbackName === undefined || operation.callbackParameters === undefined || operation.callbackReturnKind === undefined) {
+    useRuntimeHelper(context.runtime, "arraySortDefault");
+    return [`  ${pointerName} = alloca ptr`, ...array.lines, `  call void @arraySortDefault(ptr ${array.value})`, `  store ptr ${array.value}, ptr ${pointerName}`];
+  }
+  const sortLines = emitRuntimeArrayComparatorSort(array.value, operation.callbackName, operation.callbackParameters, operation.callbackReturnKind, context);
+  return [`  ${pointerName} = alloca ptr`, ...array.lines, ...sortLines, `  store ptr ${array.value}, ptr ${pointerName}`];
+}
+
+// eslint-disable-next-line max-statements -- Comparator sort owns nested loop labels plus callback invocation.
+function emitRuntimeArrayComparatorSort(
+  array: string,
+  callbackName: string,
+  callbackParameters: readonly JsIrFunctionParameter[],
+  callbackReturnKind: JsIrValueKind,
+  context: EmitContext
+): string[] {
+  useRuntimeHelper(context.runtime, "arrayLength");
+  useRuntimeHelper(context.runtime, "arrayGet");
+  useRuntimeHelper(context.runtime, "arraySet");
+  useRuntimeHelper(context.runtime, "valueToNumber");
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  const length = `%arr.sort.len.${index}`;
+  const iPointer = `%arr.sort.i.${index}.addr`;
+  const jPointer = `%arr.sort.j.${index}.addr`;
+  const outerCond = `arr.sort.outer.cond.${index}`;
+  const outerBody = `arr.sort.outer.body.${index}`;
+  const innerCond = `arr.sort.inner.cond.${index}`;
+  const innerBody = `arr.sort.inner.body.${index}`;
+  const swapLabel = `arr.sort.swap.${index}`;
+  const advanceLabel = `arr.sort.advance.${index}`;
+  const outerAdvance = `arr.sort.outer.advance.${index}`;
+  const endLabel = `arr.sort.end.${index}`;
+  const i = `%arr.sort.i.${index}`;
+  const j = `%arr.sort.j.${index}`;
+  const nextJ = `%arr.sort.next.j.${index}`;
+  const nextI = `%arr.sort.next.i.${index}`;
+  const limit = `%arr.sort.limit.${index}`;
+  const left = `%arr.sort.left.${index}`;
+  const right = `%arr.sort.right.${index}`;
+  const callbackArgs = emitSortCallbackArguments(callbackParameters, left, right, index, context);
+  const callbackReturn = emitArrayCallbackReturn(callbackReturnKind, callbackName, callbackArgs.values, index, context);
+  const order = `%arr.sort.order.${index}`;
+  const shouldSwap = `%arr.sort.should.swap.${index}`;
+  return [`  ${length} = call i64 @arrayLength(ptr ${array})`, `  ${iPointer} = alloca i64`, `  ${jPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${outerCond}`, `${outerCond}:`, `  ${i} = load i64, ptr ${iPointer}`, `  %arr.sort.outer.done.${index} = icmp uge i64 ${i}, ${length}`, `  br i1 %arr.sort.outer.done.${index}, label %${endLabel}, label %${outerBody}`, `${outerBody}:`, `  store i64 0, ptr ${jPointer}`, `  br label %${innerCond}`, `${innerCond}:`, `  ${j} = load i64, ptr ${jPointer}`, `  ${limit} = sub i64 ${length}, 1`, `  %arr.sort.inner.done.${index} = icmp uge i64 ${j}, ${limit}`, `  br i1 %arr.sort.inner.done.${index}, label %${outerAdvance}, label %${innerBody}`, `${innerBody}:`, `  ${nextJ} = add i64 ${j}, 1`, `  ${left} = call i64 @arrayGet(ptr ${array}, i64 ${j})`, `  ${right} = call i64 @arrayGet(ptr ${array}, i64 ${nextJ})`, ...callbackArgs.lines, ...callbackReturn.lines, `  ${order} = call double @valueToNumber(i64 ${callbackReturn.value})`, `  ${shouldSwap} = fcmp ogt double ${order}, 0.0`, `  br i1 ${shouldSwap}, label %${swapLabel}, label %${advanceLabel}`, `${swapLabel}:`, `  call void @arraySet(ptr ${array}, i64 ${j}, i64 ${right})`, `  call void @arraySet(ptr ${array}, i64 ${nextJ}, i64 ${left})`, `  br label %${advanceLabel}`, `${advanceLabel}:`, `  store i64 ${nextJ}, ptr ${jPointer}`, `  br label %${innerCond}`, `${outerAdvance}:`, `  ${nextI} = add i64 ${i}, 1`, `  store i64 ${nextI}, ptr ${iPointer}`, `  br label %${outerCond}`, `${endLabel}:`];
+}
+
+function emitSortCallbackArguments(
+  parameters: readonly JsIrFunctionParameter[],
+  left: string,
+  right: string,
+  loopIndex: number,
+  context: EmitContext
+): { readonly lines: readonly string[]; readonly values: readonly string[] } {
+  const lines: string[] = [];
+  const values: string[] = [];
+  const rawValues = [left, right];
+  for (let parameterIndex = 0; parameterIndex < parameters.length; parameterIndex += 1) {
+    const parameter = parameters[parameterIndex];
+    const raw = rawValues[parameterIndex] ?? jsValueUndefined;
+    if (parameter.valueKind === "value") {
+      values.push(`i64 ${raw}`);
+      continue;
+    }
+    const number = `%arr.sort.arg.${loopIndex}.${parameterIndex}.num`;
+    useRuntimeHelper(context.runtime, "valueToNumber");
+    lines.push(`  ${number} = call double @valueToNumber(i64 ${raw})`);
+    values.push(`double ${number}`);
+  }
+  return { lines, values };
 }
 
 function emitRuntimeObjectGetPrototypeOperation(

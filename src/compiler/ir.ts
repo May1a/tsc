@@ -839,6 +839,28 @@ export type JsIrOperation =
       readonly callbackReturnKind: JsIrValueKind;
     }
   | {
+      readonly kind: "runtimeArrayFlatMapCallback";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly callbackName: string;
+      readonly callbackParameters: readonly JsIrFunctionParameter[];
+      readonly callbackReturnKind: JsIrValueKind;
+    }
+  | {
+      readonly kind: "runtimeArraySort";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly callbackName?: string;
+      readonly callbackParameters?: readonly JsIrFunctionParameter[];
+      readonly callbackReturnKind?: JsIrValueKind;
+    }
+  | {
+      readonly kind: "runtimeArrayFrom";
+      readonly name: string;
+      readonly targetName: string;
+      readonly targetKind: "array" | "object";
+    }
+  | {
       readonly kind: "runtimeArrayFilterCallback";
       readonly name: string;
       readonly arrayName: string;
@@ -962,6 +984,7 @@ export type JsIrOperation =
       readonly callbackParameters: readonly JsIrFunctionParameter[];
       readonly callbackReturnKind: JsIrValueKind;
       readonly initialValue?: JsIrValueExpression;
+      readonly direction: "left" | "right";
     }
   | {
       readonly kind: "runtimeMapNew" | "runtimeSetNew";
@@ -1219,6 +1242,7 @@ const arrayFillRangeArgumentCount = 3;
 const arrayCopyWithinArgumentCount = 3;
 const arrayCallbackArgumentCount = 3;
 const reduceCallbackArgumentCount = 4;
+const sortCallbackArgumentCount = 2;
 const decimalRadix = 10;
 const minimumNumberRadix = 2;
 const maximumNumberRadix = 36;
@@ -1267,7 +1291,7 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   if (operation.kind === "runtimeObjectOwnPropertyDescriptors") {
     return { kind: "runtimeObject", name: operation.name };
   }
-  if (operation.kind === "runtimeArraySlice") {
+  if (operation.kind === "runtimeArraySlice" || operation.kind === "runtimeArrayFlatMapCallback" || operation.kind === "runtimeArraySort" || operation.kind === "runtimeArrayFrom") {
     return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeArraySplice") {
@@ -4752,6 +4776,7 @@ function lowerParsedJsonPrimitive(value: unknown): JsIrValueExpression {
   throw new Error("Unsupported JSON.parse primitive value");
 }
 
+// eslint-disable-next-line max-statements -- Runtime aggregate built-in routing is centralized during roadmap expansion.
 function lowerRuntimeAggregateExpansionBinding(
   name: string,
   initializer: ts.Expression,
@@ -4781,6 +4806,10 @@ function lowerRuntimeAggregateExpansionBinding(
   if (flat !== undefined) {
     return flat;
   }
+  const arrayStatic = lowerRuntimeArrayStaticBinding(name, initializer, bindings);
+  if (arrayStatic !== undefined) {
+    return arrayStatic;
+  }
   const split = lowerRuntimeStringSplitBinding(name, initializer, bindings);
   if (split !== undefined) {
     return split;
@@ -4793,7 +4822,71 @@ function lowerRuntimeAggregateExpansionBinding(
   if (mutator !== undefined) {
     return mutator;
   }
+  const sort = lowerRuntimeArraySortBinding(name, initializer, bindings);
+  if (sort !== undefined) {
+    return sort;
+  }
   return undefined;
+}
+
+function lowerRuntimeArrayStaticBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || !ts.isPropertyAccessExpression(initializer.expression) || !ts.isIdentifier(initializer.expression.expression) || initializer.expression.expression.text !== "Array") {
+    return undefined;
+  }
+  const method = initializer.expression.name.text;
+  if (method === "of") {
+    const elements: JsIrRuntimeArrayElement[] = [];
+    for (const argument of initializer.arguments) {
+      const value = lowerValueExpression(argument, bindings);
+      if (value === undefined) {
+        return undefined;
+      }
+      elements.push({ kind: "value", value });
+    }
+    return { kind: "runtimeArrayLiteral", name, elements };
+  }
+  if (method !== "from" || initializer.arguments.length !== 1 || !ts.isIdentifier(initializer.arguments[0])) {
+    return undefined;
+  }
+  const targetName = initializer.arguments[0].text;
+  const target = bindings.get(targetName);
+  if (target?.kind === "runtimeArray") {
+    return { kind: "runtimeArrayFrom", name, targetName, targetKind: "array" };
+  }
+  if (target?.kind === "runtimeObject") {
+    return { kind: "runtimeArrayFrom", name, targetName, targetKind: "object" };
+  }
+  return undefined;
+}
+
+function lowerRuntimeArraySortBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isCallExpression(initializer) || !ts.isPropertyAccessExpression(initializer.expression) || !ts.isIdentifier(initializer.expression.expression)) {
+    return undefined;
+  }
+  const arrayName = initializer.expression.expression.text;
+  if (initializer.expression.name.text !== "sort" || bindings.get(arrayName)?.kind !== "runtimeArray" || initializer.arguments.length > 1) {
+    return undefined;
+  }
+  if (initializer.arguments.length === 0) {
+    return { kind: "runtimeArraySort", name, arrayName };
+  }
+  const [callback] = initializer.arguments;
+  if (!ts.isIdentifier(callback)) {
+    return undefined;
+  }
+  const callbackBinding = lowerArrayCallbackBinding(callback.text, bindings, sortCallbackArgumentCount);
+  if (callbackBinding === undefined || callbackBinding.returnKind === "void") {
+    return undefined;
+  }
+  return { kind: "runtimeArraySort", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind };
 }
 
 function lowerRuntimeStringSplitBinding(
@@ -4822,6 +4915,7 @@ function lowerRuntimeStringSplitBinding(
   return { kind: "runtimeStringSplit", name, receiver, separator, limit };
 }
 
+// eslint-disable-next-line complexity -- Runtime array callback routing keeps method-specific validation in one place.
 function lowerRuntimeArrayCallbackBinding(
   name: string,
   initializer: ts.Expression,
@@ -4835,10 +4929,14 @@ function lowerRuntimeArrayCallbackBinding(
     return undefined;
   }
   const method = initializer.expression.name.text;
-  if (method === "reduce") {
-    return lowerRuntimeArrayReduceCallbackBinding(name, arrayName, initializer.arguments, bindings);
+  if (method === "reduce" || method === "reduceRight") {
+    let direction: "left" | "right" = "left";
+    if (method === "reduceRight") {
+      direction = "right";
+    }
+    return lowerRuntimeArrayReduceCallbackBinding(name, arrayName, initializer.arguments, bindings, direction);
   }
-  if (method !== "map" && method !== "filter" && method !== "find" && method !== "findIndex") {
+  if (method !== "map" && method !== "flatMap" && method !== "filter" && method !== "find" && method !== "findIndex") {
     return undefined;
   }
   if (initializer.arguments.length !== 1) {
@@ -4855,6 +4953,9 @@ function lowerRuntimeArrayCallbackBinding(
   if (method === "map") {
     return { kind: "runtimeArrayMapCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind };
   }
+  if (method === "flatMap") {
+    return { kind: "runtimeArrayFlatMapCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind };
+  }
   if (method === "filter") {
     return { kind: "runtimeArrayFilterCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind };
   }
@@ -4868,7 +4969,8 @@ function lowerRuntimeArrayReduceCallbackBinding(
   name: string,
   arrayName: string,
   args: ts.NodeArray<ts.Expression>,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  direction: "left" | "right"
 ): JsIrOperation | undefined {
   if (args.length !== 1 && args.length !== 2) {
     return undefined;
@@ -4888,7 +4990,7 @@ function lowerRuntimeArrayReduceCallbackBinding(
       return undefined;
     }
   }
-  return { kind: "runtimeArrayReduceCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind, initialValue };
+  return { kind: "runtimeArrayReduceCallback", name, arrayName, callbackName: callback.text, callbackParameters: callbackBinding.parameters, callbackReturnKind: callbackBinding.returnKind, initialValue, direction };
 }
 
 function lowerRuntimeArrayForEachCallbackStatement(
