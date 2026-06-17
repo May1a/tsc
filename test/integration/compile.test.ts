@@ -917,6 +917,20 @@ describe("tscn function declarations and calls", () => {
       await result.cleanup();
     }
   });
+
+  test("pads default numeric parameters at the call site", async () => {
+    const result = await expectSuccessfulCompile("param-default-basic.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define void @add(double %p0, double %p1)");
+      expect(llvmIr).toContain("call void @add(double 1.0, double 10.0)");
+      expect(llvmIr).toContain("call void @add(double 3.0, double 4.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "11\n7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn loops", () => {

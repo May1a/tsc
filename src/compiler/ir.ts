@@ -22,6 +22,7 @@ export type JsIrValueKind = "number" | "string" | "value";
 export type JsIrFunctionParameter = {
   readonly name: string;
   readonly valueKind: JsIrValueKind;
+  readonly defaultValue?: JsIrNumberExpression;
 };
 
 export type JsIrCallArgument =
@@ -3370,7 +3371,22 @@ function lowerFunctionDeclaration(
       return undefined;
     }
     const valueKind = parameterValueKind(param);
-    parameters.push({ name: param.name.text, valueKind });
+    let defaultValue: JsIrNumberExpression | undefined;
+    if (param.initializer !== undefined && param.initializer.kind !== ts.SyntaxKind.UndefinedKeyword) {
+      if (valueKind !== "number") {
+        return undefined;
+      }
+      const lowered = lowerNumberExpression(param.initializer, fnBindings);
+      if (lowered === undefined) {
+        return undefined;
+      }
+      defaultValue = lowered;
+    }
+    if (defaultValue === undefined) {
+      parameters.push({ name: param.name.text, valueKind });
+    } else {
+      parameters.push({ name: param.name.text, valueKind, defaultValue });
+    }
     if (valueKind === "string") {
       fnBindings.set(param.name.text, { kind: "stringVariable", name: param.name.text });
     } else if (valueKind === "value") {
@@ -8115,18 +8131,24 @@ function lowerTypedCallArguments(
   args: ts.NodeArray<ts.Expression>,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly JsIrCallArgument[] | undefined {
-  if (parameters.length !== args.length) {
+  if (args.length > parameters.length) {
     return undefined;
   }
   const lowered: JsIrCallArgument[] = [];
   for (let i = 0; i < parameters.length; i++) {
     const parameter = parameters[i];
-    const arg = args[i];
-    const value = lowerTypedCallArgument(parameter, arg, bindings);
-    if (value === undefined) {
+    if (i < args.length) {
+      const value = lowerTypedCallArgument(parameter, args[i], bindings);
+      if (value === undefined) {
+        return undefined;
+      }
+      lowered.push(value);
+      continue;
+    }
+    if (parameter.defaultValue === undefined || parameter.valueKind !== "number") {
       return undefined;
     }
-    lowered.push(value);
+    lowered.push({ valueKind: "number", value: parameter.defaultValue });
   }
   return lowered;
 }
