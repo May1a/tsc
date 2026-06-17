@@ -4194,6 +4194,7 @@ function emitRuntimeArrayAppendNumberExpression(
   return { lines, value: number };
 }
 
+// eslint-disable-next-line complexity, max-statements -- Math lowering dispatches the supported static runtime surface in one place.
 function emitMathCallNumberExpression(
   expression: Extract<JsIrNumberExpression, { readonly kind: "mathCall" }>,
   context: EmitContext
@@ -4229,6 +4230,22 @@ function emitMathCallNumberExpression(
     const exponent = args[1]?.value ?? "0.0";
     return { lines: [...lines, `  ${number} = call double @mathPow(double ${base}, double ${exponent})`], value: number };
   }
+  if (expression.method === "hypot") {
+    useRuntimeHelper(context.runtime, "mathHypot2");
+    const left = args[0]?.value ?? "0.0";
+    const right = args[1]?.value ?? "0.0";
+    return { lines: [...lines, `  ${number} = call double @mathHypot2(double ${left}, double ${right})`], value: number };
+  }
+  if (expression.method === "imul") {
+    useRuntimeHelper(context.runtime, "mathImul");
+    const left = args[0]?.value ?? "0.0";
+    const right = args[1]?.value ?? "0.0";
+    return { lines: [...lines, `  ${number} = call double @mathImul(double ${left}, double ${right})`], value: number };
+  }
+  if (expression.method === "random") {
+    useRuntimeHelper(context.runtime, "mathRandom");
+    return { lines: [...lines, `  ${number} = call double @mathRandom()`], value: number };
+  }
   const helperByMethod = {
     abs: "mathAbs",
     floor: "mathFloor",
@@ -4236,6 +4253,16 @@ function emitMathCallNumberExpression(
     trunc: "mathTrunc",
     round: "mathRound",
     sqrt: "mathSqrt",
+    cbrt: "mathCbrt",
+    exp: "mathExp",
+    log: "mathLog",
+    log2: "mathLog2",
+    log10: "mathLog10",
+    fround: "mathFround",
+    clz32: "mathClz32",
+    sin: "mathSin",
+    cos: "mathCos",
+    tan: "mathTan",
     sign: "mathSign"
   } as const;
   const helper = helperByMethod[expression.method];
@@ -4244,7 +4271,7 @@ function emitMathCallNumberExpression(
   return { lines: [...lines, `  ${number} = call double @${runtimeMathFunctionName(helper)}(double ${argument})`], value: number };
 }
 
-function runtimeMathFunctionName(helper: "mathAbs" | "mathFloor" | "mathCeil" | "mathTrunc" | "mathRound" | "mathSqrt" | "mathSign"): string {
+function runtimeMathFunctionName(helper: RuntimeHelper): string {
   return helper;
 }
 

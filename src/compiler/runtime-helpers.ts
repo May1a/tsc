@@ -36,9 +36,22 @@ export type RuntimeHelper =
   | "mathTrunc"
   | "mathRound"
   | "mathSqrt"
+  | "mathCbrt"
   | "mathPow"
+  | "mathExp"
+  | "mathLog"
+  | "mathLog2"
+  | "mathLog10"
+  | "mathHypot2"
   | "mathMin2"
   | "mathMax2"
+  | "mathRandom"
+  | "mathFround"
+  | "mathClz32"
+  | "mathImul"
+  | "mathSin"
+  | "mathCos"
+  | "mathTan"
   | "mathSign"
   | "valueBoxString"
   | "valueStringPtr"
@@ -194,9 +207,22 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["mathTrunc", []],
   ["mathRound", []],
   ["mathSqrt", []],
+  ["mathCbrt", ["mathAbs"]],
   ["mathPow", []],
+  ["mathExp", []],
+  ["mathLog", []],
+  ["mathLog2", []],
+  ["mathLog10", []],
+  ["mathHypot2", ["mathSqrt"]],
   ["mathMin2", []],
   ["mathMax2", []],
+  ["mathRandom", []],
+  ["mathFround", []],
+  ["mathClz32", []],
+  ["mathImul", []],
+  ["mathSin", []],
+  ["mathCos", []],
+  ["mathTan", []],
   ["mathSign", []],
   ["arrayNew", ["malloc", "objectNew"]],
   ["objectNew", ["malloc"]],
@@ -315,6 +341,7 @@ export function useRuntimeHelper(runtime: RuntimeHelperEmitter, helper: RuntimeH
   }
 }
 
+// eslint-disable-next-line complexity -- Runtime declarations are emitted only for helpers used by the current module.
 export function emitRuntimeDeclarations(runtime: RuntimeHelperEmitter): string[] {
   const declarations: string[] = [];
   const declarationByHelper = new Map<RuntimeHelper, string>([
@@ -340,6 +367,13 @@ export function emitRuntimeDeclarations(runtime: RuntimeHelperEmitter): string[]
   if (runtime.used.has("mathRound")) declarations.push("declare double @llvm.round.f64(double)");
   if (runtime.used.has("mathSqrt")) declarations.push("declare double @llvm.sqrt.f64(double)");
   if (runtime.used.has("mathPow")) declarations.push("declare double @llvm.pow.f64(double, double)");
+  if (runtime.used.has("mathExp")) declarations.push("declare double @llvm.exp.f64(double)");
+  if (runtime.used.has("mathLog")) declarations.push("declare double @llvm.log.f64(double)");
+  if (runtime.used.has("mathLog2")) declarations.push("declare double @llvm.log2.f64(double)");
+  if (runtime.used.has("mathLog10")) declarations.push("declare double @llvm.log10.f64(double)");
+  if (runtime.used.has("mathSin") || runtime.used.has("mathTan")) declarations.push("declare double @llvm.sin.f64(double)");
+  if (runtime.used.has("mathCos") || runtime.used.has("mathTan")) declarations.push("declare double @llvm.cos.f64(double)");
+  if (runtime.used.has("mathClz32")) declarations.push("declare i32 @llvm.ctlz.i32(i32, i1)");
   if (runtime.used.has("parseInt") || runtime.used.has("parseFloat") || runtime.used.has("valueToNumber")) declarations.push("declare double @strtod(ptr, ptr)");
 
   return declarations;
@@ -1343,6 +1377,73 @@ end:
 }
 `);
   }
+  if (runtime.used.has("mathCbrt")) {
+    definitions.push(`define double @mathCbrt(double %value) {
+entry:
+  %negative = fcmp olt double %value, 0.0
+  %abs = call double @mathAbs(double %value)
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next.i, %loop ]
+  %guess = phi double [ %abs, %entry ], [ %next.guess, %loop ]
+  %guess.sq = fmul double %guess, %guess
+  %div = fdiv double %abs, %guess.sq
+  %double.guess = fmul double %guess, 2.0
+  %sum = fadd double %double.guess, %div
+  %next.guess = fdiv double %sum, 3.0
+  %next.i = add i64 %i, 1
+  %done = icmp eq i64 %next.i, 12
+  br i1 %done, label %end, label %loop
+end:
+  %negated = fneg double %next.guess
+  %result = select i1 %negative, double %negated, double %next.guess
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathExp")) {
+    definitions.push(`define double @mathExp(double %value) {
+entry:
+  %result = call double @llvm.exp.f64(double %value)
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathLog")) {
+    definitions.push(`define double @mathLog(double %value) {
+entry:
+  %result = call double @llvm.log.f64(double %value)
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathLog2")) {
+    definitions.push(`define double @mathLog2(double %value) {
+entry:
+  %result = call double @llvm.log2.f64(double %value)
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathLog10")) {
+    definitions.push(`define double @mathLog10(double %value) {
+entry:
+  %result = call double @llvm.log10.f64(double %value)
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathHypot2")) {
+    definitions.push(`define double @mathHypot2(double %left, double %right) {
+entry:
+  %left.sq = fmul double %left, %left
+  %right.sq = fmul double %right, %right
+  %sum = fadd double %left.sq, %right.sq
+  %result = call double @mathSqrt(double %sum)
+  ret double %result
+}
+`);
+  }
   if (runtime.used.has("mathMin2")) {
     definitions.push(`define double @mathMin2(double %left, double %right) {
 entry:
@@ -1368,6 +1469,78 @@ entry:
   %gt = fcmp ogt double %value, 0.0
   %positive = select i1 %gt, double 1.0, double 0.0
   %result = select i1 %lt, double -1.0, double %positive
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathRandom")) {
+    definitions.push(`@math.random.state = internal global i64 88172645463393265
+
+define double @mathRandom() {
+entry:
+  %state = load i64, ptr @math.random.state
+  %mul = mul i64 %state, 2862933555777941757
+  %next = add i64 %mul, 3037000493
+  store i64 %next, ptr @math.random.state
+  %mantissa = lshr i64 %next, 12
+  %as.double = uitofp i64 %mantissa to double
+  %result = fdiv double %as.double, 4.503599627370496e+15
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathFround")) {
+    definitions.push(`define double @mathFround(double %value) {
+entry:
+  %float = fptrunc double %value to float
+  %result = fpext float %float to double
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathClz32")) {
+    definitions.push(`define double @mathClz32(double %value) {
+entry:
+  %int = fptoui double %value to i32
+  %count = call i32 @llvm.ctlz.i32(i32 %int, i1 false)
+  %result = uitofp i32 %count to double
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathImul")) {
+    definitions.push(`define double @mathImul(double %left, double %right) {
+entry:
+  %left.i = fptosi double %left to i32
+  %right.i = fptosi double %right to i32
+  %product = mul i32 %left.i, %right.i
+  %result = sitofp i32 %product to double
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathSin")) {
+    definitions.push(`define double @mathSin(double %value) {
+entry:
+  %result = call double @llvm.sin.f64(double %value)
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathCos")) {
+    definitions.push(`define double @mathCos(double %value) {
+entry:
+  %result = call double @llvm.cos.f64(double %value)
+  ret double %result
+}
+`);
+  }
+  if (runtime.used.has("mathTan")) {
+    definitions.push(`define double @mathTan(double %value) {
+entry:
+  %sin = call double @llvm.sin.f64(double %value)
+  %cos = call double @llvm.cos.f64(double %value)
+  %result = fdiv double %sin, %cos
   ret double %result
 }
 `);

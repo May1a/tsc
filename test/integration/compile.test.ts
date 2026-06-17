@@ -2908,6 +2908,19 @@ describe("tscn expanded runtime roadmap", () => {
     await expectUnsupportedDiagnostic("string-replace-regex-unsupported.ts");
   }, roadmapIntegrationTimeoutMs);
 
+  test("supports package BT math function expansion", async () => {
+    const cases = [
+      ["math-log-exp.ts", "3\n1\n3\n2\n3\n"],
+      ["math-hypot.ts", "5\n"],
+      ["math-random.ts", "true\ntrue\n"],
+      ["math-trig.ts", "1\n1\n1\n"],
+      ["math-bitwise-float.ts", "1.5\n31\n-6\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+    await expectUnsupportedDiagnostic("math-unsupported-advanced.ts");
+  }, roadmapIntegrationTimeoutMs);
+
   test("supports package AA boxed string single-character methods", async () => {
     const cases = [
       ["string-boxed-char-at.ts", "h\no\n\n"],

@@ -255,7 +255,30 @@ export type JsIrNumberExpression =
     }
   | {
       readonly kind: "mathCall";
-      readonly method: "abs" | "floor" | "ceil" | "trunc" | "round" | "sqrt" | "pow" | "min" | "max" | "sign";
+      readonly method:
+        | "abs"
+        | "floor"
+        | "ceil"
+        | "trunc"
+        | "round"
+        | "sqrt"
+        | "cbrt"
+        | "pow"
+        | "exp"
+        | "log"
+        | "log2"
+        | "log10"
+        | "hypot"
+        | "min"
+        | "max"
+        | "random"
+        | "fround"
+        | "clz32"
+        | "imul"
+        | "sin"
+        | "cos"
+        | "tan"
+        | "sign";
       readonly arguments: readonly JsIrNumberExpression[];
     }
   | {
@@ -7387,8 +7410,34 @@ function lowerDateConstructorMilliseconds(
   return lowerNumberExpression(args[0], bindings);
 }
 
+const mathMethods = new Set<string>([
+  "abs",
+  "floor",
+  "ceil",
+  "trunc",
+  "round",
+  "sqrt",
+  "cbrt",
+  "pow",
+  "exp",
+  "log",
+  "log2",
+  "log10",
+  "hypot",
+  "min",
+  "max",
+  "random",
+  "fround",
+  "clz32",
+  "imul",
+  "sin",
+  "cos",
+  "tan",
+  "sign"
+]);
+
 function isMathMethod(method: string): method is Extract<JsIrNumberExpression, { readonly kind: "mathCall" }>["method"] {
-  return method === "abs" || method === "floor" || method === "ceil" || method === "trunc" || method === "round" || method === "sqrt" || method === "pow" || method === "min" || method === "max" || method === "sign";
+  return mathMethods.has(method);
 }
 
 function lowerArrayNumberMethodCall(
