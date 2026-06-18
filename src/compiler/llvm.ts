@@ -814,6 +814,14 @@ function emitLoopControlOperation(operation: JsIrOperation, context: EmitContext
     return emitForOfMapOperation(operation, context);
   }
 
+  if (operation.kind === "forInObject") {
+    return emitForInObjectOperation(operation, context);
+  }
+
+  if (operation.kind === "forInArray") {
+    return emitForInArrayOperation(operation, context);
+  }
+
   if (operation.kind === "break") {
     return emitBreakOperation(context);
   }
@@ -3661,6 +3669,92 @@ function emitForOfMapOperation(operation: Extract<JsIrOperation, { readonly kind
       binding: { kind: "runtimeArray", name: operation.itemName }
     };
   });
+}
+
+// eslint-disable-next-line max-statements -- for...in emission walks the runtime object/array key array and binds a scoped string variable.
+function emitForInObjectOperation(operation: Extract<JsIrOperation, { readonly kind: "forInObject" }>, context: EmitContext): string[] {
+  return emitForInKeyIteration(operation.itemName, "objectKeys", operation.objectName, emitRuntimeObjectPointer, operation.body, context);
+}
+
+// eslint-disable-next-line max-statements -- for...in over runtime arrays reuses the same key-iteration pattern as runtime objects.
+function emitForInArrayOperation(operation: Extract<JsIrOperation, { readonly kind: "forInArray" }>, context: EmitContext): string[] {
+  return emitForInKeyIteration(operation.itemName, "arrayKeys", operation.arrayName, emitRuntimeArrayPointer, operation.body, context);
+}
+
+// eslint-disable-next-line max-statements -- for...in body binding is set up before allocating the key pointers so the body's loops can see the key string.
+function emitForInKeyIteration(
+  itemName: string,
+  helper: "objectKeys" | "arrayKeys",
+  sourceName: string,
+  emitSourcePointer: (name: string, context: EmitContext) => NumberValue,
+  body: readonly JsIrOperation[],
+  context: EmitContext
+): string[] {
+  const { loopIndex } = context;
+  context.loopIndex += 1;
+  const condLabel = `for.in.cond.${loopIndex}`;
+  const bodyLabel = `for.in.body.${loopIndex}`;
+  const stepLabel = `for.in.step.${loopIndex}`;
+  const endLabel = `for.in.end.${loopIndex}`;
+  const indexPointer = `%for.in.index.${loopIndex}.addr`;
+  const itemPointer = variablePointerName(itemName);
+  const itemLengthPointer = stringLengthPointerName(itemName);
+  const bodyBindings = new Map(context.bindings);
+  bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
+  const previousBindings = new Map(context.bindings);
+  context.bindings.clear();
+  for (const [name, value] of bodyBindings) {
+    context.bindings.set(name, value);
+  }
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  const bodyLines = emitOperations(body, context);
+  context.loopLabels.pop();
+  context.bindings.clear();
+  for (const [name, value] of previousBindings) {
+    context.bindings.set(name, value);
+  }
+  const source = emitSourcePointer(sourceName, context);
+  const currentIndex = `%for.in.index.${loopIndex}`;
+  const inRange = `%for.in.in.range.${loopIndex}`;
+  const keysPointer = `%for.in.keys.${loopIndex}`;
+  const keysLength = `%for.in.keys.length.${loopIndex}`;
+  const keyElement = `%for.in.key.${loopIndex}`;
+  const keyPtr = `%for.in.key.ptr.${loopIndex}`;
+  const keyLen = `%for.in.key.len.${loopIndex}`;
+  const nextIndex = `%for.in.next.${loopIndex}`;
+  useRuntimeHelper(context.runtime, helper);
+  useRuntimeHelper(context.runtime, "arrayLength");
+  useRuntimeHelper(context.runtime, "arrayGet");
+  useRuntimeHelper(context.runtime, "valueStringPtr");
+  useRuntimeHelper(context.runtime, "valueStringLength");
+
+  return [
+    ...source.lines,
+    `  ${indexPointer} = alloca i64`,
+    `  ${itemPointer} = alloca ptr`,
+    `  ${itemLengthPointer} = alloca i64`,
+    `  store i64 0, ptr ${indexPointer}`,
+    `  ${keysPointer} = call ptr @${helper}(ptr ${source.value})`,
+    `  ${keysLength} = call i64 @arrayLength(ptr ${keysPointer})`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  ${currentIndex} = load i64, ptr ${indexPointer}`,
+    `  ${inRange} = icmp ult i64 ${currentIndex}, ${keysLength}`,
+    `  br i1 ${inRange}, label %${bodyLabel}, label %${endLabel}`,
+    `${bodyLabel}:`,
+    `  ${keyElement} = call i64 @arrayGet(ptr ${keysPointer}, i64 ${currentIndex})`,
+    `  ${keyPtr} = call ptr @valueStringPtr(i64 ${keyElement})`,
+    `  ${keyLen} = call i64 @valueStringLength(i64 ${keyElement})`,
+    `  store ptr ${keyPtr}, ptr ${itemPointer}`,
+    `  store i64 ${keyLen}, ptr ${itemLengthPointer}`,
+    ...bodyLines,
+    `  br label %${stepLabel}`,
+    `${stepLabel}:`,
+    `  ${nextIndex} = add i64 ${currentIndex}, 1`,
+    `  store i64 ${nextIndex}, ptr ${indexPointer}`,
+    `  br label %${condLabel}`,
+    `${endLabel}:`
+  ];
 }
 
 // eslint-disable-next-line max-statements -- Collection for...of emission owns the active-slot scan and loop-control labels.

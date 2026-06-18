@@ -999,6 +999,68 @@ describe("tscn operator expansion (package BZ)", () => {
   });
 });
 
+describe("tscn for-in loops (package CA)", () => {
+  test("iterates runtime object keys in insertion order", async () => {
+    const result = await expectSuccessfulCompile("for-in-object.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "a\nb\nc\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("iterates runtime array indices", async () => {
+    const result = await expectSuccessfulCompile("for-in-array.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "0\n1\n2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("honors break and continue inside for-in", async () => {
+    const result = await expectSuccessfulCompile("for-in-break-continue.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "b\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("uses the iteration key to access runtime object values", async () => {
+    const result = await expectSuccessfulCompile("for-in-with-key-access.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n2\n3\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("runs zero iterations on an empty object", async () => {
+    const result = await expectSuccessfulCompile("for-in-empty-object.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "0\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("handles nested for-in loops", async () => {
+    const result = await expectSuccessfulCompile("for-in-nested.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "ax\nay\nbx\nby\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
 describe("tscn loops", () => {
   test("lowers while loops with mutable numeric bindings", async () => {
     const result = await expectSuccessfulCompile("while-loop.ts");

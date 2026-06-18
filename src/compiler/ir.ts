@@ -1187,6 +1187,18 @@ export type JsIrOperation =
       readonly body: readonly JsIrOperation[];
     }
   | {
+      readonly kind: "forInObject";
+      readonly itemName: string;
+      readonly objectName: string;
+      readonly body: readonly JsIrOperation[];
+    }
+  | {
+      readonly kind: "forInArray";
+      readonly itemName: string;
+      readonly arrayName: string;
+      readonly body: readonly JsIrOperation[];
+    }
+  | {
       readonly kind: "break";
     }
   | {
@@ -2649,6 +2661,7 @@ function isNonExecutableDeclaration(statement: ts.Statement): boolean {
   return Boolean(modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword));
 }
 
+// eslint-disable-next-line max-statements -- Statement dispatch covers all supported top-level node kinds in one place.
 function lowerStatement(
   statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
@@ -2676,6 +2689,10 @@ function lowerStatement(
 
   if (ts.isForOfStatement(statement)) {
     return lowerForOfStatement(statement, bindings);
+  }
+
+  if (ts.isForInStatement(statement)) {
+    return lowerForInStatement(statement, bindings);
   }
 
   if (ts.isDoStatement(statement)) {
@@ -3103,6 +3120,44 @@ function lowerForOfStatement(
     return undefined;
   }
   return { kind: "forOfArray", itemName: declaration.name.text, arrayName: sourceName, body };
+}
+
+// eslint-disable-next-line max-statements -- for...in lowering dispatches supported source kinds explicitly while unsupported iterables stay diagnostic-only.
+function lowerForInStatement(
+  statement: ts.ForInStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1 || !ts.isBlock(statement.statement)) {
+    return undefined;
+  }
+  const [declaration] = statement.initializer.declarations;
+  if (!ts.isIdentifier(declaration.name) || declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
+    return undefined;
+  }
+  if (!ts.isIdentifier(statement.expression)) {
+    return undefined;
+  }
+  const sourceName = statement.expression.text;
+  const sourceBinding = bindings.get(sourceName);
+  if (sourceBinding?.kind === "runtimeObject") {
+    const bodyBindings = new Map(bindings);
+    bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
+    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    if (body === undefined) {
+      return undefined;
+    }
+    return { kind: "forInObject", itemName: declaration.name.text, objectName: sourceBinding.name, body };
+  }
+  if (sourceBinding?.kind === "runtimeArray") {
+    const bodyBindings = new Map(bindings);
+    bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
+    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    if (body === undefined) {
+      return undefined;
+    }
+    return { kind: "forInArray", itemName: declaration.name.text, arrayName: sourceBinding.name, body };
+  }
+  return undefined;
 }
 
 function lowerForInitializer(
