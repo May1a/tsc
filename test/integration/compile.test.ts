@@ -1237,6 +1237,38 @@ describe("tscn rest parameters (package BY.1)", () => {
   });
 });
 
+describe("tscn primitive boxing (package CD)", () => {
+  test("boxes a number with new Number and exposes valueOf/toString", async () => {
+    const result = await expectSuccessfulCompile("box-number-constructor.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "42\n42\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("boxes a boolean with new Boolean and exposes valueOf", async () => {
+    const result = await expectSuccessfulCompile("box-boolean-constructor.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("boxes a string with new String and exposes valueOf/length", async () => {
+    const result = await expectSuccessfulCompile("box-string-constructor.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "hello\n5\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
 describe("tscn spread in function calls (package BY.3)", () => {
   test("spreads a fixed array into a rest parameter", async () => {
     const result = await expectSuccessfulCompile("call-spread-into-rest.ts", { link: true });
@@ -3477,7 +3509,6 @@ describe("tscn expanded runtime roadmap", () => {
 
   test("preserves unsupported roadmap diagnostics", async () => {
     await Promise.all([
-      "boolean-constructor-unsupported.ts",
       "number-to-fixed-range-error-unsupported.ts",
       "number-to-locale-string-unsupported.ts",
       "parse-int-radix-unsupported.ts",

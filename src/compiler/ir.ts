@@ -189,6 +189,16 @@ export type JsIrValueExpression =
       readonly middleTexts: readonly string[];
       readonly expressions: readonly JsIrValueExpression[];
       readonly wrapValuesInRest?: boolean;
+    }
+  | {
+      readonly kind: "boxedPrimitive";
+      readonly inner: JsIrValueExpression;
+      readonly storeLength?: boolean;
+    }
+  | {
+      readonly kind: "boxedMethodCall";
+      readonly receiver: JsIrValueExpression;
+      readonly method: "valueOf" | "toString";
     };
 
 export type JsIrRuntimeArrayElement =
@@ -263,6 +273,10 @@ export type JsIrNumberExpression =
     }
   | {
       readonly kind: "valueArrayLength";
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "valueObjectLength";
       readonly value: JsIrValueExpression;
     }
   | {
@@ -4589,6 +4603,7 @@ function lowerLetVariableBinding(
   };
 }
 
+// eslint-disable-next-line max-statements -- Pre-existing const initializer dispatch walks aggregate/closure/string/number/boolean/condition/value branches in one place.
 function lowerConstVariableBinding(
   name: string,
   initializer: ts.Expression,
@@ -4662,6 +4677,15 @@ function lowerConstVariableBinding(
       kind: "constBooleanExpression",
       name,
       value: booleanCondition
+    };
+  }
+
+  const value = lowerValueExpression(unwrappedInitializer, bindings);
+  if (value !== undefined) {
+    return {
+      kind: "constValue",
+      name,
+      value
     };
   }
 
@@ -7210,6 +7234,32 @@ function lowerDirectValueExpression(
     return { kind: "void", expression: inner };
   }
 
+  if (ts.isNewExpression(expression) && ts.isIdentifier(expression.expression)) {
+    const constructorName = expression.expression.text;
+    if (constructorName === "Number" || constructorName === "Boolean" || constructorName === "String") {
+      const args = expression.arguments ?? [];
+      if (args.length !== 1) {
+        return undefined;
+      }
+      const inner = lowerValueExpression(args[0], bindings);
+      if (inner === undefined) {
+        return undefined;
+      }
+      return { kind: "boxedPrimitive", inner, storeLength: constructorName === "String" };
+    }
+  }
+
+  if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression) && expression.arguments.length === 0) {
+    const method = expression.expression.name.text;
+    if (method === "valueOf" || method === "toString") {
+      const receiver = lowerValueExpression(expression.expression.expression, bindings);
+      if (receiver === undefined) {
+        return undefined;
+      }
+      return { kind: "boxedMethodCall", receiver, method };
+    }
+  }
+
   if (ts.isTaggedTemplateExpression(expression) && ts.isIdentifier(expression.tag)) {
     const tagBinding = bindings.get(expression.tag.text);
     if (tagBinding?.kind === "function") {
@@ -8251,6 +8301,9 @@ function lowerNumberAccessExpression(
       if (isBoxedAggregateCandidateBinding(binding)) {
         const value = lowerValueExpression(expression.expression, bindings);
         if (value !== undefined) {
+          if (binding?.kind === "value" && binding.value.kind === "boxedPrimitive") {
+            return { kind: "valueObjectLength", value };
+          }
           return { kind: "valueArrayLength", value };
         }
       }
@@ -8267,7 +8320,7 @@ function isBoxedAggregateCandidateBinding(binding: JsIrBindingValue | undefined)
   if (binding?.kind !== "value") {
     return false;
   }
-  return binding.value.kind === "objectRef" || binding.value.kind === "arrayRef" || binding.value.kind === "objectDynamicAccess" || binding.value.kind === "arrayAccess" || binding.value.kind === "valueObjectDynamicAccess" || binding.value.kind === "valueArrayAccess";
+  return binding.value.kind === "objectRef" || binding.value.kind === "arrayRef" || binding.value.kind === "objectDynamicAccess" || binding.value.kind === "arrayAccess" || binding.value.kind === "valueObjectDynamicAccess" || binding.value.kind === "valueArrayAccess" || binding.value.kind === "boxedPrimitive";
 }
 
 function isProvenBoxedAggregateBinding(binding: JsIrBindingValue | undefined): boolean {

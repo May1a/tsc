@@ -178,6 +178,8 @@ export type RuntimeHelper =
   | "objectPropertyIsEnumerable"
   | "objectKeys"
   | "objectDelete"
+  | "boxedValueOf"
+  | "boxedToString"
   | "objectSet";
 
 export type RuntimeHelperEmitter = {
@@ -5138,6 +5140,41 @@ advance:
   br label %scan
 exit:
   ret void
+}
+`);
+  }
+  if (runtime.used.has("boxedValueOf")) {
+    definitions.push(`define i64 @boxedValueOf(ptr %object) {
+entry:
+  %count = load i64, ptr %object
+  %is.empty = icmp eq i64 %count, 0
+  br i1 %is.empty, label %miss, label %load
+load:
+  %entries.slot = getelementptr i8, ptr %object, i64 16
+  %entries = load ptr, ptr %entries.slot
+  %value.slot = getelementptr i8, ptr %entries, i64 16
+  %value = load i64, ptr %value.slot
+  ret i64 %value
+miss:
+  ret i64 9222246136947933184
+}
+`);
+  }
+  if (runtime.used.has("boxedToString")) {
+    definitions.push(`define { ptr, i64 } @boxedToString(ptr %object) {
+entry:
+  %count = load i64, ptr %object
+  %is.empty = icmp eq i64 %count, 0
+  br i1 %is.empty, label %miss, label %load
+load:
+  %entries.slot = getelementptr i8, ptr %object, i64 16
+  %entries = load ptr, ptr %entries.slot
+  %value.slot = getelementptr i8, ptr %entries, i64 16
+  %value = load i64, ptr %value.slot
+  %raw = call { ptr, i64 } @valueToString(i64 %value)
+  ret { ptr, i64 } %raw
+miss:
+  ret { ptr, i64 } { ptr null, i64 0 }
 }
 `);
   }

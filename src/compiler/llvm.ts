@@ -2942,6 +2942,97 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines, value: boxName };
   }
 
+  if (expression.kind === "boxedPrimitive") {
+    const lines: string[] = [];
+    useRuntimeHelper(context.runtime, "objectNew");
+    useRuntimeHelper(context.runtime, "objectSet");
+    useRuntimeHelper(context.runtime, "valueBoxObject");
+    if (expression.storeLength === true) {
+      useRuntimeHelper(context.runtime, "valueStringLength");
+    }
+    const inner = emitValueExpression(expression.inner, context);
+    lines.push(...inner.lines);
+    const { objectIndex } = context;
+    context.objectIndex += 1;
+    const objectName = `%boxed.object.${objectIndex}`;
+    let capacity = 1;
+    if (expression.storeLength === true) {
+      capacity = 2;
+    }
+    lines.push(`  ${objectName} = call ptr @objectNew(i64 ${capacity})`);
+    const primitiveKey = "primitive";
+    const primitiveKeyLen = primitiveKey.length;
+    const keyString = addStringConstant(primitiveKey, context);
+    lines.push(`  call void @objectSet(ptr ${objectName}, i64 ${primitiveKeyLen}, ptr ${keyString}, i64 ${inner.value})`);
+    if (expression.storeLength === true) {
+      const lengthKey = "length";
+      const lengthKeyLen = lengthKey.length;
+      const lengthKeyString = addStringConstant(lengthKey, context);
+      const lengthIndex = context.numIndex;
+      context.numIndex += 1;
+      const lengthValue = `%value.${lengthIndex}`;
+      lines.push(`  ${lengthValue} = call i64 @valueStringLength(i64 ${inner.value})`);
+      lines.push(`  call void @objectSet(ptr ${objectName}, i64 ${lengthKeyLen}, ptr ${lengthKeyString}, i64 ${lengthValue})`);
+    }
+    const valueIndex = context.numIndex;
+    context.numIndex += 1;
+    const value = `%value.${valueIndex}`;
+    lines.push(`  ${value} = call i64 @valueBoxObject(ptr ${objectName})`);
+    return { lines, value };
+  }
+
+  if (expression.kind === "boxedMethodCall") {
+    const lines: string[] = [];
+    const receiver = emitValueExpression(expression.receiver, context);
+    lines.push(...receiver.lines);
+    const { objectIndex } = context;
+    context.objectIndex += 1;
+    const objectPtr = `%boxed.object.ptr.${objectIndex}`;
+    useRuntimeHelper(context.runtime, "valueObjectPtr");
+    lines.push(`  ${objectPtr} = call ptr @valueObjectPtr(i64 ${receiver.value})`);
+    if (expression.method === "valueOf") {
+      useRuntimeHelper(context.runtime, "boxedValueOf");
+      const valueIndex = context.numIndex;
+      context.numIndex += 1;
+      const value = `%value.${valueIndex}`;
+      lines.push(`  ${value} = call i64 @boxedValueOf(ptr ${objectPtr})`);
+      return { lines, value };
+    }
+    useRuntimeHelper(context.runtime, "boxedToString");
+    useRuntimeHelper(context.runtime, "valueToString");
+    useRuntimeHelper(context.runtime, "valueBoxString");
+    useRuntimeHelper(context.runtime, "strConcat");
+    useRuntimeHelper(context.runtime, "malloc");
+    useRuntimeHelper(context.runtime, "memcpy");
+    const { stringIndex } = context;
+    context.stringIndex += 1;
+    const raw = `%str.result.${stringIndex}`;
+    const ptrValue = `%str.${stringIndex}`;
+    const length = `%str.len.${stringIndex}`;
+    lines.push(`  ${raw} = call { ptr, i64 } @boxedToString(ptr ${objectPtr})`);
+    lines.push(`  ${ptrValue} = extractvalue { ptr, i64 } ${raw}, 0`);
+    lines.push(`  ${length} = extractvalue { ptr, i64 } ${raw}, 1`);
+    const allocIndex = context.numIndex;
+    context.numIndex += 1;
+    const allocPtr = `%str.alloc.${allocIndex}`;
+    const totalIndex = context.numIndex;
+    context.numIndex += 1;
+    const totalLen = `%str.total.${totalIndex}`;
+    lines.push(`  ${totalLen} = add i64 ${length}, 1`);
+    lines.push(`  ${allocPtr} = call ptr @malloc(i64 ${totalLen})`);
+    lines.push(`  call ptr @memcpy(ptr ${allocPtr}, ptr ${ptrValue}, i64 ${length})`);
+    const nulIndex = context.numIndex;
+    context.numIndex += 1;
+    const nulPos = `%str.nul.${nulIndex}`;
+    lines.push(`  ${nulPos} = getelementptr i8, ptr ${allocPtr}, i64 ${length}`);
+    lines.push(`  store i8 0, ptr ${nulPos}`);
+    const boxIndex = context.numIndex;
+    context.numIndex += 1;
+    const boxValue = `%value.${boxIndex}`;
+    lines.push(`  ${boxValue} = call i64 @valueBoxString(ptr ${allocPtr}, i64 ${length})`);
+    return { lines, value: boxValue };
+  }
+
   if (expression.kind === "taggedTemplateValue") {
     const lines: string[] = [];
     useRuntimeHelper(context.runtime, "arrayNew");
@@ -4890,6 +4981,7 @@ function arrayNumberAppendHelper(kind: "arrayPush" | "arrayUnshift"): "arrayPush
   return "arrayUnshift";
 }
 
+// eslint-disable-next-line max-statements -- Pre-existing aggregate number expression dispatch centralizes array/object/math branches in one place.
 function emitAggregateNumberExpression(
   expression: JsIrNumberExpression,
   context: EmitContext
@@ -4926,6 +5018,20 @@ function emitAggregateNumberExpression(
     const value = `%num.${index}`;
     useRuntimeHelper(context.runtime, "valueArrayLength");
     return { lines: [...receiver.lines, `  ${length} = call i64 @valueArrayLength(i64 ${receiver.value})`, `  ${value} = uitofp i64 ${length} to double`], value };
+  }
+
+  if (expression.kind === "valueObjectLength") {
+    const receiver = emitValueExpression(expression.value, context);
+    const index = context.numIndex;
+    context.numIndex += 1;
+    const raw = `%obj.len.${index}`;
+    const value = `%num.${index}`;
+    useRuntimeHelper(context.runtime, "valueObjectGet");
+    const lengthKey = addStringConstant("length", context);
+    return {
+      lines: [...receiver.lines, `  ${raw} = call i64 @valueObjectGet(i64 ${receiver.value}, i64 6, ptr ${lengthKey})`, `  ${value} = sitofp i64 ${raw} to double`],
+      value
+    };
   }
 
   if (expression.kind === "objectAccess") {
