@@ -14,7 +14,7 @@ export type JsIrSourceModule = {
   readonly operations: readonly JsIrOperation[];
 };
 
-export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide" | "remainder" | "bitAnd" | "bitOr" | "bitXor" | "shiftLeft" | "shiftRight" | "shiftRightUnsigned";
+export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide" | "remainder" | "bitAnd" | "bitOr" | "bitXor" | "shiftLeft" | "shiftRight" | "shiftRightUnsigned" | "power";
 export type JsIrValueComparisonOperator = "==" | "!=" | "<" | "<=" | ">" | ">=";
 
 export type JsIrValueKind = "number" | "string" | "value";
@@ -155,6 +155,15 @@ export type JsIrValueExpression =
     }
   | {
       readonly kind: "optionalTarget";
+    }
+  | {
+      readonly kind: "void";
+      readonly expression: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "sequence";
+      readonly left: JsIrValueExpression;
+      readonly right: JsIrValueExpression;
     };
 
 export type JsIrRuntimeArrayElement =
@@ -5576,6 +5585,7 @@ function lowerCompoundAssignmentOperator(kind: ts.SyntaxKind): JsIrNumberOperato
     case ts.SyntaxKind.LessThanLessThanEqualsToken: { return "shiftLeft"; }
     case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken: { return "shiftRight"; }
     case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken: { return "shiftRightUnsigned"; }
+    case ts.SyntaxKind.AsteriskAsteriskEqualsToken: { return "power"; }
     default: { return undefined; }
   }
 }
@@ -7008,6 +7018,22 @@ function lowerDirectValueExpression(
     return { kind: "undefined" };
   }
 
+  if (ts.isVoidExpression(expression)) {
+    const inner = lowerValueExpression(expression.expression, bindings);
+    if (inner === undefined) {
+      return undefined;
+    }
+    return { kind: "void", expression: inner };
+  }
+
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+    const left = lowerValueExpression(expression.left, bindings);
+    const right = lowerValueExpression(expression.right, bindings);
+    if (left !== undefined && right !== undefined) {
+      return { kind: "sequence", left, right };
+    }
+  }
+
   if (expression.kind === ts.SyntaxKind.NullKeyword) {
     return { kind: "null" };
   }
@@ -7624,6 +7650,18 @@ function lowerNumberExpression(
     return lowerNumberConditionalExpression(expression, bindings);
   }
 
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+    const left = lowerValueExpression(expression.left, bindings);
+    if (left === undefined) {
+      return undefined;
+    }
+    const rightValue = lowerValueExpression(expression.right, bindings);
+    if (rightValue === undefined) {
+      return undefined;
+    }
+    return { kind: "valueToNumber", value: { kind: "sequence", left, right: rightValue } };
+  }
+
   if (!ts.isBinaryExpression(expression)) {
     return undefined;
   }
@@ -8214,6 +8252,9 @@ function lowerNumberOperator(kind: ts.SyntaxKind): JsIrNumberOperator | undefine
     case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken: {
       return "shiftRightUnsigned";
     }
+    case ts.SyntaxKind.AsteriskAsteriskToken: {
+      return "power";
+    }
     default: {
       return undefined;
     }
@@ -8484,6 +8525,15 @@ function unsupportedExpressionMessage(expression: ts.Expression): string | undef
   if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
     return unsupportedInstanceOfMessage(expression);
   }
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.InKeyword) {
+    return "The `in` operator only supports runtime dictionary objects and runtime arrays on the right-hand side";
+  }
+  if (ts.isVoidExpression(expression)) {
+    return undefined;
+  }
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.AsteriskAsteriskToken) {
+    return undefined;
+  }
   if (ts.isArrayLiteralExpression(expression)) {
     return unsupportedArrayLiteralMessage(expression);
   }
@@ -8654,10 +8704,22 @@ function unsupportedStringExpression(expression: ts.Expression): boolean {
     return true;
   }
   if (ts.isBinaryExpression(expression)) {
+    if (expression.operatorToken.kind === ts.SyntaxKind.InKeyword) {
+      return false;
+    }
+    if (
+      expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      || expression.operatorToken.kind === ts.SyntaxKind.CommaToken
+    ) {
+      return unsupportedStringExpression(expression.left) || unsupportedStringExpression(expression.right);
+    }
     return unsupportedStringExpression(expression.left) || unsupportedStringExpression(expression.right);
   }
   if (ts.isConditionalExpression(expression)) {
     return unsupportedStringExpression(expression.whenTrue) || unsupportedStringExpression(expression.whenFalse);
+  }
+  if (ts.isVoidExpression(expression)) {
+    return false;
   }
   return false;
 }

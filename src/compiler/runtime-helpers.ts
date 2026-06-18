@@ -1582,19 +1582,8 @@ end:
   if (runtime.used.has("mathPow")) {
     definitions.push(`define double @mathPow(double %base, double %exponent) {
 entry:
-  %count = fptosi double %exponent to i64
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next.i, %body ]
-  %acc = phi double [ 1.0, %entry ], [ %next.acc, %body ]
-  %done = icmp sge i64 %i, %count
-  br i1 %done, label %end, label %body
-body:
-  %next.acc = fmul double %acc, %base
-  %next.i = add i64 %i, 1
-  br label %loop
-end:
-  ret double %acc
+  %result = call double @llvm.pow.f64(double %base, double %exponent)
+  ret double %result
 }
 `);
   }

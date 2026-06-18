@@ -943,6 +943,62 @@ describe("tscn function declarations and calls", () => {
   });
 });
 
+describe("tscn operator expansion (package BZ)", () => {
+  test("evaluates the `in` operator against runtime objects and arrays", async () => {
+    const result = await expectSuccessfulCompile("operator-in-object.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nfalse\nfalse\ntrue\nfalse\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("rejects the `in` operator on non-runtime-object right-hand sides", async () => {
+    await expectUnsupportedDiagnostic("operator-in-non-object-unsupported.ts");
+  });
+
+  test("evaluates the `void` operator in value positions", async () => {
+    const result = await expectSuccessfulCompile("operator-void.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "undefined\nundefined\nundefined\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates the comma operator and discards the left operand", async () => {
+    const result = await expectSuccessfulCompile("operator-comma.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "side\n6\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates the `**` exponentiation operator with non-integer exponents", async () => {
+    const result = await expectSuccessfulCompile("operator-exponentiation.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1024\n0.5\n1.41421\n512\n0.01\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates the `**=` compound assignment", async () => {
+    const result = await expectSuccessfulCompile("operator-exponentiation-assign.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1024\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
 describe("tscn loops", () => {
   test("lowers while loops with mutable numeric bindings", async () => {
     const result = await expectSuccessfulCompile("while-loop.ts");

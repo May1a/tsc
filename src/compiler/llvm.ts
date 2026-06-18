@@ -2853,6 +2853,17 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines: [], value: target };
   }
 
+  if (expression.kind === "void") {
+    const inner = emitValueExpression(expression.expression, context);
+    return { lines: inner.lines, value: jsValueUndefined };
+  }
+
+  if (expression.kind === "sequence") {
+    const left = emitValueExpression(expression.left, context);
+    const right = emitValueExpression(expression.right, context);
+    return { lines: [...left.lines, ...right.lines], value: right.value };
+  }
+
   if (expression.kind === "arrayFind") {
     const array = emitRuntimeArrayPointer(expression.arrayName, context);
     const value = `%value.${context.numIndex}`;
@@ -4436,6 +4447,10 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
   if (isBitwiseNumberOperator(expression.operator)) {
     return emitBitwiseNumberExpression(expression, left, right, name, index);
   }
+  if (expression.operator === "power") {
+    useRuntimeHelper(context.runtime, "mathPow");
+    return { lines: [...left.lines, ...right.lines, `  ${name} = call double @mathPow(double ${left.value}, double ${right.value})`], value: name };
+  }
 
   return {
     lines: [...left.lines, ...right.lines, `  ${name} = ${llvmNumberOperator(expression.operator)} double ${left.value}, ${right.value}`],
@@ -5119,6 +5134,9 @@ function llvmNumberOperator(operator: JsIrNumberOperator): string {
     case "shiftRight":
     case "shiftRightUnsigned": {
       throw new Error("Bitwise operators are emitted through integer lowering");
+    }
+    case "power": {
+      throw new Error("Power operator is emitted through mathPow");
     }
   }
 
