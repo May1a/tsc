@@ -301,6 +301,50 @@ describe("tscn CLI", () => {
     }
   });
 
+  test("compiles the simple example through the Bun CLI entrypoint", async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), "tscn-example-"));
+    const llvmIr = path.join(outDir, "main.ll");
+    const traceMap = path.join(outDir, "trace-map.json");
+    const executable = path.join(outDir, "main");
+    const readArtifact = async (name: string): Promise<string> => readFile(path.join(outDir, name), "utf8");
+
+    try {
+      const run = await Effect.runPromise(
+        captureCommand("bun", [
+          "src/cli/main.ts",
+          "examples/01-simple.ts",
+          "--out-dir",
+          outDir
+        ], { cwd: repoRoot }).pipe(Effect.provide(testCompileLayer))
+      );
+      const clang = await toolExecutable("clang");
+      const cliResult: CompileResult = {
+        outDir,
+        status: run.status,
+        stdout: run.stdout,
+        stderr: run.stderr,
+        readArtifact,
+        cleanup: async () => rm(outDir, { recursive: true, force: true })
+      };
+
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stderr).not.toContain("TS6059");
+      expect(run.stderr).not.toContain("TSCN1002");
+      if (clang === undefined) {
+        expect(run.stderr).toContain("TSCN2001");
+      } else {
+        expect(run.stderr).toBe("");
+        expect(run.stdout).toContain(`Wrote ${executable}`);
+      }
+      expect(run.stdout).toContain(`Wrote ${llvmIr}`);
+      expect(run.stdout).toContain(`Wrote ${traceMap}`);
+      expect(await readArtifact("main.ll")).toContain("define i32 @main()");
+      await expectNativeBehaviorIfAvailable(cliResult, { status: 0, stdout: "", stderr: "" });
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  }, roadmapIntegrationTimeoutMs);
+
   test("verifies emitted LLVM IR when llvm-as is available", async () => {
     const result = await expectSuccessfulCompile("hello.ts");
 
@@ -1345,6 +1389,20 @@ describe("tscn loops", () => {
       expect(llvmIr).toContain("while.end.0:");
       expect(llvmIr).toContain("store double 0.0, ptr %i.addr");
       expect(llvmIr).toContain("store double %num.");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers unbraced while loop bodies with update expressions", async () => {
+    const result = await expectSuccessfulCompile("while-unbraced-increment.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br label %while.cond.0");
+      expect(llvmIr).toContain("while.body.0:");
+      expect(llvmIr).toContain("store double %num.");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\n", stderr: "" });
     } finally {
       await result.cleanup();
     }

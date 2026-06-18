@@ -3237,11 +3237,11 @@ function lowerWhileStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   const condition = lowerConditionExpression(statement.expression, bindings);
-  if (condition === undefined || !ts.isBlock(statement.statement)) {
+  if (condition === undefined) {
     return undefined;
   }
 
-  const body = lowerBlockStatements(statement.statement, bindings);
+  const body = lowerLoopBody(statement.statement, bindings);
   if (body === undefined) {
     return undefined;
   }
@@ -3258,11 +3258,11 @@ function lowerDoWhileStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   const condition = lowerConditionExpression(statement.expression, bindings);
-  if (condition === undefined || !ts.isBlock(statement.statement)) {
+  if (condition === undefined) {
     return undefined;
   }
 
-  const body = lowerBlockStatements(statement.statement, bindings);
+  const body = lowerLoopBody(statement.statement, bindings);
   if (body === undefined) {
     return undefined;
   }
@@ -3272,6 +3272,16 @@ function lowerDoWhileStatement(
     condition,
     body
   };
+}
+
+function lowerLoopBody(
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrOperation[] | undefined {
+  if (ts.isBlock(statement)) {
+    return lowerBlockStatements(statement, bindings);
+  }
+  return lowerStatementList([statement], bindings);
 }
 
 function lowerPrintExpression(

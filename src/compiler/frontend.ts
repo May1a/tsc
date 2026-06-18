@@ -124,6 +124,11 @@ const parseConfigFromContent = (
   return { parsed, diagnostics: tsDiagnosticsToCompiler([...parseDiagnostics, ...parsed.errors]) };
 };
 
+const compilerOptionsForEntry = (options: ts.CompilerOptions): ts.CompilerOptions => ({
+  ...options,
+  rootDir: undefined
+});
+
 const rejectPackageImports = (
   sourceFiles: readonly ts.SourceFile[]
 ): Effect.Effect<void, never, Diagnostics> =>
@@ -176,7 +181,7 @@ export const loadProgram = (
       }
     }
 
-    const program = ts.createProgram([resolvedEntry], parsed.options);
+    const program = ts.createProgram([resolvedEntry], compilerOptionsForEntry(parsed.options));
     const sourceFiles = program
       .getSourceFiles()
       .filter((sourceFile) => !sourceFile.isDeclarationFile && !sourceFile.fileName.includes("/node_modules/"));

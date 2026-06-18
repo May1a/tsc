@@ -23,7 +23,7 @@ export type LinkerError = LinkerLaunchFailed | LinkerExitFailed;
 const missingClangDiagnostic: CompilerDiagnostic = {
   code: "TSCN2001",
   category: "warning",
-  message: "clang was not found during toolchain discovery; LLVM IR was emitted but no native executable was linked"
+  message: "compatible clang was not found during toolchain discovery; LLVM IR was emitted but no native executable was linked"
 };
 
 const linkFailureDiagnostic = (message: string): CompilerDiagnostic => ({

@@ -26,10 +26,25 @@ const probeTool = (
   return probe;
 };
 
+const probeClang = (): Effect.Effect<Option.Option<string>, never, CommandExecutor.CommandExecutor> => {
+  const opaquePointerProbe = "declare i32 @puts(ptr)\ndefine i32 @main() {\nentry:\n  ret i32 0\n}\n";
+  return Command.exitCode(
+    Command.feed(Command.make("clang", "-x", "ir", "-", "-c", "-o", "/dev/null"), opaquePointerProbe)
+  ).pipe(
+    Effect.map((exitCode) => {
+      if (exitCode === 0) {
+        return Option.some("clang");
+      }
+      return Option.none<string>();
+    }),
+    Effect.catchAll(() => Effect.succeed(Option.none<string>()))
+  );
+};
+
 export const discoverToolchain: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
   function* discoverAllTools() {
     const [clang, llvmAs, lli] = yield* Effect.all(
-      [probeTool("clang"), probeTool("llvm-as"), probeTool("lli")],
+      [probeClang(), probeTool("llvm-as"), probeTool("lli")],
       { concurrency: "unbounded" }
     );
     return { clang, llvmAs, lli };
