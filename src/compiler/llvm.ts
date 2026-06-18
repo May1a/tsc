@@ -2872,6 +2872,52 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines: [...left.lines, ...right.lines], value: right.value };
   }
 
+  if (expression.kind === "stringStartsWith" || expression.kind === "stringEndsWith") {
+    const receiver = emitStringExpression(expression.receiver, context);
+    const search = emitStringExpression(expression.search, context);
+    let helper: "stringStartsWith" | "stringStartsWithAt" | "stringEndsWith" = "stringEndsWith";
+    if (expression.kind === "stringStartsWith") {
+      helper = "stringStartsWith";
+    }
+    if (expression.position !== undefined && expression.kind === "stringStartsWith") {
+      helper = "stringStartsWithAt";
+    }
+    useRuntimeHelper(context.runtime, helper);
+    const cmp = context.cmpIndex;
+    context.cmpIndex += 1;
+    const name = `%cmp.${cmp}`;
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    const positionLines: string[] = [];
+    let callArgs = `i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value}`;
+    if (expression.position !== undefined) {
+      const positionValue = emitArrayIndex(expression.position, context);
+      positionLines.push(...positionValue.lines);
+      callArgs = `${callArgs}, i64 ${positionValue.value}`;
+    }
+    return {
+      lines: [...receiver.lines, ...search.lines, ...positionLines, `  ${name} = call i1 @${helper}(${callArgs})`, `  ${value} = select i1 ${name}, i64 ${jsValueTrue}, i64 ${jsValueFalse}`],
+      value
+    };
+  }
+
+  if (expression.kind === "stringCharCodeAt" || expression.kind === "stringCodePointAt" || expression.kind === "stringLocaleCompare") {
+    const receiver = emitStringExpression(expression.receiver, context);
+    const index = emitArrayIndex(expression.index, context);
+    const doubleValue = `%num.${context.numIndex}`;
+    context.numIndex += 1;
+    useRuntimeHelper(context.runtime, "stringCharCodeAt");
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    const lines: string[] = [
+      ...receiver.lines,
+      ...index.lines,
+      `  ${doubleValue} = call double @stringCharCodeAt(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${index.value})`,
+      `  ${value} = bitcast double ${doubleValue} to i64`
+    ];
+    return { lines, value };
+  }
+
   if (expression.kind === "arrayFind") {
     const array = emitRuntimeArrayPointer(expression.arrayName, context);
     const value = `%value.${context.numIndex}`;
@@ -5016,7 +5062,9 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
       replace: "stringReplace",
       replaceAll: "stringReplaceAll",
       padStart: "stringPadStart",
-      padEnd: "stringPadEnd"
+      padEnd: "stringPadEnd",
+      at: "stringAt",
+      normalize: "stringNormalize"
     } as const;
     const helper = helperByMethod[expression.method];
     useRuntimeHelper(context.runtime, helper);
@@ -5059,6 +5107,20 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
           ...targetLength.lines,
           ...padString.lines,
           `  ${raw} = call { ptr, i64 } @${helper}(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${targetLength.value}, i64 ${padString.length}, ptr ${padString.value})`,
+          `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
+          `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+        ],
+        value,
+        length
+      };
+    }
+    if (expression.method === "at") {
+      const position = emitArrayIndex(expression.position ?? { kind: "literal", value: 0 }, context);
+      return {
+        lines: [
+          ...receiver.lines,
+          ...position.lines,
+          `  ${raw} = call { ptr, i64 } @${helper}(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${position.value})`,
           `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
           `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
         ],

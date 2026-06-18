@@ -164,6 +164,18 @@ export type JsIrValueExpression =
       readonly kind: "sequence";
       readonly left: JsIrValueExpression;
       readonly right: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "stringStartsWith" | "stringEndsWith";
+      readonly receiver: JsIrStringExpression;
+      readonly search: JsIrStringExpression;
+      readonly position?: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "stringCharCodeAt" | "stringCodePointAt" | "stringLocaleCompare";
+      readonly receiver: JsIrStringExpression;
+      readonly index: JsIrNumberExpression;
+      readonly other?: JsIrStringExpression;
     };
 
 export type JsIrRuntimeArrayElement =
@@ -342,13 +354,14 @@ export type JsIrStringExpression =
     }
   | {
       readonly kind: "stringMethod";
-      readonly method: "trim" | "trimStart" | "trimEnd" | "toUpperCase" | "toLowerCase" | "repeat" | "replace" | "replaceAll" | "padStart" | "padEnd";
+      readonly method: "trim" | "trimStart" | "trimEnd" | "toUpperCase" | "toLowerCase" | "repeat" | "replace" | "replaceAll" | "padStart" | "padEnd" | "at" | "normalize";
       readonly receiver: JsIrStringExpression;
       readonly count?: JsIrNumberExpression;
       readonly search?: JsIrStringExpression;
       readonly replacement?: JsIrStringExpression;
       readonly targetLength?: JsIrNumberExpression;
       readonly padString?: JsIrStringExpression;
+      readonly position?: JsIrNumberExpression;
     }
   | {
       readonly kind: "numberFormat";
@@ -7349,22 +7362,108 @@ function lowerStringValueMethodCall(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
   const stringMethod = lowerStringMethodCall(expression, bindings);
-  if (stringMethod === undefined) {
+  if (stringMethod !== undefined) {
+    if (typeof stringMethod === "object") {
+      return { kind: "undefined" };
+    }
+    if (typeof stringMethod === "string") {
+      return { kind: "string", value: { kind: "literal", value: stringMethod } };
+    }
+    if (typeof stringMethod === "number") {
+      if (Number.isNaN(stringMethod)) {
+        return { kind: "number", value: { kind: "nan" } };
+      }
+      return { kind: "number", value: { kind: "literal", value: stringMethod } };
+    }
+    return { kind: "boolean", value: { kind: "boolean", value: stringMethod } };
+  }
+  return lowerRuntimeStringMethodCall(expression, bindings);
+}
+
+// eslint-disable-next-line complexity, max-statements -- Runtime string method dispatch routes every method to a dedicated IR node for emission.
+function lowerRuntimeStringMethodCall(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression)) {
     return undefined;
   }
-  if (typeof stringMethod === "object") {
-    return { kind: "undefined" };
+  const receiverName = expression.expression.expression.text;
+  const receiverBinding = bindings.get(receiverName);
+  if (receiverBinding === undefined) {
+    return undefined;
   }
-  if (typeof stringMethod === "string") {
-    return { kind: "string", value: { kind: "literal", value: stringMethod } };
+  const receiver = lowerStringRuntimeExpression(expression.expression.expression, bindings);
+  if (receiver === undefined) {
+    return undefined;
   }
-  if (typeof stringMethod === "number") {
-    if (Number.isNaN(stringMethod)) {
-      return { kind: "number", value: { kind: "nan" } };
+  const method = expression.expression.name.text;
+  const args = [...expression.arguments];
+  const first = args.at(0);
+  if ((method === "startsWith" || method === "endsWith") && (args.length === 1 || args.length === 2)) {
+    if (first === undefined) {
+      return undefined;
     }
-    return { kind: "number", value: { kind: "literal", value: stringMethod } };
+    const search = lowerStringRuntimeExpression(first, bindings);
+    if (search === undefined) {
+      return undefined;
+    }
+    let position: JsIrNumberExpression | undefined;
+    if (args.length === 2) {
+      const pos = lowerNumberExpression(args[1], bindings);
+      if (pos === undefined) {
+        return undefined;
+      }
+      position = pos;
+    }
+    if (method === "startsWith") {
+      if (position === undefined) {
+        return { kind: "stringStartsWith", receiver, search };
+      }
+      return { kind: "stringStartsWith", receiver, search, position };
+    }
+    if (position === undefined) {
+      return { kind: "stringEndsWith", receiver, search };
+    }
+    return { kind: "stringEndsWith", receiver, search, position };
   }
-  return { kind: "boolean", value: { kind: "boolean", value: stringMethod } };
+  if ((method === "charCodeAt" || method === "codePointAt") && args.length === 1) {
+    if (first === undefined) {
+      return undefined;
+    }
+    const index = lowerNumberExpression(first, bindings);
+    if (index === undefined) {
+      return undefined;
+    }
+    if (method === "charCodeAt") {
+      return { kind: "stringCharCodeAt", receiver, index };
+    }
+    return { kind: "stringCodePointAt", receiver, index };
+  }
+  if (method === "localeCompare" && args.length === 1) {
+    if (first === undefined) {
+      return undefined;
+    }
+    const other = lowerStringRuntimeExpression(first, bindings);
+    if (other === undefined) {
+      return undefined;
+    }
+    return { kind: "stringLocaleCompare", receiver, index: { kind: "literal", value: 0 }, other };
+  }
+  if (method === "at" && args.length === 1) {
+    if (first === undefined) {
+      return undefined;
+    }
+    const position = lowerNumberExpression(first, bindings);
+    if (position === undefined) {
+      return undefined;
+    }
+    return { kind: "string", value: { kind: "stringMethod", method: "at", receiver, position } };
+  }
+  if (method === "normalize" && args.length === 0) {
+    return { kind: "string", value: { kind: "stringMethod", method: "normalize", receiver } };
+  }
+  return undefined;
 }
 
 // eslint-disable-next-line complexity, max-statements -- String method folding centralizes the narrow boxed-string roadmap slice.
@@ -8774,6 +8873,15 @@ function unsupportedStringExpression(expression: ts.Expression): boolean {
     return unsupportedStringExpression(expression.whenTrue) || unsupportedStringExpression(expression.whenFalse);
   }
   if (ts.isVoidExpression(expression)) {
+    return false;
+  }
+  if (ts.isCallExpression(expression)) {
+    if (ts.isPropertyAccessExpression(expression.expression)) {
+      return false;
+    }
+    return expression.arguments.some((argument) => unsupportedStringExpression(argument));
+  }
+  if (ts.isPropertyAccessExpression(expression)) {
     return false;
   }
   return false;

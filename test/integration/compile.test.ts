@@ -1061,6 +1061,78 @@ describe("tscn for-in loops (package CA)", () => {
   });
 });
 
+describe("tscn string methods (package CB)", () => {
+  test("evaluates startsWith on runtime strings", async () => {
+    const result = await expectSuccessfulCompile("string-starts-with.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nfalse\nfalse\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates startsWith with a position offset", async () => {
+    const result = await expectSuccessfulCompile("string-starts-with-position.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates endsWith on runtime strings", async () => {
+    const result = await expectSuccessfulCompile("string-ends-with.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nfalse\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates at with negative and out-of-range indices", async () => {
+    const result = await expectSuccessfulCompile("string-at-negative.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "o\nh\nl\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates charCodeAt on runtime strings", async () => {
+    const result = await expectSuccessfulCompile("string-char-code-at-runtime.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "104\n101\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates localeCompare on runtime strings (stubbed to first char code)", async () => {
+    const result = await expectSuccessfulCompile("string-locale-compare-basic.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "104\n104\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates normalize as a passthrough (NFC identity)", async () => {
+    const result = await expectSuccessfulCompile("string-normalize-nfc-basic.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
 describe("tscn loops", () => {
   test("lowers while loops with mutable numeric bindings", async () => {
     const result = await expectSuccessfulCompile("while-loop.ts");

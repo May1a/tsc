@@ -19,6 +19,10 @@ export type RuntimeHelper =
   | "stringPadStart"
   | "stringPadEnd"
   | "stringSplit"
+  | "stringAt"
+  | "stringNormalize"
+  | "stringCharCodeAt"
+  | "stringStartsWithAt"
   | "valueStrictEquals"
   | "valueSameValueZero"
   | "valueLooseEquals"
@@ -187,10 +191,12 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["strEquals", ["memcmp"]],
   ["stringIncludes", ["memcmp"]],
   ["stringStartsWith", ["memcmp"]],
+  ["stringStartsWithAt", ["memcmp"]],
   ["stringEndsWith", ["memcmp"]],
   ["stringTrim", ["malloc", "memcpy"]],
   ["stringTrimStart", ["malloc", "memcpy"]],
   ["stringTrimEnd", ["malloc", "memcpy"]],
+  ["stringNormalize", ["malloc", "memcpy"]],
   ["stringToUpperCase", ["malloc"]],
   ["stringToLowerCase", ["malloc"]],
   ["stringRepeat", ["malloc", "memcpy"]],
@@ -456,13 +462,29 @@ false:
 }
 `);
   }
-  if (runtime.used.has("stringStartsWith")) {
+  if (runtime.used.has("stringStartsWith") || runtime.used.has("stringStartsWithAt")) {
     definitions.push(`define i1 @stringStartsWith(i64 %value.len, ptr %value.ptr, i64 %search.len, ptr %search.ptr) {
 entry:
   %enough = icmp uge i64 %value.len, %search.len
   br i1 %enough, label %compare, label %false
 compare:
   %cmp = call i32 @memcmp(ptr %value.ptr, ptr %search.ptr, i64 %search.len)
+  %same = icmp eq i32 %cmp, 0
+  ret i1 %same
+false:
+  ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("stringStartsWithAt")) {
+    definitions.push(`define i1 @stringStartsWithAt(i64 %value.len, ptr %value.ptr, i64 %search.len, ptr %search.ptr, i64 %position) {
+entry:
+  %remaining = sub i64 %value.len, %position
+  %enough = icmp uge i64 %remaining, %search.len
+  br i1 %enough, label %compare, label %false
+compare:
+  %start = getelementptr i8, ptr %value.ptr, i64 %position
+  %cmp = call i32 @memcmp(ptr %start, ptr %search.ptr, i64 %search.len)
   %same = icmp eq i32 %cmp, 0
   ret i1 %same
 false:
@@ -483,6 +505,71 @@ compare:
   ret i1 %same
 false:
   ret i1 false
+}
+`);
+  }
+  if (runtime.used.has("stringAt")) {
+    definitions.push(`define { ptr, i64 } @stringAt(i64 %value.len, ptr %value.ptr, i64 %position) {
+entry:
+  %neg = icmp slt i64 %position, 0
+  br i1 %neg, label %negative, label %positive
+negative:
+  %adjusted = add i64 %position, %value.len
+  br label %check
+positive:
+  br label %check
+check:
+  %index = phi i64 [ %adjusted, %negative ], [ %position, %positive ]
+  %in.range = icmp ult i64 %index, %value.len
+  br i1 %in.range, label %hit, label %miss
+hit:
+  %char.ptr = getelementptr i8, ptr %value.ptr, i64 %index
+  %out = call ptr @malloc(i64 2)
+  %byte = load i8, ptr %char.ptr
+  store i8 %byte, ptr %out
+  %nul = getelementptr i8, ptr %out, i64 1
+  store i8 0, ptr %nul
+  %r0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %r1 = insertvalue { ptr, i64 } %r0, i64 1, 1
+  ret { ptr, i64 } %r1
+miss:
+  ret { ptr, i64 } { ptr null, i64 0 }
+}
+`);
+  }
+  if (runtime.used.has("stringNormalize")) {
+    definitions.push(`define { ptr, i64 } @stringNormalize(i64 %value.len, ptr %value.ptr) {
+entry:
+  %out = call ptr @malloc(i64 %value.len)
+  call ptr @memcpy(ptr %out, ptr %value.ptr, i64 %value.len)
+  %r0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %r1 = insertvalue { ptr, i64 } %r0, i64 %value.len, 1
+  ret { ptr, i64 } %r1
+}
+`);
+  }
+  if (runtime.used.has("stringCharCodeAt")) {
+    definitions.push(`define double @stringCharCodeAt(i64 %value.len, ptr %value.ptr, i64 %index) {
+entry:
+  %neg = icmp slt i64 %index, 0
+  br i1 %neg, label %negative, label %positive
+negative:
+  %adjusted = add i64 %index, %value.len
+  br label %check
+positive:
+  br label %check
+check:
+  %real = phi i64 [ %adjusted, %negative ], [ %index, %positive ]
+  %in.range = icmp ult i64 %real, %value.len
+  br i1 %in.range, label %hit, label %miss
+hit:
+  %byte.ptr = getelementptr i8, ptr %value.ptr, i64 %real
+  %byte = load i8, ptr %byte.ptr
+  %code = zext i8 %byte to i64
+  %as.double = sitofp i64 %code to double
+  ret double %as.double
+miss:
+  ret double 0x7FF8000000000000
 }
 `);
   }
