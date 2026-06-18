@@ -1291,6 +1291,48 @@ describe("tscn spread in function calls (package BY.3)", () => {
   });
 });
 
+describe("tscn destructuring parameters (package BY.2)", () => {
+  test("binds array destructuring parameters to local names", async () => {
+    const result = await expectSuccessfulCompile("param-destructure-array-test.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("binds object destructuring parameters to local names", async () => {
+    const result = await expectSuccessfulCompile("param-destructure-object-test.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("applies default values to destructured object properties", async () => {
+    const result = await expectSuccessfulCompile("param-destructure-default-test.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n10\n1\n2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("indexes into a value-typed array destructured parameter", async () => {
+    const result = await expectSuccessfulCompile("param-destructure-element-test.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
 describe("tscn loops", () => {
   test("lowers while loops with mutable numeric bindings", async () => {
     const result = await expectSuccessfulCompile("while-loop.ts");
