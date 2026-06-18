@@ -3435,6 +3435,7 @@ function lowerSwitchStatement(
   return { kind: "switch", expression, clauses };
 }
 
+// eslint-disable-next-line complexity, max-statements -- Function declaration lowering covers default initializers, rest parameters, and per-kind binding setup in one place.
 function lowerFunctionDeclaration(
   statement: ts.FunctionDeclaration,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -3448,54 +3449,38 @@ function lowerFunctionDeclaration(
 
   const parameters: JsIrFunctionParameter[] = [];
   const fnBindings = new Map(bindings);
-  let seenRest = false;
   for (let i = 0; i < statement.parameters.length; i++) {
     const param = statement.parameters[i];
     if (!ts.isIdentifier(param.name)) {
       return undefined;
     }
     const isRest = param.dotDotDotToken !== undefined;
+    if (isRest && i !== statement.parameters.length - 1) {
+      return undefined;
+    }
+    let valueKind: JsIrValueKind;
     if (isRest) {
-      if (i !== statement.parameters.length - 1) {
-        return undefined;
-      }
-      seenRest = true;
+      valueKind = "value";
+    } else {
+      valueKind = parameterValueKind(param);
     }
-    const valueKind = isRest ? "value" : parameterValueKind(param);
     let defaultValue: JsIrNumberExpression | undefined;
-    if (param.initializer !== undefined && param.initializer.kind !== ts.SyntaxKind.UndefinedKeyword) {
-      if (isRest || valueKind !== "number") {
-        return undefined;
-      }
-      const lowered = lowerNumberExpression(param.initializer, fnBindings);
-      if (lowered === undefined) {
-        return undefined;
-      }
-      defaultValue = lowered;
+    if (!isRest) {
+      defaultValue = lowerNumericDefaultValue(param, fnBindings);
     }
+    let parameter: JsIrFunctionParameter;
     if (defaultValue === undefined) {
       if (isRest) {
-        parameters.push({ name: param.name.text, valueKind, isRest: true });
+        parameter = { name: param.name.text, valueKind, isRest: true };
       } else {
-        parameters.push({ name: param.name.text, valueKind });
+        parameter = { name: param.name.text, valueKind };
       }
     } else {
-      parameters.push({ name: param.name.text, valueKind, defaultValue });
+      parameter = { name: param.name.text, valueKind, defaultValue };
     }
-    if (isRest) {
-      fnBindings.set(param.name.text, { kind: "valueVariable", name: param.name.text });
-    } else if (valueKind === "string") {
-      fnBindings.set(param.name.text, { kind: "stringVariable", name: param.name.text });
-    } else if (valueKind === "value") {
-      fnBindings.set(param.name.text, { kind: "valueVariable", name: param.name.text });
-    } else {
-      fnBindings.set(param.name.text, {
-        kind: "number",
-        value: { kind: "parameter", name: param.name.text }
-      });
-    }
+    parameters.push(parameter);
+    bindFunctionParameter(param.name.text, valueKind, isRest, fnBindings);
   }
-  void seenRest;
 
   const body = lowerBlockStatements(statement.body, fnBindings);
   if (body === undefined) {
@@ -3508,6 +3493,33 @@ function lowerFunctionDeclaration(
     parameters,
     body
   };
+}
+
+function lowerNumericDefaultValue(
+  param: ts.ParameterDeclaration,
+  fnBindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrNumberExpression | undefined {
+  if (param.initializer === undefined || param.initializer.kind === ts.SyntaxKind.UndefinedKeyword) {
+    return undefined;
+  }
+  return lowerNumberExpression(param.initializer, fnBindings);
+}
+
+function bindFunctionParameter(
+  name: string,
+  valueKind: JsIrValueKind,
+  isRest: boolean,
+  fnBindings: Map<string, JsIrBindingValue>
+): void {
+  if (isRest || valueKind === "value") {
+    fnBindings.set(name, { kind: "valueVariable", name });
+    return;
+  }
+  if (valueKind === "string") {
+    fnBindings.set(name, { kind: "stringVariable", name });
+    return;
+  }
+  fnBindings.set(name, { kind: "number", value: { kind: "parameter", name } });
 }
 
 function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValueKind {
@@ -8398,7 +8410,16 @@ function lowerTypedCallArgumentsWithRest(
   }
   const restValues: JsIrValueExpression[] = [];
   for (let i = restIndex; i < args.length; i++) {
-    const value = lowerValueExpression(args[i], bindings);
+    const arg = args[i];
+    if (ts.isSpreadElement(arg)) {
+      const spreadValues = lowerSpreadElementValues(arg, bindings);
+      if (spreadValues === undefined) {
+        return undefined;
+      }
+      restValues.push(...spreadValues);
+      continue;
+    }
+    const value = lowerValueExpression(arg, bindings);
     if (value === undefined) {
       return undefined;
     }
@@ -8406,6 +8427,27 @@ function lowerTypedCallArgumentsWithRest(
   }
   lowered.push({ valueKind: "value", value: { kind: "runtimeArrayValue", elements: restValues } });
   return lowered;
+}
+
+function lowerSpreadElementValues(
+  element: ts.SpreadElement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrValueExpression[] | undefined {
+  if (!ts.isIdentifier(element.expression)) {
+    return undefined;
+  }
+  const binding = bindings.get(element.expression.text);
+  if (binding?.kind === "array") {
+    const values: JsIrValueExpression[] = [];
+    for (let i = 0; i < binding.length; i++) {
+      values.push({ kind: "number", value: { kind: "arrayAccess", arrayName: binding.name, index: { kind: "literal", value: i } } });
+    }
+    return values;
+  }
+  if (binding?.kind === "runtimeArray") {
+    return undefined;
+  }
+  return undefined;
 }
 
 function lowerTypedCallArgument(

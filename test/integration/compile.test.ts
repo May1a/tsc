@@ -1175,6 +1175,28 @@ describe("tscn rest parameters (package BY.1)", () => {
   });
 });
 
+describe("tscn spread in function calls (package BY.3)", () => {
+  test("spreads a fixed array into a rest parameter", async () => {
+    const result = await expectSuccessfulCompile("call-spread-into-rest.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("mixes a positional argument with a spread", async () => {
+    const result = await expectSuccessfulCompile("call-spread-mixed.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n3\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
 describe("tscn loops", () => {
   test("lowers while loops with mutable numeric bindings", async () => {
     const result = await expectSuccessfulCompile("while-loop.ts");

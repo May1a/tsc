@@ -2924,7 +2924,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     for (const value of values) {
       lines.push(...value.lines);
     }
-    const arrayIndex = context.arrayIndex;
+    const { arrayIndex } = context;
     context.arrayIndex += 1;
     const arrayName = `%rest.array.${arrayIndex}`;
     const lengthValue = expression.elements.length;
