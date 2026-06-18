@@ -2918,6 +2918,30 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines, value };
   }
 
+  if (expression.kind === "runtimeArrayValue") {
+    const lines: string[] = [];
+    const values = expression.elements.map((element) => emitValueExpression(element, context));
+    for (const value of values) {
+      lines.push(...value.lines);
+    }
+    const arrayIndex = context.arrayIndex;
+    context.arrayIndex += 1;
+    const arrayName = `%rest.array.${arrayIndex}`;
+    const lengthValue = expression.elements.length;
+    useRuntimeHelper(context.runtime, "arrayNew");
+    useRuntimeHelper(context.runtime, "arraySet");
+    lines.push(`  ${arrayName} = call ptr @arrayNew(i64 ${lengthValue})`);
+    for (let i = 0; i < values.length; i++) {
+      lines.push(`  call void @arraySet(ptr ${arrayName}, i64 ${i}, i64 ${values[i].value})`);
+    }
+    const boxIndex = context.numIndex;
+    context.numIndex += 1;
+    const boxName = `%value.${boxIndex}`;
+    useRuntimeHelper(context.runtime, "valueBoxArray");
+    lines.push(`  ${boxName} = call i64 @valueBoxArray(ptr ${arrayName})`);
+    return { lines, value: boxName };
+  }
+
   if (expression.kind === "arrayFind") {
     const array = emitRuntimeArrayPointer(expression.arrayName, context);
     const value = `%value.${context.numIndex}`;

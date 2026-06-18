@@ -1133,6 +1133,48 @@ describe("tscn string methods (package CB)", () => {
   });
 });
 
+describe("tscn rest parameters (package BY.1)", () => {
+  test("captures the trailing arguments into a rest array", async () => {
+    const result = await expectSuccessfulCompile("param-rest-basic.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "0\n1\n3\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("mixes a named parameter with a rest array", async () => {
+    const result = await expectSuccessfulCompile("param-rest-with-named.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "10\n2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("captures an empty rest array when no extra args are passed", async () => {
+    const result = await expectSuccessfulCompile("param-rest-empty-trailing.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n0\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("pads defaults before the rest array", async () => {
+    const result = await expectSuccessfulCompile("param-mixed-defaults-rest.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "6\n3\n5\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
 describe("tscn loops", () => {
   test("lowers while loops with mutable numeric bindings", async () => {
     const result = await expectSuccessfulCompile("while-loop.ts");
