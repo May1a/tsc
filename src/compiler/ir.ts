@@ -181,6 +181,14 @@ export type JsIrValueExpression =
   | {
       readonly kind: "runtimeArrayValue";
       readonly elements: readonly JsIrValueExpression[];
+    }
+  | {
+      readonly kind: "taggedTemplateValue";
+      readonly tag: string;
+      readonly head: string;
+      readonly middleTexts: readonly string[];
+      readonly expressions: readonly JsIrValueExpression[];
+      readonly wrapValuesInRest?: boolean;
     };
 
 export type JsIrRuntimeArrayElement =
@@ -367,6 +375,13 @@ export type JsIrStringExpression =
       readonly targetLength?: JsIrNumberExpression;
       readonly padString?: JsIrStringExpression;
       readonly position?: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "taggedTemplate";
+      readonly tag: string;
+      readonly head: string;
+      readonly middleTexts: readonly string[];
+      readonly expressions: readonly JsIrValueExpression[];
     }
   | {
       readonly kind: "numberFormat";
@@ -5942,6 +5957,10 @@ function lowerStringRuntimeExpression(
     return lowerStringConcatExpression(expression, bindings);
   }
 
+  if (ts.isTemplateExpression(expression)) {
+    return lowerTemplateExpression(expression, bindings);
+  }
+
   if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
     if (expression.expression.text === "String" && expression.arguments.length === 1) {
       const value = lowerValueExpression(expression.arguments[0], bindings);
@@ -6164,6 +6183,70 @@ function lowerStringConcatExpression(
     kind: "concat",
     left: { kind: "stringConversion", value: leftValue },
     right: { kind: "stringConversion", value: rightValue }
+  };
+}
+
+// eslint-disable-next-line complexity, max-statements -- Template literal lowering handles multi-interpolation, nested templates, and tagged templates in one place.
+function lowerTemplateExpression(
+  expression: ts.TemplateExpression | ts.TaggedTemplateExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrStringExpression | undefined {
+  if (ts.isTaggedTemplateExpression(expression)) {
+    return lowerTaggedTemplateExpression(expression, bindings);
+  }
+  const head = expression.head.text;
+  let result: JsIrStringExpression = { kind: "literal", value: head };
+  for (const span of expression.templateSpans) {
+    const exprValue = lowerValueExpression(span.expression, bindings);
+    if (exprValue === undefined) {
+      return undefined;
+    }
+    const middle = span.literal.text;
+    result = {
+      kind: "concat",
+      left: result,
+      right: {
+        kind: "concat",
+        left: { kind: "stringConversion", value: exprValue },
+        right: { kind: "literal", value: middle }
+      }
+    };
+  }
+  return result;
+}
+
+function lowerTaggedTemplateExpression(
+  expression: ts.TaggedTemplateExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrStringExpression | undefined {
+  if (!ts.isIdentifier(expression.tag) || expression.tag.text === "String") {
+    return undefined;
+  }
+  const tagBinding = bindings.get(expression.tag.text);
+  if (tagBinding?.kind !== "function" || tagBinding.returnKind !== "string") {
+    return undefined;
+  }
+  const { template } = expression;
+  if (ts.isNoSubstitutionTemplateLiteral(template)) {
+    return { kind: "literal", value: template.text };
+  }
+  const headText = template.head.text;
+  const middleTexts: string[] = [];
+  const middleExpressions: JsIrValueExpression[] = [];
+  for (const span of template.templateSpans) {
+    middleTexts.push(span.literal.text);
+    const exprValue = lowerValueExpression(span.expression, bindings);
+    if (exprValue === undefined) {
+      return undefined;
+    }
+    middleExpressions.push(exprValue);
+  }
+  return {
+    kind: "taggedTemplate",
+    tag: expression.tag.text,
+    head: headText,
+    middleTexts,
+    expressions: middleExpressions
   };
 }
 
@@ -7125,6 +7208,40 @@ function lowerDirectValueExpression(
       return undefined;
     }
     return { kind: "void", expression: inner };
+  }
+
+  if (ts.isTaggedTemplateExpression(expression) && ts.isIdentifier(expression.tag)) {
+    const tagBinding = bindings.get(expression.tag.text);
+    if (tagBinding?.kind === "function") {
+      const { template } = expression;
+      if (ts.isNoSubstitutionTemplateLiteral(template)) {
+        const value = lowerStringRuntimeExpression(template, bindings);
+        if (value === undefined) {
+          return undefined;
+        }
+        return { kind: "string", value };
+      }
+      const headText = template.head.text;
+      const middleTexts: string[] = [];
+      const middleExpressions: JsIrValueExpression[] = [];
+      for (const span of template.templateSpans) {
+        middleTexts.push(span.literal.text);
+        const exprValue = lowerValueExpression(span.expression, bindings);
+        if (exprValue === undefined) {
+          return undefined;
+        }
+        middleExpressions.push(exprValue);
+      }
+      const hasRest = tagBinding.parameters.some((parameter) => parameter.isRest === true);
+      return {
+        kind: "taggedTemplateValue",
+        tag: expression.tag.text,
+        head: headText,
+        middleTexts,
+        expressions: middleExpressions,
+        wrapValuesInRest: hasRest
+      };
+    }
   }
 
   if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.CommaToken) {

@@ -2942,6 +2942,96 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines, value: boxName };
   }
 
+  if (expression.kind === "taggedTemplateValue") {
+    const lines: string[] = [];
+    useRuntimeHelper(context.runtime, "arrayNew");
+    useRuntimeHelper(context.runtime, "arraySet");
+    useRuntimeHelper(context.runtime, "valueBoxString");
+    useRuntimeHelper(context.runtime, "valueBoxArray");
+    const { arrayIndex } = context;
+    context.arrayIndex += 1;
+    const stringsArray = `%strings.array.${arrayIndex}`;
+    const totalStrings = expression.middleTexts.length + 1;
+    lines.push(`  ${stringsArray} = call ptr @arrayNew(i64 ${totalStrings})`);
+    const headString = addStringConstant(expression.head, context);
+    const headLength = String(utf8ByteLength(expression.head));
+    const headBoxIndex = context.numIndex;
+    context.numIndex += 1;
+    const headBox = `%value.${headBoxIndex}`;
+    lines.push(`  ${headBox} = call i64 @valueBoxString(ptr ${headString}, i64 ${headLength})`);
+    lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 0, i64 ${headBox})`);
+    for (let i = 0; i < expression.middleTexts.length; i++) {
+      const text = expression.middleTexts[i];
+      const textString = addStringConstant(text, context);
+      const textLength = String(utf8ByteLength(text));
+      const textBoxIndex = context.numIndex;
+      context.numIndex += 1;
+      const textBox = `%value.${textBoxIndex}`;
+      lines.push(`  ${textBox} = call i64 @valueBoxString(ptr ${textString}, i64 ${textLength})`);
+      lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 ${i + 1}, i64 ${textBox})`);
+    }
+    const stringsBoxIndex = context.numIndex;
+    context.numIndex += 1;
+    const stringsBox = `%value.${stringsBoxIndex}`;
+    lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
+    const expressionValues = expression.expressions.map((expr) => emitValueExpression(expr, context));
+    for (const value of expressionValues) {
+      lines.push(...value.lines);
+    }
+    const valueArgs: string[] = [];
+    if (expression.wrapValuesInRest === true) {
+      const restArrayIndex = context.arrayIndex;
+      context.arrayIndex += 1;
+      const restArray = `%rest.array.${restArrayIndex}`;
+      const restLength = expressionValues.length;
+      lines.push(`  ${restArray} = call ptr @arrayNew(i64 ${restLength})`);
+      for (let i = 0; i < expressionValues.length; i++) {
+        lines.push(`  call void @arraySet(ptr ${restArray}, i64 ${i}, i64 ${expressionValues[i].value})`);
+      }
+      const restBoxIndex = context.numIndex;
+      context.numIndex += 1;
+      const restBox = `%value.${restBoxIndex}`;
+      lines.push(`  ${restBox} = call i64 @valueBoxArray(ptr ${restArray})`);
+      valueArgs.push(restBox);
+    } else {
+      for (const value of expressionValues) {
+        valueArgs.push(value.value);
+      }
+    }
+    const { callIndex } = context;
+    context.callIndex += 1;
+    const raw = `%tagged.${callIndex}`;
+    const callArgs = [`i64 ${stringsBox}`, ...valueArgs.map((arg) => `i64 ${arg}`)].join(", ");
+    lines.push(`  ${raw} = call { ptr, i64 } @${expression.tag}(${callArgs})`);
+    const ptrIndex = context.numIndex;
+    context.numIndex += 1;
+    const ptrValue = `%value.${ptrIndex}`;
+    const lenIndex = context.numIndex;
+    context.numIndex += 1;
+    const lenValue = `%value.${lenIndex}`;
+    lines.push(`  ${ptrValue} = extractvalue { ptr, i64 } ${raw}, 0`);
+    lines.push(`  ${lenValue} = extractvalue { ptr, i64 } ${raw}, 1`);
+    const resultBoxIndex = context.numIndex;
+    context.numIndex += 1;
+    const resultBox = `%value.${resultBoxIndex}`;
+    const resultAllocIndex = context.numIndex;
+    context.numIndex += 1;
+    const resultAlloc = `%str.alloc.${resultAllocIndex}`;
+    const totalLenIndex = context.numIndex;
+    context.numIndex += 1;
+    const totalLen = `%str.total.${totalLenIndex}`;
+    lines.push(`  ${totalLen} = add i64 ${lenValue}, 1`);
+    lines.push(`  ${resultAlloc} = call ptr @malloc(i64 ${totalLen})`);
+    lines.push(`  call ptr @memcpy(ptr ${resultAlloc}, ptr ${ptrValue}, i64 ${lenValue})`);
+    const nulPosIndex = context.numIndex;
+    context.numIndex += 1;
+    const nulPos = `%str.nul.${nulPosIndex}`;
+    lines.push(`  ${nulPos} = getelementptr i8, ptr ${resultAlloc}, i64 ${lenValue}`);
+    lines.push(`  store i8 0, ptr ${nulPos}`);
+    lines.push(`  ${resultBox} = call i64 @valueBoxString(ptr ${resultAlloc}, i64 ${lenValue})`);
+    return { lines, value: resultBox };
+  }
+
   if (expression.kind === "arrayFind") {
     const array = emitRuntimeArrayPointer(expression.arrayName, context);
     const value = `%value.${context.numIndex}`;
@@ -5164,6 +5254,16 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     };
   }
 
+  if (expression.kind === "taggedTemplate") {
+    return emitTaggedTemplateCall(
+      expression.tag,
+      expression.head,
+      expression.middleTexts,
+      expression.expressions,
+      context
+    );
+  }
+
   if (expression.kind === "numberFormat") {
     const receiver = emitNumberExpression(expression.receiver, context);
     const argument = emitNumberExpression(expression.argument ?? defaultNumberFormatArgument(expression.method), context);
@@ -5194,6 +5294,63 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
   }
 
   return emitTernaryStringExpression(expression, context);
+}
+
+// eslint-disable-next-line max-statements -- Tagged template emission materializes the strings array, boxes each segment, and forwards them to the tag function alongside the interpolated values.
+function emitTaggedTemplateCall(
+  tag: string,
+  head: string,
+  middleTexts: readonly string[],
+  expressions: readonly JsIrValueExpression[],
+  context: EmitContext
+): StringValue {
+  const lines: string[] = [];
+  useRuntimeHelper(context.runtime, "arrayNew");
+  useRuntimeHelper(context.runtime, "arraySet");
+  useRuntimeHelper(context.runtime, "valueBoxString");
+  const { arrayIndex } = context;
+  context.arrayIndex += 1;
+  const stringsArray = `%strings.array.${arrayIndex}`;
+  const totalStrings = middleTexts.length + 1;
+  lines.push(`  ${stringsArray} = call ptr @arrayNew(i64 ${totalStrings})`);
+  const headString = addStringConstant(head, context);
+  const headLength = String(utf8ByteLength(head));
+  const headBoxIndex = context.numIndex;
+  context.numIndex += 1;
+  const headBox = `%value.${headBoxIndex}`;
+  lines.push(`  ${headBox} = call i64 @valueBoxString(ptr ${headString}, i64 ${headLength})`);
+  lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 0, i64 ${headBox})`);
+  for (let i = 0; i < middleTexts.length; i++) {
+    const text = middleTexts[i];
+    const textString = addStringConstant(text, context);
+    const textLength = String(utf8ByteLength(text));
+    const textBoxIndex = context.numIndex;
+    context.numIndex += 1;
+    const textBox = `%value.${textBoxIndex}`;
+    lines.push(`  ${textBox} = call i64 @valueBoxString(ptr ${textString}, i64 ${textLength})`);
+    lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 ${i + 1}, i64 ${textBox})`);
+  }
+  const stringsBoxIndex = context.numIndex;
+  context.numIndex += 1;
+  const stringsBox = `%value.${stringsBoxIndex}`;
+  useRuntimeHelper(context.runtime, "valueBoxArray");
+  lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
+  const expressionValues = expressions.map((expr) => emitValueExpression(expr, context));
+  for (const value of expressionValues) {
+    lines.push(...value.lines);
+  }
+  const { callIndex } = context;
+  context.callIndex += 1;
+  const raw = `%tagged.${callIndex}`;
+  const valueIndex = context.stringIndex;
+  context.stringIndex += 1;
+  const value = `%str.${valueIndex}`;
+  const length = `%str.len.${valueIndex}`;
+  const callArgs = [`i64 ${stringsBox}`, ...expressionValues.map((v) => `i64 ${v.value}`)].join(", ");
+  lines.push(`  ${raw} = call { ptr, i64 } @${tag}(${callArgs})`);
+  lines.push(`  ${value} = extractvalue { ptr, i64 } ${raw}, 0`);
+  lines.push(`  ${length} = extractvalue { ptr, i64 } ${raw}, 1`);
+  return { lines, value, length };
 }
 
 function defaultNumberFormatArgument(method: Extract<JsIrStringExpression, { readonly kind: "numberFormat" }>["method"]): JsIrNumberExpression {

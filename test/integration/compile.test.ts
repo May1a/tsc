@@ -1133,6 +1133,68 @@ describe("tscn string methods (package CB)", () => {
   });
 });
 
+describe("tscn template literals (package CC)", () => {
+  test("supports multiple interpolations in a single template", async () => {
+    const result = await expectSuccessfulCompile("template-multi-interpolation.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "Hello Ada, you are 30\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports arbitrary expressions inside interpolations", async () => {
+    const result = await expectSuccessfulCompile("template-expression.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "Result: 7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports nested template literals", async () => {
+    const result = await expectSuccessfulCompile("template-nested.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "Outer inner 5\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports templates as function arguments", async () => {
+    const result = await expectSuccessfulCompile("template-as-argument.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "x=1\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports templates as function return values", async () => {
+    const result = await expectSuccessfulCompile("template-as-return.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "v=42\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports tagged templates with rest parameters", async () => {
+    const result = await expectSuccessfulCompile("template-tagged.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "text |7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
 describe("tscn rest parameters (package BY.1)", () => {
   test("captures the trailing arguments into a rest array", async () => {
     const result = await expectSuccessfulCompile("param-rest-basic.ts", { link: true });
