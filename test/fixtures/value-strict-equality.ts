@@ -21,6 +21,6 @@ if (missing === alsoMissing) {
   print("undefined equal");
 }
 
-if (firstString !== secondString) {
-  print("strings are references");
+if (firstString === secondString) {
+  print("strings compare by content");
 }

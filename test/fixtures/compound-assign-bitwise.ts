@@ -1,0 +1,14 @@
+declare function print(value: unknown): void;
+let value = 6;
+value &= 3;
+print(value);
+value |= 4;
+print(value);
+value ^= 1;
+print(value);
+value <<= 2;
+print(value);
+value >>= 1;
+print(value);
+value >>>= 1;
+print(value);

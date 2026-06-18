@@ -50,7 +50,7 @@ const runClang = (
   llvmIr: string,
   executable: string
 ): Effect.Effect<LinkResult, LinkerError, CommandExecutor.CommandExecutor> => {
-  const command = Command.make(clangPath, llvmIr, "-o", executable);
+  const command = Command.make(clangPath, llvmIr, "-o", executable, "-lm");
   return Effect.scoped(
     Effect.gen(function* runClangScoped() {
       const process = yield* Command.start(command);
