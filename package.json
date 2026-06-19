@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build && bun test --timeout 30000",
+    "test": "npm run build && vitest",
+    "test:watch": "vitest --watch",
     "lint": "npx oxlint --type-aware"
   },
   "dependencies": {
@@ -25,7 +26,9 @@
   },
   "devDependencies": {
     "@types/bun": "^1.2.22",
-    "@types/node": "^22.19.0"
+    "@types/node": "^22.19.0",
+    "@vitest/coverage-v8": "^4.1.9",
+    "vitest": "^4.1.9"
   },
   "engines": {
     "node": ">=22"

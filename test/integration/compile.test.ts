@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { Command, type CommandExecutor } from "@effect/platform";
 import { NodeContext } from "@effect/platform-node";
 import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect";
