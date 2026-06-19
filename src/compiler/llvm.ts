@@ -101,7 +101,10 @@ type FunctionDef = {
   returnType: LlvmReturnType;
 };
 
-type LlvmReturnType = "void" | "double" | "ptr" | "{ ptr, i64 }" | "i64";
+// User functions return the uniform i64 NaN-boxed JSValue, `void`, or `ptr` (for
+// returned closures). The former `double` / `{ ptr, i64 }` scalar return ABIs were
+// removed when numbers and strings moved onto the i64 JSValue ABI.
+type LlvmReturnType = "void" | "ptr" | "i64";
 
 const doubleQuoteByte = 34;
 const backslashByte = 92;
@@ -257,15 +260,15 @@ function classifyAndProcessOperation(
         parameters: [...returnClosure.captures, ...returnClosure.parameters].map((name) => ({ name, valueKind: "number" })),
         body: returnClosure.body,
         outerBindings: new Map(),
-        returnType: "double"
+        returnType: "i64"
       });
     }
     let returnType: LlvmReturnType = "void";
     if (operation.body.some((op) => op.kind === "returnNumber")) {
-      returnType = "double";
+      returnType = "i64";
     }
     if (operation.body.some((op) => op.kind === "returnString")) {
-      returnType = "{ ptr, i64 }";
+      returnType = "i64";
     }
     if (operation.body.some((op) => op.kind === "returnValue")) {
       returnType = "i64";
@@ -332,10 +335,14 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     }
     fnContext.bindings.set(parameter.name, {
       kind: "number",
-      value: { kind: "parameter", name: `%p${i}` }
+      value: { kind: "parameter", name: `%p${i}.num` }
     });
   }
-  const bodyLines = [...emitStringParameterStores(fn.parameters), ...emitOperations(fn.body, fnContext)];
+  const bodyLines = [
+    ...emitStringParameterStores(fn.parameters, fnContext),
+    ...emitNumberParameterUnbox(fn.parameters),
+    ...emitOperations(fn.body, fnContext)
+  ];
   context.printIndex = fnContext.printIndex;
   context.hasNumberPrint = fnContext.hasNumberPrint;
   context.arrayIndex = fnContext.arrayIndex;
@@ -353,25 +360,42 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
 }
 
 function emitFunctionParameters(parameters: readonly JsIrFunctionParameter[]): string[] {
-  return parameters.flatMap((parameter, index) => {
-    if (parameter.valueKind === "string") {
-      return [`i64 %p${index}.len`, `ptr %p${index}.ptr`];
-    }
-    if (parameter.valueKind === "value") {
-      return [`i64 %p${index}`];
-    }
-    return [`double %p${index}`];
-  });
+  // Every parameter now uses the uniform i64 NaN-boxed JSValue ABI. Numbers and
+  // strings are unboxed back into their backend-local working forms in the
+  // function prologue (emitNumberParameterUnbox / emitStringParameterStores).
+  return parameters.map((_parameter, index) => `i64 %p${index}`);
 }
 
-function emitStringParameterStores(parameters: readonly JsIrFunctionParameter[]): string[] {
+// Unboxes i64 JSValue number parameters back into raw doubles at function entry,
+// mirroring emitStringParameterStores. A number parameter %pN is bound to the
+// recovered double register %pN.num (see the parameter binding in
+// emitFunctionDefinition).
+function emitNumberParameterUnbox(parameters: readonly JsIrFunctionParameter[]): string[] {
+  const lines: string[] = [];
+  for (let index = 0; index < parameters.length; index++) {
+    const parameter = parameters[index];
+    if (parameter.valueKind === "string" || parameter.valueKind === "value") {
+      continue;
+    }
+    lines.push(`  %p${index}.num = bitcast i64 %p${index} to double`);
+  }
+  return lines;
+}
+
+function emitStringParameterStores(parameters: readonly JsIrFunctionParameter[], context: EmitContext): string[] {
   const lines: string[] = [];
   for (let index = 0; index < parameters.length; index++) {
     const parameter = parameters[index];
     if (parameter.valueKind !== "string") {
       continue;
     }
+    // String parameters arrive as a single i64 NaN-boxed reference. Unbox it back
+    // into the backend-local (ptr, length) working form held in twin allocas.
+    useRuntimeHelper(context.runtime, "valueStringPtr");
+    useRuntimeHelper(context.runtime, "valueStringLength");
     lines.push(
+      `  %p${index}.ptr = call ptr @valueStringPtr(i64 %p${index})`,
+      `  %p${index}.len = call i64 @valueStringLength(i64 %p${index})`,
       `  ${variablePointerName(parameter.name)} = alloca ptr`,
       `  ${stringLengthPointerName(parameter.name)} = alloca i64`,
       `  store ptr %p${index}.ptr, ptr ${variablePointerName(parameter.name)}`,
@@ -1214,7 +1238,7 @@ function emitRuntimeArrayMapCallbackOperation(
   const nextIndex = `%arr.map.next.${index}`;
   const element = `%arr.map.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
-  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index, context);
+  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index);
   return [
     `  ${pointerName} = alloca ptr`,
     ...source.lines,
@@ -1272,7 +1296,7 @@ function emitRuntimeArrayFlatMapCallbackOperation(
   const nextIndex = `%arr.flatmap.next.${index}`;
   const element = `%arr.flatmap.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
-  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index, context);
+  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index);
   const isArray = `%arr.flatmap.is.array.${index}`;
   const innerArray = `%arr.flatmap.inner.array.${index}`;
   const innerLength = `%arr.flatmap.inner.len.${index}`;
@@ -1308,7 +1332,7 @@ function emitRuntimeArrayFilterCallbackOperation(
   const nextIndex = `%arr.filter.next.${index}`;
   const element = `%arr.filter.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
-  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index, context);
+  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index);
   const keep = `%arr.filter.keep.value.${index}`;
   return [`  ${pointerName} = alloca ptr`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${output} = call ptr @arrayNew(i64 0)`, `  store ptr ${output}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.filter.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.filter.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  ${keep} = call i1 @valueTruthy(i64 ${callbackReturn.value})`, `  br i1 ${keep}, label %${keepLabel}, label %${advanceLabel}`, `${keepLabel}:`, `  call i64 @arrayPush(ptr ${output}, i64 ${element})`, `  br label %${advanceLabel}`, `${advanceLabel}:`, `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
@@ -1377,7 +1401,7 @@ function emitRuntimeArrayFindCallbackOperation(
   const canContinue = `%arr.find.continue.${index}`;
   const element = `%arr.find.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
-  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index, context);
+  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index);
   const keep = `%arr.find.keep.${index}`;
   let initialStore = [`  ${pointerName} = alloca i64`, `  store i64 ${jsValueUndefined}, ptr ${pointerName}`];
   let matchStore = [`  store i64 ${element}, ptr ${pointerName}`];
@@ -1430,7 +1454,7 @@ function emitRuntimeArrayReduceCallbackOperation(
     nextLine = `  ${nextIndex} = sub i64 ${currentIndex}, 1`;
   }
   const callbackArgs = emitReduceCallbackArguments(operation.callbackParameters, source.value, currentIndex, pointerName, element, index, context);
-  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index, context);
+  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index);
   return [`  ${pointerName} = alloca i64`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, ...initialLines, `  store i64 %arr.reduce.initial.${index}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 ${startIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  ${doneCheck}`, `  br i1 %arr.reduce.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  store i64 ${callbackReturn.value}, ptr ${pointerName}`, nextLine, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
 
@@ -1445,14 +1469,10 @@ function emitArrayCallbackArguments(
   const lines: string[] = [];
   const values: string[] = [];
   for (let parameterIndex = 0; parameterIndex < parameters.length; parameterIndex += 1) {
-    const parameter = parameters[parameterIndex];
-    if (parameter.valueKind === "value") {
-      const value = emitArrayCallbackValueArgument(parameterIndex, sourceArray, currentIndex, element, loopIndex, context, lines);
-      values.push(`i64 ${value}`);
-      continue;
-    }
-    const value = emitArrayCallbackNumberArgument(parameterIndex, currentIndex, element, loopIndex, context, lines);
-    values.push(`double ${value}`);
+    // Number and value callback parameters share the uniform i64 JSValue ABI; the
+    // callee unboxes numbers in its prologue.
+    const value = emitArrayCallbackValueArgument(parameterIndex, sourceArray, currentIndex, element, loopIndex, context, lines);
+    values.push(`i64 ${value}`);
   }
   return { lines, values };
 }
@@ -1471,27 +1491,15 @@ function emitReduceCallbackArguments(
   const accumulator = `%arr.reduce.acc.${loopIndex}`;
   lines.push(`  ${accumulator} = load i64, ptr ${accumulatorPointer}`);
   const valueArguments = [accumulator, element];
+  // Number and value callback parameters share the uniform i64 JSValue ABI; the
+  // callee unboxes numbers in its prologue.
   for (let parameterIndex = 0; parameterIndex < parameters.length; parameterIndex += 1) {
-    const parameter = parameters[parameterIndex];
     if (parameterIndex < 2) {
-      const value = valueArguments[parameterIndex];
-      if (parameter.valueKind === "value") {
-        values.push(`i64 ${value}`);
-      } else {
-        const number = `%arr.reduce.arg.${loopIndex}.${parameterIndex}.num`;
-        useRuntimeHelper(context.runtime, "valueToNumber");
-        lines.push(`  ${number} = call double @valueToNumber(i64 ${value})`);
-        values.push(`double ${number}`);
-      }
+      values.push(`i64 ${valueArguments[parameterIndex]}`);
       continue;
     }
-    if (parameter.valueKind === "value") {
-      const value = emitArrayCallbackValueArgument(parameterIndex - 1, sourceArray, currentIndex, element, loopIndex, context, lines);
-      values.push(`i64 ${value}`);
-      continue;
-    }
-    const value = emitArrayCallbackNumberArgument(parameterIndex - 1, currentIndex, element, loopIndex, context, lines);
-    values.push(`double ${value}`);
+    const value = emitArrayCallbackValueArgument(parameterIndex - 1, sourceArray, currentIndex, element, loopIndex, context, lines);
+    values.push(`i64 ${value}`);
   }
   return { lines, values };
 }
@@ -1520,57 +1528,18 @@ function emitArrayCallbackValueArgument(
   return value;
 }
 
-function emitArrayCallbackNumberArgument(
-  parameterIndex: number,
-  currentIndex: string,
-  element: string,
-  loopIndex: number,
-  context: EmitContext,
-  lines: string[]
-): string {
-  if (parameterIndex === 0) {
-    const value = `%arr.map.arg.${loopIndex}.value.num`;
-    useRuntimeHelper(context.runtime, "valueToNumber");
-    lines.push(`  ${value} = call double @valueToNumber(i64 ${element})`);
-    return value;
-  }
-  const value = `%arr.map.arg.${loopIndex}.idx.num`;
-  lines.push(`  ${value} = uitofp i64 ${currentIndex} to double`);
-  return value;
-}
-
 function emitArrayCallbackReturn(
   returnKind: JsIrValueKind,
   callbackName: string,
   args: readonly string[],
-  loopIndex: number,
-  context: EmitContext
+  loopIndex: number
 ): { readonly lines: readonly string[]; readonly value: string } {
+  // All callback return kinds now share the uniform i64 JSValue ABI, so the
+  // result register is the boxed value directly.
   const returnType = callbackLlvmReturnType(returnKind);
   const callArgs = args.join(", ");
-  if (returnKind === "value") {
-    const result = `%arr.map.ret.${loopIndex}`;
-    return { lines: [`  ${result} = call ${returnType} @${callbackName}(${callArgs})`], value: result };
-  }
-  if (returnKind === "string") {
-    const result = `%arr.map.ret.${loopIndex}`;
-    const pointer = `%arr.map.ret.${loopIndex}.ptr`;
-    const length = `%arr.map.ret.${loopIndex}.len`;
-    const value = `%arr.map.ret.${loopIndex}.value`;
-    useRuntimeHelper(context.runtime, "valueBoxString");
-    return {
-      lines: [
-        `  ${result} = call ${returnType} @${callbackName}(${callArgs})`,
-        `  ${pointer} = extractvalue { ptr, i64 } ${result}, 0`,
-        `  ${length} = extractvalue { ptr, i64 } ${result}, 1`,
-        `  ${value} = call i64 @valueBoxString(ptr ${pointer}, i64 ${length})`
-      ],
-      value
-    };
-  }
-  const result = `%arr.map.ret.${loopIndex}`;
-  const value = `%arr.map.ret.${loopIndex}.value`;
-  return { lines: [`  ${result} = call ${returnType} @${callbackName}(${callArgs})`, `  ${value} = bitcast double ${result} to i64`], value };
+  const value = `%arr.map.ret.${loopIndex}`;
+  return { lines: [`  ${value} = call ${returnType} @${callbackName}(${callArgs})`], value };
 }
 
 function emitIgnoredCallbackCall(returnKind: JsIrValueKind | "void", callbackName: string, args: readonly string[]): string {
@@ -1578,17 +1547,13 @@ function emitIgnoredCallbackCall(returnKind: JsIrValueKind | "void", callbackNam
   return `call ${returnType} @${callbackName}(${args.join(", ")})`;
 }
 
-function callbackLlvmReturnType(returnKind: JsIrValueKind): "double" | "i64" | "{ ptr, i64 }" {
-  if (returnKind === "value") {
-    return "i64";
-  }
-  if (returnKind === "string") {
-    return "{ ptr, i64 }";
-  }
-  return "double";
+function callbackLlvmReturnType(_returnKind: JsIrValueKind): "i64" {
+  // Every callback return kind (number, string, value) now uses the uniform i64
+  // JSValue ABI.
+  return "i64";
 }
 
-function callbackLlvmReturnTypeOrVoid(returnKind: JsIrValueKind | "void"): "double" | "i64" | "{ ptr, i64 }" | "void" {
+function callbackLlvmReturnTypeOrVoid(returnKind: JsIrValueKind | "void"): "i64" | "void" {
   if (returnKind === "void") {
     return "void";
   }
@@ -2110,8 +2075,8 @@ function emitRuntimeArrayComparatorSort(
   const limit = `%arr.sort.limit.${index}`;
   const left = `%arr.sort.left.${index}`;
   const right = `%arr.sort.right.${index}`;
-  const callbackArgs = emitSortCallbackArguments(callbackParameters, left, right, index, context);
-  const callbackReturn = emitArrayCallbackReturn(callbackReturnKind, callbackName, callbackArgs.values, index, context);
+  const callbackArgs = emitSortCallbackArguments(callbackParameters, left, right);
+  const callbackReturn = emitArrayCallbackReturn(callbackReturnKind, callbackName, callbackArgs.values, index);
   const order = `%arr.sort.order.${index}`;
   const shouldSwap = `%arr.sort.should.swap.${index}`;
   return [`  ${length} = call i64 @arrayLength(ptr ${array})`, `  ${iPointer} = alloca i64`, `  ${jPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${outerCond}`, `${outerCond}:`, `  ${i} = load i64, ptr ${iPointer}`, `  %arr.sort.outer.done.${index} = icmp uge i64 ${i}, ${length}`, `  br i1 %arr.sort.outer.done.${index}, label %${endLabel}, label %${outerBody}`, `${outerBody}:`, `  store i64 0, ptr ${jPointer}`, `  br label %${innerCond}`, `${innerCond}:`, `  ${j} = load i64, ptr ${jPointer}`, `  ${limit} = sub i64 ${length}, 1`, `  %arr.sort.inner.done.${index} = icmp uge i64 ${j}, ${limit}`, `  br i1 %arr.sort.inner.done.${index}, label %${outerAdvance}, label %${innerBody}`, `${innerBody}:`, `  ${nextJ} = add i64 ${j}, 1`, `  ${left} = call i64 @arrayGet(ptr ${array}, i64 ${j})`, `  ${right} = call i64 @arrayGet(ptr ${array}, i64 ${nextJ})`, ...callbackArgs.lines, ...callbackReturn.lines, `  ${order} = call double @valueToNumber(i64 ${callbackReturn.value})`, `  ${shouldSwap} = fcmp ogt double ${order}, 0.0`, `  br i1 ${shouldSwap}, label %${swapLabel}, label %${advanceLabel}`, `${swapLabel}:`, `  call void @arraySet(ptr ${array}, i64 ${j}, i64 ${right})`, `  call void @arraySet(ptr ${array}, i64 ${nextJ}, i64 ${left})`, `  br label %${advanceLabel}`, `${advanceLabel}:`, `  store i64 ${nextJ}, ptr ${jPointer}`, `  br label %${innerCond}`, `${outerAdvance}:`, `  ${nextI} = add i64 ${i}, 1`, `  store i64 ${nextI}, ptr ${iPointer}`, `  br label %${outerCond}`, `${endLabel}:`];
@@ -2120,24 +2085,16 @@ function emitRuntimeArrayComparatorSort(
 function emitSortCallbackArguments(
   parameters: readonly JsIrFunctionParameter[],
   left: string,
-  right: string,
-  loopIndex: number,
-  context: EmitContext
+  right: string
 ): { readonly lines: readonly string[]; readonly values: readonly string[] } {
   const lines: string[] = [];
   const values: string[] = [];
   const rawValues = [left, right];
+  // Number and value callback parameters share the uniform i64 JSValue ABI; the
+  // callee unboxes numbers in its prologue.
   for (let parameterIndex = 0; parameterIndex < parameters.length; parameterIndex += 1) {
-    const parameter = parameters[parameterIndex];
     const raw = rawValues[parameterIndex] ?? jsValueUndefined;
-    if (parameter.valueKind === "value") {
-      values.push(`i64 ${raw}`);
-      continue;
-    }
-    const number = `%arr.sort.arg.${loopIndex}.${parameterIndex}.num`;
-    useRuntimeHelper(context.runtime, "valueToNumber");
-    lines.push(`  ${number} = call double @valueToNumber(i64 ${raw})`);
-    values.push(`double ${number}`);
+    values.push(`i64 ${raw}`);
   }
   return { lines, values };
 }
@@ -2666,15 +2623,19 @@ function emitCallExpressionResult(expression: { readonly kind: "call"; readonly 
   const argValues: string[] = [];
   for (const arg of expression.arguments) {
     const result = emitNumberExpression(arg, context);
-    lines.push(...result.lines);
-    argValues.push(`double ${result.value}`);
+    const argIndex = context.numIndex;
+    context.numIndex += 1;
+    const boxed = `%arg.num.${argIndex}`;
+    lines.push(...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`);
+    argValues.push(`i64 ${boxed}`);
   }
   const args = argValues.join(", ");
   const index = context.callIndex;
   context.callIndex += 1;
   const name = `%call.${index}`;
-  lines.push(`  ${name} = call double @${expression.name}(${args})`);
-  return { lines, value: name };
+  const number = `%call.${index}.num`;
+  lines.push(`  ${name} = call i64 @${expression.name}(${args})`, `  ${number} = bitcast i64 ${name} to double`);
+  return { lines, value: number };
 }
 
 function emitNumberCallExpressionResult(expression: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): { readonly lines: string[]; readonly value: string } {
@@ -2682,7 +2643,11 @@ function emitNumberCallExpressionResult(expression: { readonly kind: "call"; rea
   const index = context.callIndex;
   context.callIndex += 1;
   const name = `%call.${index}`;
-  return { lines: [...args.lines, `  ${name} = call double @${expression.name}(${args.values.join(", ")})`], value: name };
+  const number = `%call.${index}.num`;
+  return {
+    lines: [...args.lines, `  ${name} = call i64 @${expression.name}(${args.values.join(", ")})`, `  ${number} = bitcast i64 ${name} to double`],
+    value: number
+  };
 }
 
 function emitStringCallExpressionResult(expression: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): StringValue {
@@ -2692,12 +2657,14 @@ function emitStringCallExpressionResult(expression: { readonly kind: "call"; rea
   const result = `%call.${index}`;
   const value = `%call.${index}.ptr`;
   const length = `%call.${index}.len`;
+  useRuntimeHelper(context.runtime, "valueStringPtr");
+  useRuntimeHelper(context.runtime, "valueStringLength");
   return {
     lines: [
       ...args.lines,
-      `  ${result} = call { ptr, i64 } @${expression.name}(${args.values.join(", ")})`,
-      `  ${value} = extractvalue { ptr, i64 } ${result}, 0`,
-      `  ${length} = extractvalue { ptr, i64 } ${result}, 1`
+      `  ${result} = call i64 @${expression.name}(${args.values.join(", ")})`,
+      `  ${value} = call ptr @valueStringPtr(i64 ${result})`,
+      `  ${length} = call i64 @valueStringLength(i64 ${result})`
     ],
     value,
     length
@@ -2733,8 +2700,12 @@ function emitCallArguments(args: readonly JsIrCallArgument[], context: EmitConte
   for (const arg of args) {
     if (arg.valueKind === "string") {
       const result = emitStringExpression(arg.value, context);
-      lines.push(...result.lines);
-      values.push(`i64 ${result.length}`, `ptr ${result.value}`);
+      const index = context.stringIndex;
+      context.stringIndex += 1;
+      const boxed = `%arg.str.${index}`;
+      useRuntimeHelper(context.runtime, "valueBoxString");
+      lines.push(...result.lines, `  ${boxed} = call i64 @valueBoxString(ptr ${result.value}, i64 ${result.length})`);
+      values.push(`i64 ${boxed}`);
       continue;
     }
     if (arg.valueKind === "value") {
@@ -2744,24 +2715,33 @@ function emitCallArguments(args: readonly JsIrCallArgument[], context: EmitConte
       continue;
     }
     const result = emitNumberExpression(arg.value, context);
-    lines.push(...result.lines);
-    values.push(`double ${result.value}`);
+    const index = context.numIndex;
+    context.numIndex += 1;
+    const boxed = `%arg.num.${index}`;
+    lines.push(...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`);
+    values.push(`i64 ${boxed}`);
   }
   return { lines, values };
 }
 
 function emitNumberReturnOperation(operation: { readonly kind: "returnNumber"; readonly expression: JsIrNumberExpression }, context: EmitContext): string[] {
   const result = emitNumberExpression(operation.expression, context);
-  return [...result.lines, `  ret double ${result.value}`];
+  const index = context.numIndex;
+  context.numIndex += 1;
+  const boxed = `%ret.num.${index}`;
+  return [...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`, `  ret i64 ${boxed}`];
 }
 
 function emitStringReturnOperation(operation: { readonly kind: "returnString"; readonly expression: JsIrStringExpression }, context: EmitContext): string[] {
   const result = emitStringExpression(operation.expression, context);
+  const index = context.stringIndex;
+  context.stringIndex += 1;
+  const boxed = `%ret.str.${index}`;
+  useRuntimeHelper(context.runtime, "valueBoxString");
   return [
     ...result.lines,
-    `  %ret.str.0 = insertvalue { ptr, i64 } undef, ptr ${result.value}, 0`,
-    `  %ret.str.1 = insertvalue { ptr, i64 } %ret.str.0, i64 ${result.length}, 1`,
-    "  ret { ptr, i64 } %ret.str.1"
+    `  ${boxed} = call i64 @valueBoxString(ptr ${result.value}, i64 ${result.length})`,
+    `  ret i64 ${boxed}`
   ];
 }
 
@@ -3137,34 +3117,10 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     context.callIndex += 1;
     const raw = `%tagged.${callIndex}`;
     const callArgs = [`i64 ${stringsBox}`, ...valueArgs.map((arg) => `i64 ${arg}`)].join(", ");
-    lines.push(`  ${raw} = call { ptr, i64 } @${expression.tag}(${callArgs})`);
-    const ptrIndex = context.numIndex;
-    context.numIndex += 1;
-    const ptrValue = `%value.${ptrIndex}`;
-    const lenIndex = context.numIndex;
-    context.numIndex += 1;
-    const lenValue = `%value.${lenIndex}`;
-    lines.push(`  ${ptrValue} = extractvalue { ptr, i64 } ${raw}, 0`);
-    lines.push(`  ${lenValue} = extractvalue { ptr, i64 } ${raw}, 1`);
-    const resultBoxIndex = context.numIndex;
-    context.numIndex += 1;
-    const resultBox = `%value.${resultBoxIndex}`;
-    const resultAllocIndex = context.numIndex;
-    context.numIndex += 1;
-    const resultAlloc = `%str.alloc.${resultAllocIndex}`;
-    const totalLenIndex = context.numIndex;
-    context.numIndex += 1;
-    const totalLen = `%str.total.${totalLenIndex}`;
-    lines.push(`  ${totalLen} = add i64 ${lenValue}, 1`);
-    lines.push(`  ${resultAlloc} = call ptr @malloc(i64 ${totalLen})`);
-    lines.push(`  call ptr @memcpy(ptr ${resultAlloc}, ptr ${ptrValue}, i64 ${lenValue})`);
-    const nulPosIndex = context.numIndex;
-    context.numIndex += 1;
-    const nulPos = `%str.nul.${nulPosIndex}`;
-    lines.push(`  ${nulPos} = getelementptr i8, ptr ${resultAlloc}, i64 ${lenValue}`);
-    lines.push(`  store i8 0, ptr ${nulPos}`);
-    lines.push(`  ${resultBox} = call i64 @valueBoxString(ptr ${resultAlloc}, i64 ${lenValue})`);
-    return { lines, value: resultBox };
+    // The tag function returns a uniform i64 JSValue, so its result is already the
+    // boxed value.
+    lines.push(`  ${raw} = call i64 @${expression.tag}(${callArgs})`);
+    return { lines, value: raw };
   }
 
   if (expression.kind === "arrayFind") {
@@ -5497,9 +5453,13 @@ function emitTaggedTemplateCall(
   const value = `%str.${valueIndex}`;
   const length = `%str.len.${valueIndex}`;
   const callArgs = [`i64 ${stringsBox}`, ...expressionValues.map((v) => `i64 ${v.value}`)].join(", ");
-  lines.push(`  ${raw} = call { ptr, i64 } @${tag}(${callArgs})`);
-  lines.push(`  ${value} = extractvalue { ptr, i64 } ${raw}, 0`);
-  lines.push(`  ${length} = extractvalue { ptr, i64 } ${raw}, 1`);
+  // The tag function returns a uniform i64 JSValue; unbox it into the (ptr, length)
+  // string working form.
+  useRuntimeHelper(context.runtime, "valueStringPtr");
+  useRuntimeHelper(context.runtime, "valueStringLength");
+  lines.push(`  ${raw} = call i64 @${tag}(${callArgs})`);
+  lines.push(`  ${value} = call ptr @valueStringPtr(i64 ${raw})`);
+  lines.push(`  ${length} = call i64 @valueStringLength(i64 ${raw})`);
   return { lines, value, length };
 }
 
