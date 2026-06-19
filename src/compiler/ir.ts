@@ -1637,6 +1637,10 @@ function classStaticStorageName(className: string): string {
   return `${className}$statics`;
 }
 
+function classPrototypeName(className: string): string {
+  return `${className}$prototype`;
+}
+
 function classGetterFunctionName(className: string, propertyName: string): string {
   return `${className}$get$${propertyName}`;
 }
@@ -1680,6 +1684,7 @@ function lowerClassDeclaration(
   activeClassRegistry = classes;
 
   const operations: JsIrOperation[] = [];
+  operations.push(lowerClassPrototypeStorage(info));
   const staticStorage = lowerClassStaticStorage(info, members.staticFields, bindings);
   if (staticStorage !== undefined) {
     operations.push(staticStorage);
@@ -1698,6 +1703,17 @@ function lowerClassDeclaration(
     operations.push(lowerClassAccessor(info, accessor, classSetterFunctionName(info.name, accessorName(accessor)), bindings));
   }
   return operations;
+}
+
+// Emits the module-init slot that backs a class's prototype object: an empty
+// object that serves as the prototype for all instances. Accessible as `C.prototype`
+// and automatically set on instances via the class-id slot (future work).
+function lowerClassPrototypeStorage(info: ClassInfo): JsIrOperation {
+  return {
+    kind: "letValue",
+    name: classPrototypeName(info.name),
+    value: { kind: "objectLiteralValue", value: { fields: [] } }
+  };
 }
 
 // Emits the module-init slot that backs a class's static fields: a single object
@@ -1995,6 +2011,14 @@ function lowerClassValueExpression(
   }
 
   if (ts.isPropertyAccessExpression(expression)) {
+    // C.prototype where C is a class name (not in bindings) gives the prototype object
+    if (ts.isIdentifier(expression.expression) && !bindings.has(expression.expression.text) && expression.name.text === "prototype") {
+      const classInfo = activeClassRegistry.get(expression.expression.text);
+      if (classInfo !== undefined) {
+        return { kind: "objectRef", name: classPrototypeName(classInfo.name) };
+      }
+    }
+
     const receiver = lowerClassInstanceExpression(expression.expression, bindings);
     if (receiver !== undefined) {
       const receiverClass = resolveReceiverClass(expression.expression, bindings);
@@ -8101,14 +8125,24 @@ function lowerDirectValueExpression(
     }
   }
 
-  if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression) && expression.arguments.length === 0) {
-    const method = expression.expression.name.text;
-    if (method === "valueOf" || method === "toString") {
-      const receiver = lowerValueExpression(expression.expression.expression, bindings);
-      if (receiver === undefined) {
-        return undefined;
+  if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
+    // Object.getPrototypeOf(instance) where instance is a class instance returns the prototype
+    if (ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "Object" && expression.expression.name.text === "getPrototypeOf" && expression.arguments.length === 1) {
+      const target = expression.arguments[0];
+      const receiverClass = resolveReceiverClass(target, bindings);
+      if (receiverClass !== undefined) {
+        return { kind: "objectRef", name: classPrototypeName(receiverClass.name) };
       }
-      return { kind: "boxedMethodCall", receiver, method };
+    }
+    if (expression.arguments.length === 0) {
+      const method = expression.expression.name.text;
+      if (method === "valueOf" || method === "toString") {
+        const receiver = lowerValueExpression(expression.expression.expression, bindings);
+        if (receiver === undefined) {
+          return undefined;
+        }
+        return { kind: "boxedMethodCall", receiver, method };
+      }
     }
   }
 
