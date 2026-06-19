@@ -3,7 +3,7 @@ import { Command, type CommandExecutor } from "@effect/platform";
 import { NodeContext } from "@effect/platform-node";
 import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { formatDiagnostic } from "../../src/compiler/diagnostics.js";
 import { DiagnosticsLive } from "../../src/compiler/diagnostics-service.js";
@@ -43,6 +43,8 @@ type ToolRunResult = NativeRunResult & {
 
 type ToolName = "clang" | "llvm-as" | "lli";
 
+const toolExecutableCache = new Map<ToolName, Promise<string | undefined>>();
+
 type CompileFixtureOptions = {
   readonly link?: boolean;
 };
@@ -51,6 +53,7 @@ const testCompileLayer = Layer.provideMerge(
   Layer.provideMerge(ToolchainLive, NodeContext.layer),
   DiagnosticsLive
 );
+const commandExecutorLayer = NodeContext.layer;
 
 const compileFixture = async (fixture: string, options: CompileFixtureOptions = {}): Promise<CompileResult> => {
   const outDir = await mkdtemp(path.join(tmpdir(), "tscn-"));
@@ -177,13 +180,18 @@ const runNativeIfAvailable = async (result: CompileResult): Promise<NativeRunRes
         }
         return Effect.succeed({ skipped: true, reason: String(error) });
       }),
-      Effect.provide(testCompileLayer)
+      Effect.provide(commandExecutorLayer)
     )
   );
 };
 
-const toolExecutable = async (name: ToolName): Promise<string | undefined> =>
-  Effect.runPromise(
+const toolExecutable = async (name: ToolName): Promise<string | undefined> => {
+  const cached = toolExecutableCache.get(name);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const lookup = Effect.runPromise(
     Effect.gen(function* toolAvailableGen() {
       const toolchain = yield* Toolchain;
       switch (name) {
@@ -203,6 +211,9 @@ const toolExecutable = async (name: ToolName): Promise<string | undefined> =>
       }
     }).pipe(Effect.provide(testCompileLayer))
   );
+  toolExecutableCache.set(name, lookup);
+  return lookup;
+};
 
 const expectNativeBehaviorIfAvailable = async (
   result: CompileResult,
@@ -231,7 +242,7 @@ const expectToolBehaviorIfAvailable = async (
   }
 
   const run = await Effect.runPromise(
-    captureCommand(executable, args, { cwd: repoRoot }).pipe(Effect.provide(testCompileLayer))
+    captureCommand(executable, args, { cwd: repoRoot }).pipe(Effect.provide(commandExecutorLayer))
   );
   expect(run.status, run.stderr).toBe(expected.status);
   expect(run.stdout).toBe(expected.stdout);
@@ -249,8 +260,8 @@ const expectLlvmAsVerificationIfAvailable = async (result: CompileResult): Promi
     captureCommand(llvmAs, [
       path.join(result.outDir, "main.ll"),
       "-o",
-      path.join(result.outDir, "main.bc")
-    ]).pipe(Effect.provide(testCompileLayer))
+      devNull
+    ]).pipe(Effect.provide(commandExecutorLayer))
   );
   expect(verifier.status, verifier.stderr).toBe(0);
 };
@@ -315,7 +326,7 @@ describe("tscn CLI", () => {
           "examples/01-simple.ts",
           "--out-dir",
           outDir
-        ], { cwd: repoRoot }).pipe(Effect.provide(testCompileLayer))
+        ], { cwd: repoRoot }).pipe(Effect.provide(commandExecutorLayer))
       );
       const clang = await toolExecutable("clang");
       const cliResult: CompileResult = {

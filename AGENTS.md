@@ -10,7 +10,7 @@
 
 - Run the linter with `npm run lint`.
 - Run typechecking with `npm run check`.
-- Run Bun tests with `bun test`.
+- Run Vitest tests with `npm test`.
 
 ## Agent Skills
 

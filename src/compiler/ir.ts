@@ -1770,7 +1770,10 @@ function collectClassMembers(statement: ts.ClassDeclaration): CollectedClassMemb
       if (!ts.isIdentifier(member.name)) {
         throw new ClassLoweringUnsupportedError();
       }
-      const target = classMemberHasStaticModifier(member) ? staticFields : fields;
+      let target = fields;
+      if (classMemberHasStaticModifier(member)) {
+        target = staticFields;
+      }
       target.push({ name: member.name.text, initializer: member.initializer });
     } else if (ts.isConstructorDeclaration(member)) {
       constructorDeclaration = member;
@@ -8128,7 +8131,7 @@ function lowerDirectValueExpression(
   if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
     // Object.getPrototypeOf(instance) where instance is a class instance returns the prototype
     if (ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "Object" && expression.expression.name.text === "getPrototypeOf" && expression.arguments.length === 1) {
-      const target = expression.arguments[0];
+      const [target] = expression.arguments;
       const receiverClass = resolveReceiverClass(target, bindings);
       if (receiverClass !== undefined) {
         return { kind: "objectRef", name: classPrototypeName(receiverClass.name) };

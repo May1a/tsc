@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build && vitest",
+    "test": "vitest --run",
     "test:watch": "vitest --watch",
     "lint": "npx oxlint --type-aware"
   },
