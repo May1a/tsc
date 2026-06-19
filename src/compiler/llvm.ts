@@ -232,6 +232,8 @@ function classifyAndProcessOperation(
     context.bindings.set(operation.name, { kind: "booleanExpression", value: operation.value });
   } else if (operation.kind === "constValue") {
     context.bindings.set(operation.name, { kind: "value", value: operation.value });
+  } else if (operation.kind === "letValue") {
+    context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
   } else if (operation.kind === "constClosure") {
     context.bindings.set(operation.name, { kind: "closure", value: operation.value });
   } else if (operation.kind === "constString") {
@@ -765,6 +767,9 @@ function emitConstBindingOperation(operation: JsIrOperation, context: EmitContex
   if (operation.kind === "constValue") {
     context.bindings.set(operation.name, { kind: "value", value: operation.value });
     return [];
+  }
+  if (operation.kind === "letValue") {
+    return emitLetValueOperation(operation, context);
   }
   if (operation.kind === "constClosure") {
     context.bindings.set(operation.name, { kind: "closure", value: operation.value });
@@ -2192,6 +2197,18 @@ function emitNamedValueBinding(name: string, context: EmitContext): JsValue {
   throw new Error("Expected JSValue binding");
 }
 
+// Materializes a JSValue into a stable memory slot and binds the name to it, so
+// every later reference loads the same value (used for class instance locals).
+function emitLetValueOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "letValue" }>,
+  context: EmitContext
+): string[] {
+  const value = emitValueExpression(operation.value, context);
+  const pointer = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
+  return [...value.lines, `  ${pointer} = alloca i64`, `  store i64 ${value.value}, ptr ${pointer}`];
+}
+
 function emitRuntimePrototypeTargetPointer(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectGetPrototype" }>,
   context: EmitContext
@@ -2687,6 +2704,29 @@ function emitStringCallExpressionResult(expression: { readonly kind: "call"; rea
   };
 }
 
+function emitNewInstanceValueExpression(
+  expression: Extract<JsIrValueExpression, { readonly kind: "newInstance" }>,
+  context: EmitContext
+): JsValue {
+  const args = emitCallArguments(expression.arguments, context);
+  const index = context.objectIndex;
+  context.objectIndex += 1;
+  const object = `%instance.obj.${index}`;
+  const instance = `%instance.${index}`;
+  useRuntimeHelper(context.runtime, "objectNew");
+  useRuntimeHelper(context.runtime, "valueBoxObject");
+  const constructorArgs = [`i64 ${instance}`, ...args.values].join(", ");
+  return {
+    lines: [
+      ...args.lines,
+      `  ${object} = call ptr @objectNew(i64 ${expression.fieldCount})`,
+      `  ${instance} = call i64 @valueBoxObject(ptr ${object})`,
+      `  call void @${expression.constructorName}(${constructorArgs})`
+    ],
+    value: instance
+  };
+}
+
 function emitCallArguments(args: readonly JsIrCallArgument[], context: EmitContext): { readonly lines: string[]; readonly values: string[] } {
   const lines: string[] = [];
   const values: string[] = [];
@@ -2764,6 +2804,10 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     context.callIndex += 1;
     const value = `%call.${index}`;
     return { lines: [...args.lines, `  ${value} = call i64 @${expression.name}(${args.values.join(", ")})`], value };
+  }
+
+  if (expression.kind === "newInstance") {
+    return emitNewInstanceValueExpression(expression, context);
   }
 
   if (expression.kind === "ternary") {
