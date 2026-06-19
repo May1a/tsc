@@ -24,7 +24,7 @@ export const compile = (
     const diagnostics = yield* Diagnostics;
 
     const frontend = yield* loadProgram(options.entry);
-    const jsIr = yield* lowerToJsIr(path.resolve(options.entry), frontend.sourceFiles);
+    const jsIr = yield* lowerToJsIr(path.resolve(options.entry), frontend.sourceFiles, frontend.program.getTypeChecker());
 
     yield* fs.makeDirectory(options.outDir, { recursive: true });
 

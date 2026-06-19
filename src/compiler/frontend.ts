@@ -1,6 +1,6 @@
 import { FileSystem, Path } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
-import { Chunk, Effect } from "effect";
+import { Effect } from "effect";
 import ts from "typescript";
 import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
@@ -14,6 +14,13 @@ type ParsedConfigResult = {
   readonly parsed: ts.ParsedCommandLine;
   readonly diagnostics: readonly CompilerDiagnostic[];
 };
+
+type CachedParsedConfigResult = {
+  readonly content: string;
+  readonly result: ParsedConfigResult;
+};
+
+const parsedConfigCache = new Map<string, CachedParsedConfigResult>();
 
 const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
   const lineAndCharacter = sourceFile.getLineAndCharacterOfPosition(position);
@@ -95,13 +102,20 @@ const parseConfigFromContent = (
   content: string,
   pathService: Path.Path
 ): ParsedConfigResult => {
+  const cached = parsedConfigCache.get(configFileName);
+  if (cached?.content === content) {
+    return cached.result;
+  }
+
   const parsedJson = ts.parseConfigFileTextToJson(configFileName, content);
   let parseDiagnostics: readonly ts.Diagnostic[] = [];
   if (parsedJson.error !== undefined) {
     parseDiagnostics = [parsedJson.error];
   }
   if (!parsedJson.config) {
-    return { parsed: defaultCompilerOptions(), diagnostics: tsDiagnosticsToCompiler(parseDiagnostics) };
+    const result = { parsed: defaultCompilerOptions(), diagnostics: tsDiagnosticsToCompiler(parseDiagnostics) };
+    parsedConfigCache.set(configFileName, { content, result });
+    return result;
   }
   const host: ts.ParseConfigHost = {
     useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
@@ -121,7 +135,9 @@ const parseConfigFromContent = (
     }
   };
   const parsed = ts.parseJsonConfigFileContent(parsedJson.config, host, pathService.dirname(configFileName));
-  return { parsed, diagnostics: tsDiagnosticsToCompiler([...parseDiagnostics, ...parsed.errors]) };
+  const result = { parsed, diagnostics: tsDiagnosticsToCompiler([...parseDiagnostics, ...parsed.errors]) };
+  parsedConfigCache.set(configFileName, { content, result });
+  return result;
 };
 
 const compilerOptionsForEntry = (options: ts.CompilerOptions): ts.CompilerOptions => ({
@@ -129,33 +145,80 @@ const compilerOptionsForEntry = (options: ts.CompilerOptions): ts.CompilerOption
   rootDir: undefined
 });
 
+const declarationSourceFileCache = new Map<string, ts.SourceFile>();
+
+const sourceFileCacheKey = (
+  fileName: string,
+  languageVersionOrOptions: ts.ScriptTarget | ts.CreateSourceFileOptions
+): string => {
+  const normalized = ts.sys.resolvePath(fileName);
+  let stableFileName = normalized;
+  if (!ts.sys.useCaseSensitiveFileNames) {
+    stableFileName = normalized.toLowerCase();
+  }
+
+  let languageKey: string;
+  if (typeof languageVersionOrOptions === "number") {
+    languageKey = String(languageVersionOrOptions);
+  } else {
+    languageKey = JSON.stringify({
+      languageVersion: languageVersionOrOptions.languageVersion,
+      impliedNodeFormat: languageVersionOrOptions.impliedNodeFormat,
+      jsDocParsingMode: languageVersionOrOptions.jsDocParsingMode
+    });
+  }
+  return `${stableFileName}:${languageKey}`;
+};
+
+const createCompilerHostWithCachedDeclarations = (options: ts.CompilerOptions): ts.CompilerHost => {
+  const host = ts.createCompilerHost(options);
+  const getSourceFile = host.getSourceFile.bind(host);
+
+  host.getSourceFile = (fileName, languageVersionOrOptions, onError, shouldCreateNewSourceFile) => {
+    if (shouldCreateNewSourceFile === true || !fileName.endsWith(".d.ts")) {
+      return getSourceFile(fileName, languageVersionOrOptions, onError, shouldCreateNewSourceFile);
+    }
+
+    const key = sourceFileCacheKey(fileName, languageVersionOrOptions);
+    const cached = declarationSourceFileCache.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const sourceFile = getSourceFile(fileName, languageVersionOrOptions, onError, shouldCreateNewSourceFile);
+    if (sourceFile !== undefined) {
+      declarationSourceFileCache.set(key, sourceFile);
+    }
+    return sourceFile;
+  };
+
+  return host;
+};
+
 const rejectPackageImports = (
   sourceFiles: readonly ts.SourceFile[]
 ): Effect.Effect<void, never, Diagnostics> =>
   Effect.gen(function* rejectPackages() {
     const diagnostics = yield* Diagnostics;
+    const packageImportDiagnostics: CompilerDiagnostic[] = [];
     for (const sourceFile of sourceFiles) {
-      const visit = (node: ts.Node): Effect.Effect<void, never, Diagnostics> =>
-        Effect.gen(function* visitNode() {
-          if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-            const specifier = node.moduleSpecifier.text;
-            if (!specifier.startsWith(".") && !specifier.startsWith("/")) {
-              yield* diagnostics.error({
-                code: "TSCN1001",
-                message: `NPM package imports are not supported yet: ${specifier}`,
-                span: sourceSpan(sourceFile, node.moduleSpecifier.getStart(sourceFile))
-              });
-            }
-          }
-          const children: ts.Node[] = [];
-          ts.forEachChild(node, (child) => {
-            children.push(child);
-          });
-          yield* Effect.forEach(children, (child) => visit(child), { discard: true });
+      for (const statement of sourceFile.statements) {
+        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
+          continue;
+        }
+        const specifier = statement.moduleSpecifier.text;
+        if (specifier.startsWith(".") || specifier.startsWith("/")) {
+          continue;
+        }
+        packageImportDiagnostics.push({
+          code: "TSCN1001",
+          category: "error",
+          message: `NPM package imports are not supported yet: ${specifier}`,
+          span: sourceSpan(sourceFile, statement.moduleSpecifier.getStart(sourceFile))
         });
-
-      yield* visit(sourceFile);
+      }
     }
+    yield* Effect.forEach(packageImportDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
   });
 
 export const loadProgram = (
@@ -181,23 +244,22 @@ export const loadProgram = (
       }
     }
 
-    const program = ts.createProgram([resolvedEntry], compilerOptionsForEntry(parsed.options));
+    const compilerOptions = compilerOptionsForEntry(parsed.options);
+    const program = ts.createProgram(
+      [resolvedEntry],
+      compilerOptions,
+      createCompilerHostWithCachedDeclarations(compilerOptions)
+    );
     const sourceFiles = program
       .getSourceFiles()
       .filter((sourceFile) => !sourceFile.isDeclarationFile && !sourceFile.fileName.includes("/node_modules/"));
 
-    const tsDiagnostics = Chunk.toReadonlyArray(
-      Chunk.appendAll(
-        Chunk.fromIterable(tsDiagnosticsToCompiler(program.getOptionsDiagnostics())),
-        Chunk.appendAll(
-          Chunk.fromIterable(tsDiagnosticsToCompiler(program.getGlobalDiagnostics())),
-          Chunk.appendAll(
-            Chunk.fromIterable(tsDiagnosticsToCompiler(program.getSyntacticDiagnostics())),
-            Chunk.fromIterable(tsDiagnosticsToCompiler(program.getSemanticDiagnostics()))
-          )
-        )
-      )
-    );
+    const tsDiagnostics = tsDiagnosticsToCompiler([
+      ...program.getOptionsDiagnostics(),
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...program.getSemanticDiagnostics()
+    ]);
     yield* Effect.forEach(tsDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
 
     yield* rejectPackageImports(sourceFiles);

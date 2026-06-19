@@ -29,7 +29,7 @@ const probeTool = (
 const probeClang = (): Effect.Effect<Option.Option<string>, never, CommandExecutor.CommandExecutor> => {
   const opaquePointerProbe = "declare i32 @puts(ptr)\ndefine i32 @main() {\nentry:\n  ret i32 0\n}\n";
   return Command.exitCode(
-    Command.feed(Command.make("clang", "-x", "ir", "-", "-c", "-o", "/dev/null"), opaquePointerProbe)
+    Command.feed(Command.make("clang", "-x", "ir", "-", "-o", "/dev/null", "-lm"), opaquePointerProbe)
   ).pipe(
     Effect.map((exitCode) => {
       if (exitCode === 0) {
@@ -41,13 +41,27 @@ const probeClang = (): Effect.Effect<Option.Option<string>, never, CommandExecut
   );
 };
 
-export const discoverToolchain: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
+let cachedToolchain: Toolchain | undefined;
+
+const discoverToolchainUncached: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
   function* discoverAllTools() {
     const [clang, llvmAs, lli] = yield* Effect.all(
       [probeClang(), probeTool("llvm-as"), probeTool("lli")],
       { concurrency: "unbounded" }
     );
     return { clang, llvmAs, lli };
+  }
+);
+
+export const discoverToolchain: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
+  function* discoverCachedTools() {
+    if (cachedToolchain !== undefined) {
+      return cachedToolchain;
+    }
+
+    const toolchain = yield* discoverToolchainUncached;
+    cachedToolchain = toolchain;
+    return toolchain;
   }
 );
 
