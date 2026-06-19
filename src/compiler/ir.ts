@@ -1465,26 +1465,73 @@ const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
 
 function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): ReadonlySet<string> {
   const names = new Set<string>();
-  for (const statement of statements) {
-    if (!ts.isExpressionStatement(statement)) {
-      continue;
+
+  // Detect array mutation methods: push, pop, shift, unshift, fill, reverse, copyWithin
+  const detectMutationMethod = (node: ts.CallExpression): void => {
+    if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)) {
+      const method = node.expression.name.text;
+      if (method === "push" || method === "unshift" || method === "pop" || method === "shift" || method === "fill" || method === "reverse" || method === "copyWithin") {
+        names.add(node.expression.expression.text);
+      }
     }
-    const { expression } = statement;
-    if (ts.isCallExpression(expression)) {
-      if (ts.isPropertyAccessExpression(expression.expression) && ts.isIdentifier(expression.expression.expression)) {
-        const method = expression.expression.name.text;
-        if (method === "push" || method === "unshift" || method === "pop" || method === "shift" || method === "fill" || method === "reverse" || method === "copyWithin") {
-          names.add(expression.expression.expression.text);
+  };
+
+  // Detect Object.assign and Object methods that require runtime semantics
+  const detectObjectMethod = (node: ts.CallExpression): void => {
+    if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "Object") {
+      const objectMethod = node.expression.name.text;
+      if (objectMethod === "assign") {
+        const [target] = node.arguments;
+        if (ts.isIdentifier(target)) {
+          names.add(target.text);
         }
       }
-      if (ts.isPropertyAccessExpression(expression.expression) && ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "Object" && expression.expression.name.text === "assign") {
-        const [target] = expression.arguments;
+      if (objectMethod === "getOwnPropertyDescriptor" || objectMethod === "getOwnPropertyDescriptors" || objectMethod === "getOwnPropertyNames" || objectMethod === "keys" || objectMethod === "values" || objectMethod === "entries") {
+        const [target] = node.arguments;
         if (ts.isIdentifier(target)) {
           names.add(target.text);
         }
       }
     }
+  };
+
+  // Detect 'in' operator: `prop in arr` or `prop in obj`
+  const detectInOperator = (node: ts.BinaryExpression): void => {
+    if (node.operatorToken.kind === ts.SyntaxKind.InKeyword && ts.isIdentifier(node.right)) {
+      names.add(node.right.text);
+    }
+  };
+
+  // Detect 'delete' operator: `delete arr[i]` or `delete obj.prop`
+  const detectDeleteOperator = (node: ts.DeleteExpression): void => {
+    const target = node.expression;
+    if (ts.isPropertyAccessExpression(target) && ts.isIdentifier(target.expression)) {
+      names.add(target.expression.text);
+    }
+    if (ts.isElementAccessExpression(target) && ts.isIdentifier(target.expression)) {
+      names.add(target.expression.text);
+    }
+  };
+
+  // Recursively visit all nodes to detect operations requiring runtime semantics
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      detectMutationMethod(node);
+      detectObjectMethod(node);
+    }
+    if (ts.isBinaryExpression(node)) {
+      detectInOperator(node);
+    }
+    if (ts.isDeleteExpression(node)) {
+      detectDeleteOperator(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  for (const statement of statements) {
+    visit(statement);
   }
+
   return names;
 }
 
