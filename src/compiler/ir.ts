@@ -27,6 +27,7 @@ type ClassInfo = {
   readonly constructorParameters: readonly JsIrFunctionParameter[];
   readonly methods: ReadonlyMap<string, ClassMethodInfo>;
   readonly staticMethods: ReadonlyMap<string, ClassMethodInfo>;
+  readonly staticFields: ReadonlySet<string>;
   readonly getters: ReadonlySet<string>;
   readonly setters: ReadonlySet<string>;
 };
@@ -1630,6 +1631,12 @@ function classStaticMethodFunctionName(className: string, methodName: string): s
   return `${className}$static$${methodName}`;
 }
 
+// Name of the per-class module-level slot holding the object that backs static
+// fields. Created once at module init; `C.x` reads/writes are properties on it.
+function classStaticStorageName(className: string): string {
+  return `${className}$statics`;
+}
+
 function classGetterFunctionName(className: string, propertyName: string): string {
   return `${className}$get$${propertyName}`;
 }
@@ -1665,13 +1672,19 @@ function lowerClassDeclaration(
     constructorParameters: constructorParametersOf(members.constructorDeclaration),
     methods: classMethodInfoMap(members.methodDeclarations),
     staticMethods: classMethodInfoMap(members.staticMethodDeclarations),
+    staticFields: new Set(members.staticFields.map((field) => field.name)),
     getters: new Set(members.getAccessors.map((accessor) => accessorName(accessor))),
     setters: new Set(members.setAccessors.map((accessor) => accessorName(accessor)))
   };
   classes.set(info.name, info);
   activeClassRegistry = classes;
 
-  const operations: JsIrOperation[] = [lowerClassConstructor(info, members.constructorDeclaration, bindings)];
+  const operations: JsIrOperation[] = [];
+  const staticStorage = lowerClassStaticStorage(info, members.staticFields, bindings);
+  if (staticStorage !== undefined) {
+    operations.push(staticStorage);
+  }
+  operations.push(lowerClassConstructor(info, members.constructorDeclaration, bindings));
   for (const declaration of members.methodDeclarations) {
     operations.push(lowerClassMethod(info, declaration, false, bindings));
   }
@@ -1687,6 +1700,30 @@ function lowerClassDeclaration(
   return operations;
 }
 
+// Emits the module-init slot that backs a class's static fields: a single object
+// whose properties are the static fields, initialized in declaration order. Each
+// `C.x` read/write resolves to a property access on this slot. Returns undefined
+// for classes without static fields.
+function lowerClassStaticStorage(
+  info: ClassInfo,
+  staticFields: readonly ClassFieldInfo[],
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (staticFields.length === 0) {
+    return undefined;
+  }
+  const fields: JsIrRuntimeObjectField[] = staticFields.map((field) => ({
+    kind: "field",
+    key: { kind: "literal", value: field.name },
+    value: lowerClassFieldInitializer(field, bindings)
+  }));
+  return {
+    kind: "letValue",
+    name: classStaticStorageName(info.name),
+    value: { kind: "objectLiteralValue", value: { fields } }
+  };
+}
+
 function accessorName(accessor: ts.AccessorDeclaration): string {
   if (!ts.isIdentifier(accessor.name)) {
     throw new ClassLoweringUnsupportedError();
@@ -1696,6 +1733,7 @@ function accessorName(accessor: ts.AccessorDeclaration): string {
 
 type CollectedClassMembers = {
   readonly fields: readonly ClassFieldInfo[];
+  readonly staticFields: readonly ClassFieldInfo[];
   readonly constructorDeclaration: ts.ConstructorDeclaration | undefined;
   readonly methodDeclarations: readonly ts.MethodDeclaration[];
   readonly staticMethodDeclarations: readonly ts.MethodDeclaration[];
@@ -1705,6 +1743,7 @@ type CollectedClassMembers = {
 
 function collectClassMembers(statement: ts.ClassDeclaration): CollectedClassMembers {
   const fields: ClassFieldInfo[] = [];
+  const staticFields: ClassFieldInfo[] = [];
   const methodDeclarations: ts.MethodDeclaration[] = [];
   const staticMethodDeclarations: ts.MethodDeclaration[] = [];
   const getAccessors: ts.GetAccessorDeclaration[] = [];
@@ -1712,10 +1751,11 @@ function collectClassMembers(statement: ts.ClassDeclaration): CollectedClassMemb
   let constructorDeclaration: ts.ConstructorDeclaration | undefined;
   for (const member of statement.members) {
     if (ts.isPropertyDeclaration(member)) {
-      if (classMemberHasStaticModifier(member) || !ts.isIdentifier(member.name)) {
+      if (!ts.isIdentifier(member.name)) {
         throw new ClassLoweringUnsupportedError();
       }
-      fields.push({ name: member.name.text, initializer: member.initializer });
+      const target = classMemberHasStaticModifier(member) ? staticFields : fields;
+      target.push({ name: member.name.text, initializer: member.initializer });
     } else if (ts.isConstructorDeclaration(member)) {
       constructorDeclaration = member;
     } else if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.body !== undefined) {
@@ -1733,7 +1773,7 @@ function collectClassMembers(statement: ts.ClassDeclaration): CollectedClassMemb
       throw new ClassLoweringUnsupportedError();
     }
   }
-  return { fields, constructorDeclaration, methodDeclarations, staticMethodDeclarations, getAccessors, setAccessors };
+  return { fields, staticFields, constructorDeclaration, methodDeclarations, staticMethodDeclarations, getAccessors, setAccessors };
 }
 
 function lowerClassAccessor(
@@ -1949,6 +1989,11 @@ function lowerClassValueExpression(
     }
   }
 
+  const staticField = lowerClassStaticFieldAccess(expression, bindings);
+  if (staticField !== undefined) {
+    return staticField;
+  }
+
   if (ts.isPropertyAccessExpression(expression)) {
     const receiver = lowerClassInstanceExpression(expression.expression, bindings);
     if (receiver !== undefined) {
@@ -1965,6 +2010,31 @@ function lowerClassValueExpression(
   }
 
   return undefined;
+}
+
+// Resolves a static field read `C.x` to a property access on the class's
+// module-level static storage slot. Returns undefined when the receiver is not a
+// class name or the property is not a declared static field.
+function lowerClassStaticFieldAccess(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (activeClassRegistry === undefined || !ts.isPropertyAccessExpression(expression)) {
+    return undefined;
+  }
+  const receiver = expression.expression;
+  if (!ts.isIdentifier(receiver) || bindings.has(receiver.text)) {
+    return undefined;
+  }
+  const info = activeClassRegistry.get(receiver.text);
+  if (info === undefined || !info.staticFields.has(expression.name.text)) {
+    return undefined;
+  }
+  return {
+    kind: "valueObjectDynamicAccess",
+    value: { kind: "variable", name: classStaticStorageName(info.name) },
+    key: { kind: "literal", value: expression.name.text }
+  };
 }
 
 // Resolves a static method call `C.m(...)` or an instance method call
@@ -2093,6 +2163,18 @@ function lowerClassPropertyAssignment(
     return undefined;
   }
   const propertyName = left.name.text;
+  if (receiverClass.staticFields.has(propertyName)) {
+    const value = lowerValueExpression(right, bindings);
+    if (value === undefined) {
+      throw new ClassLoweringUnsupportedError();
+    }
+    return {
+      kind: "valueObjectStore",
+      targetName: classStaticStorageName(receiverClass.name),
+      key: { kind: "literal", value: propertyName },
+      value
+    };
+  }
   const value = lowerValueExpression(right, bindings);
   if (value === undefined) {
     throw new ClassLoweringUnsupportedError();
