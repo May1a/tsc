@@ -1,10 +1,12 @@
 
+declare function print(x: unknown): void;
 
-
-function main() {
+function test() {
     let i = 0;
-    while (i < 100)
+    while (i < 100) {
+        print(i);
         i++;
+    }
 }
 
-main();
+test();
