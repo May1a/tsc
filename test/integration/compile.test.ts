@@ -350,7 +350,7 @@ describe("tscn CLI", () => {
       expect(run.stdout).toContain(`Wrote ${llvmIr}`);
       expect(run.stdout).toContain(`Wrote ${traceMap}`);
       expect(await readArtifact("main.ll")).toContain("define i32 @main()");
-      await expectNativeBehaviorIfAvailable(cliResult, { status: 0, stdout: "", stderr: "" });
+      await expectNativeBehaviorIfAvailable(cliResult, { status: 0, stdout: `${Array.from({ length: 100 }, (_, i) => i).join("\n")}\n`, stderr: "" });
     } finally {
       await rm(outDir, { recursive: true, force: true });
     }
