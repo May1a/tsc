@@ -47,6 +47,9 @@ type EmitContext = {
   arrayIndex: number;
   objectIndex: number;
   readonly optionalTargets: string[];
+  // Phase B: number of gcRootPush calls emitted in the current function so we
+  // can balance them with matching gcRootPop() before each ret.
+  pushedValueCount: number;
 };
 
 type ObjectLayout = ObjectValue;
@@ -170,7 +173,8 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     stringIndex: 0,
     arrayIndex: 0,
     objectIndex: 0,
-    optionalTargets: []
+    optionalTargets: [],
+    pushedValueCount: 0
   };
   const functionDefs: FunctionDef[] = [];
   const mainOps: JsIrOperation[] = [];
@@ -196,6 +200,10 @@ export const emitLlvmIr = (module: JsIrModule): string => {
   if (mainLines.length > noLines) {
     mainBody = `${mainLines.join("\n")}\n`;
   }
+  // Phase A: invoke the GC initializer before any user statement so that the
+  // call to gcInit lands at the start of @main's entry block. The body of
+  // gcInit is a no-op until Phase B starts routing allocations through it.
+  const mainInit = `  call void @gcInit()\n`;
 
   const runtimeDeclarations = emitRuntimeDeclarations(context.runtime).join("\n");
   const runtimeDefinitions = emitRuntimeDefinitions(context.runtime).join("\n");
@@ -216,7 +224,7 @@ ${runtimeDefinitions}
 ${fnLines}
 define i32 @main() {
 entry:
-${mainBody}  ret i32 0
+${mainInit}${mainBody}  ret i32 0
 }
 `;
 };
@@ -298,6 +306,25 @@ function classifyAggregateOperation(operation: JsIrOperation, context: EmitConte
   return false;
 }
 
+// Phase B: pin a freshly-allocated boxed value onto the GC root stack. The
+// matching gcRootPop() runs before the function's ret, so the value survives
+// any subsequent allocating call in the same function.
+function emitRootStackPush(value: string, context: EmitContext): string {
+  context.pushedValueCount += 1;
+  return `  call void @gcRootPush(i64 ${value})`;
+}
+
+// Phase B: emit one gcRootPop() per value previously pinned by emitRootStackPush.
+// Used at ret points so the root stack returns to the caller's level.
+function emitRootStackPops(context: EmitContext): string[] {
+  const lines: string[] = [];
+  for (let i = 0; i < context.pushedValueCount; i += 1) {
+    lines.push("  call void @gcRootPop()");
+  }
+  context.pushedValueCount = 0;
+  return lines;
+}
+
 function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
   const paramList = emitFunctionParameters(fn.parameters).join(", ");
   const lines: string[] = [`define ${fn.returnType} @${fn.name}(${paramList}) {`];
@@ -321,7 +348,8 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     stringIndex: 0,
     arrayIndex: context.arrayIndex,
     objectIndex: context.objectIndex,
-    optionalTargets: []
+    optionalTargets: [],
+    pushedValueCount: 0
   };
   for (let i = 0; i < fn.parameters.length; i++) {
     const parameter = fn.parameters[i];
@@ -353,6 +381,7 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     lines.push("entry:");
   }
   if (fn.returnType === "void") {
+    lines.push(...emitRootStackPops(fnContext));
     lines.push("  ret void");
   }
   lines.push("}", "");
@@ -434,7 +463,7 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
   if (operation.kind === "throwValue") {
     const value = emitValueExpression(operation.value, context);
     useRuntimeHelper(context.runtime, "valuePrint");
-    return [...value.lines, `  call void @valuePrint(i64 ${value.value})`, "  call void @exit(i32 1)"];
+    return [...value.lines, `  call void @valuePrint(i64 ${value.value})`, ...emitRootStackPops(context), "  call void @exit(i32 1)"];
   }
 
   if (operation.kind === "block") {
@@ -466,7 +495,7 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
   }
 
   if (operation.kind === "returnClosure") {
-    return ["  ret ptr null"];
+    return [...emitRootStackPops(context), "  ret ptr null"];
   }
 
   return [];
@@ -977,7 +1006,17 @@ function emitRuntimeArrayLiteralOperation(
       const boxed = `%${operation.name}.spread.boxed.${i}`;
       const args = `%${operation.name}.spread.args.${i}`;
       const next = `%${operation.name}.spread.next.${i}`;
-      lines.push(...source.lines, `  ${current} = load ptr, ptr ${arrayValue.pointerName}`, `  ${boxed} = call i64 @valueBoxArray(ptr ${source.value})`, `  ${args} = call ptr @arrayNew(i64 1)`, `  call void @arraySet(ptr ${args}, i64 0, i64 ${boxed})`, `  ${next} = call ptr @arrayConcat(ptr ${current}, ptr ${args})`, `  store ptr ${next}, ptr ${arrayValue.pointerName}`);
+      lines.push(
+        ...source.lines,
+        `  ${current} = load ptr, ptr ${arrayValue.pointerName}`,
+        `  ${boxed} = call i64 @valueBoxArray(ptr ${source.value})`,
+        `  call void @gcRootPush(i64 ${boxed})`,
+        `  ${args} = call ptr @arrayNew(i64 1)`,
+        `  call void @arraySet(ptr ${args}, i64 0, i64 ${boxed})`,
+        `  ${next} = call ptr @arrayConcat(ptr ${current}, ptr ${args})`,
+        `  call void @gcRootPop()`,
+        `  store ptr ${next}, ptr ${arrayValue.pointerName}`
+      );
       continue;
     }
     const value = emitValueExpression(element.value, context);
@@ -2688,7 +2727,9 @@ function emitNewInstanceValueExpression(
       ...args.lines,
       `  ${object} = call ptr @objectNew(i64 ${expression.fieldCount})`,
       `  ${instance} = call i64 @valueBoxObject(ptr ${object})`,
-      `  call void @${expression.constructorName}(${constructorArgs})`
+      `  call void @gcRootPush(i64 ${instance})`,
+      `  call void @${expression.constructorName}(${constructorArgs})`,
+      `  call void @gcRootPop()`
     ],
     value: instance
   };
@@ -2729,7 +2770,7 @@ function emitNumberReturnOperation(operation: { readonly kind: "returnNumber"; r
   const index = context.numIndex;
   context.numIndex += 1;
   const boxed = `%ret.num.${index}`;
-  return [...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`, `  ret i64 ${boxed}`];
+  return [...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`, ...emitRootStackPops(context), `  ret i64 ${boxed}`];
 }
 
 function emitStringReturnOperation(operation: { readonly kind: "returnString"; readonly expression: JsIrStringExpression }, context: EmitContext): string[] {
@@ -2741,13 +2782,15 @@ function emitStringReturnOperation(operation: { readonly kind: "returnString"; r
   return [
     ...result.lines,
     `  ${boxed} = call i64 @valueBoxString(ptr ${result.value}, i64 ${result.length})`,
+    emitRootStackPush(boxed, context),
+    ...emitRootStackPops(context),
     `  ret i64 ${boxed}`
   ];
 }
 
 function emitValueReturnOperation(operation: { readonly kind: "returnValue"; readonly expression: JsIrValueExpression }, context: EmitContext): string[] {
   const result = emitValueExpression(operation.expression, context);
-  return [...result.lines, `  ret i64 ${result.value}`];
+  return [...result.lines, ...emitRootStackPops(context), `  ret i64 ${result.value}`];
 }
 
 // eslint-disable-next-line complexity, max-statements -- Transitional JSValue emission remains centralized during aggregate boxing.
@@ -2837,7 +2880,15 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
     useRuntimeHelper(context.runtime, "valuePlus");
-    return { lines: [...left.lines, ...right.lines, `  ${value} = call i64 @valuePlus(i64 ${left.value}, i64 ${right.value})`], value };
+    return {
+      lines: [
+        ...left.lines,
+        ...right.lines,
+        `  ${value} = call i64 @valuePlus(i64 ${left.value}, i64 ${right.value})`,
+        emitRootStackPush(value, context)
+      ],
+      value
+    };
   }
 
   if (expression.kind === "logicalValue") {
@@ -3054,6 +3105,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     context.numIndex += 1;
     const boxValue = `%value.${boxIndex}`;
     lines.push(`  ${boxValue} = call i64 @valueBoxString(ptr ${allocPtr}, i64 ${length})`);
+    lines.push(emitRootStackPush(boxValue, context));
     return { lines, value: boxValue };
   }
 
@@ -3074,6 +3126,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     context.numIndex += 1;
     const headBox = `%value.${headBoxIndex}`;
     lines.push(`  ${headBox} = call i64 @valueBoxString(ptr ${headString}, i64 ${headLength})`);
+    lines.push(emitRootStackPush(headBox, context));
     lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 0, i64 ${headBox})`);
     for (let i = 0; i < expression.middleTexts.length; i++) {
       const text = expression.middleTexts[i];
@@ -3083,12 +3136,14 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
       context.numIndex += 1;
       const textBox = `%value.${textBoxIndex}`;
       lines.push(`  ${textBox} = call i64 @valueBoxString(ptr ${textString}, i64 ${textLength})`);
+      lines.push(emitRootStackPush(textBox, context));
       lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 ${i + 1}, i64 ${textBox})`);
     }
     const stringsBoxIndex = context.numIndex;
     context.numIndex += 1;
     const stringsBox = `%value.${stringsBoxIndex}`;
     lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
+    lines.push(emitRootStackPush(stringsBox, context));
     const expressionValues = expression.expressions.map((expr) => emitValueExpression(expr, context));
     for (const value of expressionValues) {
       lines.push(...value.lines);
@@ -3107,6 +3162,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
       context.numIndex += 1;
       const restBox = `%value.${restBoxIndex}`;
       lines.push(`  ${restBox} = call i64 @valueBoxArray(ptr ${restArray})`);
+      lines.push(emitRootStackPush(restBox, context));
       valueArgs.push(restBox);
     } else {
       for (const value of expressionValues) {
@@ -3303,7 +3359,8 @@ function emitStringValueExpression(expression: Extract<JsIrValueExpression, { re
   return {
     lines: [
       ...string.lines,
-      `  ${value} = call i64 @valueBoxString(ptr ${string.value}, i64 ${string.length})`
+      `  ${value} = call i64 @valueBoxString(ptr ${string.value}, i64 ${string.length})`,
+      emitRootStackPush(value, context)
     ],
     value
   };
@@ -5425,6 +5482,7 @@ function emitTaggedTemplateCall(
   context.numIndex += 1;
   const headBox = `%value.${headBoxIndex}`;
   lines.push(`  ${headBox} = call i64 @valueBoxString(ptr ${headString}, i64 ${headLength})`);
+  lines.push(emitRootStackPush(headBox, context));
   lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 0, i64 ${headBox})`);
   for (let i = 0; i < middleTexts.length; i++) {
     const text = middleTexts[i];
@@ -5434,6 +5492,7 @@ function emitTaggedTemplateCall(
     context.numIndex += 1;
     const textBox = `%value.${textBoxIndex}`;
     lines.push(`  ${textBox} = call i64 @valueBoxString(ptr ${textString}, i64 ${textLength})`);
+    lines.push(emitRootStackPush(textBox, context));
     lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 ${i + 1}, i64 ${textBox})`);
   }
   const stringsBoxIndex = context.numIndex;
@@ -5441,6 +5500,7 @@ function emitTaggedTemplateCall(
   const stringsBox = `%value.${stringsBoxIndex}`;
   useRuntimeHelper(context.runtime, "valueBoxArray");
   lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
+  lines.push(emitRootStackPush(stringsBox, context));
   const expressionValues = expressions.map((expr) => emitValueExpression(expr, context));
   for (const value of expressionValues) {
     lines.push(...value.lines);
