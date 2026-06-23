@@ -83,12 +83,15 @@ export default defineConfig({
     },
     ignorePatterns: [
         "dist/**",
+        "oxlint.config.js",
         "oxlint.config.ts",
         "third_party/**",
         "docs/**",
         "examples/**",
         "out/**",
         "test/fixtures/**",
+        "typescript/**",
+        "vitest.config.js",
     ],
     overrides: [
         {
