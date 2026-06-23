@@ -47,6 +47,11 @@ type EmitContext = {
   arrayIndex: number;
   objectIndex: number;
   readonly optionalTargets: string[];
+  // GC root protocol: the SSA name holding this function's saved root-stack depth
+  // (from @gcRootSave at entry). Every ret/throw restores to this depth instead of
+  // emitting a static number of pops, so the root stack stays balanced across loops,
+  // branches, and multiple returns.
+  gcFrameName: string;
 };
 
 type ObjectLayout = ObjectValue;
@@ -170,7 +175,8 @@ export const emitLlvmIr = (module: JsIrModule): string => {
     stringIndex: 0,
     arrayIndex: 0,
     objectIndex: 0,
-    optionalTargets: []
+    optionalTargets: [],
+    gcFrameName: "%gc.main.frame"
   };
   const functionDefs: FunctionDef[] = [];
   const mainOps: JsIrOperation[] = [];
@@ -196,6 +202,11 @@ export const emitLlvmIr = (module: JsIrModule): string => {
   if (mainLines.length > noLines) {
     mainBody = `${mainLines.join("\n")}\n`;
   }
+  // Phase A: invoke the GC initializer before any user statement so that the
+  // call to gcInit lands at the start of @main's entry block. Immediately record
+  // the root-stack baseline so top-level roots are released before @main returns
+  // (otherwise straight-line top-level temporaries stay pinned until process exit).
+  const mainInit = `  call void @gcInit()\n  %gc.main.frame = call i64 @gcRootSave()\n`;
 
   const runtimeDeclarations = emitRuntimeDeclarations(context.runtime).join("\n");
   const runtimeDefinitions = emitRuntimeDefinitions(context.runtime).join("\n");
@@ -216,7 +227,8 @@ ${runtimeDefinitions}
 ${fnLines}
 define i32 @main() {
 entry:
-${mainBody}  ret i32 0
+${mainInit}${mainBody}  call void @gcRootRestore(i64 %gc.main.frame)
+  ret i32 0
 }
 `;
 };
@@ -298,6 +310,21 @@ function classifyAggregateOperation(operation: JsIrOperation, context: EmitConte
   return false;
 }
 
+// Pin a freshly-allocated boxed value onto the GC root stack. It is released when
+// the enclosing scope restores the root-stack depth (function ret, or the per-
+// iteration restore at a loop back-edge), so the value survives any subsequent
+// allocating call / safepoint until then.
+function emitRootStackPush(value: string, _context: EmitContext): string {
+  return `  call void @gcRootPush(i64 ${value})`;
+}
+
+// Restore the root stack to the depth captured at this function's entry. Emitted at
+// every ret/throw point; correct regardless of how many pushes ran, in which branch,
+// or how many returns exist (replaces the old static pop counter).
+function emitRootStackRestore(context: EmitContext): string[] {
+  return [`  call void @gcRootRestore(i64 ${context.gcFrameName})`];
+}
+
 function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
   const paramList = emitFunctionParameters(fn.parameters).join(", ");
   const lines: string[] = [`define ${fn.returnType} @${fn.name}(${paramList}) {`];
@@ -321,7 +348,8 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     stringIndex: 0,
     arrayIndex: context.arrayIndex,
     objectIndex: context.objectIndex,
-    optionalTargets: []
+    optionalTargets: [],
+    gcFrameName: "%gc.frame"
   };
   for (let i = 0; i < fn.parameters.length; i++) {
     const parameter = fn.parameters[i];
@@ -339,6 +367,12 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     });
   }
   const bodyLines = [
+    // Record the root-stack baseline first; every ret/throw restores to it.
+    `  ${fnContext.gcFrameName} = call i64 @gcRootSave()`,
+    // Pin heap-capable parameters for the whole call so an internal safepoint (e.g. a
+    // loop back-edge) cannot collect a value the body still uses. Released by the
+    // restore on return.
+    ...emitParameterRoots(fn.parameters),
     ...emitStringParameterStores(fn.parameters, fnContext),
     ...emitNumberParameterUnbox(fn.parameters),
     ...emitOperations(fn.body, fnContext)
@@ -347,15 +381,25 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
   context.hasNumberPrint = fnContext.hasNumberPrint;
   context.arrayIndex = fnContext.arrayIndex;
   context.objectIndex = fnContext.objectIndex;
-  if (bodyLines.length > noLines) {
-    lines.push("entry:", ...bodyLines);
-  } else {
-    lines.push("entry:");
-  }
+  lines.push("entry:", ...bodyLines);
   if (fn.returnType === "void") {
+    lines.push(...emitRootStackRestore(fnContext));
     lines.push("  ret void");
   }
   lines.push("}", "");
+  return lines;
+}
+
+// Push heap-capable parameters (strings and arbitrary JSValues) onto the GC root
+// stack at function entry. Numbers are NaN-boxed non-pointers, so they are skipped.
+function emitParameterRoots(parameters: readonly JsIrFunctionParameter[]): string[] {
+  const lines: string[] = [];
+  for (let index = 0; index < parameters.length; index++) {
+    const parameter = parameters[index];
+    if (parameter.valueKind === "string" || parameter.valueKind === "value") {
+      lines.push(`  call void @gcRootPush(i64 %p${index})`);
+    }
+  }
   return lines;
 }
 
@@ -434,7 +478,7 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
   if (operation.kind === "throwValue") {
     const value = emitValueExpression(operation.value, context);
     useRuntimeHelper(context.runtime, "valuePrint");
-    return [...value.lines, `  call void @valuePrint(i64 ${value.value})`, "  call void @exit(i32 1)"];
+    return [...value.lines, `  call void @valuePrint(i64 ${value.value})`, ...emitRootStackRestore(context), "  call void @exit(i32 1)"];
   }
 
   if (operation.kind === "block") {
@@ -466,7 +510,7 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
   }
 
   if (operation.kind === "returnClosure") {
-    return ["  ret ptr null"];
+    return [...emitRootStackRestore(context), "  ret ptr null"];
   }
 
   return [];
@@ -977,7 +1021,17 @@ function emitRuntimeArrayLiteralOperation(
       const boxed = `%${operation.name}.spread.boxed.${i}`;
       const args = `%${operation.name}.spread.args.${i}`;
       const next = `%${operation.name}.spread.next.${i}`;
-      lines.push(...source.lines, `  ${current} = load ptr, ptr ${arrayValue.pointerName}`, `  ${boxed} = call i64 @valueBoxArray(ptr ${source.value})`, `  ${args} = call ptr @arrayNew(i64 1)`, `  call void @arraySet(ptr ${args}, i64 0, i64 ${boxed})`, `  ${next} = call ptr @arrayConcat(ptr ${current}, ptr ${args})`, `  store ptr ${next}, ptr ${arrayValue.pointerName}`);
+      lines.push(
+        ...source.lines,
+        `  ${current} = load ptr, ptr ${arrayValue.pointerName}`,
+        `  ${boxed} = call i64 @valueBoxArray(ptr ${source.value})`,
+        `  call void @gcRootPush(i64 ${boxed})`,
+        `  ${args} = call ptr @arrayNew(i64 1)`,
+        `  call void @arraySet(ptr ${args}, i64 0, i64 ${boxed})`,
+        `  ${next} = call ptr @arrayConcat(ptr ${current}, ptr ${args})`,
+        `  call void @gcRootPop()`,
+        `  store ptr ${next}, ptr ${arrayValue.pointerName}`
+      );
       continue;
     }
     const value = emitValueExpression(element.value, context);
@@ -2663,6 +2717,9 @@ function emitStringCallExpressionResult(expression: { readonly kind: "call"; rea
     lines: [
       ...args.lines,
       `  ${result} = call i64 @${expression.name}(${args.values.join(", ")})`,
+      // Pin the returned string box before unboxing: the callee already released its
+      // frame, so without this the backing cell is unrooted across later safepoints.
+      emitRootStackPush(result, context),
       `  ${value} = call ptr @valueStringPtr(i64 ${result})`,
       `  ${length} = call i64 @valueStringLength(i64 ${result})`
     ],
@@ -2688,6 +2745,10 @@ function emitNewInstanceValueExpression(
       ...args.lines,
       `  ${object} = call ptr @objectNew(i64 ${expression.fieldCount})`,
       `  ${instance} = call i64 @valueBoxObject(ptr ${object})`,
+      // Pin the new instance for the constructor call AND keep it pinned afterwards
+      // (released by the enclosing frame/iteration restore) so a later allocation in
+      // the consuming function cannot collect the freshly-built object.
+      emitRootStackPush(instance, context),
       `  call void @${expression.constructorName}(${constructorArgs})`
     ],
     value: instance
@@ -2729,7 +2790,7 @@ function emitNumberReturnOperation(operation: { readonly kind: "returnNumber"; r
   const index = context.numIndex;
   context.numIndex += 1;
   const boxed = `%ret.num.${index}`;
-  return [...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`, `  ret i64 ${boxed}`];
+  return [...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`, ...emitRootStackRestore(context), `  ret i64 ${boxed}`];
 }
 
 function emitStringReturnOperation(operation: { readonly kind: "returnString"; readonly expression: JsIrStringExpression }, context: EmitContext): string[] {
@@ -2738,16 +2799,20 @@ function emitStringReturnOperation(operation: { readonly kind: "returnString"; r
   context.stringIndex += 1;
   const boxed = `%ret.str.${index}`;
   useRuntimeHelper(context.runtime, "valueBoxString");
+  // Box, then restore this frame and return the raw i64. No safepoint runs between the
+  // box and the ret, and the caller re-roots the result at the handoff (see the value
+  // "call" emitter), so the freshly-boxed string is never collected in the gap.
   return [
     ...result.lines,
     `  ${boxed} = call i64 @valueBoxString(ptr ${result.value}, i64 ${result.length})`,
+    ...emitRootStackRestore(context),
     `  ret i64 ${boxed}`
   ];
 }
 
 function emitValueReturnOperation(operation: { readonly kind: "returnValue"; readonly expression: JsIrValueExpression }, context: EmitContext): string[] {
   const result = emitValueExpression(operation.expression, context);
-  return [...result.lines, `  ret i64 ${result.value}`];
+  return [...result.lines, ...emitRootStackRestore(context), `  ret i64 ${result.value}`];
 }
 
 // eslint-disable-next-line complexity, max-statements -- Transitional JSValue emission remains centralized during aggregate boxing.
@@ -2783,7 +2848,14 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const index = context.callIndex;
     context.callIndex += 1;
     const value = `%call.${index}`;
-    return { lines: [...args.lines, `  ${value} = call i64 @${expression.name}(${args.values.join(", ")})`], value };
+    // Root the heap-capable call result: the callee released its own frame before
+    // returning, so the value is unrooted at the handoff. Pinning it here keeps it
+    // alive across any later allocation/safepoint in the caller (released by the
+    // enclosing frame/iteration restore). Harmless for non-heap results.
+    return {
+      lines: [...args.lines, `  ${value} = call i64 @${expression.name}(${args.values.join(", ")})`, emitRootStackPush(value, context)],
+      value
+    };
   }
 
   if (expression.kind === "newInstance") {
@@ -2837,7 +2909,15 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
     useRuntimeHelper(context.runtime, "valuePlus");
-    return { lines: [...left.lines, ...right.lines, `  ${value} = call i64 @valuePlus(i64 ${left.value}, i64 ${right.value})`], value };
+    return {
+      lines: [
+        ...left.lines,
+        ...right.lines,
+        `  ${value} = call i64 @valuePlus(i64 ${left.value}, i64 ${right.value})`,
+        emitRootStackPush(value, context)
+      ],
+      value
+    };
   }
 
   if (expression.kind === "logicalValue") {
@@ -3054,6 +3134,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     context.numIndex += 1;
     const boxValue = `%value.${boxIndex}`;
     lines.push(`  ${boxValue} = call i64 @valueBoxString(ptr ${allocPtr}, i64 ${length})`);
+    lines.push(emitRootStackPush(boxValue, context));
     return { lines, value: boxValue };
   }
 
@@ -3074,6 +3155,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     context.numIndex += 1;
     const headBox = `%value.${headBoxIndex}`;
     lines.push(`  ${headBox} = call i64 @valueBoxString(ptr ${headString}, i64 ${headLength})`);
+    lines.push(emitRootStackPush(headBox, context));
     lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 0, i64 ${headBox})`);
     for (let i = 0; i < expression.middleTexts.length; i++) {
       const text = expression.middleTexts[i];
@@ -3083,12 +3165,14 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
       context.numIndex += 1;
       const textBox = `%value.${textBoxIndex}`;
       lines.push(`  ${textBox} = call i64 @valueBoxString(ptr ${textString}, i64 ${textLength})`);
+      lines.push(emitRootStackPush(textBox, context));
       lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 ${i + 1}, i64 ${textBox})`);
     }
     const stringsBoxIndex = context.numIndex;
     context.numIndex += 1;
     const stringsBox = `%value.${stringsBoxIndex}`;
     lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
+    lines.push(emitRootStackPush(stringsBox, context));
     const expressionValues = expression.expressions.map((expr) => emitValueExpression(expr, context));
     for (const value of expressionValues) {
       lines.push(...value.lines);
@@ -3107,6 +3191,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
       context.numIndex += 1;
       const restBox = `%value.${restBoxIndex}`;
       lines.push(`  ${restBox} = call i64 @valueBoxArray(ptr ${restArray})`);
+      lines.push(emitRootStackPush(restBox, context));
       valueArgs.push(restBox);
     } else {
       for (const value of expressionValues) {
@@ -3303,7 +3388,8 @@ function emitStringValueExpression(expression: Extract<JsIrValueExpression, { re
   return {
     lines: [
       ...string.lines,
-      `  ${value} = call i64 @valueBoxString(ptr ${string.value}, i64 ${string.length})`
+      `  ${value} = call i64 @valueBoxString(ptr ${string.value}, i64 ${string.length})`,
+      emitRootStackPush(value, context)
     ],
     value
   };
@@ -3685,6 +3771,27 @@ function switchClauseTerminates(clause: JsIrSwitchClause): boolean {
   return last?.kind === "break" || last?.kind === "continue" || last?.kind === "returnNumber" || last?.kind === "returnString" || last?.kind === "returnValue" || last?.kind === "throwValue";
 }
 
+// GC loop frame: name of the root-stack baseline captured immediately before a loop.
+function loopFrameName(loopIndex: number): string {
+  return `%gc.loop.${loopIndex}`;
+}
+
+// Emitted once before a loop: capture the root-stack depth so each iteration can be
+// reset back to it. Keeps per-iteration temporaries from accumulating across the
+// stress loops while preserving every loop-invariant root pushed before the loop.
+function emitLoopFrameSave(loopIndex: number): string {
+  return `  ${loopFrameName(loopIndex)} = call i64 @gcRootSave()`;
+}
+
+// Emitted at the top of every loop body: drop the previous iteration's roots, then run
+// a safepoint. Collection only ever happens here (and at function-level boundaries), so
+// raw pointers built mid-statement are never reclaimed, and prior-iteration garbage is
+// reclaimed once the body has re-rooted whatever it still needs. Also reached via
+// `continue`, which targets the cond/step block and flows back through the body top.
+function emitLoopIterationPrologue(loopIndex: number): string[] {
+  return [`  call void @gcRootRestore(i64 ${loopFrameName(loopIndex)})`, "  call void @gcSafepoint()"];
+}
+
 function emitWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "while" }>, context: EmitContext): string[] {
   const { loopIndex } = context;
   context.loopIndex += 1;
@@ -3697,11 +3804,13 @@ function emitWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "
   context.loopLabels.pop();
 
   return [
+    emitLoopFrameSave(loopIndex),
     `  br label %${condLabel}`,
     `${condLabel}:`,
     ...emittedCondition.lines,
     `  br i1 ${emittedCondition.value}, label %${bodyLabel}, label %${endLabel}`,
     `${bodyLabel}:`,
+    ...emitLoopIterationPrologue(loopIndex),
     ...bodyLines,
     `  br label %${condLabel}`,
     `${endLabel}:`
@@ -3720,8 +3829,10 @@ function emitDoWhileOperation(operation: Extract<JsIrOperation, { readonly kind:
   const emittedCondition = emitCondition(operation.condition, context);
 
   return [
+    emitLoopFrameSave(loopIndex),
     `  br label %${bodyLabel}`,
     `${bodyLabel}:`,
+    ...emitLoopIterationPrologue(loopIndex),
     ...bodyLines,
     `  br label %${condLabel}`,
     `${condLabel}:`,
@@ -3747,11 +3858,13 @@ function emitForOperation(operation: Extract<JsIrOperation, { readonly kind: "fo
 
   return [
     ...initializerLines,
+    emitLoopFrameSave(loopIndex),
     `  br label %${condLabel}`,
     `${condLabel}:`,
     ...emittedCondition.lines,
     `  br i1 ${emittedCondition.value}, label %${bodyLabel}, label %${endLabel}`,
     `${bodyLabel}:`,
+    ...emitLoopIterationPrologue(loopIndex),
     ...bodyLines,
     `  br label %${stepLabel}`,
     `${stepLabel}:`,
@@ -3798,12 +3911,14 @@ function emitForOfArrayOperation(operation: Extract<JsIrOperation, { readonly ki
     `  ${indexPointer} = alloca double`,
     `  ${itemPointer} = alloca double`,
     `  store double 0.0, ptr ${indexPointer}`,
+    emitLoopFrameSave(loopIndex),
     `  br label %${condLabel}`,
     `${condLabel}:`,
     `  ${currentIndex} = load double, ptr ${indexPointer}`,
     `  ${inRange} = fcmp olt double ${currentIndex}, ${llvmDoubleLiteral(arrayLength)}`,
     `  br i1 ${inRange}, label %${bodyLabel}, label %${endLabel}`,
     `${bodyLabel}:`,
+    ...emitLoopIterationPrologue(loopIndex),
     ...element.lines,
     `  store double ${element.value}, ptr ${itemPointer}`,
     ...bodyLines,
@@ -3857,12 +3972,14 @@ function emitForOfStringOperation(operation: Extract<JsIrOperation, { readonly k
     `  ${itemPointer} = alloca ptr`,
     `  ${itemLengthPointer} = alloca i64`,
     `  store i64 0, ptr ${indexPointer}`,
+    emitLoopFrameSave(loopIndex),
     `  br label %${condLabel}`,
     `${condLabel}:`,
     `  ${currentIndex} = load i64, ptr ${indexPointer}`,
     `  ${inRange} = icmp ult i64 ${currentIndex}, ${source.length}`,
     `  br i1 ${inRange}, label %${bodyLabel}, label %${endLabel}`,
     `${bodyLabel}:`,
+    ...emitLoopIterationPrologue(loopIndex),
     `  ${charSource} = getelementptr i8, ptr ${source.value}, i64 ${currentIndex}`,
     `  ${charValue} = load i8, ptr ${charSource}`,
     `  ${charString} = call ptr @malloc(i64 2)`,
@@ -3987,12 +4104,14 @@ function emitForInKeyIteration(
     `  store i64 0, ptr ${indexPointer}`,
     `  ${keysPointer} = call ptr @${helper}(ptr ${source.value})`,
     `  ${keysLength} = call i64 @arrayLength(ptr ${keysPointer})`,
+    emitLoopFrameSave(loopIndex),
     `  br label %${condLabel}`,
     `${condLabel}:`,
     `  ${currentIndex} = load i64, ptr ${indexPointer}`,
     `  ${inRange} = icmp ult i64 ${currentIndex}, ${keysLength}`,
     `  br i1 ${inRange}, label %${bodyLabel}, label %${endLabel}`,
     `${bodyLabel}:`,
+    ...emitLoopIterationPrologue(loopIndex),
     `  ${keyElement} = call i64 @arrayGet(ptr ${keysPointer}, i64 ${currentIndex})`,
     `  ${keyPtr} = call ptr @valueStringPtr(i64 ${keyElement})`,
     `  ${keyLen} = call i64 @valueStringLength(i64 ${keyElement})`,
@@ -4059,6 +4178,7 @@ function emitForOfCollectionValueOperation(
     `  ${indexPointer} = alloca i64`,
     `  ${itemPointer} = alloca ${itemPointerType}`,
     `  store i64 0, ptr ${indexPointer}`,
+    emitLoopFrameSave(loopIndex),
     `  br label %${condLabel}`,
     `${condLabel}:`,
     `  ${currentIndex} = load i64, ptr ${indexPointer}`,
@@ -4075,6 +4195,7 @@ function emitForOfCollectionValueOperation(
     `  ${isActive} = icmp ne i64 ${active}, 0`,
     `  br i1 ${isActive}, label %${bodyLabel}, label %${stepLabel}`,
     `${bodyLabel}:`,
+    ...emitLoopIterationPrologue(loopIndex),
     ...item.lines,
     ...bodyLines,
     `  br label %${stepLabel}`,
@@ -5425,6 +5546,7 @@ function emitTaggedTemplateCall(
   context.numIndex += 1;
   const headBox = `%value.${headBoxIndex}`;
   lines.push(`  ${headBox} = call i64 @valueBoxString(ptr ${headString}, i64 ${headLength})`);
+  lines.push(emitRootStackPush(headBox, context));
   lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 0, i64 ${headBox})`);
   for (let i = 0; i < middleTexts.length; i++) {
     const text = middleTexts[i];
@@ -5434,6 +5556,7 @@ function emitTaggedTemplateCall(
     context.numIndex += 1;
     const textBox = `%value.${textBoxIndex}`;
     lines.push(`  ${textBox} = call i64 @valueBoxString(ptr ${textString}, i64 ${textLength})`);
+    lines.push(emitRootStackPush(textBox, context));
     lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 ${i + 1}, i64 ${textBox})`);
   }
   const stringsBoxIndex = context.numIndex;
@@ -5441,6 +5564,7 @@ function emitTaggedTemplateCall(
   const stringsBox = `%value.${stringsBoxIndex}`;
   useRuntimeHelper(context.runtime, "valueBoxArray");
   lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
+  lines.push(emitRootStackPush(stringsBox, context));
   const expressionValues = expressions.map((expr) => emitValueExpression(expr, context));
   for (const value of expressionValues) {
     lines.push(...value.lines);
