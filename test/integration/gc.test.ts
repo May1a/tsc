@@ -43,6 +43,13 @@ describe("tscn GC scaffolding (phase A)", () => {
       expect(llvmIr).toMatch(/^define ptr @gcAlloc\(i64 [^,]+, i64 [^)]+\) \{/m);
       expect(llvmIr).toMatch(/^define void @gcRootPush\(i64 [^)]+\) \{/m);
       expect(llvmIr).toMatch(/^define void @gcRootPop\(\) \{/m);
+      // Root balancing is now depth-based: every function/loop captures the
+      // root-stack depth with gcRootSave and resets to it with gcRootRestore
+      // (replacing the old static pop counting), and collection only runs at
+      // gcSafepoint boundaries.
+      expect(llvmIr).toMatch(/^define i64 @gcRootSave\(\) \{/m);
+      expect(llvmIr).toMatch(/^define void @gcRootRestore\(i64 [^)]+\) \{/m);
+      expect(llvmIr).toMatch(/^define void @gcSafepoint\(\) \{/m);
       expect(llvmIr).toMatch(/^define void @gcMarkValue\(i64 [^)]+\) \{/m);
       expect(llvmIr).toMatch(/^define void @gcSweep\(\) \{/m);
       expect(llvmIr).toMatch(/^define void @gcCollect\(\) \{/m);
@@ -76,21 +83,24 @@ describe("tscn GC scaffolding (phase A)", () => {
 });
 
 // Phase B coverage: valueBoxString now allocates through @gcAlloc (8-byte
-// header + 16-byte payload), every allocating call site is bracketed by a
-// gcRootPush/gcRootPop pair, and the GC survives a 100-iteration string
+// header + 16-byte payload), roots are pinned with gcRootPush and released by
+// the depth-based gcRootSave/gcRootRestore protocol, collection only runs at
+// gcSafepoint boundaries, and the GC survives a 70k-iteration string
 // concatenation loop that crosses the initial collection threshold.
 describe("tscn GC strings (phase B)", () => {
-  test("emits gcRootPush and gcRootPop with equal counts", async () => {
+  test("emits depth-based root instrumentation and boxes strings through gcAlloc", async () => {
     const result = await expectSuccessfulCompile("gc-stress-strings.ts");
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      const pushCount = countOccurrences(llvmIr, "call void @gcRootPush(");
-      const popCount = countOccurrences(llvmIr, "call void @gcRootPop(");
-      expect(pushCount, "every gcRootPush must be balanced by a gcRootPop").toBeGreaterThan(0);
-      expect(pushCount).toBe(popCount);
-      // Every valueBoxString call site must be preceded by a gcRootPush within
-      // the immediately enclosing context.
+      // Roots are pinned (gcRootPush) and released by frame restore, not by a
+      // matching static pop. Both the save and restore primitives must appear.
+      expect(countOccurrences(llvmIr, "call void @gcRootPush("), "expected at least one gcRootPush").toBeGreaterThan(0);
+      expect(countOccurrences(llvmIr, "call i64 @gcRootSave("), "expected gcRootSave frames").toBeGreaterThan(0);
+      expect(countOccurrences(llvmIr, "call void @gcRootRestore("), "expected gcRootRestore frame resets").toBeGreaterThan(0);
+      // The concat loop must carry a safepoint so collection can actually fire
+      // mid-program (gcAlloc itself never collects).
+      expect(countOccurrences(llvmIr, "call void @gcSafepoint("), "expected a gcSafepoint in the loop").toBeGreaterThan(0);
       const boxStringCalls = llvmIr.match(/= call i64 @valueBoxString\(/g) ?? [];
       expect(boxStringCalls.length, "expected at least one valueBoxString call").toBeGreaterThan(0);
     } finally {
@@ -98,29 +108,19 @@ describe("tscn GC strings (phase B)", () => {
     }
   });
 
-  test("brackets every valueBoxString call with push/pop in the stress fixture", async () => {
+  test("instruments the loop body with a per-iteration restore and safepoint", async () => {
     const result = await expectSuccessfulCompile("gc-stress-strings.ts");
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      const lines = llvmIr.split("\n");
-      const boxStringIndices: number[] = [];
-      for (let i = 0; i < lines.length; i += 1) {
-        if (lines[i]?.includes("= call i64 @valueBoxString(")) {
-          boxStringIndices.push(i);
-        }
-      }
-      expect(boxStringIndices.length, "expected valueBoxString calls in stress fixture").toBeGreaterThan(0);
-      // Each valueBoxString call must be followed within 5 lines by a gcRootPush.
-      const windowRadius = 6;
-      for (const callIndex of boxStringIndices) {
-        const window = lines.slice(callIndex, callIndex + windowRadius).join("\n");
-        expect(window, `valueBoxString at line ${callIndex + 1} not bracketed by gcRootPush`).toMatch(/call void @gcRootPush\(/);
-      }
-      // Push/pop balance.
-      const pushCount = countOccurrences(llvmIr, "call void @gcRootPush(");
-      const popCount = countOccurrences(llvmIr, "call void @gcRootPop(");
-      expect(pushCount).toBe(popCount);
+      // gcAlloc must never collect inline; it only flags a pending collection.
+      const allocMatch = /define ptr @gcAlloc\([\s\S]*?\n\}/.exec(llvmIr);
+      expect(allocMatch, "expected @gcAlloc definition").not.toBeNull();
+      expect(allocMatch?.[0] ?? "", "gcAlloc must not call gcCollect inline").not.toMatch(/call void @gcCollect\(/);
+      expect(allocMatch?.[0] ?? "", "gcAlloc must flag a pending collection").toMatch(/@gcCollectPending/);
+      // Each loop body opens with a frame restore immediately followed by a
+      // safepoint, so prior-iteration temporaries are dropped and collected.
+      expect(llvmIr).toMatch(/call void @gcRootRestore\(i64 %gc\.loop\.\d+\)\n\s*call void @gcSafepoint\(\)/);
     } finally {
       await result.cleanup();
     }
@@ -170,10 +170,10 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
 
       try {
         const llvmIr = await result.readArtifact("main.ll");
-        const pushCount = countOccurrences(llvmIr, "call void @gcRootPush(");
-        const popCount = countOccurrences(llvmIr, "call void @gcRootPop(");
-        expect(pushCount, `${fixture}: expected at least one gcRootPush`).toBeGreaterThan(0);
-        expect(pushCount, `${fixture}: push/pop mismatch`).toBe(popCount);
+        // Depth-based rooting: pushes are pinned and released by frame restore.
+        expect(countOccurrences(llvmIr, "call void @gcRootPush("), `${fixture}: expected at least one gcRootPush`).toBeGreaterThan(0);
+        expect(countOccurrences(llvmIr, "call i64 @gcRootSave("), `${fixture}: expected gcRootSave frames`).toBeGreaterThan(0);
+        expect(countOccurrences(llvmIr, "call void @gcRootRestore("), `${fixture}: expected gcRootRestore frame resets`).toBeGreaterThan(0);
         // Every Phase C fixture allocates at least one object cell
         // (GC_TAG_OBJECT = 2), and the class-field / drop-and-reuse fixtures
         // additionally exercise string boxes (GC_TAG_STRING = 1).
@@ -223,14 +223,33 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
     }
   });
 
-  test("valueBoxObject call site is bracketed by a gcRootPush/gcRootPop pair", async () => {
+  test("gc-retain-live.ts keeps a rooted object alive across a real collection", async () => {
+    // run() holds one Box (`keep`) in a local across a 25k-iteration allocation
+    // loop that crosses the 1 MiB threshold, so a gcCollect cycle runs mid-loop.
+    // `keep` is pinned on the function's root frame and its field must read back
+    // 7 afterwards; the 25k transient Boxes are reclaimed. A regression in root
+    // marking, the object-field walk, the per-iteration frame restore, or the
+    // safepoint would either crash or print a value other than 7. The transient
+    // allocation sits inside an `if`, which the old static push/pop counter could
+    // not balance across the branch.
+    const result = await expectSuccessfulCompile("gc-retain-live.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("valueBoxObject call site pins the new instance with gcRootPush before the constructor", async () => {
     // The class-field fixture exercises newInstance: a valueBoxObject call
-    // followed by the constructor call inside `build()`. The instance cell
-    // is gcAlloc-managed, so we expect a gcRootPush between valueBoxObject
-    // and the constructor call, and a matching gcRootPop after the
-    // constructor call returns. We look for this pattern specifically inside
-    // @build (where `new Greeter(...)` lowers to) and skip the prototype
-    // construction in @main (which has no constructor call after it).
+    // followed by the constructor call inside `build()`. The instance cell is
+    // gcAlloc-managed, so we expect a gcRootPush between valueBoxObject and the
+    // constructor call. The instance stays pinned on the frame afterwards (no
+    // immediate pop) and is released by the function's gcRootRestore, so a later
+    // allocation in the consumer cannot collect the freshly-built object. We look
+    // for this pattern specifically inside @build (where `new Greeter(...)`
+    // lowers to) and skip the prototype construction in @main.
     const result = await expectSuccessfulCompile("gc-class-fields.ts");
 
     try {

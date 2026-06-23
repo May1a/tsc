@@ -413,6 +413,9 @@ export function emitRuntimeDeclarations(runtime: RuntimeHelperEmitter): string[]
   if (runtime.used.has("gcInit")) {
     declarations.push("declare ptr @getenv(ptr)");
     declarations.push("declare i64 @strtol(ptr, ptr, i32)");
+    // gcSweep frees the malloc'd backing buffers (object/array/collection entry
+    // tables and owned string data) of reclaimed cells.
+    declarations.push("declare void @free(ptr)");
   }
 
   if (runtime.used.has("mathAbs") || runtime.used.has("numberIsFinite")) declarations.push("declare double @llvm.fabs.f64(double)");
@@ -450,7 +453,7 @@ export function emitRuntimeDefinitions(runtime: RuntimeHelperEmitter): string[] 
 @gcBumpPtr = internal global ptr null
 @gcBytesAllocd = internal global i64 0
 @gcNextCollectAt = internal global i64 1048576
-@gcCollectGate = internal global i64 0
+@gcCollectPending = internal global i64 0
 @gcCollections = internal global i64 0
 @gcLiveBytes = internal global i64 0
 @gcFreeString = internal global ptr null
@@ -490,7 +493,7 @@ init:
   store ptr %arena, ptr @gcBumpPtr
   store i64 0, ptr @gcBytesAllocd
   store i64 1048576, ptr @gcNextCollectAt
-  store i64 0, ptr @gcCollectGate
+  store i64 0, ptr @gcCollectPending
   store i64 0, ptr @gcCollections
   store i64 0, ptr @gcLiveBytes
   store ptr null, ptr @gcFreeString
@@ -554,6 +557,31 @@ ok:
   ret void
 }
 
+define i64 @gcRootSave() {
+entry:
+  %count = load i64, ptr @gcRootStackCount
+  ret i64 %count
+}
+
+define void @gcRootRestore(i64 %depth) {
+entry:
+  store i64 %depth, ptr @gcRootStackCount
+  ret void
+}
+
+define void @gcSafepoint() {
+entry:
+  %pending = load i64, ptr @gcCollectPending
+  %do = icmp ne i64 %pending, 0
+  br i1 %do, label %collect, label %skip
+collect:
+  store i64 0, ptr @gcCollectPending
+  call void @gcCollect()
+  br label %skip
+skip:
+  ret void
+}
+
 define void @gcMarkValue(i64 %value) {
 entry:
   %tag = and i64 %value, -281474976710656
@@ -612,6 +640,50 @@ skip:
   ret void
 }
 
+; Mark a child reached through a raw GC payload pointer (object/array prototypes and
+; array property bags are stored as cell+8 payload pointers, not boxed JSValues).
+; Null-safe; greys the cell and pushes it for the iterative drain just like the heap
+; path of gcMarkValue.
+define void @gcMarkPayloadPtr(ptr %payload) {
+entry:
+  %is.null = icmp eq ptr %payload, null
+  br i1 %is.null, label %done, label %mark
+mark:
+  %cell = getelementptr i8, ptr %payload, i64 -8
+  %color.ptr = getelementptr i8, ptr %cell, i64 1
+  %color = load i8, ptr %color.ptr
+  %is.black = icmp eq i8 %color, 2
+  %is.gray = icmp eq i8 %color, 1
+  %is.marked = or i1 %is.black, %is.gray
+  br i1 %is.marked, label %done, label %push
+push:
+  %count = load i64, ptr @gcMarkStackCount
+  %cap = load i64, ptr @gcMarkStackCap
+  %need.grow = icmp eq i64 %count, %cap
+  br i1 %need.grow, label %grow, label %store
+grow:
+  %new.cap = mul i64 %cap, 2
+  %old.bytes = mul i64 %cap, 8
+  %new.bytes = mul i64 %new.cap, 8
+  %old.stack = load ptr, ptr @gcMarkStack
+  %new.stack = call ptr @malloc(i64 %new.bytes)
+  call ptr @memcpy(ptr %new.stack, ptr %old.stack, i64 %old.bytes)
+  store ptr %new.stack, ptr @gcMarkStack
+  store i64 %new.cap, ptr @gcMarkStackCap
+  br label %store
+store:
+  %stack = load ptr, ptr @gcMarkStack
+  %slot.bytes = mul i64 %count, 8
+  %slot = getelementptr i8, ptr %stack, i64 %slot.bytes
+  store ptr %cell, ptr %slot
+  %next.count = add i64 %count, 1
+  store i64 %next.count, ptr @gcMarkStackCount
+  store i8 1, ptr %color.ptr
+  br label %done
+done:
+  ret void
+}
+
 define void @gcMarkObject(ptr %cell) {
 entry:
   %color.ptr = getelementptr i8, ptr %cell, i64 1
@@ -640,17 +712,28 @@ walk.object:
   %obj.entries = load ptr, ptr %obj.entries.ptr
   br label %walk.object.loop
 walk.object.loop:
-  %oi = phi i64 [ 0, %walk.object ], [ %oi.next, %walk.object.body ]
+  %oi = phi i64 [ 0, %walk.object ], [ %oi.next, %walk.object.next ]
   %odone = icmp eq i64 %oi, %obj.count
-  br i1 %odone, label %skip, label %walk.object.body
+  br i1 %odone, label %walk.object.proto, label %walk.object.body
 walk.object.body:
   %oentry.bytes = mul i64 %oi, 32
   %oentry.ptr = getelementptr i8, ptr %obj.entries, i64 %oentry.bytes
+  %olen = load i64, ptr %oentry.ptr
+  %olive = icmp sge i64 %olen, 0
+  br i1 %olive, label %walk.object.mark, label %walk.object.next
+walk.object.mark:
   %ovalue.slot = getelementptr i8, ptr %oentry.ptr, i64 16
   %ovalue = load i64, ptr %ovalue.slot
   call void @gcMarkValue(i64 %ovalue)
+  br label %walk.object.next
+walk.object.next:
   %oi.next = add i64 %oi, 1
   br label %walk.object.loop
+walk.object.proto:
+  %obj.proto.ptr = getelementptr i8, ptr %cell, i64 40
+  %obj.proto = load ptr, ptr %obj.proto.ptr
+  call void @gcMarkPayloadPtr(ptr %obj.proto)
+  br label %skip
 walk.array:
   %arr.length.ptr = getelementptr i8, ptr %cell, i64 8
   %arr.length = load i64, ptr %arr.length.ptr
@@ -660,7 +743,7 @@ walk.array:
 walk.array.loop:
   %ai = phi i64 [ 0, %walk.array ], [ %ai.next, %walk.array.body ]
   %adone = icmp eq i64 %ai, %arr.length
-  br i1 %adone, label %skip, label %walk.array.body
+  br i1 %adone, label %walk.array.proto, label %walk.array.body
 walk.array.body:
   %aslot.bytes = mul i64 %ai, 8
   %aslot = getelementptr i8, ptr %arr.elements, i64 %aslot.bytes
@@ -668,6 +751,14 @@ walk.array.body:
   call void @gcMarkValue(i64 %avalue)
   %ai.next = add i64 %ai, 1
   br label %walk.array.loop
+walk.array.proto:
+  %arr.proto.ptr = getelementptr i8, ptr %cell, i64 32
+  %arr.proto = load ptr, ptr %arr.proto.ptr
+  call void @gcMarkPayloadPtr(ptr %arr.proto)
+  %arr.props.ptr = getelementptr i8, ptr %cell, i64 40
+  %arr.props = load ptr, ptr %arr.props.ptr
+  call void @gcMarkPayloadPtr(ptr %arr.props)
+  br label %skip
 walk.collection:
   %col.used.ptr = getelementptr i8, ptr %cell, i64 16
   %col.used = load i64, ptr %col.used.ptr
@@ -685,6 +776,9 @@ walk.collection.body:
   %cis.active = icmp ne i64 %cactive, 0
   br i1 %cis.active, label %walk.collection.active, label %walk.collection.skip
 walk.collection.active:
+  %ckey.slot = getelementptr i8, ptr %centry.ptr, i64 8
+  %ckey = load i64, ptr %ckey.slot
+  call void @gcMarkValue(i64 %ckey)
   %cvalue.slot = getelementptr i8, ptr %centry.ptr, i64 16
   %cvalue = load i64, ptr %cvalue.slot
   call void @gcMarkValue(i64 %cvalue)
@@ -700,6 +794,8 @@ define void @gcSweep() {
 entry:
   %arena = load ptr, ptr @gcArenaBase
   %bump = load ptr, ptr @gcBumpPtr
+  ; Recompute the surviving (black) byte total from scratch this cycle.
+  store i64 0, ptr @gcLiveBytes
   br label %loop
 loop:
   %cur = phi ptr [ %arena, %entry ], [ %step.cur, %advance ]
@@ -728,6 +824,19 @@ check.free.array:
 check.free.collection:
   br i1 %is.collection, label %free.collection, label %advance
 free.string:
+  ; The string data buffer is owned by this cell only when the owns-flag (header
+  ; byte +4) is set: literal-backed strings borrow constant data and must not be
+  ; freed. Free before reusing the +8 payload word as the free-list next pointer.
+  %s.owns.ptr = getelementptr i8, ptr %cur, i64 4
+  %s.owns = load i8, ptr %s.owns.ptr
+  %s.owned = icmp ne i8 %s.owns, 0
+  br i1 %s.owned, label %free.string.buf, label %free.string.link
+free.string.buf:
+  %s.data.ptr = getelementptr i8, ptr %cur, i64 8
+  %s.data = load ptr, ptr %s.data.ptr
+  call void @free(ptr %s.data)
+  br label %free.string.link
+free.string.link:
   %sh = load ptr, ptr @gcFreeString
   %snf = getelementptr i8, ptr %cur, i64 8
   store ptr %sh, ptr %snf
@@ -735,6 +844,10 @@ free.string:
   store i8 3, ptr %color.ptr
   br label %advance
 free.object:
+  ; Entry table (payload +16 => cell +24) is always a private malloc; free it.
+  %o.entries.ptr = getelementptr i8, ptr %cur, i64 24
+  %o.entries = load ptr, ptr %o.entries.ptr
+  call void @free(ptr %o.entries)
   %oh = load ptr, ptr @gcFreeObject
   %onf = getelementptr i8, ptr %cur, i64 8
   store ptr %oh, ptr %onf
@@ -742,6 +855,11 @@ free.object:
   store i8 3, ptr %color.ptr
   br label %advance
 free.array:
+  ; Element buffer (payload +16 => cell +24) is a private malloc; free it. The
+  ; properties object (cell +40) is a separate GC cell, reclaimed on its own sweep.
+  %a.elems.ptr = getelementptr i8, ptr %cur, i64 24
+  %a.elems = load ptr, ptr %a.elems.ptr
+  call void @free(ptr %a.elems)
   %ah = load ptr, ptr @gcFreeArray
   %anf = getelementptr i8, ptr %cur, i64 8
   store ptr %ah, ptr %anf
@@ -749,6 +867,10 @@ free.array:
   store i8 3, ptr %color.ptr
   br label %advance
 free.collection:
+  ; Entry buffer (payload +24 => cell +32) is a private malloc; free it.
+  %c.entries.ptr = getelementptr i8, ptr %cur, i64 32
+  %c.entries = load ptr, ptr %c.entries.ptr
+  call void @free(ptr %c.entries)
   %ch = load ptr, ptr @gcFreeCollection
   %cnf = getelementptr i8, ptr %cur, i64 8
   store ptr %ch, ptr %cnf
@@ -757,6 +879,14 @@ free.collection:
   br label %advance
 black:
   store i8 0, ptr %color.ptr
+  ; Survivor: add its full cell footprint (header + payload) to the live total.
+  %b.size.ptr = getelementptr i8, ptr %cur, i64 2
+  %b.size.i16 = load i16, ptr %b.size.ptr
+  %b.size = zext i16 %b.size.i16 to i64
+  %b.cell.bytes = add i64 %b.size, 8
+  %b.live = load i64, ptr @gcLiveBytes
+  %b.live.next = add i64 %b.live, %b.cell.bytes
+  store i64 %b.live.next, ptr @gcLiveBytes
   br label %advance
 advance:
   %size.ptr = getelementptr i8, ptr %cur, i64 2
@@ -872,10 +1002,10 @@ reuse.collection:
 bump.alloc:
   %bump = load ptr, ptr @gcBumpPtr
   %arena.end = load ptr, ptr @gcArenaEnd
-  %will.fit = icmp ult ptr %bump, %arena.end
+  %new.bump = getelementptr i8, ptr %bump, i64 %bytes
+  %will.fit = icmp ule ptr %new.bump, %arena.end
   br i1 %will.fit, label %do.bump, label %oom
 do.bump:
-  %new.bump = getelementptr i8, ptr %bump, i64 %bytes
   store ptr %new.bump, ptr @gcBumpPtr
   br label %init.header
 oom:
@@ -890,17 +1020,19 @@ init.header:
   %size.slot = getelementptr i8, ptr %cell, i64 2
   %size.i16 = trunc i64 %size to i16
   store i16 %size.i16, ptr %size.slot
+  ; Clear the reserved header word (+4..+7). Bit 0 is the "owns external buffer"
+  ; flag read by gcSweep for strings; zeroing here keeps a reused free-list cell
+  ; from inheriting a stale owns flag.
+  %reserved.slot = getelementptr i8, ptr %cell, i64 4
+  store i32 0, ptr %reserved.slot
   %old.bytes = load i64, ptr @gcBytesAllocd
   %new.bytes = add i64 %old.bytes, %bytes
   store i64 %new.bytes, ptr @gcBytesAllocd
   %threshold = load i64, ptr @gcNextCollectAt
   %over.threshold = icmp sgt i64 %new.bytes, %threshold
-  %gate = load i64, ptr @gcCollectGate
-  %gate.zero = icmp eq i64 %gate, 0
-  %should.collect = and i1 %over.threshold, %gate.zero
-  br i1 %should.collect, label %do.collect, label %done.alloc
-do.collect:
-  call void @gcCollect()
+  br i1 %over.threshold, label %mark.pending, label %done.alloc
+mark.pending:
+  store i64 1, ptr @gcCollectPending
   br label %done.alloc
 done.alloc:
   ret ptr %cell
