@@ -20,6 +20,10 @@ type CachedParsedConfigResult = {
   readonly result: ParsedConfigResult;
 };
 
+const inlineCppTag = "__tscn_inline_cpp";
+const missingInlineCppTagDiagnosticCode = 2304;
+const suggestedInlineCppTagDiagnosticCode = 2552;
+
 const parsedConfigCache = new Map<string, CachedParsedConfigResult>();
 
 const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
@@ -170,9 +174,97 @@ const sourceFileCacheKey = (
   return `${stableFileName}:${languageKey}`;
 };
 
+function isInlineCppMarkerAt(content: string, index: number): boolean {
+  return content.startsWith("@cpp`", index);
+}
+
+function skipQuotedString(content: string, index: number, quote: string): number {
+  let current = index + 1;
+  while (current < content.length) {
+    const char = content[current];
+    if (char === "\\") {
+      current += 2;
+      continue;
+    }
+    if (char === quote) {
+      return current + 1;
+    }
+    current += 1;
+  }
+  return current;
+}
+
+function skipLineComment(content: string, index: number): number {
+  const end = content.indexOf("\n", index + 2);
+  if (end === -1) {
+    return content.length;
+  }
+  return end;
+}
+
+function skipBlockComment(content: string, index: number): number {
+  const end = content.indexOf("*/", index + 2);
+  if (end === -1) {
+    return content.length;
+  }
+  return end + 2;
+}
+
+function rewriteInlineCppSyntax(content: string): string {
+  let rewritten = "";
+  let index = 0;
+  while (index < content.length) {
+    if (isInlineCppMarkerAt(content, index)) {
+      rewritten += inlineCppTag;
+      index += "@cpp".length;
+      continue;
+    }
+
+    const char = content[index];
+    if (char === "\"" || char === "'" || char === "`") {
+      const next = skipQuotedString(content, index, char);
+      rewritten += content.slice(index, next);
+      index = next;
+      continue;
+    }
+    if (char === "/" && content[index + 1] === "/") {
+      const next = skipLineComment(content, index);
+      rewritten += content.slice(index, next);
+      index = next;
+      continue;
+    }
+    if (char === "/" && content[index + 1] === "*") {
+      const next = skipBlockComment(content, index);
+      rewritten += content.slice(index, next);
+      index = next;
+      continue;
+    }
+
+    rewritten += char;
+    index += 1;
+  }
+  return rewritten;
+}
+
+function isSyntheticInlineCppDiagnostic(diagnostic: ts.Diagnostic): boolean {
+  if (diagnostic.code !== missingInlineCppTagDiagnosticCode && diagnostic.code !== suggestedInlineCppTagDiagnosticCode) {
+    return false;
+  }
+  return ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n").includes(inlineCppTag);
+}
+
 const createCompilerHostWithCachedDeclarations = (options: ts.CompilerOptions): ts.CompilerHost => {
   const host = ts.createCompilerHost(options);
   const getSourceFile = host.getSourceFile.bind(host);
+
+  const readFile = host.readFile.bind(host);
+  host.readFile = (fileName) => {
+    const content = readFile(fileName);
+    if (content === undefined || fileName.endsWith(".d.ts")) {
+      return content;
+    }
+    return rewriteInlineCppSyntax(content);
+  };
 
   host.getSourceFile = (fileName, languageVersionOrOptions, onError, shouldCreateNewSourceFile) => {
     if (shouldCreateNewSourceFile === true || !fileName.endsWith(".d.ts")) {
@@ -259,7 +351,7 @@ export const loadProgram = (
       ...program.getGlobalDiagnostics(),
       ...program.getSyntacticDiagnostics(),
       ...program.getSemanticDiagnostics()
-    ]);
+    ].filter((diagnostic) => !isSyntheticInlineCppDiagnostic(diagnostic)));
     yield* Effect.forEach(tsDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
 
     yield* rejectPackageImports(sourceFiles);

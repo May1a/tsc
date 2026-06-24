@@ -1,0 +1,1 @@
+@cpp`return tscn::undefined();`;

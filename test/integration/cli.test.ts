@@ -10,6 +10,7 @@ import {
   expectUnsupportedMessage,
   expectNativeBehaviorIfAvailable,
   expectLlvmAsVerificationIfAvailable,
+  runNativeIfAvailable,
   captureCommand,
   toolExecutable,
   roadmapIntegrationTimeoutMs,
@@ -72,7 +73,7 @@ describe("tscn CLI", () => {
       expect(run.status, run.stderr).toBe(0);
       expect(run.stderr).not.toContain("TS6059");
       expect(run.stderr).not.toContain("TSCN1002");
-      if (clang === undefined) {
+      if (clang === undefined || run.stderr.includes("TSCN2001")) {
         expect(run.stderr).toContain("TSCN2001");
       } else {
         expect(run.stderr).toBe("");
@@ -92,6 +93,80 @@ describe("tscn CLI", () => {
 
     try {
       await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("rejects inline C++ unless -fcpp is enabled", async () => {
+    const result = await compileFixture("inline-cpp-number.ts");
+
+    try {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("error TSCN1003");
+      expect(result.stderr).toContain("Inline C++ requires -fcpp");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("emits inline C++ artifacts when -fcpp is enabled", async () => {
+    const result = await expectSuccessfulCompile("inline-cpp-number.ts", { fcpp: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      const inlineCpp = await result.readArtifact("inline-cpp.cpp");
+      expect(result.stdout).toContain("inline-cpp.cpp");
+      expect(llvmIr).toContain("declare i64 @__tscn_cpp_0()");
+      expect(llvmIr).toContain("call i64 @__tscn_cpp_0()");
+      expect(inlineCpp).toContain("namespace tscn");
+      expect(inlineCpp).toContain("extern \"C\" std::uint64_t __tscn_cpp_0()");
+      expect(inlineCpp).toContain("return tscn::number(42);");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("supports inline C++ expression statements", async () => {
+    const result = await expectSuccessfulCompile("inline-cpp-statement.ts", { fcpp: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      const inlineCpp = await result.readArtifact("inline-cpp.cpp");
+      expect(llvmIr).toContain("call i64 @__tscn_cpp_0()");
+      expect(inlineCpp).toContain("return tscn::undefined();");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("runs inline C++ through clang++ when available", async () => {
+    const result = await expectSuccessfulCompile("inline-cpp-number.ts", { fcpp: true, link: true });
+
+    try {
+      const clangxx = await toolExecutable("clang++");
+      if (clangxx === undefined) {
+        const diagnostics = await result.readArtifact("diagnostics.txt");
+        expect(diagnostics).toContain("TSCN2004");
+        return;
+      }
+      const native = await runNativeIfAvailable(result);
+      expect(native.skipped, native.reason).toBe(false);
+      expect(native.status).toBe(0);
+      expect(native.stdout).toBe("42\n");
+      expect(native.stderr).toBe("");
+    } finally {
+      await result.cleanup();
+    }
+  }, roadmapIntegrationTimeoutMs);
+
+  test("rejects inline C++ interpolation for the first slice", async () => {
+    const result = await compileFixture("inline-cpp-interpolation-unsupported.ts", { fcpp: true });
+
+    try {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("error TSCN1002");
+      expect(result.stderr).toContain("Inline C++ interpolation is not supported yet");
     } finally {
       await result.cleanup();
     }

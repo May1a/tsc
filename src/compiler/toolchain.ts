@@ -1,10 +1,11 @@
 import { Command, type CommandExecutor } from "@effect/platform";
 import { Context, Effect, Layer, Option } from "effect";
 
-export type ToolName = "clang" | "llvm-as" | "lli";
+export type ToolName = "clang" | "clang++" | "llvm-as" | "lli";
 
 export type Toolchain = {
   readonly clang: Option.Option<string>;
+  readonly clangxx: Option.Option<string>;
   readonly llvmAs: Option.Option<string>;
   readonly lli: Option.Option<string>;
 };
@@ -45,11 +46,11 @@ let cachedToolchain: Toolchain | undefined;
 
 const discoverToolchainUncached: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
   function* discoverAllTools() {
-    const [clang, llvmAs, lli] = yield* Effect.all(
-      [probeClang(), probeTool("llvm-as"), probeTool("lli")],
+    const [clang, clangxx, llvmAs, lli] = yield* Effect.all(
+      [probeClang(), probeTool("clang++"), probeTool("llvm-as"), probeTool("lli")],
       { concurrency: "unbounded" }
     );
-    return { clang, llvmAs, lli };
+    return { clang, clangxx, llvmAs, lli };
   }
 );
 
