@@ -127,6 +127,28 @@ describe("tscn CLI", () => {
     }
   });
 
+  test("accepts the documented -fcpp CLI spelling", async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), "tscn-cpp-flag-"));
+
+    try {
+      const run = await Effect.runPromise(
+        captureCommand("bun", [
+          "src/cli/main.ts",
+          "test/fixtures/inline-cpp-number.ts",
+          "--out-dir",
+          outDir,
+          "-fcpp"
+        ], { cwd: repoRoot }).pipe(Effect.provide(commandExecutorLayer))
+      );
+
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stderr).not.toContain("Received unknown argument");
+      expect(run.stdout).toContain(`Wrote ${path.join(outDir, "inline-cpp.cpp")}`);
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  }, roadmapIntegrationTimeoutMs);
+
   test("supports inline C++ expression statements", async () => {
     const result = await expectSuccessfulCompile("inline-cpp-statement.ts", { fcpp: true });
 

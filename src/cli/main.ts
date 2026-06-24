@@ -22,6 +22,14 @@ const cli = Command.run(tscnCommand, {
   version: packageVersion
 });
 
+const normalizeArgv = (argv: readonly string[]): string[] =>
+  argv.map((arg) => {
+    if (arg === "-fcpp") {
+      return "--fcpp";
+    }
+    return arg;
+  });
+
 const cliLayer = Layer.provideMerge(
   Layer.provideMerge(
     Layer.provideMerge(ToolchainLive, NodeContext.layer),
@@ -30,6 +38,6 @@ const cliLayer = Layer.provideMerge(
   CliConfig.defaultLayer
 );
 
-NodeRuntime.runMain(cli(process.argv).pipe(Effect.provide(cliLayer)), {
+NodeRuntime.runMain(cli(normalizeArgv(process.argv)).pipe(Effect.provide(cliLayer)), {
   disableErrorReporting: true
 });

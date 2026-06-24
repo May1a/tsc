@@ -166,6 +166,7 @@ ${block.code}
 export const emitInlineCppSource = (blocks: readonly JsIrInlineCppBlock[]): string =>
   `#include <bit>
 #include <cstdint>
+#include <cstdio>
 
 namespace tscn {
 inline std::uint64_t number(double value) {
