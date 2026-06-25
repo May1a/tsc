@@ -14,6 +14,7 @@ export class LinkerLaunchFailed extends Data.TaggedError("LinkerLaunchFailed")<{
 }> {}
 
 export class LinkerExitFailed extends Data.TaggedError("LinkerExitFailed")<{
+  readonly toolName: string;
   readonly exitCode: number;
   readonly stderr: string;
 }> {}
@@ -38,7 +39,7 @@ const linkFailureDiagnostic = (message: string): CompilerDiagnostic => ({
   message
 });
 
-const linkExitFailureDiagnostic = (exitCode: number, stderr: string): CompilerDiagnostic => {
+const linkExitFailureDiagnostic = (toolName: string, exitCode: number, stderr: string): CompilerDiagnostic => {
   const exitLabel = String(exitCode);
   let stderrLabel = "";
   if (stderr) {
@@ -47,14 +48,16 @@ const linkExitFailureDiagnostic = (exitCode: number, stderr: string): CompilerDi
   return {
     code: "TSCN2003",
     category: "error",
-    message: `clang failed with exit code ${exitLabel}${stderrLabel}`
+    message: `${toolName} failed with exit code ${exitLabel}${stderrLabel}`
   };
 };
 
 const runClang = (
   clangPath: string,
   args: readonly string[],
-  executable: string
+  executable: string,
+  missingToolDiagnostic: CompilerDiagnostic,
+  toolName: string
 ): Effect.Effect<LinkResult, LinkerError, CommandExecutor.CommandExecutor> => {
   const command = Command.make(clangPath, ...args);
   return Effect.scoped(
@@ -68,12 +71,12 @@ const runClang = (
       if (exitCode === 0) {
         return { executable, diagnostics: [] };
       }
-      return yield* Effect.fail(new LinkerExitFailed({ exitCode, stderr }));
+      return yield* Effect.fail(new LinkerExitFailed({ toolName, exitCode, stderr }));
     })
   ).pipe(
     Effect.catchAll((error) => {
       if (error instanceof SystemError && error.reason === "NotFound") {
-        return Effect.succeed({ diagnostics: [missingClangDiagnostic] });
+        return Effect.succeed({ diagnostics: [missingToolDiagnostic] });
       }
       if (error instanceof LinkerExitFailed) {
         return Effect.fail(error);
@@ -98,7 +101,13 @@ export const linkWithClang = (
     if (Option.isNone(toolchain.clang)) {
       return { diagnostics: [missingClangDiagnostic] };
     }
-    return yield* runClang(toolchain.clang.value, [llvmIr, "-o", executable, "-lm"], executable);
+    return yield* runClang(
+      toolchain.clang.value,
+      [llvmIr, "-o", executable, "-lm"],
+      executable,
+      missingClangDiagnostic,
+      "clang"
+    );
   });
 
 export const linkWithClangxx = (
@@ -114,13 +123,15 @@ export const linkWithClangxx = (
     return yield* runClang(
       toolchain.clangxx.value,
       ["-std=c++20", llvmIr, inlineCpp, "-o", executable, "-lm"],
-      executable
+      executable,
+      missingClangxxDiagnostic,
+      "clang++"
     );
   });
 
 export const linkerErrorToLinkResult = (error: LinkerError): LinkResult => {
   if (error instanceof LinkerExitFailed) {
-    return { diagnostics: [linkExitFailureDiagnostic(error.exitCode, error.stderr)] };
+    return { diagnostics: [linkExitFailureDiagnostic(error.toolName, error.exitCode, error.stderr)] };
   }
   return { diagnostics: [linkFailureDiagnostic(error.message)] };
 };

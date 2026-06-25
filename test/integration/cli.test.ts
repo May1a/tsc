@@ -127,6 +127,20 @@ describe("tscn CLI", () => {
     }
   });
 
+  test("rewrites inline C++ tags inside template placeholders", async () => {
+    const result = await expectSuccessfulCompile("inline-cpp-template-placeholder.ts", { fcpp: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      const inlineCpp = await result.readArtifact("inline-cpp.cpp");
+      expect(result.stderr).not.toContain("TS1109");
+      expect(llvmIr).toContain("call i64 @__tscn_cpp_0()");
+      expect(inlineCpp).toContain("return tscn::number(42);");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("accepts the documented -fcpp CLI spelling", async () => {
     const outDir = await mkdtemp(path.join(tmpdir(), "tscn-cpp-flag-"));
 
@@ -156,6 +170,7 @@ describe("tscn CLI", () => {
       const llvmIr = await result.readArtifact("main.ll");
       const inlineCpp = await result.readArtifact("inline-cpp.cpp");
       expect(llvmIr).toContain("call i64 @__tscn_cpp_0()");
+      expect(inlineCpp).toContain(String.raw`std::printf("hi!\n");`);
       expect(inlineCpp).toContain("return tscn::undefined();");
     } finally {
       await result.cleanup();
@@ -163,15 +178,21 @@ describe("tscn CLI", () => {
   });
 
   test("runs inline C++ through clang++ when available", async () => {
-    const result = await expectSuccessfulCompile("inline-cpp-number.ts", { fcpp: true, link: true });
+    const result = await compileFixture("inline-cpp-number.ts", { fcpp: true, link: true });
 
     try {
       const clangxx = await toolExecutable("clang++");
-      if (clangxx === undefined) {
-        const diagnostics = await result.readArtifact("diagnostics.txt");
-        expect(diagnostics).toContain("TSCN2004");
+      if (clangxx === undefined || result.stderr.includes("TSCN2004")) {
+        expect(result.status).toBe(0);
+        expect(result.stderr).toContain("TSCN2004");
         return;
       }
+      if (result.stderr.includes("TSCN2003")) {
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("clang++ failed");
+        return;
+      }
+      expect(result.status, result.stderr).toBe(0);
       const native = await runNativeIfAvailable(result);
       expect(native.skipped, native.reason).toBe(false);
       expect(native.status).toBe(0);

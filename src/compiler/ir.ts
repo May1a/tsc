@@ -7955,8 +7955,18 @@ function lowerInlineCppValueExpression(expression: ts.Expression): JsIrValueExpr
     return undefined;
   }
   const symbol = `__tscn_cpp_${activeInlineCppBlocks.length}`;
-  activeInlineCppBlocks.push({ symbol, code: expression.template.text });
+  activeInlineCppBlocks.push({ symbol, code: rawNoSubstitutionTemplateText(expression.template) });
   return { kind: "inlineCppValue", symbol };
+}
+
+function rawNoSubstitutionTemplateText(template: ts.NoSubstitutionTemplateLiteral): string {
+  const sourceFile = template.getSourceFile();
+  const start = template.getStart(sourceFile);
+  const end = template.getEnd();
+  if (sourceFile.text[start] === "`" && sourceFile.text[end - 1] === "`") {
+    return sourceFile.text.slice(start + 1, end - 1);
+  }
+  return template.text;
 }
 
 function lowerAggregateValueExpression(
