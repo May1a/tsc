@@ -5,6 +5,7 @@ import {
   type JsIrCondition,
   type JsIrExpression,
   type JsIrFunctionParameter,
+  type JsIrInlineCppBlock,
   type JsIrModule,
   type JsIrNumberExpression,
   type JsIrNumberOperator,
@@ -151,6 +152,46 @@ const encodeCString = (value: string): { readonly value: string; readonly length
   };
 };
 
+function emitInlineCppDeclarations(blocks: readonly JsIrInlineCppBlock[]): string[] {
+  return blocks.map((block) => `declare i64 @${block.symbol}()`);
+}
+
+function emitInlineCppFunction(block: JsIrInlineCppBlock): string {
+  return `extern "C" std::uint64_t ${block.symbol}() {
+${block.code}
+}
+`;
+}
+
+export const emitInlineCppSource = (blocks: readonly JsIrInlineCppBlock[]): string =>
+  `#include <bit>
+#include <cstdint>
+#include <cstdio>
+
+namespace tscn {
+inline std::uint64_t number(double value) {
+  return std::bit_cast<std::uint64_t>(value);
+}
+
+inline std::uint64_t undefined() {
+  return 9222246136947933184ULL;
+}
+
+inline std::uint64_t false_value() {
+  return 9222246136947933185ULL;
+}
+
+inline std::uint64_t true_value() {
+  return 9222246136947933186ULL;
+}
+
+inline std::uint64_t null() {
+  return 9222246136947933187ULL;
+}
+}
+
+${blocks.map(emitInlineCppFunction).join("\n")}`;
+
 export const emitLlvmIr = (module: JsIrModule): string => {
   const moduleComments = module.modules
     .map((sourceModule) => `; source ${sourceModule.fileName} statements=${sourceModule.statementCount}`)
@@ -210,6 +251,7 @@ export const emitLlvmIr = (module: JsIrModule): string => {
 
   const runtimeDeclarations = emitRuntimeDeclarations(context.runtime).join("\n");
   const runtimeDefinitions = emitRuntimeDefinitions(context.runtime).join("\n");
+  const inlineCppDeclarations = emitInlineCppDeclarations(module.inlineCppBlocks).join("\n");
 
   return `; tscn textual LLVM IR placeholder
 ; entry ${module.entry}
@@ -218,6 +260,7 @@ ${moduleComments}
 declare i32 @puts(ptr)
 declare i32 @printf(ptr, ...)
 declare void @exit(i32)
+${inlineCppDeclarations}
 ${runtimeDeclarations}
 
 ${numberFormat}
@@ -493,8 +536,9 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
     return emitIfOperation(operation, context);
   }
 
-  if (operation.kind === "call") {
-    return emitCallOperation(operation, context);
+  const callLines = emitCallLikeOperation(operation, context);
+  if (callLines !== undefined) {
+    return callLines;
   }
 
   if (operation.kind === "returnNumber") {
@@ -514,6 +558,16 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
   }
 
   return [];
+}
+
+function emitCallLikeOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+  if (operation.kind === "call") {
+    return emitCallOperation(operation, context);
+  }
+  if (operation.kind === "inlineCpp") {
+    return [`  call i64 @${operation.symbol}()`];
+  }
+  return undefined;
 }
 
 function emitBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
@@ -2854,6 +2908,16 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     // enclosing frame/iteration restore). Harmless for non-heap results.
     return {
       lines: [...args.lines, `  ${value} = call i64 @${expression.name}(${args.values.join(", ")})`, emitRootStackPush(value, context)],
+      value
+    };
+  }
+
+  if (expression.kind === "inlineCppValue") {
+    const index = context.callIndex;
+    context.callIndex += 1;
+    const value = `%cpp.${index}`;
+    return {
+      lines: [`  ${value} = call i64 @${expression.symbol}()`, emitRootStackPush(value, context)],
       value
     };
   }

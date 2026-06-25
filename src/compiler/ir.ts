@@ -42,9 +42,20 @@ let classThisInScope = false;
 
 let nextClassId = 1;
 
+const inlineCppTag = "__tscn_inline_cpp";
+
+let activeInlineCppEnabled = false;
+let activeInlineCppBlocks: JsIrInlineCppBlock[] | undefined;
+
+export type JsIrInlineCppBlock = {
+  readonly symbol: string;
+  readonly code: string;
+};
+
 export type JsIrModule = {
   readonly entry: string;
   readonly modules: readonly JsIrSourceModule[];
+  readonly inlineCppBlocks: readonly JsIrInlineCppBlock[];
 };
 
 export type JsIrSourceModule = {
@@ -106,6 +117,10 @@ export type JsIrValueExpression =
       readonly kind: "call";
       readonly name: string;
       readonly arguments: readonly JsIrCallArgument[];
+    }
+  | {
+      readonly kind: "inlineCppValue";
+      readonly symbol: string;
     }
   | {
       readonly kind: "ternary";
@@ -1314,6 +1329,10 @@ export type JsIrOperation =
       readonly arguments: readonly JsIrCallArgument[];
     }
   | {
+      readonly kind: "inlineCpp";
+      readonly symbol: string;
+    }
+  | {
       readonly kind: "returnNumber";
       readonly expression: JsIrNumberExpression;
     }
@@ -1335,6 +1354,10 @@ export type JsIrOperation =
 
 export type JsIrResult = {
   readonly module: JsIrModule;
+};
+
+export type JsIrLowerOptions = {
+  readonly fcpp?: boolean;
 };
 
 type ArrayLiteralClassification =
@@ -1518,6 +1541,11 @@ function sourceFileContainsClass(sourceFile: ts.SourceFile): boolean {
 function lowerStatements(
   sourceFile: ts.SourceFile
 ): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } {
+  const inlineCppDiagnostic = inlineCppDisabledDiagnostic(sourceFile);
+  if (inlineCppDiagnostic !== undefined) {
+    return { operations: [], diagnostics: Chunk.of(inlineCppDiagnostic) };
+  }
+
   // Class-using files are attempted through real codegen first. Any unsupported
   // class feature (or a file mixing classes with still-B683 features) falls back
   // to the compile-time interpreter below.
@@ -1534,6 +1562,42 @@ function lowerStatements(
   }
 
   return lowerTopLevelStatements(sourceFile, false).result;
+}
+
+function isInlineCppTaggedTemplate(expression: ts.Expression): expression is ts.TaggedTemplateExpression {
+  return ts.isTaggedTemplateExpression(expression) && ts.isIdentifier(expression.tag) && expression.tag.text === inlineCppTag;
+}
+
+function findInlineCppTaggedTemplate(sourceFile: ts.SourceFile): ts.TaggedTemplateExpression | undefined {
+  let found: ts.TaggedTemplateExpression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (found !== undefined) {
+      return;
+    }
+    if (ts.isTaggedTemplateExpression(node) && ts.isIdentifier(node.tag) && node.tag.text === inlineCppTag) {
+      found = node;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
+function inlineCppDisabledDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnostic | undefined {
+  if (activeInlineCppEnabled) {
+    return undefined;
+  }
+  const node = findInlineCppTaggedTemplate(sourceFile);
+  if (node === undefined) {
+    return undefined;
+  }
+  return {
+    code: "TSCN1003",
+    category: "error",
+    message: "Inline C++ requires -fcpp",
+    span: sourceSpan(sourceFile, node.getStart(sourceFile))
+  };
 }
 
 // Runs the real lowering loop. In strict mode any unsupported statement or class
@@ -3693,6 +3757,11 @@ function lowerExpressionStatement(
     if (runtimeArrayCall !== undefined) {
       return runtimeArrayCall;
     }
+  }
+
+  const inlineCppValue = lowerInlineCppValueExpression(expression);
+  if (inlineCppValue?.kind === "inlineCppValue") {
+    return { kind: "inlineCpp", symbol: inlineCppValue.symbol };
   }
 
   if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)) {
@@ -7840,6 +7909,11 @@ function lowerValueExpression(
     return lowerValueExpression(unwrappedExpression, bindings);
   }
 
+  const inlineCppValue = lowerInlineCppValueExpression(expression);
+  if (inlineCppValue !== undefined) {
+    return inlineCppValue;
+  }
+
   const classValue = lowerClassValueExpression(expression, bindings);
   if (classValue !== undefined) {
     return classValue;
@@ -7871,6 +7945,28 @@ function lowerValueExpression(
   }
 
   return undefined;
+}
+
+function lowerInlineCppValueExpression(expression: ts.Expression): JsIrValueExpression | undefined {
+  if (!isInlineCppTaggedTemplate(expression) || !ts.isNoSubstitutionTemplateLiteral(expression.template)) {
+    return undefined;
+  }
+  if (!activeInlineCppEnabled || activeInlineCppBlocks === undefined) {
+    return undefined;
+  }
+  const symbol = `__tscn_cpp_${activeInlineCppBlocks.length}`;
+  activeInlineCppBlocks.push({ symbol, code: rawNoSubstitutionTemplateText(expression.template) });
+  return { kind: "inlineCppValue", symbol };
+}
+
+function rawNoSubstitutionTemplateText(template: ts.NoSubstitutionTemplateLiteral): string {
+  const sourceFile = template.getSourceFile();
+  const start = template.getStart(sourceFile);
+  const end = template.getEnd();
+  if (sourceFile.text[start] === "`" && sourceFile.text[end - 1] === "`") {
+    return sourceFile.text.slice(start + 1, end - 1);
+  }
+  return template.text;
 }
 
 function lowerAggregateValueExpression(
@@ -9923,21 +10019,17 @@ function unsupportedStatementMessage(statement: ts.Statement): string {
 }
 
 function unsupportedExpressionMessage(expression: ts.Expression): string | undefined {
+  const inlineCppMessage = unsupportedInlineCppExpressionMessage(expression);
+  if (inlineCppMessage !== undefined) {
+    return inlineCppMessage;
+  }
   const runtimeBoundary = unsupportedRuntimeBoundaryMessage(expression);
   if (runtimeBoundary !== undefined) {
     return runtimeBoundary;
   }
-  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
-    return unsupportedInstanceOfMessage(expression);
-  }
-  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.InKeyword) {
-    return "The `in` operator only supports runtime dictionary objects and runtime arrays on the right-hand side";
-  }
-  if (ts.isVoidExpression(expression)) {
-    return undefined;
-  }
-  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.AsteriskAsteriskToken) {
-    return undefined;
+  const binaryMessage = unsupportedBinaryExpressionMessage(expression);
+  if (binaryMessage !== undefined) {
+    return binaryMessage;
   }
   if (ts.isArrayLiteralExpression(expression)) {
     return unsupportedArrayLiteralMessage(expression);
@@ -9948,22 +10040,54 @@ function unsupportedExpressionMessage(expression: ts.Expression): string | undef
   if (unsupportedStringExpression(expression)) {
     return "Unsupported string expression in the current runtime string lowering slice";
   }
-  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-    return unsupportedExpressionMessage(expression.right);
-  }
-  if (ts.isCallExpression(expression)) {
-    for (const argument of expression.arguments) {
-      const message = unsupportedExpressionMessage(argument);
-      if (message !== undefined) {
-        return message;
-      }
-    }
+  const nestedMessage = unsupportedNestedExpressionMessage(expression);
+  if (nestedMessage !== undefined) {
+    return nestedMessage;
   }
   if (ts.isElementAccessExpression(expression) && !isLiteralElementAccessArgument(expression)) {
     if (containsNestedObjectElementAccess(expression)) {
       return "Dynamic computed object keys on nested known-shape objects are not supported yet";
     }
     return "Dynamic computed object keys are not supported by known-shape numeric objects";
+  }
+  return undefined;
+}
+
+function unsupportedBinaryExpressionMessage(expression: ts.Expression): string | undefined {
+  if (!ts.isBinaryExpression(expression)) {
+    return undefined;
+  }
+  if (expression.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+    return unsupportedInstanceOfMessage(expression);
+  }
+  if (expression.operatorToken.kind === ts.SyntaxKind.InKeyword) {
+    return "The `in` operator only supports runtime dictionary objects and runtime arrays on the right-hand side";
+  }
+  return undefined;
+}
+
+function unsupportedNestedExpressionMessage(expression: ts.Expression): string | undefined {
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    return unsupportedExpressionMessage(expression.right);
+  }
+  if (!ts.isCallExpression(expression)) {
+    return undefined;
+  }
+  for (const argument of expression.arguments) {
+    const message = unsupportedExpressionMessage(argument);
+    if (message !== undefined) {
+      return message;
+    }
+  }
+  return undefined;
+}
+
+function unsupportedInlineCppExpressionMessage(expression: ts.Expression): string | undefined {
+  if (!isInlineCppTaggedTemplate(expression)) {
+    return undefined;
+  }
+  if (!ts.isNoSubstitutionTemplateLiteral(expression.template)) {
+    return "Inline C++ interpolation is not supported yet";
   }
   return undefined;
 }
@@ -10196,12 +10320,16 @@ function objectHasNestedFields(value: JsIrObjectValue): boolean {
 export const lowerToJsIr = (
   entry: string,
   sourceFiles: readonly ts.SourceFile[],
-  checker?: ts.TypeChecker
+  checker?: ts.TypeChecker,
+  options: JsIrLowerOptions = {}
 ): Effect.Effect<JsIrResult, never, Diagnostics> =>
   Effect.gen(function* lowerToJsIrEffect() {
     const diagnostics = yield* Diagnostics;
     const allDiagnostics: CompilerDiagnostic[] = [];
+    const inlineCppBlocks: JsIrInlineCppBlock[] = [];
     activeTypeChecker = checker;
+    activeInlineCppEnabled = options.fcpp === true;
+    activeInlineCppBlocks = inlineCppBlocks;
     let modules;
     try {
       modules = sourceFiles.map((sourceFile) => {
@@ -10215,12 +10343,15 @@ export const lowerToJsIr = (
       });
     } finally {
       activeTypeChecker = undefined;
+      activeInlineCppEnabled = false;
+      activeInlineCppBlocks = undefined;
     }
     yield* Effect.forEach(allDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
     return {
       module: {
         entry,
-        modules
+        modules,
+        inlineCppBlocks
       }
     };
   });

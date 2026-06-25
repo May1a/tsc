@@ -25,6 +25,7 @@ This plan describes the first path toward a TypeScript compiler written in TypeS
 - Program entry is top-level execution of the selected entry module.
 - The first observable output API is a compiler-provided `print` builtin.
 - Compiler output is a native executable plus optional `.ll`, trace map, and diagnostics artifacts in a build directory.
+- Inline C++ is an opt-in compiler extension gated by `-fcpp`; without that flag, the C++ runtime and standard library are not linked.
 - Correctness is checked against Node and a filtered Test262 subset by comparing stdout, stderr, exit code, and thrown error class/message.
 - Self-hosting is a late goal, after the compiler can compile the runtime and enough of its own implementation.
 

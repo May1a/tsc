@@ -4,11 +4,13 @@ export type CompileOptions = {
   readonly entry: string;
   readonly outDir: string;
   readonly link?: boolean;
+  readonly fcpp?: boolean;
 };
 
 export type BuildArtifacts = {
   readonly llvmIr: string;
   readonly traceMap: string;
+  readonly inlineCpp?: string;
   readonly executable?: string;
 };
 

@@ -41,10 +41,11 @@ export type ToolRunResult = NativeRunResult & {
   readonly tool: string;
 };
 
-export type ToolName = "clang" | "llvm-as" | "lli";
+export type ToolName = "clang" | "clang++" | "llvm-as" | "lli";
 
 export type CompileFixtureOptions = {
   readonly link?: boolean;
+  readonly fcpp?: boolean;
 };
 
 export type CapturedRun = {
@@ -65,22 +66,28 @@ export const compileFixture = async (fixture: string, options: CompileFixtureOpt
   const outDir = await mkdtemp(path.join(tmpdir(), "tscn-"));
   const llvmIr = path.join(outDir, "main.ll");
   const traceMap = path.join(outDir, "trace-map.json");
+  const inlineCpp = path.join(outDir, "inline-cpp.cpp");
   const stdout = `Wrote ${llvmIr}\nWrote ${traceMap}\n`;
   const readArtifact = async (name: string): Promise<string> => readFile(path.join(outDir, name), "utf8");
   const cleanup = async (): Promise<void> => rm(outDir, { recursive: true, force: true });
 
   const exit = await Effect.runPromiseExit(
-    compile({ entry: `test/fixtures/${fixture}`, outDir, link: options.link ?? false }).pipe(
+    compile({ entry: `test/fixtures/${fixture}`, outDir, link: options.link ?? false, fcpp: options.fcpp }).pipe(
       Effect.provide(testCompileLayer)
     )
   );
 
   if (Exit.isSuccess(exit)) {
     const result = exit.value;
+    const outputLines = [`Wrote ${llvmIr}`, `Wrote ${traceMap}`];
+    if (result.artifacts.inlineCpp !== undefined) {
+      outputLines.push(`Wrote ${inlineCpp}`);
+    }
+    const successStdout = `${outputLines.join("\n")}\n`;
     return {
       outDir,
       status: 0,
-      stdout,
+      stdout: successStdout,
       stderr: result.diagnostics.map(formatDiagnostic).join("\n"),
       readArtifact,
       cleanup
@@ -197,6 +204,9 @@ export const toolExecutable = async (name: ToolName): Promise<string | undefined
       switch (name) {
         case "clang": {
           return Option.getOrUndefined(toolchain.clang);
+        }
+        case "clang++": {
+          return Option.getOrUndefined(toolchain.clangxx);
         }
         case "llvm-as": {
           return Option.getOrUndefined(toolchain.llvmAs);

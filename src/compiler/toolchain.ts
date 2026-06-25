@@ -1,10 +1,12 @@
 import { Command, type CommandExecutor } from "@effect/platform";
 import { Context, Effect, Layer, Option } from "effect";
+import { devNull } from "node:os";
 
-export type ToolName = "clang" | "llvm-as" | "lli";
+export type ToolName = "clang" | "clang++" | "llvm-as" | "lli";
 
 export type Toolchain = {
   readonly clang: Option.Option<string>;
+  readonly clangxx: Option.Option<string>;
   readonly llvmAs: Option.Option<string>;
   readonly lli: Option.Option<string>;
 };
@@ -29,7 +31,7 @@ const probeTool = (
 const probeClang = (): Effect.Effect<Option.Option<string>, never, CommandExecutor.CommandExecutor> => {
   const opaquePointerProbe = "declare i32 @puts(ptr)\ndefine i32 @main() {\nentry:\n  ret i32 0\n}\n";
   return Command.exitCode(
-    Command.feed(Command.make("clang", "-x", "ir", "-", "-o", "/dev/null", "-lm"), opaquePointerProbe)
+    Command.feed(Command.make("clang", "-x", "ir", "-", "-o", devNull, "-lm"), opaquePointerProbe)
   ).pipe(
     Effect.map((exitCode) => {
       if (exitCode === 0) {
@@ -41,15 +43,30 @@ const probeClang = (): Effect.Effect<Option.Option<string>, never, CommandExecut
   );
 };
 
+const probeClangxx = (): Effect.Effect<Option.Option<string>, never, CommandExecutor.CommandExecutor> => {
+  const llvmIrProbe = "define i32 @main() {\nentry:\n  ret i32 0\n}\n";
+  return Command.exitCode(
+    Command.feed(Command.make("clang++", "-std=c++20", "-x", "ir", "-", "-x", "c++", devNull, "-o", devNull, "-lm"), llvmIrProbe)
+  ).pipe(
+    Effect.map((exitCode) => {
+      if (exitCode === 0) {
+        return Option.some("clang++");
+      }
+      return Option.none<string>();
+    }),
+    Effect.catchAll(() => Effect.succeed(Option.none<string>()))
+  );
+};
+
 let cachedToolchain: Toolchain | undefined;
 
 const discoverToolchainUncached: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
   function* discoverAllTools() {
-    const [clang, llvmAs, lli] = yield* Effect.all(
-      [probeClang(), probeTool("llvm-as"), probeTool("lli")],
+    const [clang, clangxx, llvmAs, lli] = yield* Effect.all(
+      [probeClang(), probeClangxx(), probeTool("llvm-as"), probeTool("lli")],
       { concurrency: "unbounded" }
     );
-    return { clang, llvmAs, lli };
+    return { clang, clangxx, llvmAs, lli };
   }
 );
 

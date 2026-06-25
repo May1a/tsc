@@ -11,6 +11,7 @@ import type { Toolchain } from "../compiler/toolchain.js";
 type CliConfig = {
   readonly entry: string;
   readonly outDir: string;
+  readonly fcpp: boolean;
 };
 
 const rejectFlagLikeEntry = (value: string): string => {
@@ -38,7 +39,8 @@ export const tscnCommand = Command.make(
   "tscn",
   {
     entry: Args.text({ name: "entry" }).pipe(Args.mapTryCatch(rejectFlagLikeEntry, flagLikeEntryHelp)),
-    outDir: Options.text("out-dir").pipe(Options.withDefault("build"))
+    outDir: Options.text("out-dir").pipe(Options.withDefault("build")),
+    fcpp: Options.boolean("fcpp")
   },
   (config: CliConfig): Effect.Effect<
     void,
@@ -50,6 +52,9 @@ export const tscnCommand = Command.make(
 
       yield* Console.log(`Wrote ${result.artifacts.llvmIr}`);
       yield* Console.log(`Wrote ${result.artifacts.traceMap}`);
+      if (result.artifacts.inlineCpp) {
+        yield* Console.log(`Wrote ${result.artifacts.inlineCpp}`);
+      }
       if (result.artifacts.executable) {
         yield* Console.log(`Wrote ${result.artifacts.executable}`);
       }
