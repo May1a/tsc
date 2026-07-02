@@ -46,6 +46,7 @@ const inlineCppTag = "__tscn_inline_cpp";
 
 let activeInlineCppEnabled = false;
 let activeInlineCppBlocks: JsIrInlineCppBlock[] | undefined;
+let nextFunctionObjectId = 0;
 
 export type JsIrInlineCppBlock = {
   readonly symbol: string;
@@ -962,6 +963,18 @@ export type JsIrOperation =
       readonly callbackReturnKind: JsIrValueKind;
     }
   | {
+      readonly kind: "runtimeArrayMapFunctionObject";
+      readonly method: "map" | "flatMap" | "filter" | "find" | "findIndex" | "reduce" | "reduceRight" | "forEach";
+      readonly name: string;
+      readonly arrayName: string;
+      readonly callbackName: string;
+      readonly callbackParameters: readonly JsIrFunctionParameter[];
+      readonly callbackReturnKind: JsIrValueKind | "void";
+      readonly callbackBody: readonly JsIrOperation[];
+      readonly initialValue?: JsIrValueExpression;
+      readonly direction?: "left" | "right";
+    }
+  | {
       readonly kind: "runtimeArrayFlatMapCallback";
       readonly name: string;
       readonly arrayName: string;
@@ -1112,6 +1125,11 @@ export type JsIrOperation =
   | {
       readonly kind: "runtimeMapNew" | "runtimeSetNew";
       readonly name: string;
+    }
+  | {
+      readonly kind: "runtimeMapFromArray" | "runtimeSetFromArray";
+      readonly name: string;
+      readonly sourceName: string;
     }
   | {
       readonly kind: "runtimeMapSet";
@@ -1446,7 +1464,7 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   if (operation.kind === "runtimeStringSplit") {
     return { kind: "runtimeArray", name: operation.name };
   }
-  if (operation.kind === "runtimeArrayMapCallback") {
+  if (operation.kind === "runtimeArrayMapCallback" || operation.kind === "runtimeArrayMapFunctionObject") {
     return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeArrayFilterCallback") {
@@ -1458,10 +1476,10 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   if (operation.kind === "runtimeArrayMutatorResult") {
     return { kind: "runtimeArray", name: operation.name };
   }
-  if (operation.kind === "runtimeMapNew" || operation.kind === "runtimeMapSetResult") {
+  if (operation.kind === "runtimeMapNew" || operation.kind === "runtimeMapFromArray" || operation.kind === "runtimeMapSetResult") {
     return { kind: "runtimeMap", name: operation.name };
   }
-  if (operation.kind === "runtimeSetNew" || operation.kind === "runtimeSetAddResult") {
+  if (operation.kind === "runtimeSetNew" || operation.kind === "runtimeSetFromArray" || operation.kind === "runtimeSetAddResult") {
     return { kind: "runtimeSet", name: operation.name };
   }
   if (operation.kind === "runtimeIteratorNew") {
@@ -1541,6 +1559,7 @@ function sourceFileContainsClass(sourceFile: ts.SourceFile): boolean {
 function lowerStatements(
   sourceFile: ts.SourceFile
 ): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } {
+  nextFunctionObjectId = 0;
   const inlineCppDiagnostic = inlineCppDisabledDiagnostic(sourceFile);
   if (inlineCppDiagnostic !== undefined) {
     return { operations: [], diagnostics: Chunk.of(inlineCppDiagnostic) };
@@ -5748,14 +5767,29 @@ function lowerRuntimeCollectionConstructorBinding(
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if (!ts.isNewExpression(initializer) || initializer.arguments?.length !== 0 || !ts.isIdentifier(initializer.expression)) {
+  if (!ts.isNewExpression(initializer) || !ts.isIdentifier(initializer.expression)) {
+    return undefined;
+  }
+  const argumentCount = initializer.arguments?.length ?? 0;
+  if (argumentCount === 0 && initializer.expression.text === "Map" && !bindings.has("Map")) {
+    return { kind: "runtimeMapNew", name };
+  }
+  if (argumentCount === 0 && initializer.expression.text === "Set" && !bindings.has("Set")) {
+    return { kind: "runtimeSetNew", name };
+  }
+  if (argumentCount !== 1 || initializer.arguments === undefined || !ts.isIdentifier(initializer.arguments[0])) {
+    return undefined;
+  }
+  const sourceName = initializer.arguments[0].text;
+  const source = bindings.get(sourceName);
+  if (source?.kind !== "runtimeArray") {
     return undefined;
   }
   if (initializer.expression.text === "Map" && !bindings.has("Map")) {
-    return { kind: "runtimeMapNew", name };
+    return { kind: "runtimeMapFromArray", name, sourceName };
   }
   if (initializer.expression.text === "Set" && !bindings.has("Set")) {
-    return { kind: "runtimeSetNew", name };
+    return { kind: "runtimeSetFromArray", name, sourceName };
   }
   return undefined;
 }
@@ -5984,7 +6018,7 @@ function lowerRuntimeStringSplitBinding(
   return { kind: "runtimeStringSplit", name, receiver, separator, limit };
 }
 
-// eslint-disable-next-line complexity -- Runtime array callback routing keeps method-specific validation in one place.
+// eslint-disable-next-line complexity, max-statements -- Runtime array callback routing keeps method-specific validation in one place.
 function lowerRuntimeArrayCallbackBinding(
   name: string,
   initializer: ts.Expression,
@@ -6008,10 +6042,17 @@ function lowerRuntimeArrayCallbackBinding(
   if (method !== "map" && method !== "flatMap" && method !== "filter" && method !== "find" && method !== "findIndex") {
     return undefined;
   }
-  if (initializer.arguments.length !== 1) {
+  if (initializer.arguments.length !== 1 && initializer.arguments.length !== 2) {
     return undefined;
   }
   const [callback] = initializer.arguments;
+  const arrowCallback = lowerInlineArrayCallbackFunctionObject(name, arrayName, callback, bindings, arrayCallbackArgumentCount, method);
+  if (arrowCallback !== undefined) {
+    return arrowCallback;
+  }
+  if (initializer.arguments.length !== 1) {
+    return undefined;
+  }
   if (!ts.isIdentifier(callback)) {
     return undefined;
   }
@@ -6045,6 +6086,21 @@ function lowerRuntimeArrayReduceCallbackBinding(
     return undefined;
   }
   const [callback] = args;
+  let method: "reduce" | "reduceRight" = "reduce";
+  if (direction === "right") {
+    method = "reduceRight";
+  }
+  const arrowCallback = lowerInlineArrayCallbackFunctionObject(name, arrayName, callback, bindings, reduceCallbackArgumentCount, method);
+  if (arrowCallback !== undefined) {
+    if (args.length === 1) {
+      return arrowCallback;
+    }
+    const initialValue = lowerValueExpression(args[1], bindings);
+    if (initialValue === undefined) {
+      return undefined;
+    }
+    return { ...arrowCallback, initialValue, direction };
+  }
   if (!ts.isIdentifier(callback)) {
     return undefined;
   }
@@ -6071,6 +6127,10 @@ function lowerRuntimeArrayForEachCallbackStatement(
     return undefined;
   }
   const [callback] = args;
+  const arrowCallback = lowerInlineArrayCallbackFunctionObject("__tscn_each", arrayName, callback, bindings, arrayCallbackArgumentCount, "forEach");
+  if (arrowCallback !== undefined) {
+    return arrowCallback;
+  }
   if (!ts.isIdentifier(callback)) {
     return undefined;
   }
@@ -6094,6 +6154,57 @@ function lowerArrayCallbackBinding(
     return undefined;
   }
   return callbackBinding;
+}
+
+function lowerInlineArrayCallbackFunctionObject(
+  name: string,
+  arrayName: string,
+  callback: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  maxParameters: number,
+  method: "map" | "flatMap" | "filter" | "find" | "findIndex" | "reduce" | "reduceRight" | "forEach"
+): Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }> | undefined {
+  if (!ts.isArrowFunction(callback) || callback.parameters.length > maxParameters) {
+    return undefined;
+  }
+  const parameters: JsIrFunctionParameter[] = [];
+  const callbackBindings = new Map(bindings);
+  for (const parameter of callback.parameters) {
+    if (!ts.isIdentifier(parameter.name)) {
+      return undefined;
+    }
+    parameters.push({ name: parameter.name.text, valueKind: "value" });
+    callbackBindings.set(parameter.name.text, { kind: "valueVariable", name: parameter.name.text });
+  }
+  const body = lowerArrowFunctionBody(callback.body, callbackBindings);
+  if (body === undefined) {
+    return undefined;
+  }
+  const returnKind = functionReturnKind(body);
+  if (returnKind === "void" && method !== "forEach") {
+    return undefined;
+  }
+  const callbackName = `__tscn_fnobj_${name}_${nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
+  nextFunctionObjectId += 1;
+  let direction: "left" | "right" = "left";
+  if (method === "reduceRight") {
+    direction = "right";
+  }
+  return { kind: "runtimeArrayMapFunctionObject", method, name, arrayName, callbackName, callbackParameters: parameters, callbackReturnKind: returnKind, callbackBody: body, direction };
+}
+
+function lowerArrowFunctionBody(
+  body: ts.ConciseBody,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrOperation[] | undefined {
+  if (ts.isBlock(body)) {
+    return lowerBlockStatements(body, bindings);
+  }
+  const expression = lowerValueExpression(body, bindings);
+  if (expression === undefined) {
+    return undefined;
+  }
+  return [{ kind: "returnValue", expression }];
 }
 
 function lowerRuntimeArrayMutatorResultBinding(

@@ -70,6 +70,10 @@ export type RuntimeHelper =
   | "valueBoxArray"
   | "valueObjectPtr"
   | "valueArrayPtr"
+  | "valueBoxFunction"
+  | "valueFunctionPtr"
+  | "functionObjectNew"
+  | "jsCall"
   | "valueIsObject"
   | "valueIsArray"
   | "valueObjectGet"
@@ -265,8 +269,12 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["valueStringLength", ["valueBoxString"]],
   ["valueBoxObject", []],
   ["valueBoxArray", []],
+  ["valueBoxFunction", []],
   ["valueObjectPtr", []],
   ["valueArrayPtr", []],
+  ["valueFunctionPtr", []],
+  ["functionObjectNew", ["gcAlloc", "valueBoxFunction"]],
+  ["jsCall", ["valueFunctionPtr"]],
   ["valueObjectGet", ["valueObjectPtr", "objectGet"]],
   ["valueArrayGet", ["valueArrayPtr", "arrayGetWithKey"]],
   ["valueArrayLength", ["valueArrayPtr", "arrayLength"]],
@@ -460,6 +468,7 @@ export function emitRuntimeDefinitions(runtime: RuntimeHelperEmitter): string[] 
 @gcFreeObject = internal global ptr null
 @gcFreeArray = internal global ptr null
 @gcFreeCollection = internal global ptr null
+@gcFreeFunction = internal global ptr null
 @gcMarkStack = internal global ptr null
 @gcMarkStackCount = internal global i64 0
 @gcMarkStackCap = internal global i64 0
@@ -500,6 +509,7 @@ init:
   store ptr null, ptr @gcFreeObject
   store ptr null, ptr @gcFreeArray
   store ptr null, ptr @gcFreeCollection
+  store ptr null, ptr @gcFreeFunction
   %root.cap.bytes = mul i64 64, 8
   %root.stack = call ptr @malloc(i64 %root.cap.bytes)
   store ptr %root.stack, ptr @gcRootStack
@@ -588,9 +598,11 @@ entry:
   %is.string = icmp eq i64 %tag, 9221683186994511872
   %is.object = icmp eq i64 %tag, 9221120237041090560
   %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.function = icmp eq i64 %tag, 9221964661971222528
   br i1 %is.string, label %mark.string, label %check.heap
 check.heap:
-  %is.heap = or i1 %is.object, %is.array
+  %is.object.or.array = or i1 %is.object, %is.array
+  %is.heap = or i1 %is.object.or.array, %is.function
   br i1 %is.heap, label %mark.heap, label %skip
 mark.string:
   %str.bits = and i64 %value, 281474976710655
@@ -698,13 +710,16 @@ walk:
   %is.object = icmp eq i8 %tag, 2
   %is.array = icmp eq i8 %tag, 3
   %is.collection = icmp eq i8 %tag, 4
+  %is.function = icmp eq i8 %tag, 5
   br i1 %is.string, label %skip, label %check.object
 check.object:
   br i1 %is.object, label %walk.object, label %check.array
 check.array:
   br i1 %is.array, label %walk.array, label %check.collection
 check.collection:
-  br i1 %is.collection, label %walk.collection, label %skip
+  br i1 %is.collection, label %walk.collection, label %check.function
+check.function:
+  br i1 %is.function, label %walk.function, label %skip
 walk.object:
   %obj.count.ptr = getelementptr i8, ptr %cell, i64 8
   %obj.count = load i64, ptr %obj.count.ptr
@@ -786,6 +801,20 @@ walk.collection.active:
 walk.collection.skip:
   %ci.next = add i64 %ci, 1
   br label %walk.collection.loop
+walk.function:
+  %fn.env.ptr = getelementptr i8, ptr %cell, i64 16
+  %fn.env = load ptr, ptr %fn.env.ptr
+  call void @gcMarkPayloadPtr(ptr %fn.env)
+  %fn.this.ptr = getelementptr i8, ptr %cell, i64 24
+  %fn.this = load i64, ptr %fn.this.ptr
+  call void @gcMarkValue(i64 %fn.this)
+  %fn.proto.ptr = getelementptr i8, ptr %cell, i64 32
+  %fn.proto = load ptr, ptr %fn.proto.ptr
+  call void @gcMarkPayloadPtr(ptr %fn.proto)
+  %fn.name.ptr = getelementptr i8, ptr %cell, i64 40
+  %fn.name = load i64, ptr %fn.name.ptr
+  call void @gcMarkValue(i64 %fn.name)
+  br label %skip
 skip:
   ret void
 }
@@ -816,13 +845,16 @@ white:
   %is.object = icmp eq i8 %tag, 2
   %is.array = icmp eq i8 %tag, 3
   %is.collection = icmp eq i8 %tag, 4
+  %is.function = icmp eq i8 %tag, 5
   br i1 %is.string, label %free.string, label %check.free.object
 check.free.object:
   br i1 %is.object, label %free.object, label %check.free.array
 check.free.array:
   br i1 %is.array, label %free.array, label %check.free.collection
 check.free.collection:
-  br i1 %is.collection, label %free.collection, label %advance
+  br i1 %is.collection, label %free.collection, label %check.free.function
+check.free.function:
+  br i1 %is.function, label %free.function, label %advance
 free.string:
   ; The string data buffer is owned by this cell only when the owns-flag (header
   ; byte +4) is set: literal-backed strings borrow constant data and must not be
@@ -875,6 +907,13 @@ free.collection:
   %cnf = getelementptr i8, ptr %cur, i64 8
   store ptr %ch, ptr %cnf
   store ptr %cur, ptr @gcFreeCollection
+  store i8 3, ptr %color.ptr
+  br label %advance
+free.function:
+  %fh = load ptr, ptr @gcFreeFunction
+  %fnf = getelementptr i8, ptr %cur, i64 8
+  store ptr %fh, ptr %fnf
+  store ptr %cur, ptr @gcFreeFunction
   store i8 3, ptr %color.ptr
   br label %advance
 black:
@@ -958,6 +997,7 @@ entry:
   %is.object = icmp eq i64 %tag, 2
   %is.array = icmp eq i64 %tag, 3
   %is.collection = icmp eq i64 %tag, 4
+  %is.function = icmp eq i64 %tag, 5
   br i1 %is.string, label %try.string, label %try.object
 try.string:
   %sh = load ptr, ptr @gcFreeString
@@ -991,6 +1031,8 @@ reuse.array:
   store ptr %an, ptr @gcFreeArray
   br label %init.header
 try.collection:
+  br i1 %is.collection, label %try.collection.body, label %try.function
+try.collection.body:
   %ch = load ptr, ptr @gcFreeCollection
   %ce = icmp eq ptr %ch, null
   br i1 %ce, label %bump.alloc, label %reuse.collection
@@ -998,6 +1040,17 @@ reuse.collection:
   %cnf = getelementptr i8, ptr %ch, i64 8
   %cn = load ptr, ptr %cnf
   store ptr %cn, ptr @gcFreeCollection
+  br label %init.header
+try.function:
+  br i1 %is.function, label %try.function.body, label %bump.alloc
+try.function.body:
+  %fh = load ptr, ptr @gcFreeFunction
+  %fe = icmp eq ptr %fh, null
+  br i1 %fe, label %bump.alloc, label %reuse.function
+reuse.function:
+  %fnf = getelementptr i8, ptr %fh, i64 8
+  %fn = load ptr, ptr %fnf
+  store ptr %fn, ptr @gcFreeFunction
   br label %init.header
 bump.alloc:
   %bump = load ptr, ptr @gcBumpPtr
@@ -1012,7 +1065,7 @@ oom:
   call void @exit(i32 1)
   ret ptr null
 init.header:
-  %cell = phi ptr [ %sh, %reuse.string ], [ %oh, %reuse.object ], [ %ah, %reuse.array ], [ %ch, %reuse.collection ], [ %bump, %do.bump ]
+  %cell = phi ptr [ %sh, %reuse.string ], [ %oh, %reuse.object ], [ %ah, %reuse.array ], [ %ch, %reuse.collection ], [ %fh, %reuse.function ], [ %bump, %do.bump ]
   %tag.i8 = trunc i64 %tag to i8
   store i8 %tag.i8, ptr %cell
   %color.slot = getelementptr i8, ptr %cell, i64 1
@@ -2552,6 +2605,16 @@ entry:
 }
 `);
   }
+  if (runtime.used.has("valueBoxFunction")) {
+    definitions.push(`define i64 @valueBoxFunction(ptr %function) {
+entry:
+  %bits = ptrtoint ptr %function to i64
+  %payload = and i64 %bits, 281474976710655
+  %value = or i64 %payload, 9221964661971222528
+  ret i64 %value
+}
+`);
+  }
   if (runtime.used.has("valueObjectPtr")) {
     definitions.push(`define ptr @valueObjectPtr(i64 %value) {
 entry:
@@ -2567,6 +2630,50 @@ entry:
   %bits = and i64 %value, 281474976710655
   %ptr = inttoptr i64 %bits to ptr
   ret ptr %ptr
+}
+`);
+  }
+  if (runtime.used.has("valueFunctionPtr")) {
+    definitions.push(`define ptr @valueFunctionPtr(i64 %value) {
+entry:
+  %bits = and i64 %value, 281474976710655
+  %ptr = inttoptr i64 %bits to ptr
+  ret ptr %ptr
+}
+`);
+  }
+  if (runtime.used.has("functionObjectNew")) {
+    definitions.push(`define i64 @functionObjectNew(ptr %code, ptr %env) {
+entry:
+  %cell = call ptr @gcAlloc(i64 5, i64 48)
+  %payload = getelementptr i8, ptr %cell, i64 8
+  store ptr %code, ptr %payload
+  %env.slot = getelementptr i8, ptr %payload, i64 8
+  store ptr %env, ptr %env.slot
+  %this.slot = getelementptr i8, ptr %payload, i64 16
+  store i64 9222246136947933184, ptr %this.slot
+  %prototype.slot = getelementptr i8, ptr %payload, i64 24
+  store ptr null, ptr %prototype.slot
+  %name.slot = getelementptr i8, ptr %payload, i64 32
+  store i64 9222246136947933184, ptr %name.slot
+  %flags.slot = getelementptr i8, ptr %payload, i64 40
+  store i64 0, ptr %flags.slot
+  %value = call i64 @valueBoxFunction(ptr %payload)
+  ret i64 %value
+}
+`);
+  }
+  if (runtime.used.has("jsCall")) {
+    definitions.push(`define i64 @jsCall(i64 %fn.value, i64 %argc, ptr %argv) {
+entry:
+  %function = call ptr @valueFunctionPtr(i64 %fn.value)
+  %code = load ptr, ptr %function
+  %env.slot = getelementptr i8, ptr %function, i64 8
+  %env = load ptr, ptr %env.slot
+  %this.slot = getelementptr i8, ptr %function, i64 16
+  %this.value = load i64, ptr %this.slot
+  %result = call i64 %code(i64 %argc, ptr %argv, ptr %env, i64 %this.value)
+  ret i64 %result
 }
 `);
   }

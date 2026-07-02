@@ -104,6 +104,7 @@ type FunctionDef = {
   readonly parameters: readonly JsIrFunctionParameter[];
   readonly body: readonly JsIrOperation[];
   readonly outerBindings: Map<string, JsIrBindingValue>;
+  readonly callingConvention?: "direct" | "functionObject";
   returnType: LlvmReturnType;
 };
 
@@ -276,6 +277,7 @@ ${mainInit}${mainBody}  call void @gcRootRestore(i64 %gc.main.frame)
 `;
 };
 
+// eslint-disable-next-line complexity -- Top-level operation classification is an explicit dispatch table.
 function classifyAndProcessOperation(
   operation: JsIrOperation,
   context: EmitContext,
@@ -304,6 +306,15 @@ function classifyAndProcessOperation(
     context.bindings.set(operation.name, { kind: "stringVariable", name: operation.name });
   } else if (operation.kind === "letBoolean") {
     context.bindings.set(operation.name, { kind: "booleanVariable", name: operation.name });
+  } else if (operation.kind === "runtimeArrayMapFunctionObject") {
+    functionDefs.push({
+      name: operation.callbackName,
+      parameters: operation.callbackParameters,
+      body: operation.callbackBody,
+      outerBindings: new Map(),
+      callingConvention: "functionObject",
+      returnType: "i64"
+    });
   } else if (classifyAggregateOperation(operation, context)) {
     // Binding recorded; the operation still belongs in the emitted body below.
   } else if (operation.kind === "function") {
@@ -369,6 +380,9 @@ function emitRootStackRestore(context: EmitContext): string[] {
 }
 
 function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
+  if (fn.callingConvention === "functionObject") {
+    return emitFunctionObjectDefinition(fn, context);
+  }
   const paramList = emitFunctionParameters(fn.parameters).join(", ");
   const lines: string[] = [`define ${fn.returnType} @${fn.name}(${paramList}) {`];
   const fnContext: EmitContext = {
@@ -428,6 +442,52 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
   if (fn.returnType === "void") {
     lines.push(...emitRootStackRestore(fnContext));
     lines.push("  ret void");
+  }
+  lines.push("}", "");
+  return lines;
+}
+
+function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): string[] {
+  const lines: string[] = [`define i64 @${fn.name}(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {`];
+  const fnContext: EmitContext = {
+    bindings: new Map(fn.outerBindings),
+    stringConstants: context.stringConstants,
+    arrayGlobals: context.arrayGlobals,
+    objectTypes: context.objectTypes,
+    objectLayouts: new Map(context.objectLayouts),
+    runtime: context.runtime,
+    loopLabels: [],
+    hasNumberPrint: context.hasNumberPrint,
+    printIndex: context.printIndex,
+    ifIndex: 0,
+    cmpIndex: 0,
+    numIndex: 0,
+    callIndex: 0,
+    loopIndex: 0,
+    logicIndex: 0,
+    boolIndex: 0,
+    stringIndex: 0,
+    arrayIndex: context.arrayIndex,
+    objectIndex: context.objectIndex,
+    optionalTargets: [],
+    gcFrameName: "%gc.frame"
+  };
+  const bodyLines = [`  ${fnContext.gcFrameName} = call i64 @gcRootSave()`];
+  for (let i = 0; i < fn.parameters.length; i += 1) {
+    const parameter = fn.parameters[i];
+    const slot = `%fnobj.arg.${i}.slot`;
+    const value = `%fnobj.arg.${i}`;
+    bodyLines.push(`  ${slot} = getelementptr i64, ptr %argv, i64 ${i}`, `  ${value} = load i64, ptr ${slot}`, `  call void @gcRootPush(i64 ${value})`);
+    fnContext.bindings.set(parameter.name, { kind: "valueVariable", name: value });
+  }
+  bodyLines.push(...emitOperations(fn.body, fnContext));
+  context.printIndex = fnContext.printIndex;
+  context.hasNumberPrint = fnContext.hasNumberPrint;
+  context.arrayIndex = fnContext.arrayIndex;
+  context.objectIndex = fnContext.objectIndex;
+  lines.push("entry:", ...bodyLines);
+  if (!operationListTerminates(fn.body)) {
+    lines.push(...emitRootStackRestore(fnContext), `  ret i64 ${jsValueUndefined}`);
   }
   lines.push("}", "");
   return lines;
@@ -777,6 +837,10 @@ function emitAggregateLiteralBindingOperation(operation: JsIrOperation, context:
     return emitRuntimeCollectionNewOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeMapFromArray" || operation.kind === "runtimeSetFromArray") {
+    return emitRuntimeCollectionFromArrayOperation(operation, context);
+  }
+
   return undefined;
 }
 
@@ -840,6 +904,10 @@ function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, con
 
   if (operation.kind === "runtimeArrayMapCallback") {
     return emitRuntimeArrayMapCallbackOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeArrayMapFunctionObject") {
+    return emitRuntimeArrayMapFunctionObjectOperation(operation, context);
   }
 
   if (operation.kind === "runtimeArrayFlatMapCallback") {
@@ -1114,6 +1182,75 @@ function emitRuntimeCollectionNewOperation(
   return [`  ${pointerName} = alloca ptr`, `  %${operation.name}.collection = call ptr @collectionNew()`, `  store ptr %${operation.name}.collection, ptr ${pointerName}`];
 }
 
+// Consumes the currently supported iterable-constructor source shape: a runtime
+// array. Map entries are runtime array pairs, matching `new Map([[k, v]])`.
+// eslint-disable-next-line max-statements -- Constructor iteration emits allocation, loop control, and per-kind insertion in one LLVM block.
+function emitRuntimeCollectionFromArrayOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeMapFromArray" | "runtimeSetFromArray" }>,
+  context: EmitContext
+): string[] {
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  const pointerName = variablePointerName(operation.name);
+  const source = emitRuntimeArrayPointer(operation.sourceName, context);
+  const collection = `%${operation.name}.collection`;
+  const length = `%${operation.name}.source.length.${index}`;
+  const indexSlot = `%${operation.name}.source.index.slot.${index}`;
+  const currentIndex = `%${operation.name}.source.index.${index}`;
+  const inRange = `%${operation.name}.source.in.range.${index}`;
+  const element = `%${operation.name}.source.element.${index}`;
+  const nextIndex = `%${operation.name}.source.next.${index}`;
+  const condLabel = `${operation.name}.from.array.cond.${index}`;
+  const bodyLabel = `${operation.name}.from.array.body.${index}`;
+  const endLabel = `${operation.name}.from.array.end.${index}`;
+  let bindingKind: "runtimeMap" | "runtimeSet" = "runtimeSet";
+  if (operation.kind === "runtimeMapFromArray") {
+    bindingKind = "runtimeMap";
+  }
+  context.bindings.set(operation.name, { kind: bindingKind, name: operation.name });
+  useRuntimeHelper(context.runtime, "collectionNew");
+  useRuntimeHelper(context.runtime, "collectionSet");
+  useRuntimeHelper(context.runtime, "arrayLength");
+  useRuntimeHelper(context.runtime, "arrayGet");
+  const lines = [
+    `  ${pointerName} = alloca ptr`,
+    ...source.lines,
+    `  ${collection} = call ptr @collectionNew()`,
+    `  store ptr ${collection}, ptr ${pointerName}`,
+    `  ${length} = call i64 @arrayLength(ptr ${source.value})`,
+    `  ${indexSlot} = alloca i64`,
+    `  store i64 0, ptr ${indexSlot}`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  ${currentIndex} = load i64, ptr ${indexSlot}`,
+    `  ${inRange} = icmp ult i64 ${currentIndex}, ${length}`,
+    `  br i1 ${inRange}, label %${bodyLabel}, label %${endLabel}`,
+    `${bodyLabel}:`,
+    `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`
+  ];
+  if (operation.kind === "runtimeMapFromArray") {
+    const keyConstant = addStringConstant("0", context);
+    const valueConstant = addStringConstant("1", context);
+    const key = `%${operation.name}.source.entry.key.${index}`;
+    const value = `%${operation.name}.source.entry.value.${index}`;
+    useRuntimeHelper(context.runtime, "valueArrayGet");
+    lines.push(
+      `  ${key} = call i64 @valueArrayGet(i64 ${element}, i64 0, i64 1, ptr ${keyConstant})`,
+      `  ${value} = call i64 @valueArrayGet(i64 ${element}, i64 1, i64 1, ptr ${valueConstant})`,
+      `  call void @collectionSet(ptr ${collection}, i64 ${key}, i64 ${value})`
+    );
+  } else {
+    lines.push(`  call void @collectionSet(ptr ${collection}, i64 ${element}, i64 ${jsValueTrue})`);
+  }
+  lines.push(
+    `  ${nextIndex} = add i64 ${currentIndex}, 1`,
+    `  store i64 ${nextIndex}, ptr ${indexSlot}`,
+    `  br label %${condLabel}`,
+    `${endLabel}:`
+  );
+  return lines;
+}
+
 function emitRuntimeCollectionResultOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeMapSetResult" | "runtimeSetAddResult" }>,
   context: EmitContext
@@ -1372,10 +1509,142 @@ function emitRuntimeArrayMapCallbackOperation(
   ];
 }
 
+// eslint-disable-next-line max-statements -- Function-object array dispatch keeps method routing next to the map tracer bullet emitter.
+function emitRuntimeArrayMapFunctionObjectOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>,
+  context: EmitContext
+): string[] {
+  if (operation.method === "filter") {
+    return emitRuntimeArrayFilterFunctionObjectOperation(operation, context);
+  }
+  if (operation.method === "flatMap") {
+    return emitRuntimeArrayFlatMapFunctionObjectOperation(operation, context);
+  }
+  if (operation.method === "find" || operation.method === "findIndex") {
+    return emitRuntimeArrayFindFunctionObjectOperation(operation, context);
+  }
+  if (operation.method === "reduce" || operation.method === "reduceRight") {
+    return emitRuntimeArrayReduceFunctionObjectOperation(operation, context);
+  }
+  if (operation.method === "forEach") {
+    return emitRuntimeArrayForEachFunctionObjectOperation(operation, context);
+  }
+  useRuntimeHelper(context.runtime, "arrayLength");
+  useRuntimeHelper(context.runtime, "arrayGet");
+  useRuntimeHelper(context.runtime, "arrayNew");
+  useRuntimeHelper(context.runtime, "arraySet");
+  useRuntimeHelper(context.runtime, "functionObjectNew");
+  useRuntimeHelper(context.runtime, "jsCall");
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const source = emitRuntimeArrayPointer(operation.arrayName, context);
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  const functionValue = `%arr.map.fn.${index}`;
+  const length = `%arr.map.len.${index}`;
+  const output = `%arr.map.out.${index}`;
+  const iPointer = `%arr.map.i.${index}.addr`;
+  const condLabel = `arr.map.cond.${index}`;
+  const bodyLabel = `arr.map.body.${index}`;
+  const endLabel = `arr.map.end.${index}`;
+  const currentIndex = `%arr.map.i.${index}`;
+  const nextIndex = `%arr.map.next.${index}`;
+  const element = `%arr.map.value.${index}`;
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackReturn = emitFunctionObjectCallbackReturn(functionValue, callbackArgs.values, index);
+  return [
+    `  ${pointerName} = alloca ptr`,
+    `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr null)`,
+    emitRootStackPush(functionValue, context),
+    ...source.lines,
+    `  ${length} = call i64 @arrayLength(ptr ${source.value})`,
+    `  ${output} = call ptr @arrayNew(i64 ${length})`,
+    `  store ptr ${output}, ptr ${pointerName}`,
+    `  ${iPointer} = alloca i64`,
+    `  store i64 0, ptr ${iPointer}`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  ${currentIndex} = load i64, ptr ${iPointer}`,
+    `  %arr.map.done.${index} = icmp eq i64 ${currentIndex}, ${length}`,
+    `  br i1 %arr.map.done.${index}, label %${endLabel}, label %${bodyLabel}`,
+    `${bodyLabel}:`,
+    `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`,
+    ...callbackArgs.lines,
+    ...callbackReturn.lines,
+    `  call void @arraySet(ptr ${output}, i64 ${currentIndex}, i64 ${callbackReturn.value})`,
+    `  ${nextIndex} = add i64 ${currentIndex}, 1`,
+    `  store i64 ${nextIndex}, ptr ${iPointer}`,
+    `  br label %${condLabel}`,
+    `${endLabel}:`
+  ];
+}
+
+function emitFunctionObjectValue(operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>, context: EmitContext, index: number): { readonly lines: readonly string[]; readonly value: string } {
+  useRuntimeHelper(context.runtime, "functionObjectNew");
+  useRuntimeHelper(context.runtime, "jsCall");
+  const functionValue = `%arr.fnobj.${index}`;
+  return { lines: [`  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr null)`, emitRootStackPush(functionValue, context)], value: functionValue };
+}
+
+function emitRuntimeArrayFlatMapFunctionObjectOperation(operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>, context: EmitContext): string[] {
+  const direct: Extract<JsIrOperation, { readonly kind: "runtimeArrayFlatMapCallback" }> = { kind: "runtimeArrayFlatMapCallback", name: operation.name, arrayName: operation.arrayName, callbackName: operation.callbackName, callbackParameters: operation.callbackParameters, callbackReturnKind: nonVoidCallbackReturnKind(operation.callbackReturnKind) };
+  return emitRuntimeArrayCallbackFunctionObjectPrelude(operation, context, (functionValue) => emitRuntimeArrayFlatMapCallbackOperationWithReturn(direct, context, (args, index) => emitFunctionObjectCallbackReturn(functionValue, args, index)));
+}
+
+function emitRuntimeArrayFilterFunctionObjectOperation(operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>, context: EmitContext): string[] {
+  const direct: Extract<JsIrOperation, { readonly kind: "runtimeArrayFilterCallback" }> = { kind: "runtimeArrayFilterCallback", name: operation.name, arrayName: operation.arrayName, callbackName: operation.callbackName, callbackParameters: operation.callbackParameters, callbackReturnKind: nonVoidCallbackReturnKind(operation.callbackReturnKind) };
+  return emitRuntimeArrayCallbackFunctionObjectPrelude(operation, context, (functionValue) => emitRuntimeArrayFilterCallbackOperationWithReturn(direct, context, (args, index) => emitFunctionObjectCallbackReturn(functionValue, args, index)));
+}
+
+function emitRuntimeArrayForEachFunctionObjectOperation(operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>, context: EmitContext): string[] {
+  const direct: Extract<JsIrOperation, { readonly kind: "runtimeArrayForEachCallback" }> = { kind: "runtimeArrayForEachCallback", arrayName: operation.arrayName, callbackName: operation.callbackName, callbackParameters: operation.callbackParameters, callbackReturnKind: operation.callbackReturnKind };
+  return emitRuntimeArrayCallbackFunctionObjectPrelude(operation, context, (functionValue) => emitRuntimeArrayForEachCallbackOperationWithCall(direct, context, (args, index) => emitFunctionObjectCallbackReturn(functionValue, args, index).lines));
+}
+
+function emitRuntimeArrayFindFunctionObjectOperation(operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>, context: EmitContext): string[] {
+  let kind: "runtimeArrayFindCallback" | "runtimeArrayFindIndexCallback" = "runtimeArrayFindIndexCallback";
+  if (operation.method === "find") {
+    kind = "runtimeArrayFindCallback";
+  }
+  const direct: Extract<JsIrOperation, { readonly kind: "runtimeArrayFindCallback" | "runtimeArrayFindIndexCallback" }> = { kind, name: operation.name, arrayName: operation.arrayName, callbackName: operation.callbackName, callbackParameters: operation.callbackParameters, callbackReturnKind: nonVoidCallbackReturnKind(operation.callbackReturnKind) };
+  return emitRuntimeArrayCallbackFunctionObjectPrelude(operation, context, (functionValue) => emitRuntimeArrayFindCallbackOperationWithReturn(direct, context, (args, index) => emitFunctionObjectCallbackReturn(functionValue, args, index)));
+}
+
+function emitRuntimeArrayReduceFunctionObjectOperation(operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>, context: EmitContext): string[] {
+  const direct: Extract<JsIrOperation, { readonly kind: "runtimeArrayReduceCallback" }> = { kind: "runtimeArrayReduceCallback", name: operation.name, arrayName: operation.arrayName, callbackName: operation.callbackName, callbackParameters: operation.callbackParameters, callbackReturnKind: nonVoidCallbackReturnKind(operation.callbackReturnKind), initialValue: operation.initialValue, direction: operation.direction ?? "left" };
+  return emitRuntimeArrayCallbackFunctionObjectPrelude(operation, context, (functionValue) => emitRuntimeArrayReduceCallbackOperationWithReturn(direct, context, (args, index) => emitFunctionObjectCallbackReturn(functionValue, args, index)));
+}
+
+function nonVoidCallbackReturnKind(returnKind: JsIrValueKind | "void"): JsIrValueKind {
+  if (returnKind === "void") {
+    return "value";
+  }
+  return returnKind;
+}
+
+function emitRuntimeArrayCallbackFunctionObjectPrelude(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>,
+  context: EmitContext,
+  emitBody: (functionValue: string) => string[]
+): string[] {
+  const index = context.arrayIndex;
+  const functionObject = emitFunctionObjectValue(operation, context, index);
+  return [...functionObject.lines, ...emitBody(functionObject.value)];
+}
+
 // eslint-disable-next-line max-statements -- flatMap emits callback invocation plus one-level array flattening in one loop.
 function emitRuntimeArrayFlatMapCallbackOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFlatMapCallback" }>,
   context: EmitContext
+): string[] {
+  return emitRuntimeArrayFlatMapCallbackOperationWithReturn(operation, context, (args, index) => emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, args, index));
+}
+
+// eslint-disable-next-line max-statements -- flatMap emits callback invocation plus one-level array flattening in one loop.
+function emitRuntimeArrayFlatMapCallbackOperationWithReturn(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFlatMapCallback" }>,
+  context: EmitContext,
+  emitCallbackReturn: (args: readonly string[], loopIndex: number) => { readonly lines: readonly string[]; readonly value: string }
 ): string[] {
   useRuntimeHelper(context.runtime, "arrayLength");
   useRuntimeHelper(context.runtime, "arrayGet");
@@ -1404,7 +1673,7 @@ function emitRuntimeArrayFlatMapCallbackOperation(
   const nextIndex = `%arr.flatmap.next.${index}`;
   const element = `%arr.flatmap.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
-  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index);
+  const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   const isArray = `%arr.flatmap.is.array.${index}`;
   const innerArray = `%arr.flatmap.inner.array.${index}`;
   const innerLength = `%arr.flatmap.inner.len.${index}`;
@@ -1417,6 +1686,14 @@ function emitRuntimeArrayFlatMapCallbackOperation(
 function emitRuntimeArrayFilterCallbackOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFilterCallback" }>,
   context: EmitContext
+): string[] {
+  return emitRuntimeArrayFilterCallbackOperationWithReturn(operation, context, (args, index) => emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, args, index));
+}
+
+function emitRuntimeArrayFilterCallbackOperationWithReturn(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFilterCallback" }>,
+  context: EmitContext,
+  emitCallbackReturn: (args: readonly string[], loopIndex: number) => { readonly lines: readonly string[]; readonly value: string }
 ): string[] {
   useRuntimeHelper(context.runtime, "arrayLength");
   useRuntimeHelper(context.runtime, "arrayGet");
@@ -1440,7 +1717,7 @@ function emitRuntimeArrayFilterCallbackOperation(
   const nextIndex = `%arr.filter.next.${index}`;
   const element = `%arr.filter.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
-  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index);
+  const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   const keep = `%arr.filter.keep.value.${index}`;
   return [`  ${pointerName} = alloca ptr`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${output} = call ptr @arrayNew(i64 0)`, `  store ptr ${output}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.filter.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.filter.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  ${keep} = call i1 @valueTruthy(i64 ${callbackReturn.value})`, `  br i1 ${keep}, label %${keepLabel}, label %${advanceLabel}`, `${keepLabel}:`, `  call i64 @arrayPush(ptr ${output}, i64 ${element})`, `  br label %${advanceLabel}`, `${advanceLabel}:`, `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
@@ -1448,6 +1725,14 @@ function emitRuntimeArrayFilterCallbackOperation(
 function emitRuntimeArrayForEachCallbackOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayForEachCallback" }>,
   context: EmitContext
+): string[] {
+  return emitRuntimeArrayForEachCallbackOperationWithCall(operation, context, (args) => [`  ${emitIgnoredCallbackCall(operation.callbackReturnKind, operation.callbackName, args)}`]);
+}
+
+function emitRuntimeArrayForEachCallbackOperationWithCall(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayForEachCallback" }>,
+  context: EmitContext,
+  emitCallbackCall: (args: readonly string[], loopIndex: number) => readonly string[]
 ): string[] {
   useRuntimeHelper(context.runtime, "arrayLength");
   useRuntimeHelper(context.runtime, "arrayGet");
@@ -1463,7 +1748,7 @@ function emitRuntimeArrayForEachCallbackOperation(
   const nextIndex = `%arr.each.next.${index}`;
   const element = `%arr.each.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
-  return [...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${iPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.each.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.each.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, `  ${emitIgnoredCallbackCall(operation.callbackReturnKind, operation.callbackName, callbackArgs.values)}`, `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
+  return [...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${iPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.each.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.each.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...emitCallbackCall(callbackArgs.values, index), `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
 
 function emitRuntimeArrayScalarCallbackOperation(
@@ -1480,6 +1765,15 @@ function emitRuntimeArrayScalarCallbackOperation(
 function emitRuntimeArrayFindCallbackOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFindCallback" | "runtimeArrayFindIndexCallback" }>,
   context: EmitContext
+): string[] {
+  return emitRuntimeArrayFindCallbackOperationWithReturn(operation, context, (args, index) => emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, args, index));
+}
+
+// eslint-disable-next-line max-statements -- Find and findIndex share one loop because only result storage differs.
+function emitRuntimeArrayFindCallbackOperationWithReturn(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFindCallback" | "runtimeArrayFindIndexCallback" }>,
+  context: EmitContext,
+  emitCallbackReturn: (args: readonly string[], loopIndex: number) => { readonly lines: readonly string[]; readonly value: string }
 ): string[] {
   useRuntimeHelper(context.runtime, "arrayLength");
   useRuntimeHelper(context.runtime, "arrayGet");
@@ -1509,7 +1803,7 @@ function emitRuntimeArrayFindCallbackOperation(
   const canContinue = `%arr.find.continue.${index}`;
   const element = `%arr.find.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
-  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index);
+  const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   const keep = `%arr.find.keep.${index}`;
   let initialStore = [`  ${pointerName} = alloca i64`, `  store i64 ${jsValueUndefined}, ptr ${pointerName}`];
   let matchStore = [`  store i64 ${element}, ptr ${pointerName}`];
@@ -1524,6 +1818,15 @@ function emitRuntimeArrayFindCallbackOperation(
 function emitRuntimeArrayReduceCallbackOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayReduceCallback" }>,
   context: EmitContext
+): string[] {
+  return emitRuntimeArrayReduceCallbackOperationWithReturn(operation, context, (args, index) => emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, args, index));
+}
+
+// eslint-disable-next-line max-statements -- reduce/reduceRight share accumulator setup and directional loop emission.
+function emitRuntimeArrayReduceCallbackOperationWithReturn(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayReduceCallback" }>,
+  context: EmitContext,
+  emitCallbackReturn: (args: readonly string[], loopIndex: number) => { readonly lines: readonly string[]; readonly value: string }
 ): string[] {
   useRuntimeHelper(context.runtime, "arrayLength");
   useRuntimeHelper(context.runtime, "arrayGet");
@@ -1562,7 +1865,7 @@ function emitRuntimeArrayReduceCallbackOperation(
     nextLine = `  ${nextIndex} = sub i64 ${currentIndex}, 1`;
   }
   const callbackArgs = emitReduceCallbackArguments(operation.callbackParameters, source.value, currentIndex, pointerName, element, index, context);
-  const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index);
+  const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   return [`  ${pointerName} = alloca i64`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, ...initialLines, `  store i64 %arr.reduce.initial.${index}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 ${startIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  ${doneCheck}`, `  br i1 %arr.reduce.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  store i64 ${callbackReturn.value}, ptr ${pointerName}`, nextLine, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
 
@@ -1648,6 +1951,23 @@ function emitArrayCallbackReturn(
   const callArgs = args.join(", ");
   const value = `%arr.map.ret.${loopIndex}`;
   return { lines: [`  ${value} = call ${returnType} @${callbackName}(${callArgs})`], value };
+}
+
+function emitFunctionObjectCallbackReturn(
+  functionValue: string,
+  args: readonly string[],
+  loopIndex: number
+): { readonly lines: readonly string[]; readonly value: string } {
+  const rawArgs = args.map((arg) => arg.replace(/^i64 /, ""));
+  const argv = `%arr.map.argv.${loopIndex}`;
+  const value = `%arr.map.ret.${loopIndex}`;
+  const lines = [`  ${argv} = alloca i64, i64 ${rawArgs.length}`];
+  for (let i = 0; i < rawArgs.length; i += 1) {
+    const slot = `%arr.map.argv.${loopIndex}.${i}`;
+    lines.push(`  ${slot} = getelementptr i64, ptr ${argv}, i64 ${i}`, `  store i64 ${rawArgs[i]}, ptr ${slot}`);
+  }
+  lines.push(`  ${value} = call i64 @jsCall(i64 ${functionValue}, i64 ${rawArgs.length}, ptr ${argv})`);
+  return { lines, value };
 }
 
 function emitIgnoredCallbackCall(returnKind: JsIrValueKind | "void", callbackName: string, args: readonly string[]): string {
@@ -3831,7 +4151,11 @@ function switchCompareLabel(loopIndex: number, clauseIndex: number | undefined):
 }
 
 function switchClauseTerminates(clause: JsIrSwitchClause): boolean {
-  const last = clause.operations.at(-1);
+  return operationListTerminates(clause.operations);
+}
+
+function operationListTerminates(operations: readonly JsIrOperation[]): boolean {
+  const last = operations.at(-1);
   return last?.kind === "break" || last?.kind === "continue" || last?.kind === "returnNumber" || last?.kind === "returnString" || last?.kind === "returnValue" || last?.kind === "throwValue";
 }
 

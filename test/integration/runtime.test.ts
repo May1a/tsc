@@ -721,11 +721,18 @@ describe("tscn expanded runtime roadmap", () => {
   test("supports package BO callback-driven runtime array methods", async () => {
     const cases = [
       ["array-runtime-map-callback.ts", "3\n2\n4\n6\n"],
+      ["array-runtime-map-unsupported-callback.ts", "2\n1\n2\n"],
       ["array-runtime-filter-callback.ts", "2\n2\n4\n"],
+      ["array-runtime-filter-unsupported-callback.ts", "2\n1\n2\n"],
       ["array-runtime-for-each-callback.ts", "2\n5\n8\ndone\n"],
+      ["array-runtime-for-each-arrow-callback.ts", "1\n2\ndone\n"],
       ["array-runtime-find-callback.ts", "2\nundefined\n"],
+      ["array-runtime-find-arrow-callback.ts", "2\nundefined\n"],
       ["array-runtime-find-index-callback.ts", "1\n-1\n"],
+      ["array-runtime-find-index-arrow-callback.ts", "1\n-1\n"],
       ["array-runtime-reduce-callback.ts", "16\n"],
+      ["array-runtime-reduce-unsupported-callback.ts", "1\n"],
+      ["array-runtime-flat-map-arrow-callback.ts", "4\n1\n11\n2\n12\n"],
       ["array-runtime-reduce-no-initial.ts", "6\n"]
     ] as const;
 
@@ -752,13 +759,14 @@ describe("tscn expanded runtime roadmap", () => {
       ["map-size-delete-has.ts", "2\ntrue\n3\ntrue\nfalse\n1\nfalse\n"],
       ["map-same-value-zero.ts", "nan\nzero\n2\nnegzero\n"],
       ["map-object-identity-keys.ts", "object\nfalse\narray\n"],
+      ["map-constructor-iterable.ts", "1\n1\n"],
       ["set-basic-add-has.ts", "0\ntrue\n2\ntrue\nfalse\n"],
       ["set-size-delete.ts", "2\ntrue\ntrue\ntrue\nfalse\n1\n"],
-      ["set-object-identity-values.ts", "true\nfalse\ntrue\n"]
+      ["set-object-identity-values.ts", "true\nfalse\ntrue\n"],
+      ["set-constructor-iterable.ts", "2\ntrue\nfalse\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
-    await expectUnsupportedDiagnostic("map-constructor-iterable-unsupported.ts");
     await expectUnsupportedDiagnostic("weak-map-unsupported.ts");
     await expectUnsupportedDiagnostic("weak-set-unsupported.ts");
   });
@@ -1029,9 +1037,6 @@ describe("tscn expanded runtime roadmap", () => {
       "number-to-fixed-range-error-unsupported.ts",
       "number-to-locale-string-unsupported.ts",
       "parse-int-radix-unsupported.ts",
-      "array-runtime-map-unsupported-callback.ts",
-      "array-runtime-filter-unsupported-callback.ts",
-      "array-runtime-reduce-unsupported-callback.ts",
       "array-runtime-map-noarg-unsupported.ts",
       "error-constructor-unsupported.ts",
       "try-finally-unsupported.ts",
