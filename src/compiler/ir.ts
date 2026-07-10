@@ -1,7 +1,7 @@
 import { Chunk, Effect } from "effect";
 import ts from "typescript";
 import { Diagnostics } from "./diagnostics-service.js";
-import type { CompilerDiagnostic } from "./diagnostics.js";
+import type { CompilerDiagnostic, SourceSpan } from "./diagnostics.js";
 
 // The TypeScript checker for the program currently being lowered. Set by
 // `lowerToJsIr` and read by the class-lowering path for static method dispatch.
@@ -59,9 +59,20 @@ export type JsIrModule = {
   readonly inlineCppBlocks: readonly JsIrInlineCppBlock[];
 };
 
+export type JsIrLoweringMode = "native" | "compileTimeFallback";
+
+export type JsIrTraceOrigin = "source" | "synthesized";
+
+export type JsIrOperationTrace = {
+  readonly id: string;
+  readonly source?: SourceSpan;
+  readonly origin: JsIrTraceOrigin;
+};
+
 export type JsIrSourceModule = {
   readonly fileName: string;
   readonly statementCount: number;
+  readonly loweringMode: JsIrLoweringMode;
   readonly operations: readonly JsIrOperation[];
 };
 
@@ -787,7 +798,7 @@ export type JsIrExpression =
       readonly value: JsIrValueExpression;
     };
 
-export type JsIrOperation =
+export type JsIrOperationNode =
   | {
       readonly kind: "constNumber";
       readonly name: string;
@@ -1370,6 +1381,61 @@ export type JsIrOperation =
       readonly body: readonly JsIrOperation[];
     };
 
+export type JsIrOperation = JsIrOperationNode & {
+  readonly trace?: JsIrOperationTrace;
+};
+
+export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOperation[] {
+  switch (operation.kind) {
+    case "runtimeArrayMapFunctionObject": {
+      return operation.callbackBody;
+    }
+    case "block":
+    case "bindingGroup": {
+      return operation.operations;
+    }
+    case "if": {
+      return [...operation.thenOperations, ...operation.elseOperations];
+    }
+    case "switch": {
+      return operation.clauses.flatMap((clause) => clause.operations);
+    }
+    case "while":
+    case "doWhile":
+    case "forOfArray":
+    case "forOfString":
+    case "forOfSet":
+    case "forOfMap":
+    case "forInObject":
+    case "forInArray":
+    case "function":
+    case "returnClosure": {
+      return operation.body;
+    }
+    case "for": {
+      return [operation.initializer, ...operation.body, operation.increment];
+    }
+    default: {
+      return [];
+    }
+  }
+}
+
+export function visitJsIrOperations(
+  operations: readonly JsIrOperation[],
+  visitor: (operation: JsIrOperation, parent: JsIrOperation | undefined) => void
+): void {
+  const visit = (operation: JsIrOperation, parent: JsIrOperation | undefined): void => {
+    visitor(operation, parent);
+    for (const child of jsIrOperationChildren(operation)) {
+      visit(child, operation);
+    }
+  };
+  for (const operation of operations) {
+    visit(operation, undefined);
+  }
+}
+
 export type JsIrResult = {
   readonly module: JsIrModule;
 };
@@ -1410,6 +1476,7 @@ const maximumNumberRadix = 36;
 const maximumToFixedDigits = 100;
 const regexpConstructorArgumentCount = 2;
 const maxAsciiCodePoint = 127;
+const traceOperationIdWidth = 6;
 
 // eslint-disable-next-line complexity, max-statements -- Aggregate binding classification is centralized during the runtime-shape transition.
 export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBindingValue | undefined {
@@ -1504,6 +1571,40 @@ const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
   };
 };
 
+function traceOperationFromNode(
+  operation: JsIrOperation,
+  node: ts.Node,
+  origin: JsIrTraceOrigin = "source"
+): JsIrOperation {
+  if (operation.trace?.source !== undefined) {
+    return operation;
+  }
+  const sourceFile = node.getSourceFile();
+  return {
+    ...operation,
+    trace: {
+      id: operation.trace?.id ?? "",
+      source: sourceSpan(sourceFile, node.getStart(sourceFile)),
+      origin
+    }
+  };
+}
+
+function finalizeOperationTraces(operations: readonly JsIrOperation[], moduleIndex: number): readonly JsIrOperation[] {
+  let operationIndex = 0;
+  visitJsIrOperations(operations, (operation, parent) => {
+    const inheritedSource = operation.trace?.source ?? parent?.trace?.source;
+    const id = `m${moduleIndex}:o${operationIndex.toString().padStart(traceOperationIdWidth, "0")}`;
+    let trace: JsIrOperationTrace = { id, origin: operation.trace?.origin ?? "synthesized" };
+    if (inheritedSource !== undefined) {
+      trace = { ...trace, source: inheritedSource };
+    }
+    (operation as { trace?: JsIrOperationTrace }).trace = trace;
+    operationIndex += 1;
+  });
+  return operations;
+}
+
 function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): ReadonlySet<string> {
   const names = new Set<string>();
   for (const statement of statements) {
@@ -1540,6 +1641,12 @@ class ClassLoweringUnsupportedError extends Error {
   }
 }
 
+type LoweredStatements = {
+  readonly operations: readonly JsIrOperation[];
+  readonly diagnostics: Chunk.Chunk<CompilerDiagnostic>;
+  readonly loweringMode: JsIrLoweringMode;
+};
+
 function sourceFileContainsClass(sourceFile: ts.SourceFile): boolean {
   let found = false;
   const visit = (node: ts.Node): void => {
@@ -1556,13 +1663,20 @@ function sourceFileContainsClass(sourceFile: ts.SourceFile): boolean {
   return found;
 }
 
+function classOperationTraceOrigin(index: number): JsIrTraceOrigin {
+  if (index === 0) {
+    return "source";
+  }
+  return "synthesized";
+}
+
 function lowerStatements(
   sourceFile: ts.SourceFile
-): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } {
+): LoweredStatements {
   nextFunctionObjectId = 0;
   const inlineCppDiagnostic = inlineCppDisabledDiagnostic(sourceFile);
   if (inlineCppDiagnostic !== undefined) {
-    return { operations: [], diagnostics: Chunk.of(inlineCppDiagnostic) };
+    return { operations: [], diagnostics: Chunk.of(inlineCppDiagnostic), loweringMode: "native" };
   }
 
   // Class-using files are attempted through real codegen first. Any unsupported
@@ -1625,7 +1739,7 @@ function inlineCppDisabledDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnos
 function lowerTopLevelStatements(
   sourceFile: ts.SourceFile,
   strict: boolean
-): { readonly supported: boolean; readonly result: { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } } {
+): { readonly supported: boolean; readonly result: LoweredStatements } {
   const operations: JsIrOperation[] = [];
   const bindings = new Map<string, JsIrBindingValue>();
   const diagnostics: CompilerDiagnostic[] = [];
@@ -1642,9 +1756,10 @@ function lowerTopLevelStatements(
 
       if (ts.isClassDeclaration(statement)) {
         const classOperations = lowerClassDeclaration(statement, bindings, classes);
-        for (const operation of classOperations) {
-          operations.push(operation);
-          updateBindings(operation, bindings);
+        for (let index = 0; index < classOperations.length; index += 1) {
+          const traced = traceOperationFromNode(classOperations[index], statement, classOperationTraceOrigin(index));
+          operations.push(traced);
+          updateBindings(traced, bindings);
         }
         continue;
       }
@@ -1657,7 +1772,7 @@ function lowerTopLevelStatements(
       }
 
       if (strict) {
-        return { supported: false, result: { operations: [], diagnostics: Chunk.empty() } };
+        return { supported: false, result: { operations: [], diagnostics: Chunk.empty(), loweringMode: "native" } };
       }
 
       diagnostics.push({
@@ -1673,13 +1788,13 @@ function lowerTopLevelStatements(
 
   return {
     supported: true,
-    result: { operations: markRuntimeObjectShadows(operations), diagnostics: Chunk.fromIterable(diagnostics) }
+    result: { operations: markRuntimeObjectShadows(operations), diagnostics: Chunk.fromIterable(diagnostics), loweringMode: "native" }
   };
 }
 
 function tryLowerStatementsWithClasses(
   sourceFile: ts.SourceFile
-): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } | undefined {
+): LoweredStatements | undefined {
   try {
     const { supported, result } = lowerTopLevelStatements(sourceFile, true);
     if (!supported || !Chunk.isEmpty(result.diagnostics)) {
@@ -2308,13 +2423,13 @@ function lowerClassPropertyAssignment(
 
 function lowerB683NativeFeatureStatements(
   sourceFile: ts.SourceFile
-): { readonly operations: readonly JsIrOperation[]; readonly diagnostics: Chunk.Chunk<CompilerDiagnostic> } | undefined {
+): LoweredStatements | undefined {
   if (!usesB683NativeFeatureSurface(sourceFile)) {
     return undefined;
   }
   const unsupported = b683NativeFeatureUnsupportedDiagnostic(sourceFile);
   if (unsupported !== undefined) {
-    return { operations: [], diagnostics: Chunk.of(unsupported) };
+    return { operations: [], diagnostics: Chunk.of(unsupported), loweringMode: "compileTimeFallback" };
   }
   let printed: string[] | undefined;
   try {
@@ -2322,8 +2437,13 @@ function lowerB683NativeFeatureStatements(
   } catch (error) {
     if (error instanceof B683NativeThrow) {
       return {
-        operations: [{ kind: "throwValue", value: { kind: "string", value: { kind: "literal", value: b683NativePrintString(error.value) } } }],
-        diagnostics: Chunk.empty()
+        operations: [traceOperationFromNode(
+          { kind: "throwValue", value: { kind: "string", value: { kind: "literal", value: b683NativePrintString(error.value) } } },
+          sourceFile,
+          "synthesized"
+        )],
+        diagnostics: Chunk.empty(),
+        loweringMode: "compileTimeFallback"
       };
     }
     throw error;
@@ -2332,8 +2452,13 @@ function lowerB683NativeFeatureStatements(
     return undefined;
   }
   return {
-    operations: printed.map((value): JsIrOperation => ({ kind: "print", expression: { kind: "string", value } })),
-    diagnostics: Chunk.empty()
+    operations: printed.map((value): JsIrOperation => traceOperationFromNode(
+      { kind: "print", expression: { kind: "string", value } },
+      sourceFile,
+      "synthesized"
+    )),
+    diagnostics: Chunk.empty(),
+    loweringMode: "compileTimeFallback"
   };
 }
 
@@ -3544,8 +3669,20 @@ function isNonExecutableDeclaration(statement: ts.Statement): boolean {
   return Boolean(modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword));
 }
 
-// eslint-disable-next-line max-statements -- Statement dispatch covers all supported top-level node kinds in one place.
 function lowerStatement(
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  promotedAggregates: ReadonlySet<string> = new Set()
+): JsIrOperation | undefined {
+  const operation = lowerStatementCore(statement, bindings, promotedAggregates);
+  if (operation === undefined) {
+    return undefined;
+  }
+  return traceOperationFromNode(operation, statement);
+}
+
+// eslint-disable-next-line max-statements -- Statement dispatch covers all supported top-level node kinds in one place.
+function lowerStatementCore(
   statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   promotedAggregates: ReadonlySet<string> = new Set()
@@ -10443,13 +10580,14 @@ export const lowerToJsIr = (
     activeInlineCppBlocks = inlineCppBlocks;
     let modules;
     try {
-      modules = sourceFiles.map((sourceFile) => {
+      modules = sourceFiles.map((sourceFile, moduleIndex) => {
         const lowered = lowerStatements(sourceFile);
         allDiagnostics.push(...lowered.diagnostics);
         return {
           fileName: sourceFile.fileName,
           statementCount: sourceFile.statements.length,
-          operations: lowered.operations
+          loweringMode: lowered.loweringMode,
+          operations: finalizeOperationTraces(lowered.operations, moduleIndex)
         };
       });
     } finally {

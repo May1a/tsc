@@ -746,7 +746,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["date-constructor-get-time.ts", "1234\n"],
       ["date-value-of.ts", "5678\n"],
       ["date-to-iso-string-epoch.ts", "1970-01-01T00:00:00.000Z\n"],
-      ["date-parse-iso-literal.ts", "0\nnan\n"]
+      ["date-parse-iso-literal.ts", "0\nNaN\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
@@ -821,7 +821,7 @@ describe("tscn expanded runtime roadmap", () => {
   test("supports package AA boxed string single-character methods", async () => {
     const cases = [
       ["string-boxed-char-at.ts", "h\no\n\n"],
-      ["string-boxed-char-code-at.ts", "104\n111\nnan\n"],
+      ["string-boxed-char-code-at.ts", "104\n111\nNaN\n"],
       ["string-boxed-code-point-at.ts", "104\n111\nundefined\n"],
       ["string-boxed-at.ts", "h\no\nundefined\n"]
     ] as const;
@@ -846,9 +846,9 @@ describe("tscn expanded runtime roadmap", () => {
       ["number-coercion-empty-string.ts", "0\n"],
       ["number-coercion-whitespace.ts", "0\n3\n3.14\n"],
       ["number-coercion-radix-prefixes.ts", "31\n2\n7\n"],
-      ["number-coercion-infinity-nan-string.ts", "inf\n-inf\nnan\nnan\n"],
-      ["number-coercion-primitives.ts", "0\nnan\n1\n0\n0\nnan\ninf\n"],
-      ["number-coercion-aggregates.ts", "nan\n0\n1\nnan\n"],
+      ["number-coercion-infinity-nan-string.ts", "Infinity\n-Infinity\nNaN\nNaN\n"],
+      ["number-coercion-primitives.ts", "0\nNaN\n1\n0\n0\nNaN\nInfinity\n"],
+      ["number-coercion-aggregates.ts", "NaN\n0\n1\nNaN\n"],
       ["number-coercion-signed-zero.ts", "-0\n"]
     ] as const;
 
@@ -1003,7 +1003,7 @@ describe("tscn expanded runtime roadmap", () => {
   test("supports scoped JSValue coercion, comparisons, Math, parsing, and runtime string methods", async () => {
     const cases = [
       ["value-plus-string-coercion.ts", "a1\ntrue!\nnullx\nundefinedx\n"],
-      ["value-plus-number-coercion.ts", "3\n1\n0\nnan\n"],
+      ["value-plus-number-coercion.ts", "3\n1\n0\nNaN\n"],
       ["value-plus-aggregate-coercion.ts", "a,b!\n[object Object]!\n"],
       ["value-loose-equality-primitives.ts", "true\nfalse\ntrue\ntrue\nfalse\n"],
       ["value-loose-equality-string-number.ts", "true\ntrue\nfalse\n"],
@@ -1012,7 +1012,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["boolean-coercion-supported-values.ts", "false\nfalse\nfalse\nfalse\nfalse\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\n"],
       ["logical-and-or-value-results.ts", "fallback\nvalue\n0\nright\n"],
       ["math-basic-number-functions.ts", "3\n2\n3\n2\n3\n4\n8\n-1\n"],
-      ["math-min-max-variadic.ts", "2\n1\n3\n4\ninf\n-inf\n"],
+      ["math-min-max-variadic.ts", "2\n1\n3\n4\nInfinity\n-Infinity\n"],
       ["math-constants.ts", "true\ntrue\n"],
       ["number-is-nan-finite.ts", "true\nfalse\ntrue\nfalse\nfalse\nfalse\n"],
       ["global-is-nan-coercion.ts", "true\nfalse\ntrue\nfalse\n"],

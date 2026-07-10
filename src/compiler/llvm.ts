@@ -1,5 +1,6 @@
 import {
   aggregateBindingForOperation,
+  visitJsIrOperations,
   type JsIrCallArgument,
   type JsIrBindingValue,
   type JsIrCondition,
@@ -18,6 +19,7 @@ import {
   type JsIrValueKind,
   type JsIrValueExpression
 } from "./ir.js";
+import { buildTraceMap, traceOperationId, type LlvmLineRange, type TraceMapV1 } from "./trace.js";
 import {
   createRuntimeHelperEmitter,
   emitRuntimeDeclarations,
@@ -104,6 +106,7 @@ type FunctionDef = {
   readonly parameters: readonly JsIrFunctionParameter[];
   readonly body: readonly JsIrOperation[];
   readonly outerBindings: Map<string, JsIrBindingValue>;
+  readonly traceOperation: JsIrOperation;
   readonly callingConvention?: "direct" | "functionObject";
   returnType: LlvmReturnType;
 };
@@ -193,7 +196,7 @@ inline std::uint64_t null() {
 
 ${blocks.map(emitInlineCppFunction).join("\n")}`;
 
-export const emitLlvmIr = (module: JsIrModule): string => {
+function emitLlvmIr(module: JsIrModule): string {
   const moduleComments = module.modules
     .map((sourceModule) => `; source ${sourceModule.fileName} statements=${sourceModule.statementCount}`)
     .join("\n");
@@ -237,7 +240,10 @@ export const emitLlvmIr = (module: JsIrModule): string => {
   const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals].join("\n");
   let numberFormat = "";
   if (context.hasNumberPrint) {
-    numberFormat = String.raw`@.fmt.number = private unnamed_addr constant [4 x i8] c"%g\0A\00"`;
+    numberFormat = String.raw`@.fmt.number = private unnamed_addr constant [4 x i8] c"%g\0A\00"
+@.fmt.number.nan = private unnamed_addr constant [4 x i8] c"NaN\00"
+@.fmt.number.infinity = private unnamed_addr constant [9 x i8] c"Infinity\00"
+@.fmt.number.negative-infinity = private unnamed_addr constant [10 x i8] c"-Infinity\00"`;
   }
 
   let mainBody = "";
@@ -275,7 +281,18 @@ ${mainInit}${mainBody}  call void @gcRootRestore(i64 %gc.main.frame)
   ret i32 0
 }
 `;
+}
+
+export type LlvmEmission = {
+  readonly llvmIr: string;
+  readonly traceMap: TraceMapV1;
 };
+
+export function emitLlvmModule(module: JsIrModule): LlvmEmission {
+  const llvmIr = emitLlvmIr(module);
+  const ranges = collectTraceRanges(llvmIr, module);
+  return { llvmIr, traceMap: buildTraceMap(module, ranges) };
+}
 
 // eslint-disable-next-line complexity -- Top-level operation classification is an explicit dispatch table.
 function classifyAndProcessOperation(
@@ -312,6 +329,7 @@ function classifyAndProcessOperation(
       parameters: operation.callbackParameters,
       body: operation.callbackBody,
       outerBindings: new Map(),
+      traceOperation: operation,
       callingConvention: "functionObject",
       returnType: "i64"
     });
@@ -326,6 +344,7 @@ function classifyAndProcessOperation(
         parameters: [...returnClosure.captures, ...returnClosure.parameters].map((name) => ({ name, valueKind: "number" })),
         body: returnClosure.body,
         outerBindings: new Map(),
+        traceOperation: returnClosure,
         returnType: "i64"
       });
     }
@@ -347,6 +366,7 @@ function classifyAndProcessOperation(
       parameters: operation.parameters,
       body: operation.body,
       outerBindings,
+      traceOperation: operation,
       returnType
     });
     return;
@@ -377,6 +397,29 @@ function emitRootStackPush(value: string, _context: EmitContext): string {
 // or how many returns exist (replaces the old static pop counter).
 function emitRootStackRestore(context: EmitContext): string[] {
   return [`  call void @gcRootRestore(i64 ${context.gcFrameName})`];
+}
+
+function traceStartLine(operation: JsIrOperation): string {
+  const { trace } = operation;
+  const id = traceOperationId(operation);
+  const source = trace?.source;
+  let location = "-";
+  if (source !== undefined) {
+    location = `${source.fileName}:${source.line}:${source.column}`;
+  }
+  return `; tscn-trace-start ${id} ${operation.kind} ${location} ${trace?.origin ?? "synthesized"}`;
+}
+
+function traceEndLine(operation: JsIrOperation): string {
+  return `; tscn-trace-end ${traceOperationId(operation)}`;
+}
+
+function wrapFunctionTrace(operation: JsIrOperation, lines: readonly string[]): string[] {
+  let content = lines;
+  if (lines.at(-1) === "") {
+    content = lines.slice(0, -1);
+  }
+  return [traceStartLine(operation), ...content, traceEndLine(operation), ""];
 }
 
 function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
@@ -444,7 +487,7 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     lines.push("  ret void");
   }
   lines.push("}", "");
-  return lines;
+  return wrapFunctionTrace(fn.traceOperation, lines);
 }
 
 function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): string[] {
@@ -490,7 +533,7 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     lines.push(...emitRootStackRestore(fnContext), `  ret i64 ${jsValueUndefined}`);
   }
   lines.push("}", "");
-  return lines;
+  return wrapFunctionTrace(fn.traceOperation, lines);
 }
 
 // Push heap-capable parameters (strings and arbitrary JSValues) onto the GC root
@@ -557,7 +600,7 @@ function emitOperations(operations: readonly JsIrOperation[], context: EmitConte
 
   for (const operation of operations) {
     const emitted = emitOperation(operation, context);
-    lines.push(...emitted);
+    lines.push(traceStartLine(operation), ...emitted, traceEndLine(operation));
   }
 
   return lines;
@@ -4237,12 +4280,12 @@ function emitForOperation(operation: Extract<JsIrOperation, { readonly kind: "fo
   const bodyLabel = `for.body.${loopIndex}`;
   const stepLabel = `for.step.${loopIndex}`;
   const endLabel = `for.end.${loopIndex}`;
-  const initializerLines = emitOperation(operation.initializer, context);
+  const initializerLines = emitOperations([operation.initializer], context);
   const emittedCondition = emitCondition(operation.condition, context);
   context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
   const bodyLines = emitOperations(operation.body, context);
   context.loopLabels.pop();
-  const incrementLines = emitOperation(operation.increment, context);
+  const incrementLines = emitOperations([operation.increment], context);
 
   return [
     ...initializerLines,
@@ -6146,7 +6189,29 @@ function emitNumberPrint(value: string, context: EmitContext): string {
   const index = context.printIndex;
   context.printIndex += 1;
   context.hasNumberPrint = true;
-  return `  %print.${index} = call i32 (ptr, ...) @printf(ptr @.fmt.number, double ${value})`;
+  return `  %print.${index}.nan = fcmp uno double ${value}, ${value}
+  br i1 %print.${index}.nan, label %print.nan.${index}, label %print.check-infinity.${index}
+print.nan.${index}:
+  %print.${index}.nan.result = call i32 @puts(ptr @.fmt.number.nan)
+  br label %print.end.${index}
+print.check-infinity.${index}:
+  %print.${index}.bits = bitcast double ${value} to i64
+  %print.${index}.absolute-bits = and i64 %print.${index}.bits, 9223372036854775807
+  %print.${index}.infinite = icmp eq i64 %print.${index}.absolute-bits, 9218868437227405312
+  br i1 %print.${index}.infinite, label %print.infinity-sign.${index}, label %print.finite.${index}
+print.infinity-sign.${index}:
+  %print.${index}.negative = icmp slt i64 %print.${index}.bits, 0
+  br i1 %print.${index}.negative, label %print.negative-infinity.${index}, label %print.positive-infinity.${index}
+print.negative-infinity.${index}:
+  %print.${index}.negative-infinity.result = call i32 @puts(ptr @.fmt.number.negative-infinity)
+  br label %print.end.${index}
+print.positive-infinity.${index}:
+  %print.${index}.positive-infinity.result = call i32 @puts(ptr @.fmt.number.infinity)
+  br label %print.end.${index}
+print.finite.${index}:
+  %print.${index} = call i32 (ptr, ...) @printf(ptr @.fmt.number, double ${value})
+  br label %print.end.${index}
+print.end.${index}:`;
 }
 
 function emitBooleanValuePrint(value: string, context: EmitContext): string[] {
@@ -6170,12 +6235,86 @@ function emitBooleanValuePrint(value: string, context: EmitContext): string[] {
   ];
 }
 
-export const emitTraceMap = (module: JsIrModule): string =>
-  JSON.stringify(
-    {
-      entry: module.entry,
-      modules: module.modules
-    },
-    undefined,
-    2
-  );
+const traceStartPattern = /^; tscn-trace-start (\S+) /;
+const traceEndPattern = /^; tscn-trace-end (\S+)$/;
+
+function collectInstructionRanges(lines: readonly string[], startIndex: number, endIndex: number): LlvmLineRange[] {
+  const ranges: LlvmLineRange[] = [];
+  let rangeStart: number | undefined;
+  let rangeEnd: number | undefined;
+  for (let index = startIndex + 1; index < endIndex; index += 1) {
+    const line = lines[index];
+    const excluded = line.length === 0 || traceStartPattern.test(line) || traceEndPattern.test(line);
+    if (excluded) {
+      if (rangeStart !== undefined && rangeEnd !== undefined) {
+        ranges.push({ startLine: rangeStart, endLine: rangeEnd });
+        rangeStart = undefined;
+        rangeEnd = undefined;
+      }
+      continue;
+    }
+    const lineNumber = index + 1;
+    rangeStart ??= lineNumber;
+    rangeEnd = lineNumber;
+  }
+  if (rangeStart !== undefined && rangeEnd !== undefined) {
+    ranges.push({ startLine: rangeStart, endLine: rangeEnd });
+  }
+  return ranges;
+}
+
+// eslint-disable-next-line max-statements -- Marker validation and pairing intentionally stay in one linear scan.
+function collectTraceRanges(llvmIr: string, module: JsIrModule): ReadonlyMap<string, readonly LlvmLineRange[]> {
+  const knownIds = new Set<string>();
+  for (const sourceModule of module.modules) {
+    visitJsIrOperations(sourceModule.operations, (operation) => {
+      knownIds.add(traceOperationId(operation));
+    });
+  }
+
+  const lines = llvmIr.split("\n");
+  const openMarkers: { readonly id: string; readonly lineIndex: number }[] = [];
+  const ranges = new Map<string, LlvmLineRange[]>();
+  const closedIds = new Set<string>();
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const start = traceStartPattern.exec(line);
+    if (start !== null) {
+      const [, id] = start;
+      if (!knownIds.has(id)) {
+        throw new Error(`Internal compiler error: trace marker references unknown ID ${id}`);
+      }
+      openMarkers.push({ id, lineIndex });
+      continue;
+    }
+    const end = traceEndPattern.exec(line);
+    if (end === null) {
+      continue;
+    }
+    const [, id] = end;
+    if (!knownIds.has(id)) {
+      throw new Error(`Internal compiler error: trace marker references unknown ID ${id}`);
+    }
+    const open = openMarkers.pop();
+    if (open === undefined) {
+      throw new Error(`Internal compiler error: unmatched trace end marker ${id}`);
+    }
+    if (open.id !== id) {
+      throw new Error(`Internal compiler error: misnested trace markers ${open.id} and ${id}`);
+    }
+    const operationRanges = ranges.get(id) ?? [];
+    operationRanges.push(...collectInstructionRanges(lines, open.lineIndex, lineIndex));
+    ranges.set(id, operationRanges);
+    closedIds.add(id);
+  }
+  const unclosed = openMarkers.at(-1);
+  if (unclosed !== undefined) {
+    throw new Error(`Internal compiler error: unmatched trace start marker ${unclosed.id}`);
+  }
+  for (const id of knownIds) {
+    if (!closedIds.has(id)) {
+      throw new Error(`Internal compiler error: missing trace marker pair ${id}`);
+    }
+  }
+  return ranges;
+}

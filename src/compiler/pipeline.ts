@@ -7,7 +7,7 @@ import { CompilationFailed } from "./errors.js";
 import { loadProgram } from "./frontend.js";
 import { lowerToJsIr } from "./ir.js";
 import { linkerErrorToLinkResult, linkWithClang, linkWithClangxx, type LinkResult } from "./linker.js";
-import { emitInlineCppSource, emitLlvmIr, emitTraceMap } from "./llvm.js";
+import { emitInlineCppSource, emitLlvmModule } from "./llvm.js";
 import type { Toolchain } from "./toolchain.js";
 import type { CompileOptions, CompileResult } from "./types.js";
 
@@ -39,8 +39,9 @@ export const compile = (
       inlineCpp = path.join(options.outDir, "inline-cpp.cpp");
     }
 
-    yield* fs.writeFileString(llvmIr, emitLlvmIr(jsIr.module));
-    yield* fs.writeFileString(traceMap, emitTraceMap(jsIr.module));
+    const emission = emitLlvmModule(jsIr.module);
+    yield* fs.writeFileString(llvmIr, emission.llvmIr);
+    yield* fs.writeFileString(traceMap, `${JSON.stringify(emission.traceMap, undefined, 2)}\n`);
     if (inlineCpp !== undefined) {
       yield* fs.writeFileString(inlineCpp, emitInlineCppSource(jsIr.module.inlineCppBlocks));
     }

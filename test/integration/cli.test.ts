@@ -219,8 +219,15 @@ describe("tscn CLI", () => {
     const result = await expectSuccessfulCompile("hello.ts");
 
     try {
-      const traceMap = JSON.parse(await result.readArtifact("trace-map.json")) as { readonly modules: readonly unknown[] };
+      const traceMap = JSON.parse(await result.readArtifact("trace-map.json")) as {
+        readonly version: number;
+        readonly modules: readonly { readonly loweringMode: string }[];
+        readonly operations: readonly unknown[];
+      };
+      expect(traceMap.version).toBe(1);
       expect(traceMap.modules).toHaveLength(1);
+      expect(traceMap.modules[0].loweringMode).toBe("native");
+      expect(traceMap.operations.length).toBeGreaterThan(0);
     } finally {
       await result.cleanup();
     }

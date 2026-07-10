@@ -3003,6 +3003,9 @@ false:
   }
   if (runtime.used.has("valuePrint")) {
     definitions.push(`@.value.fmt.number = private unnamed_addr constant [4 x i8] c"%g\\0A\\00"
+@.value.number.nan = private unnamed_addr constant [4 x i8] c"NaN\\00"
+@.value.number.infinity = private unnamed_addr constant [9 x i8] c"Infinity\\00"
+@.value.number.negative-infinity = private unnamed_addr constant [10 x i8] c"-Infinity\\00"
 @.value.true = private unnamed_addr constant [5 x i8] c"true\\00"
 @.value.false = private unnamed_addr constant [6 x i8] c"false\\00"
 @.value.undefined = private unnamed_addr constant [10 x i8] c"undefined\\00"
@@ -3059,6 +3062,25 @@ print.string:
   ret void
 print.number:
   %number = bitcast i64 %value to double
+  %number.is.nan = fcmp uno double %number, %number
+  br i1 %number.is.nan, label %print.number.nan, label %check.number.infinity
+check.number.infinity:
+  %number.absolute-bits = and i64 %value, 9223372036854775807
+  %number.is.infinity = icmp eq i64 %number.absolute-bits, 9218868437227405312
+  br i1 %number.is.infinity, label %print.number.infinity, label %print.number.finite
+print.number.nan:
+  call i32 @puts(ptr @.value.number.nan)
+  ret void
+print.number.infinity:
+  %number.is.negative = icmp slt i64 %value, 0
+  br i1 %number.is.negative, label %print.number.negative-infinity, label %print.number.positive-infinity
+print.number.negative-infinity:
+  call i32 @puts(ptr @.value.number.negative-infinity)
+  ret void
+print.number.positive-infinity:
+  call i32 @puts(ptr @.value.number.infinity)
+  ret void
+print.number.finite:
   call i32 (ptr, ...) @printf(ptr @.value.fmt.number, double %number)
   ret void
 }
