@@ -2643,7 +2643,7 @@ entry:
 `);
   }
   if (runtime.used.has("functionObjectNew")) {
-    definitions.push(`define i64 @functionObjectNew(ptr %code, ptr %env) {
+    definitions.push(`define i64 @functionObjectNew(ptr %code, ptr %env, i64 %boundThis) {
 entry:
   %cell = call ptr @gcAlloc(i64 5, i64 48)
   %payload = getelementptr i8, ptr %cell, i64 8
@@ -2651,7 +2651,7 @@ entry:
   %env.slot = getelementptr i8, ptr %payload, i64 8
   store ptr %env, ptr %env.slot
   %this.slot = getelementptr i8, ptr %payload, i64 16
-  store i64 9222246136947933184, ptr %this.slot
+  store i64 %boundThis, ptr %this.slot
   %prototype.slot = getelementptr i8, ptr %payload, i64 24
   store ptr null, ptr %prototype.slot
   %name.slot = getelementptr i8, ptr %payload, i64 32

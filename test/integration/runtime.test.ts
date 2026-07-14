@@ -733,11 +733,21 @@ describe("tscn expanded runtime roadmap", () => {
       ["array-runtime-reduce-callback.ts", "16\n"],
       ["array-runtime-reduce-unsupported-callback.ts", "1\n"],
       ["array-runtime-flat-map-arrow-callback.ts", "4\n1\n11\n2\n12\n"],
-      ["array-runtime-reduce-no-initial.ts", "6\n"]
+      ["array-runtime-reduce-no-initial.ts", "6\n"],
+      ["array-runtime-map-thisarg.ts", "2\n3\n6\n"],
+      ["array-runtime-reduce-initial-not-thisarg.ts", "true\ntrue\n13\n"],
+      ["array-runtime-reduce-right-initial-not-thisarg.ts", "true\ntrue\n13\n"],
+      ["array-runtime-callback-thisarg-methods.ts", "6\n2\n2\n2\n2\n11\n12\n13\n6\n21\n23\n"],
+      ["array-runtime-arrow-thisarg-evaluation.ts", "receiver\n2\n"],
+      ["array-runtime-thisarg-strict-values.ts", "true\ntrue\ntrue\n"],
+      ["array-runtime-map-thisarg-in-function.ts", "8\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
     await expectUnsupportedDiagnostic("array-runtime-map-thisarg-unsupported.ts");
+    await expectUnsupportedDiagnostic("array-runtime-for-each-thisarg-unsupported.ts");
+    await expectUnsupportedDiagnostic("array-runtime-property-thisarg-unsupported.ts");
+    await expectUnsupportedDiagnostic("array-runtime-arrow-lexical-this-unsupported.ts");
   });
 
   test("supports package BP minimal Date builtin", async () => {

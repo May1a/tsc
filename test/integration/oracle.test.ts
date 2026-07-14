@@ -18,6 +18,13 @@ const oracleFixtures = [
   "number-coercion-primitives.ts",
   "json-parse-primitives.ts",
   "destructure-nested.ts",
+  "array-runtime-map-thisarg.ts",
+  "array-runtime-callback-thisarg-methods.ts",
+  "array-runtime-arrow-thisarg-evaluation.ts",
+  "array-runtime-reduce-initial-not-thisarg.ts",
+  "array-runtime-reduce-right-initial-not-thisarg.ts",
+  "array-runtime-thisarg-strict-values.ts",
+  "array-runtime-map-thisarg-in-function.ts",
   "class-basic-method.ts",
   "gc-retain-live.ts",
   "throw-string-top-level.ts"

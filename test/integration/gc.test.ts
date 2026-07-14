@@ -293,4 +293,36 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
       await result.cleanup();
     }
   });
+
+  test("keeps an array callback receiver alive across collection", async () => {
+    const result = await expectSuccessfulCompile("gc-function-thisarg.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      const callback = /define i64 @__tscn_fnobj_[^(]+\([^)]*i64 %this\.value\) \{[\s\S]*?\n\}/.exec(llvmIr)?.[0] ?? "";
+      expect(callback, "expected an emitted function-object callback").not.toBe("");
+      expect(callback).toContain("call void @gcRootPush(i64 %this.value)");
+      expect(llvmIr).toContain("call void @gcMarkValue(i64 %fn.this)");
+      expect(llvmIr).toMatch(/call i64 @functionObjectNew\([^\n]+\)\n\s*call void @gcRootRestore\([^\n]+\)\n\s*call void @gcRootPush\(/);
+      await expectLlvmAsVerificationIfAvailable(result);
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates but does not bind thisArg for an arrow callback", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-arrow-thisarg-evaluation.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      const receiverCall = llvmIr.indexOf("call i64 @receiver(");
+      const functionObjectCall = llvmIr.indexOf("call i64 @functionObjectNew(");
+      expect(receiverCall).toBeGreaterThanOrEqual(0);
+      expect(functionObjectCall).toBeGreaterThan(receiverCall);
+      expect(llvmIr).toMatch(/call i64 @functionObjectNew\(ptr @[^,]+, ptr null, i64 9222246136947933184\)/);
+    } finally {
+      await result.cleanup();
+    }
+  });
 });

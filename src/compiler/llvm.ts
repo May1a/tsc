@@ -108,6 +108,7 @@ type FunctionDef = {
   readonly outerBindings: Map<string, JsIrBindingValue>;
   readonly traceOperation: JsIrOperation;
   readonly callingConvention?: "direct" | "functionObject";
+  readonly usesDynamicThis?: boolean;
   returnType: LlvmReturnType;
 };
 
@@ -230,6 +231,11 @@ function emitLlvmIr(module: JsIrModule): string {
     for (const op of sourceModule.operations) {
       classifyAndProcessOperation(op, context, functionDefs, mainOps);
     }
+    visitJsIrOperations(sourceModule.operations, (operation, parent) => {
+      if (parent !== undefined && operation.kind === "runtimeArrayMapFunctionObject") {
+        functionDefs.push(functionObjectDefinition(operation));
+      }
+    });
   }
 
   const fnLines = functionDefs
@@ -324,15 +330,7 @@ function classifyAndProcessOperation(
   } else if (operation.kind === "letBoolean") {
     context.bindings.set(operation.name, { kind: "booleanVariable", name: operation.name });
   } else if (operation.kind === "runtimeArrayMapFunctionObject") {
-    functionDefs.push({
-      name: operation.callbackName,
-      parameters: operation.callbackParameters,
-      body: operation.callbackBody,
-      outerBindings: new Map(),
-      traceOperation: operation,
-      callingConvention: "functionObject",
-      returnType: "i64"
-    });
+    functionDefs.push(functionObjectDefinition(operation));
   } else if (classifyAggregateOperation(operation, context)) {
     // Binding recorded; the operation still belongs in the emitted body below.
   } else if (operation.kind === "function") {
@@ -373,6 +371,21 @@ function classifyAndProcessOperation(
   }
 
   mainOps.push(operation);
+}
+
+function functionObjectDefinition(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>
+): FunctionDef {
+  return {
+    name: operation.callbackName,
+    parameters: operation.callbackParameters,
+    body: operation.callbackBody,
+    outerBindings: new Map(),
+    traceOperation: operation,
+    callingConvention: "functionObject",
+    usesDynamicThis: operation.callbackKind === "ordinary",
+    returnType: "i64"
+  };
 }
 
 function classifyAggregateOperation(operation: JsIrOperation, context: EmitContext): boolean {
@@ -516,6 +529,10 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     gcFrameName: "%gc.frame"
   };
   const bodyLines = [`  ${fnContext.gcFrameName} = call i64 @gcRootSave()`];
+  if (fn.usesDynamicThis === true) {
+    bodyLines.push("  call void @gcRootPush(i64 %this.value)");
+    fnContext.bindings.set("this", { kind: "valueVariable", name: "%this.value" });
+  }
   for (let i = 0; i < fn.parameters.length; i += 1) {
     const parameter = fn.parameters[i];
     const slot = `%fnobj.arg.${i}.slot`;
@@ -1595,9 +1612,12 @@ function emitRuntimeArrayMapFunctionObjectOperation(
   const element = `%arr.map.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
   const callbackReturn = emitFunctionObjectCallbackReturn(functionValue, callbackArgs.values, index);
+  const thisArg = emitFunctionObjectThisArg(operation, context, `%arr.map.this.frame.${index}`);
   return [
     `  ${pointerName} = alloca ptr`,
-    `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr null)`,
+    ...thisArg.setup,
+    `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr null, i64 ${thisArg.value})`,
+    ...thisArg.cleanup,
     emitRootStackPush(functionValue, context),
     ...source.lines,
     `  ${length} = call i64 @arrayLength(ptr ${source.value})`,
@@ -1626,7 +1646,30 @@ function emitFunctionObjectValue(operation: Extract<JsIrOperation, { readonly ki
   useRuntimeHelper(context.runtime, "functionObjectNew");
   useRuntimeHelper(context.runtime, "jsCall");
   const functionValue = `%arr.fnobj.${index}`;
-  return { lines: [`  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr null)`, emitRootStackPush(functionValue, context)], value: functionValue };
+  const thisArg = emitFunctionObjectThisArg(operation, context, `%arr.fnobj.this.frame.${index}`);
+  const newCall = `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr null, i64 ${thisArg.value})`;
+  const push = emitRootStackPush(functionValue, context);
+  return { lines: [...thisArg.setup, newCall, ...thisArg.cleanup, push], value: functionValue };
+}
+
+function emitFunctionObjectThisArg(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>,
+  context: EmitContext,
+  frameName: string
+): { readonly setup: readonly string[]; readonly value: string; readonly cleanup: readonly string[] } {
+  if (operation.thisArg === undefined) {
+    return { setup: [], value: jsValueUndefined, cleanup: [] };
+  }
+  const { lines, value: emittedValue } = emitValueExpression(operation.thisArg, context);
+  let value = jsValueUndefined;
+  if (operation.callbackKind === "ordinary") {
+    value = emittedValue;
+  }
+  return {
+    setup: [`  ${frameName} = call i64 @gcRootSave()`, ...lines, `  call void @gcRootPush(i64 ${emittedValue})`],
+    value,
+    cleanup: [`  call void @gcRootRestore(i64 ${frameName})`]
+  };
 }
 
 function emitRuntimeArrayFlatMapFunctionObjectOperation(operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>, context: EmitContext): string[] {

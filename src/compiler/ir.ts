@@ -982,8 +982,10 @@ export type JsIrOperationNode =
       readonly callbackParameters: readonly JsIrFunctionParameter[];
       readonly callbackReturnKind: JsIrValueKind | "void";
       readonly callbackBody: readonly JsIrOperation[];
+      readonly callbackKind: "arrow" | "ordinary";
       readonly initialValue?: JsIrValueExpression;
       readonly direction?: "left" | "right";
+      readonly thisArg?: JsIrValueExpression;
     }
   | {
       readonly kind: "runtimeArrayFlatMapCallback";
@@ -3238,6 +3240,9 @@ function unsupportedB683NativeFeatureNode(
   }
   if (ts.isPrivateIdentifier(node)) {
     return { node, message: "Private class fields are not supported yet" };
+  }
+  if (ts.isArrowFunction(node) && containsLexicalThis(node.body)) {
+    return { node, message: "Lexical this capture in arrow callbacks is not supported yet" };
   }
   if ((ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) && ts.isComputedPropertyName(node.name)) {
     return { node, message: "Computed class members are not supported yet" };
@@ -6183,9 +6188,9 @@ function lowerRuntimeArrayCallbackBinding(
     return undefined;
   }
   const [callback] = initializer.arguments;
-  const arrowCallback = lowerInlineArrayCallbackFunctionObject(name, arrayName, callback, bindings, arrayCallbackArgumentCount, method);
-  if (arrowCallback !== undefined) {
-    return arrowCallback;
+  const inlineCallback = lowerInlineArrayCallbackFunctionObject(name, arrayName, callback, initializer.arguments[1], bindings, arrayCallbackArgumentCount, method);
+  if (inlineCallback !== undefined) {
+    return inlineCallback;
   }
   if (initializer.arguments.length !== 1) {
     return undefined;
@@ -6227,16 +6232,16 @@ function lowerRuntimeArrayReduceCallbackBinding(
   if (direction === "right") {
     method = "reduceRight";
   }
-  const arrowCallback = lowerInlineArrayCallbackFunctionObject(name, arrayName, callback, bindings, reduceCallbackArgumentCount, method);
-  if (arrowCallback !== undefined) {
+  const inlineCallback = lowerInlineArrayCallbackFunctionObject(name, arrayName, callback, undefined, bindings, reduceCallbackArgumentCount, method);
+  if (inlineCallback !== undefined) {
     if (args.length === 1) {
-      return arrowCallback;
+      return inlineCallback;
     }
     const initialValue = lowerValueExpression(args[1], bindings);
     if (initialValue === undefined) {
       return undefined;
     }
-    return { ...arrowCallback, initialValue, direction };
+    return { ...inlineCallback, initialValue, direction };
   }
   if (!ts.isIdentifier(callback)) {
     return undefined;
@@ -6260,13 +6265,16 @@ function lowerRuntimeArrayForEachCallbackStatement(
   args: ts.NodeArray<ts.Expression>,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if (args.length !== 1) {
+  if (args.length !== 1 && args.length !== 2) {
     return undefined;
   }
   const [callback] = args;
-  const arrowCallback = lowerInlineArrayCallbackFunctionObject("__tscn_each", arrayName, callback, bindings, arrayCallbackArgumentCount, "forEach");
-  if (arrowCallback !== undefined) {
-    return arrowCallback;
+  const inlineCallback = lowerInlineArrayCallbackFunctionObject("__tscn_each", arrayName, callback, args[1], bindings, arrayCallbackArgumentCount, "forEach");
+  if (inlineCallback !== undefined) {
+    return inlineCallback;
+  }
+  if (args.length !== 1) {
+    return undefined;
   }
   if (!ts.isIdentifier(callback)) {
     return undefined;
@@ -6293,27 +6301,50 @@ function lowerArrayCallbackBinding(
   return callbackBinding;
 }
 
+// eslint-disable-next-line complexity, max-statements -- Callback lowering validates syntax, parameters, receiver semantics, and the body as one atomic operation.
 function lowerInlineArrayCallbackFunctionObject(
   name: string,
   arrayName: string,
   callback: ts.Expression,
+  thisArgExpression: ts.Expression | undefined,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   maxParameters: number,
   method: "map" | "flatMap" | "filter" | "find" | "findIndex" | "reduce" | "reduceRight" | "forEach"
 ): Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }> | undefined {
-  if (!ts.isArrowFunction(callback) || callback.parameters.length > maxParameters) {
+  if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
+    return undefined;
+  }
+  if ((ts.isFunctionExpression(callback) && callback.asteriskToken !== undefined) || callback.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
+    return undefined;
+  }
+  let callbackKind: "arrow" | "ordinary" = "ordinary";
+  if (ts.isArrowFunction(callback)) {
+    callbackKind = "arrow";
+  }
+  const declaredParameters = [...callback.parameters];
+  const firstParameter = declaredParameters.at(0);
+  if (callbackKind === "ordinary" && firstParameter !== undefined && ts.isIdentifier(firstParameter.name) && firstParameter.name.text === CLASS_THIS_NAME) {
+    declaredParameters.shift();
+  }
+  if (callbackKind === "arrow" && containsLexicalThis(callback.body)) {
+    return undefined;
+  }
+  if (declaredParameters.length > maxParameters) {
     return undefined;
   }
   const parameters: JsIrFunctionParameter[] = [];
   const callbackBindings = new Map(bindings);
-  for (const parameter of callback.parameters) {
-    if (!ts.isIdentifier(parameter.name)) {
+  if (callbackKind === "ordinary") {
+    callbackBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
+  }
+  for (const parameter of declaredParameters) {
+    if (!ts.isIdentifier(parameter.name) || parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined) {
       return undefined;
     }
     parameters.push({ name: parameter.name.text, valueKind: "value" });
     callbackBindings.set(parameter.name.text, { kind: "valueVariable", name: parameter.name.text });
   }
-  const body = lowerArrowFunctionBody(callback.body, callbackBindings);
+  const body = lowerInlineFunctionBody(callback.body, callbackBindings);
   if (body === undefined) {
     return undefined;
   }
@@ -6321,16 +6352,39 @@ function lowerInlineArrayCallbackFunctionObject(
   if (returnKind === "void" && method !== "forEach") {
     return undefined;
   }
+  let thisArg: JsIrValueExpression | undefined;
+  if (thisArgExpression !== undefined) {
+    thisArg = lowerValueExpression(thisArgExpression, bindings);
+    if (thisArg === undefined) {
+      return undefined;
+    }
+  }
   const callbackName = `__tscn_fnobj_${name}_${nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   nextFunctionObjectId += 1;
   let direction: "left" | "right" = "left";
   if (method === "reduceRight") {
     direction = "right";
   }
-  return { kind: "runtimeArrayMapFunctionObject", method, name, arrayName, callbackName, callbackParameters: parameters, callbackReturnKind: returnKind, callbackBody: body, direction };
+  return { kind: "runtimeArrayMapFunctionObject", method, name, arrayName, callbackName, callbackParameters: parameters, callbackReturnKind: returnKind, callbackBody: body, callbackKind, direction, thisArg };
 }
 
-function lowerArrowFunctionBody(
+function containsLexicalThis(node: ts.Node): boolean {
+  let found = false;
+  const visit = (child: ts.Node): void => {
+    if (found || child.kind === ts.SyntaxKind.ThisKeyword) {
+      found = true;
+      return;
+    }
+    if (child !== node && ts.isFunctionLike(child) && !ts.isArrowFunction(child)) {
+      return;
+    }
+    ts.forEachChild(child, visit);
+  };
+  ts.forEachChild(node, visit);
+  return found;
+}
+
+function lowerInlineFunctionBody(
   body: ts.ConciseBody,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly JsIrOperation[] | undefined {
@@ -8157,6 +8211,10 @@ function lowerValueExpression(
     return lowerValueExpression(unwrappedExpression, bindings);
   }
 
+  if (expression.kind === ts.SyntaxKind.ThisKeyword && bindings.get(CLASS_THIS_NAME)?.kind === "valueVariable") {
+    return { kind: "variable", name: CLASS_THIS_NAME };
+  }
+
   const inlineCppValue = lowerInlineCppValueExpression(expression);
   if (inlineCppValue !== undefined) {
     return inlineCppValue;
@@ -8252,7 +8310,7 @@ function lowerAggregateValueExpression(
     }
   }
 
-  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
+  if (ts.isPropertyAccessExpression(expression)) {
     return lowerAggregatePropertyValueAccess(expression, bindings);
   }
 
@@ -8291,6 +8349,12 @@ function lowerAggregatePropertyValueAccess(
   expression: ts.PropertyAccessExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
+  if (expression.expression.kind === ts.SyntaxKind.ThisKeyword) {
+    const value = lowerValueExpression(expression.expression, bindings);
+    if (value !== undefined) {
+      return { kind: "valueObjectDynamicAccess", value, key: { kind: "literal", value: expression.name.text } };
+    }
+  }
   if (!ts.isIdentifier(expression.expression)) {
     return undefined;
   }
