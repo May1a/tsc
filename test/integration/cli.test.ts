@@ -489,18 +489,13 @@ describe("tscn CLI", () => {
     }
   });
 
-  test("rejects unsupported object runtime boundaries", async () => {
-    const fixtures = ["object-method.ts"];
-
-    await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
-  });
-
-  test("explains unsupported object runtime boundaries precisely", async () => {
-    const expectations = new Map([
-      ["object-method.ts", "Object methods are not supported"]
-    ]);
-
-    await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
+  test("supports object methods as first-class function values", async () => {
+    const result = await expectSuccessfulCompile("object-method.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
   });
 
   test("explains unsupported new runtime built-in boundaries precisely", async () => {

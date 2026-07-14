@@ -74,6 +74,7 @@ export type JsIrSourceModule = {
   readonly statementCount: number;
   readonly loweringMode: JsIrLoweringMode;
   readonly operations: readonly JsIrOperation[];
+  readonly functionObjects: readonly JsIrFunctionObjectDefinition[];
 };
 
 export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide" | "remainder" | "bitAnd" | "bitOr" | "bitXor" | "shiftLeft" | "shiftRight" | "shiftRightUnsigned" | "power";
@@ -86,6 +87,20 @@ export type JsIrFunctionParameter = {
   readonly valueKind: JsIrValueKind;
   readonly defaultValue?: JsIrNumberExpression;
   readonly isRest?: boolean;
+};
+
+export type JsIrFunctionObjectDefinition = {
+  readonly codeName: string;
+  readonly parameters: readonly JsIrFunctionParameter[];
+  readonly functionKind: "arrow" | "ordinary";
+  readonly returnKind: JsIrValueKind | "void";
+  readonly body?: readonly JsIrOperation[];
+  readonly directTarget?: string;
+  readonly captures?: readonly {
+    readonly name: string;
+    readonly valueKind: JsIrValueKind;
+    readonly value: JsIrValueExpression;
+  }[];
 };
 
 export type JsIrCallArgument =
@@ -129,6 +144,16 @@ export type JsIrValueExpression =
       readonly kind: "call";
       readonly name: string;
       readonly arguments: readonly JsIrCallArgument[];
+    }
+  | {
+      readonly kind: "callValue";
+      readonly callee: JsIrValueExpression;
+      readonly arguments: readonly JsIrCallArgument[];
+      readonly thisValue?: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "functionObject";
+      readonly definition: JsIrFunctionObjectDefinition;
     }
   | {
       readonly kind: "inlineCppValue";
@@ -545,6 +570,7 @@ export type JsIrBindingValue =
   | {
       readonly kind: "valueVariable";
       readonly name: string;
+      readonly valueType?: "function";
     }
   | {
       readonly kind: "number";
@@ -606,6 +632,7 @@ export type JsIrBindingValue =
       readonly kind: "function";
       readonly parameters: readonly JsIrFunctionParameter[];
       readonly returnKind: JsIrValueKind | "void";
+      readonly body: readonly JsIrOperation[];
     };
 
 export type JsIrCondition =
@@ -983,6 +1010,7 @@ export type JsIrOperationNode =
       readonly callbackReturnKind: JsIrValueKind | "void";
       readonly callbackBody: readonly JsIrOperation[];
       readonly callbackKind: "arrow" | "ordinary";
+      readonly captures?: JsIrFunctionObjectDefinition["captures"];
       readonly initialValue?: JsIrValueExpression;
       readonly direction?: "left" | "right";
       readonly thisArg?: JsIrValueExpression;
@@ -1358,6 +1386,12 @@ export type JsIrOperationNode =
       readonly kind: "call";
       readonly name: string;
       readonly arguments: readonly JsIrCallArgument[];
+    }
+  | {
+      readonly kind: "callValue";
+      readonly callee: JsIrValueExpression;
+      readonly arguments: readonly JsIrCallArgument[];
+      readonly thisValue?: JsIrValueExpression;
     }
   | {
       readonly kind: "inlineCpp";
@@ -3387,7 +3421,11 @@ function updateConstBindings(
     bindings.set(operation.name, { kind: "value", value: operation.value });
   }
   if (operation.kind === "letValue") {
-    bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
+    let valueType: "function" | undefined;
+    if (operation.value.kind === "functionObject") {
+      valueType = "function";
+    }
+    bindings.set(operation.name, { kind: "valueVariable", name: operation.name, valueType });
   }
   if (operation.kind === "constClosure") {
     bindings.set(operation.name, { kind: "closure", value: operation.value });
@@ -3422,7 +3460,8 @@ function updateBindings(
     bindings.set(operation.name, {
       kind: "function",
       parameters: operation.parameters,
-      returnKind: functionReturnKind(operation.body)
+      returnKind: functionReturnKind(operation.body),
+      body: operation.body
     });
     const returnClosure = operation.body.find((bodyOperation) => bodyOperation.kind === "returnClosure");
     if (returnClosure?.kind === "returnClosure") {
@@ -4605,12 +4644,21 @@ function lowerCallStatement(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if (!ts.isIdentifier(expression.expression)) {
+  if (ts.isIdentifier(expression.expression) && expression.expression.text === "print") {
     return undefined;
   }
 
-  if (expression.expression.text === "print") {
-    return undefined;
+  let identifierBinding: JsIrBindingValue | undefined;
+  if (ts.isIdentifier(expression.expression)) {
+    identifierBinding = bindings.get(expression.expression.text);
+  }
+  if (!ts.isIdentifier(expression.expression) || identifierBinding?.kind === "value" || identifierBinding?.kind === "valueVariable") {
+    const callee = lowerValueExpression(expression.expression, bindings);
+    const args = lowerValueCallArguments(expression.arguments, bindings);
+    if (callee === undefined || args === undefined) {
+      return undefined;
+    }
+    return { kind: "callValue", callee, arguments: args, thisValue: lowerCallThisValue(expression.expression, bindings) };
   }
 
   const args = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
@@ -4940,6 +4988,38 @@ function lowerRuntimeDataDescriptorMap(
   return descriptors;
 }
 
+// eslint-disable-next-line max-statements -- Method value lowering keeps parameter, this, and body setup together.
+function lowerObjectMethodFunctionValue(
+  method: ts.MethodDeclaration,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (method.asteriskToken !== undefined || method.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true || method.body === undefined) {
+    return undefined;
+  }
+  const parameters: JsIrFunctionParameter[] = [];
+  const methodBindings = new Map(bindings);
+  methodBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
+  for (const parameter of method.parameters) {
+    if (!ts.isIdentifier(parameter.name) || parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined) {
+      return undefined;
+    }
+    const valueKind = parameterValueKind(parameter);
+    parameters.push({ name: parameter.name.text, valueKind });
+    bindFunctionParameter(parameter.name.text, valueKind, false, methodBindings);
+  }
+  const body = lowerBlockStatements(method.body, methodBindings);
+  if (body === undefined) {
+    return undefined;
+  }
+  let displayName = "method";
+  if (ts.isIdentifier(method.name)) {
+    displayName = method.name.text;
+  }
+  const codeName = `__tscn_fnobj_${displayName}_${nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
+  nextFunctionObjectId += 1;
+  return { kind: "functionObject", definition: { codeName, parameters, functionKind: "ordinary", returnKind: functionReturnKind(body), body } };
+}
+
 function lowerRuntimeDataDescriptorMapValue(
   value: JsIrRuntimeObjectValue,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -5155,82 +5235,133 @@ function lowerReturnStatement(
   };
 }
 
+// eslint-disable-next-line complexity, max-statements -- Closure lowering validates syntax, captures, parameters, and body atomically.
 function lowerReturnedFunctionExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if (!ts.isFunctionExpression(expression) || !expression.name) {
+  if (!ts.isFunctionExpression(expression) && !ts.isArrowFunction(expression)) {
     return undefined;
   }
 
-  const parameters: string[] = [];
+  const parameters: JsIrFunctionParameter[] = [];
   const nestedBindings = new Map(bindings);
+  const localNames = new Set<string>();
   for (const param of expression.parameters) {
     if (!ts.isIdentifier(param.name)) {
       return undefined;
     }
-    parameters.push(param.name.text);
-    nestedBindings.set(param.name.text, {
-      kind: "number",
-      value: { kind: "parameter", name: param.name.text }
-    });
+    const valueKind = parameterValueKind(param);
+    parameters.push({ name: param.name.text, valueKind });
+    localNames.add(param.name.text);
+    bindFunctionParameter(param.name.text, valueKind, false, nestedBindings);
   }
 
-  const body = lowerBlockStatements(expression.body, nestedBindings);
+  const captureNames = collectFunctionExpressionCaptureNames(expression, localNames, bindings);
+  for (const name of captureNames) {
+    const binding = bindings.get(name);
+    if (binding?.kind === "number") {
+      nestedBindings.set(name, { kind: "number", value: { kind: "parameter", name } });
+    } else if (binding?.kind === "string" || binding?.kind === "stringExpression" || binding?.kind === "stringVariable") {
+      nestedBindings.set(name, { kind: "stringVariable", name });
+    } else {
+      nestedBindings.set(name, { kind: "valueVariable", name });
+    }
+  }
+
+  const body = lowerInlineFunctionBody(expression.body, nestedBindings);
   if (body === undefined) {
     return undefined;
   }
-
+  const captures: { name: string; valueKind: JsIrValueKind; value: JsIrValueExpression }[] = [];
+  for (const name of captureNames) {
+    const binding = bindings.get(name);
+    const capture = lowerCapturedBindingValue(binding);
+    if (capture === undefined) {
+      return undefined;
+    }
+    captures.push({ name, ...capture });
+  }
+  let displayName = "arrow";
+  if (ts.isFunctionExpression(expression)) {
+    displayName = expression.name?.text ?? "anonymous";
+  }
+  const codeName = `__tscn_fnobj_${displayName}_${nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
+  nextFunctionObjectId += 1;
   return {
-    kind: "returnClosure",
-    functionName: expression.name.text,
-    parameters,
-    captures: collectCapturedParameterNames(body, new Set(parameters), bindings),
-    body
+    kind: "returnValue",
+    expression: {
+      kind: "functionObject",
+      definition: {
+        codeName,
+        parameters,
+        functionKind: functionExpressionKind(expression),
+        returnKind: functionReturnKind(body),
+        body,
+        captures
+      }
+    }
   };
 }
 
-function collectCapturedParameterNames(
-  operations: readonly JsIrOperation[],
-  localParameters: ReadonlySet<string>,
-  outerBindings: ReadonlyMap<string, JsIrBindingValue>
+function functionExpressionKind(expression: ts.ArrowFunction | ts.FunctionExpression): "arrow" | "ordinary" {
+  if (ts.isArrowFunction(expression)) {
+    return "arrow";
+  }
+  return "ordinary";
+}
+
+function collectFunctionExpressionCaptureNames(
+  expression: ts.ArrowFunction | ts.FunctionExpression,
+  localNames: ReadonlySet<string>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly string[] {
   const captures: string[] = [];
   const seen = new Set<string>();
-  const visitNumber = (expression: JsIrNumberExpression): void => {
-    if (expression.kind === "parameter" && !localParameters.has(expression.name) && outerBindings.has(expression.name) && !seen.has(expression.name)) {
-      seen.add(expression.name);
-      captures.push(expression.name);
+  const visit = (node: ts.Node): void => {
+    if (node !== expression && ts.isFunctionLike(node) && !ts.isArrowFunction(node)) {
       return;
     }
-    if (expression.kind === "unary") {
-      visitNumber(expression.value);
-      return;
-    }
-    if (expression.kind === "binary") {
-      visitNumber(expression.left);
-      visitNumber(expression.right);
-      return;
-    }
-    if (expression.kind === "call") {
-      for (const arg of expression.arguments) {
-        visitNumber(arg);
+    if (ts.isIdentifier(node) && bindings.has(node.text) && !localNames.has(node.text) && !seen.has(node.text)) {
+      if (!(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)) {
+        seen.add(node.text);
+        captures.push(node.text);
       }
-      return;
     }
-    if (expression.kind === "ternary") {
-      visitNumber(expression.consequent);
-      visitNumber(expression.alternate);
-    }
+    ts.forEachChild(node, visit);
   };
-
-  for (const operation of operations) {
-    if (operation.kind === "returnNumber") {
-      visitNumber(operation.expression);
-    }
-  }
-
+  ts.forEachChild(expression.body, visit);
   return captures;
+}
+
+function lowerCapturedBindingValue(
+  binding: JsIrBindingValue | undefined
+): { readonly valueKind: JsIrValueKind; readonly value: JsIrValueExpression } | undefined {
+  if (binding?.kind === "number") {
+    return { valueKind: "number", value: { kind: "number", value: binding.value } };
+  }
+  if (binding?.kind === "string") {
+    return { valueKind: "string", value: { kind: "string", value: { kind: "literal", value: binding.value } } };
+  }
+  if (binding?.kind === "stringExpression") {
+    return { valueKind: "string", value: { kind: "string", value: binding.value } };
+  }
+  if (binding?.kind === "stringVariable") {
+    return { valueKind: "string", value: { kind: "string", value: { kind: "variable", name: binding.name } } };
+  }
+  if (binding?.kind === "value") {
+    return { valueKind: "value", value: binding.value };
+  }
+  if (binding?.kind === "valueVariable") {
+    return { valueKind: "value", value: { kind: "variable", name: binding.name } };
+  }
+  if (binding?.kind === "runtimeObject") {
+    return { valueKind: "value", value: { kind: "objectRef", name: binding.name } };
+  }
+  if (binding?.kind === "runtimeArray") {
+    return { valueKind: "value", value: { kind: "arrayRef", name: binding.name } };
+  }
+  return undefined;
 }
 
 function lowerVariableBinding(
@@ -5744,7 +5875,7 @@ function lowerConstVariableBinding(
   if (value !== undefined) {
     // A class instance must be materialized once into a stable slot so later
     // references share object identity instead of re-running the constructor.
-    if (value.kind === "newInstance") {
+    if (value.kind === "newInstance" || value.kind === "functionObject" || value.kind === "call" || value.kind === "callValue") {
       return { kind: "letValue", name, value };
     }
     return {
@@ -6312,7 +6443,7 @@ function lowerInlineArrayCallbackFunctionObject(
   method: "map" | "flatMap" | "filter" | "find" | "findIndex" | "reduce" | "reduceRight" | "forEach"
 ): Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }> | undefined {
   if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
-    return undefined;
+    return lowerArrayCallbackValueWrapper(name, arrayName, callback, thisArgExpression, bindings, maxParameters, method);
   }
   if ((ts.isFunctionExpression(callback) && callback.asteriskToken !== undefined) || callback.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
     return undefined;
@@ -6326,8 +6457,13 @@ function lowerInlineArrayCallbackFunctionObject(
   if (callbackKind === "ordinary" && firstParameter !== undefined && ts.isIdentifier(firstParameter.name) && firstParameter.name.text === CLASS_THIS_NAME) {
     declaredParameters.shift();
   }
+  const captures: { name: string; valueKind: JsIrValueKind; value: JsIrValueExpression }[] = [];
   if (callbackKind === "arrow" && containsLexicalThis(callback.body)) {
-    return undefined;
+    const thisBinding = bindings.get(CLASS_THIS_NAME);
+    if (thisBinding?.kind !== "valueVariable") {
+      return undefined;
+    }
+    captures.push({ name: CLASS_THIS_NAME, valueKind: "value", value: { kind: "variable", name: thisBinding.name } });
   }
   if (declaredParameters.length > maxParameters) {
     return undefined;
@@ -6365,7 +6501,69 @@ function lowerInlineArrayCallbackFunctionObject(
   if (method === "reduceRight") {
     direction = "right";
   }
-  return { kind: "runtimeArrayMapFunctionObject", method, name, arrayName, callbackName, callbackParameters: parameters, callbackReturnKind: returnKind, callbackBody: body, callbackKind, direction, thisArg };
+  return { kind: "runtimeArrayMapFunctionObject", method, name, arrayName, callbackName, callbackParameters: parameters, callbackReturnKind: returnKind, callbackBody: body, callbackKind, direction, thisArg, captures };
+}
+
+function lowerArrayCallbackValueWrapper(
+  name: string,
+  arrayName: string,
+  callback: ts.Expression,
+  thisArgExpression: ts.Expression | undefined,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  maxParameters: number,
+  method: "map" | "flatMap" | "filter" | "find" | "findIndex" | "reduce" | "reduceRight" | "forEach"
+): Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }> | undefined {
+  const callbackValue = lowerValueExpression(callback, bindings);
+  if (callbackValue === undefined) {
+    return undefined;
+  }
+  let thisValue: JsIrValueExpression = { kind: "undefined" };
+  if (thisArgExpression !== undefined) {
+    const loweredThis = lowerValueExpression(thisArgExpression, bindings);
+    if (loweredThis === undefined) {
+      return undefined;
+    }
+    thisValue = loweredThis;
+  }
+  const id = nextFunctionObjectId;
+  nextFunctionObjectId += 1;
+  const callbackName = `__tscn_fnobj_${name}_${id}`.replace(/[^A-Za-z0-9_]/g, "_");
+  const callbackCaptureName = `__callback_${id}`;
+  const thisCaptureName = `__callback_this_${id}`;
+  const parameters = Array.from({ length: maxParameters }, (_, index) => ({ name: `__callback_arg_${id}_${index}`, valueKind: "value" as const }));
+  const callArguments = parameters.map((parameter) => ({ valueKind: "value" as const, value: { kind: "variable" as const, name: parameter.name } }));
+  const body: JsIrOperation[] = [{
+    kind: "returnValue",
+    expression: {
+      kind: "callValue",
+      callee: { kind: "variable", name: callbackCaptureName },
+      arguments: callArguments,
+      thisValue: { kind: "variable", name: thisCaptureName }
+    }
+  }];
+  return {
+    kind: "runtimeArrayMapFunctionObject",
+    method,
+    name,
+    arrayName,
+    callbackName,
+    callbackParameters: parameters,
+    callbackReturnKind: "value",
+    callbackBody: body,
+    callbackKind: "arrow",
+    direction: arrayCallbackDirection(method),
+    captures: [
+      { name: callbackCaptureName, valueKind: "value", value: callbackValue },
+      { name: thisCaptureName, valueKind: "value", value: thisValue }
+    ]
+  };
+}
+
+function arrayCallbackDirection(method: "map" | "flatMap" | "filter" | "find" | "findIndex" | "reduce" | "reduceRight" | "forEach"): "left" | "right" {
+  if (method === "reduceRight") {
+    return "right";
+  }
+  return "left";
 }
 
 function containsLexicalThis(node: ts.Node): boolean {
@@ -7383,6 +7581,9 @@ function lowerTypeOfResult(expression: ts.Expression, bindings: ReadonlyMap<stri
     if (binding?.kind === "function" || binding?.kind === "closure" || binding?.kind === "closureFactory") {
       return "function";
     }
+    if (binding?.kind === "valueVariable" && binding.valueType === "function") {
+      return "function";
+    }
     if (binding?.kind === "string" || binding?.kind === "stringExpression" || binding?.kind === "stringVariable") return "string";
     if (binding?.kind === "number") return "number";
     if (binding?.kind === "boolean" || binding?.kind === "booleanExpression" || binding?.kind === "booleanVariable") return "boolean";
@@ -8250,6 +8451,10 @@ function lowerValueExpression(
     return { kind: "boolean", value: booleanValue };
   }
 
+  if (ts.isCallExpression(expression) && !(ts.isIdentifier(expression.expression) && expression.expression.text === "print")) {
+    return lowerValueCallExpression(expression, bindings);
+  }
+
   return undefined;
 }
 
@@ -8474,6 +8679,11 @@ function lowerDirectValueExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
+  const functionValue = lowerFunctionObjectValue(expression, bindings);
+  if (functionValue !== undefined) {
+    return functionValue;
+  }
+
   if (ts.isBinaryExpression(expression)) {
     if (expression.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       const left = lowerValueExpression(expression.left, bindings);
@@ -8634,10 +8844,74 @@ function lowerDirectValueExpression(
     if (collectionMethod !== undefined) {
       return collectionMethod;
     }
-    return lowerStringValueMethodCall(expression, bindings);
+    const stringMethod = lowerStringValueMethodCall(expression, bindings);
+    if (stringMethod !== undefined) {
+      return stringMethod;
+    }
   }
 
   return undefined;
+}
+
+// eslint-disable-next-line complexity, max-statements -- Function value lowering validates both declaration references and inline function syntax.
+function lowerFunctionObjectValue(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (ts.isIdentifier(expression)) {
+    const binding = bindings.get(expression.text);
+    if (binding?.kind !== "function") {
+      return undefined;
+    }
+    const codeName = `__tscn_fnobj_ref_${expression.text}_${nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
+    nextFunctionObjectId += 1;
+    return {
+      kind: "functionObject",
+      definition: {
+        codeName,
+        parameters: binding.parameters,
+        functionKind: "ordinary",
+        returnKind: binding.returnKind,
+        directTarget: expression.text
+      }
+    };
+  }
+
+  if (!ts.isArrowFunction(expression) && !ts.isFunctionExpression(expression)) {
+    return undefined;
+  }
+  if ((ts.isFunctionExpression(expression) && expression.asteriskToken !== undefined) || expression.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
+    return undefined;
+  }
+
+  const functionKind = functionExpressionKind(expression);
+  if (functionKind === "arrow" && containsLexicalThis(expression.body)) {
+    return undefined;
+  }
+  const parameters: JsIrFunctionParameter[] = [];
+  const functionBindings = new Map(bindings);
+  if (functionKind === "ordinary") {
+    functionBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
+  }
+  for (const parameter of expression.parameters) {
+    if (!ts.isIdentifier(parameter.name) || parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined) {
+      return undefined;
+    }
+    const valueKind = parameterValueKind(parameter);
+    parameters.push({ name: parameter.name.text, valueKind });
+    bindFunctionParameter(parameter.name.text, valueKind, false, functionBindings);
+  }
+  const body = lowerInlineFunctionBody(expression.body, functionBindings);
+  if (body === undefined) {
+    return undefined;
+  }
+  let displayName = "anonymous";
+  if (expression.name !== undefined) {
+    displayName = expression.name.text;
+  }
+  const codeName = `__tscn_fnobj_${displayName}_${nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
+  nextFunctionObjectId += 1;
+  return { kind: "functionObject", definition: { codeName, parameters, functionKind, returnKind: functionReturnKind(body), body } };
 }
 
 function lowerRuntimeCollectionValueMethodCall(
@@ -8840,18 +9114,33 @@ function lowerValueCallExpression(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
-  if (!ts.isIdentifier(expression.expression)) {
+  if (ts.isIdentifier(expression.expression)) {
+    const callee = bindings.get(expression.expression.text);
+    if (callee?.kind === "function" && callee.returnKind === "value") {
+      const args = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
+      if (args === undefined) {
+        return undefined;
+      }
+      return { kind: "call", name: expression.expression.text, arguments: args };
+    }
+  }
+
+  const calleeValue = lowerValueExpression(expression.expression, bindings);
+  const args = lowerValueCallArguments(expression.arguments, bindings);
+  if (calleeValue === undefined || args === undefined) {
     return undefined;
   }
-  const callee = bindings.get(expression.expression.text);
-  if (callee?.kind !== "function" || callee.returnKind !== "value") {
-    return undefined;
+  return { kind: "callValue", callee: calleeValue, arguments: args, thisValue: lowerCallThisValue(expression.expression, bindings) };
+}
+
+function lowerCallThisValue(
+  callee: ts.LeftHandSideExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
+    return lowerValueExpression(callee.expression, bindings);
   }
-  const args = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
-  if (args === undefined) {
-    return undefined;
-  }
-  return { kind: "call", name: expression.expression.text, arguments: args };
+  return undefined;
 }
 
 function lowerStringValueMethodCall(
@@ -9609,6 +9898,9 @@ function lowerNumberAccessExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrNumberExpression | undefined {
+  if (activeTypeChecker?.getTypeAtLocation(expression).getCallSignatures().length !== 0) {
+    return undefined;
+  }
   if (ts.isElementAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
     const binding = bindings.get(expression.expression.text);
     const index = lowerNumberExpression(expression.argumentExpression, bindings);
@@ -9724,12 +10016,24 @@ function lowerNumberConditionalExpression(
   };
 }
 
+// eslint-disable-next-line complexity, max-statements -- Number-call lowering preserves direct and dynamic call fast paths during ABI migration.
 function lowerNumberCallExpression(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrNumberExpression | undefined {
+  if (activeTypeChecker !== undefined) {
+    const callType = activeTypeChecker.getTypeAtLocation(expression);
+    if ((callType.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) !== 0) {
+      return undefined;
+    }
+  }
   if (!ts.isIdentifier(expression.expression)) {
-    return undefined;
+    const calleeValue = lowerValueExpression(expression.expression, bindings);
+    const dynamicArgs = lowerValueCallArguments(expression.arguments, bindings);
+    if (calleeValue === undefined || dynamicArgs === undefined) {
+      return undefined;
+    }
+    return { kind: "valueToNumber", value: { kind: "callValue", callee: calleeValue, arguments: dynamicArgs, thisValue: lowerCallThisValue(expression.expression, bindings) } };
   }
 
   if (expression.expression.text === "Number" && expression.arguments.length === 1) {
@@ -9737,6 +10041,14 @@ function lowerNumberCallExpression(
   }
 
   const callee = bindings.get(expression.expression.text);
+  if (callee?.kind === "value" || callee?.kind === "valueVariable") {
+    const calleeValue = lowerValueExpression(expression.expression, bindings);
+    const dynamicArgs = lowerValueCallArguments(expression.arguments, bindings);
+    if (calleeValue === undefined || dynamicArgs === undefined) {
+      return undefined;
+    }
+    return { kind: "valueToNumber", value: { kind: "callValue", callee: calleeValue, arguments: dynamicArgs, thisValue: lowerCallThisValue(expression.expression, bindings) } };
+  }
   const args: JsIrNumberExpression[] = [];
   let name = expression.expression.text;
   if (callee?.kind === "closure") {
@@ -9869,6 +10181,21 @@ function lowerCallArguments(
       return undefined;
     }
     lowered.push({ valueKind: "number", value });
+  }
+  return lowered;
+}
+
+function lowerValueCallArguments(
+  args: readonly ts.Expression[],
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrCallArgument[] | undefined {
+  const lowered: JsIrCallArgument[] = [];
+  for (const argument of args) {
+    const value = lowerValueExpression(argument, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    lowered.push({ valueKind: "value", value });
   }
   return lowered;
 }
@@ -10238,6 +10565,7 @@ function lowerObjectLiteralExpression(
   return { fields };
 }
 
+// eslint-disable-next-line max-statements -- Runtime object literals validate spread, shorthand, methods, and value fields in one pass.
 function lowerRuntimeObjectLiteralExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -10265,6 +10593,15 @@ function lowerRuntimeObjectLiteralExpression(
         return undefined;
       }
       fields.push({ kind: "field", key: { kind: "literal", value: property.name.text }, value });
+      continue;
+    }
+    if (ts.isMethodDeclaration(property) && property.body !== undefined) {
+      const key = lowerRuntimeObjectFieldName(property.name, bindings);
+      const value = lowerObjectMethodFunctionValue(property, bindings);
+      if (key === undefined || value === undefined) {
+        return undefined;
+      }
+      fields.push({ kind: "field", key, value });
       continue;
     }
     if (!ts.isPropertyAssignment(property)) {
@@ -10629,6 +10966,38 @@ function objectHasNestedFields(value: JsIrObjectValue): boolean {
   return value.fields.some((field) => field.value.kind === "object");
 }
 
+function collectFunctionObjectDefinitions(operations: readonly JsIrOperation[]): readonly JsIrFunctionObjectDefinition[] {
+  const definitions = new Map<string, JsIrFunctionObjectDefinition>();
+  const visited = new Set<object>();
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== "object" || visited.has(value)) {
+      return;
+    }
+    visited.add(value);
+    if (Array.isArray(value)) {
+      for (const element of value) {
+        visit(element);
+      }
+      return;
+    }
+    if (isFunctionObjectContainer(value)) {
+      definitions.set(value.definition.codeName, value.definition);
+    }
+    for (const child of Object.values(value)) {
+      visit(child);
+    }
+  };
+  visit(operations);
+  return [...definitions.values()];
+}
+
+function isFunctionObjectContainer(value: object): value is { readonly kind: "functionObject"; readonly definition: JsIrFunctionObjectDefinition } {
+  if (!("kind" in value) || value.kind !== "functionObject" || !("definition" in value) || value.definition === null || typeof value.definition !== "object") {
+    return false;
+  }
+  return "codeName" in value.definition && typeof value.definition.codeName === "string";
+}
+
 export const lowerToJsIr = (
   entry: string,
   sourceFiles: readonly ts.SourceFile[],
@@ -10651,7 +11020,8 @@ export const lowerToJsIr = (
           fileName: sourceFile.fileName,
           statementCount: sourceFile.statements.length,
           loweringMode: lowered.loweringMode,
-          operations: finalizeOperationTraces(lowered.operations, moduleIndex)
+          operations: finalizeOperationTraces(lowered.operations, moduleIndex),
+          functionObjects: collectFunctionObjectDefinitions(lowered.operations)
         };
       });
     } finally {

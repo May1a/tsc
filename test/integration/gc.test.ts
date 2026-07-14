@@ -311,6 +311,19 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
     }
   });
 
+  test("traces captured values through function environments", async () => {
+    const result = await expectSuccessfulCompile("gc-function-closure-environment.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("walk.environment:");
+      expect(llvmIr).toContain("call void @gcMarkValue(i64 %evalue)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("evaluates but does not bind thisArg for an arrow callback", async () => {
     const result = await expectSuccessfulCompile("array-runtime-arrow-thisarg-evaluation.ts");
 

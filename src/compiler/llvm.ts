@@ -5,6 +5,7 @@ import {
   type JsIrBindingValue,
   type JsIrCondition,
   type JsIrExpression,
+  type JsIrFunctionObjectDefinition,
   type JsIrFunctionParameter,
   type JsIrInlineCppBlock,
   type JsIrModule,
@@ -59,6 +60,7 @@ type EmitContext = {
   // branches, and multiple returns.
   gcFrameName: string;
   readonly traceMarkers: Map<string, Omit<LegacyLlvmTraceMarker, "line">>;
+  readonly suppressTrace?: boolean;
 };
 
 type ObjectLayout = ObjectValue;
@@ -110,9 +112,10 @@ type FunctionDef = {
   readonly parameters: readonly JsIrFunctionParameter[];
   readonly body: readonly JsIrOperation[];
   readonly outerBindings: Map<string, JsIrBindingValue>;
-  readonly traceOperation: JsIrOperation;
+  readonly traceOperation?: JsIrOperation;
   readonly callingConvention?: "direct" | "functionObject";
   readonly usesDynamicThis?: boolean;
+  readonly captures?: JsIrFunctionObjectDefinition["captures"];
   returnType: LlvmReturnType;
 };
 
@@ -213,9 +216,26 @@ function emitLlvmIr(module: JsIrModule): RenderedLlvmModule {
     traceMarkers: new Map()
   };
   const functionDefs: FunctionDef[] = [];
+  const functionObjectThunks: JsIrFunctionObjectDefinition[] = [];
   const mainOps: JsIrOperation[] = [];
 
   for (const sourceModule of module.modules) {
+    for (const definition of sourceModule.functionObjects) {
+      if (definition.body === undefined) {
+        functionObjectThunks.push(definition);
+      } else {
+        functionDefs.push({
+          name: definition.codeName,
+          parameters: definition.parameters,
+          body: definition.body,
+          outerBindings: new Map(),
+          callingConvention: "functionObject",
+          usesDynamicThis: definition.functionKind === "ordinary",
+          captures: definition.captures,
+          returnType: "i64"
+        });
+      }
+    }
     for (const op of sourceModule.operations) {
       classifyAndProcessOperation(op, context, functionDefs, mainOps);
     }
@@ -226,7 +246,10 @@ function emitLlvmIr(module: JsIrModule): RenderedLlvmModule {
     });
   }
 
-  const fnLines = functionDefs.flatMap((fn) => emitFunctionDefinition(fn, context));
+  const fnLines = [
+    ...functionObjectThunks.flatMap((definition) => emitFunctionObjectThunk(definition, context)),
+    ...functionDefs.flatMap((fn) => emitFunctionDefinition(fn, context))
+  ];
   const mainLines = emitOperations(mainOps, context);
   const stringConstants = context.stringConstants.join("\n");
   const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals].join("\n");
@@ -305,7 +328,7 @@ export function emitLlvmModule(module: JsIrModule): LlvmEmission {
   return { llvmIr: rendered.text, traceMap: buildTraceMap(module, rendered.traceRanges) };
 }
 
-// eslint-disable-next-line complexity -- Top-level operation classification is an explicit dispatch table.
+// eslint-disable-next-line complexity, max-statements -- Top-level operation classification is an explicit dispatch table.
 function classifyAndProcessOperation(
   operation: JsIrOperation,
   context: EmitContext,
@@ -321,7 +344,11 @@ function classifyAndProcessOperation(
   } else if (operation.kind === "constValue") {
     context.bindings.set(operation.name, { kind: "value", value: operation.value });
   } else if (operation.kind === "letValue") {
-    context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
+    let valueType: "function" | undefined;
+    if (operation.value.kind === "functionObject") {
+      valueType = "function";
+    }
+    context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name, valueType });
   } else if (operation.kind === "constClosure") {
     context.bindings.set(operation.name, { kind: "closure", value: operation.value });
   } else if (operation.kind === "constString") {
@@ -389,6 +416,7 @@ function functionObjectDefinition(
     traceOperation: operation,
     callingConvention: "functionObject",
     usesDynamicThis: operation.callbackKind === "ordinary",
+    captures: operation.captures,
     returnType: "i64"
   };
 }
@@ -473,7 +501,8 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     objectIndex: context.objectIndex,
     optionalTargets: [],
     gcFrameName: "%gc.frame",
-    traceMarkers: context.traceMarkers
+    traceMarkers: context.traceMarkers,
+    suppressTrace: fn.traceOperation === undefined
   };
   for (let i = 0; i < fn.parameters.length; i++) {
     const parameter = fn.parameters[i];
@@ -511,9 +540,13 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     lines.push("  ret void");
   }
   lines.push("}", "");
+  if (fn.traceOperation === undefined) {
+    return lines;
+  }
   return wrapFunctionTrace(fn.traceOperation, lines, context);
 }
 
+// eslint-disable-next-line max-statements -- Function-object prologue materializes this, captures, and typed argv bindings together.
 function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): string[] {
   const lines: string[] = [`define i64 @${fn.name}(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {`];
   const fnContext: EmitContext = {
@@ -538,18 +571,73 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     objectIndex: context.objectIndex,
     optionalTargets: [],
     gcFrameName: "%gc.frame",
-    traceMarkers: context.traceMarkers
+    traceMarkers: context.traceMarkers,
+    suppressTrace: fn.traceOperation === undefined
   };
   const bodyLines = [`  ${fnContext.gcFrameName} = call i64 @gcRootSave()`];
   if (fn.usesDynamicThis === true) {
     bodyLines.push("  call void @gcRootPush(i64 %this.value)");
     fnContext.bindings.set("this", { kind: "valueVariable", name: "%this.value" });
   }
+  for (let i = 0; i < (fn.captures?.length ?? 0); i += 1) {
+    const capture = fn.captures?.[i];
+    if (capture === undefined) {
+      continue;
+    }
+    useRuntimeHelper(context.runtime, "environmentGet");
+    const value = `%fnobj.capture.${i}`;
+    bodyLines.push(`  ${value} = call i64 @environmentGet(ptr %env, i64 ${i})`, `  call void @gcRootPush(i64 ${value})`);
+    if (capture.valueKind === "number") {
+      const number = `%fnobj.capture.${i}.num`;
+      bodyLines.push(`  ${number} = call double @valueNumber(i64 ${value})`);
+      fnContext.bindings.set(capture.name, { kind: "number", value: { kind: "parameter", name: number } });
+      continue;
+    }
+    if (capture.valueKind === "string") {
+      const pointer = `%fnobj.capture.${i}.ptr`;
+      const length = `%fnobj.capture.${i}.len`;
+      useRuntimeHelper(context.runtime, "valueStringPtr");
+      useRuntimeHelper(context.runtime, "valueStringLength");
+      bodyLines.push(
+        `  ${pointer} = call ptr @valueStringPtr(i64 ${value})`,
+        `  ${length} = call i64 @valueStringLength(i64 ${value})`,
+        `  ${variablePointerName(capture.name)} = alloca ptr`,
+        `  ${stringLengthPointerName(capture.name)} = alloca i64`,
+        `  store ptr ${pointer}, ptr ${variablePointerName(capture.name)}`,
+        `  store i64 ${length}, ptr ${stringLengthPointerName(capture.name)}`
+      );
+      fnContext.bindings.set(capture.name, { kind: "stringVariable", name: capture.name });
+      continue;
+    }
+    fnContext.bindings.set(capture.name, { kind: "valueVariable", name: value });
+  }
   for (let i = 0; i < fn.parameters.length; i += 1) {
     const parameter = fn.parameters[i];
     const slot = `%fnobj.arg.${i}.slot`;
     const value = `%fnobj.arg.${i}`;
     bodyLines.push(`  ${slot} = getelementptr i64, ptr %argv, i64 ${i}`, `  ${value} = load i64, ptr ${slot}`, `  call void @gcRootPush(i64 ${value})`);
+    if (parameter.valueKind === "number") {
+      const number = `%fnobj.arg.${i}.num`;
+      bodyLines.push(`  ${number} = call double @valueNumber(i64 ${value})`);
+      fnContext.bindings.set(parameter.name, { kind: "number", value: { kind: "parameter", name: number } });
+      continue;
+    }
+    if (parameter.valueKind === "string") {
+      const pointer = `%fnobj.arg.${i}.ptr`;
+      const length = `%fnobj.arg.${i}.len`;
+      useRuntimeHelper(context.runtime, "valueStringPtr");
+      useRuntimeHelper(context.runtime, "valueStringLength");
+      bodyLines.push(
+        `  ${pointer} = call ptr @valueStringPtr(i64 ${value})`,
+        `  ${length} = call i64 @valueStringLength(i64 ${value})`,
+        `  ${variablePointerName(parameter.name)} = alloca ptr`,
+        `  ${stringLengthPointerName(parameter.name)} = alloca i64`,
+        `  store ptr ${pointer}, ptr ${variablePointerName(parameter.name)}`,
+        `  store i64 ${length}, ptr ${stringLengthPointerName(parameter.name)}`
+      );
+      fnContext.bindings.set(parameter.name, { kind: "stringVariable", name: parameter.name });
+      continue;
+    }
     fnContext.bindings.set(parameter.name, { kind: "valueVariable", name: value });
   }
   bodyLines.push(...emitOperations(fn.body, fnContext));
@@ -562,7 +650,37 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     lines.push(...emitRootStackRestore(fnContext), `  ret i64 ${jsValueUndefined}`);
   }
   lines.push("}", "");
+  if (fn.traceOperation === undefined) {
+    return lines;
+  }
   return wrapFunctionTrace(fn.traceOperation, lines, context);
+}
+
+function emitFunctionObjectThunk(definition: JsIrFunctionObjectDefinition, _context: EmitContext): string[] {
+  const target = definition.directTarget;
+  if (target === undefined) {
+    return [];
+  }
+  const lines = [
+    `define i64 @${definition.codeName}(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {`,
+    "entry:",
+    "  %gc.frame = call i64 @gcRootSave()",
+    "  call void @gcRootPush(i64 %this.value)"
+  ];
+  const callArguments: string[] = [];
+  for (let index = 0; index < definition.parameters.length; index += 1) {
+    const slot = `%fnobj.thunk.arg.${index}.slot`;
+    const value = `%fnobj.thunk.arg.${index}`;
+    lines.push(`  ${slot} = getelementptr i64, ptr %argv, i64 ${index}`, `  ${value} = load i64, ptr ${slot}`, `  call void @gcRootPush(i64 ${value})`);
+    callArguments.push(`i64 ${value}`);
+  }
+  if (definition.returnKind === "void") {
+    lines.push(`  call void @${target}(${callArguments.join(", ")})`, "  call void @gcRootRestore(i64 %gc.frame)", `  ret i64 ${jsValueUndefined}`);
+  } else {
+    lines.push(`  %fnobj.thunk.result = call i64 @${target}(${callArguments.join(", ")})`, "  call void @gcRootRestore(i64 %gc.frame)", "  ret i64 %fnobj.thunk.result");
+  }
+  lines.push("}", "");
+  return lines;
 }
 
 // Push heap-capable parameters (strings and arbitrary JSValues) onto the GC root
@@ -629,7 +747,11 @@ function emitOperations(operations: readonly JsIrOperation[], context: EmitConte
 
   for (const operation of operations) {
     const emitted = emitOperation(operation, context);
-    lines.push(traceStartLine(operation, context), ...emitted, traceEndLine(operation, context));
+    if (context.suppressTrace === true) {
+      lines.push(...emitted);
+    } else {
+      lines.push(traceStartLine(operation, context), ...emitted, traceEndLine(operation, context));
+    }
   }
 
   return lines;
@@ -695,6 +817,9 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
 function emitCallLikeOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
   if (operation.kind === "call") {
     return emitCallOperation(operation, context);
+  }
+  if (operation.kind === "callValue") {
+    return [...emitValueCallExpression(operation, context).lines];
   }
   if (operation.kind === "inlineCpp") {
     return [`  call i64 @${operation.symbol}()`];
@@ -1612,7 +1737,6 @@ function emitRuntimeArrayMapFunctionObjectOperation(
   const source = emitRuntimeArrayPointer(operation.arrayName, context);
   const index = context.arrayIndex;
   context.arrayIndex += 1;
-  const functionValue = `%arr.map.fn.${index}`;
   const length = `%arr.map.len.${index}`;
   const output = `%arr.map.out.${index}`;
   const iPointer = `%arr.map.i.${index}.addr`;
@@ -1623,14 +1747,11 @@ function emitRuntimeArrayMapFunctionObjectOperation(
   const nextIndex = `%arr.map.next.${index}`;
   const element = `%arr.map.value.${index}`;
   const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
-  const callbackReturn = emitFunctionObjectCallbackReturn(functionValue, callbackArgs.values, index);
-  const thisArg = emitFunctionObjectThisArg(operation, context, `%arr.map.this.frame.${index}`);
+  const functionObject = emitFunctionObjectValue(operation, context, index);
+  const callbackReturn = emitFunctionObjectCallbackReturn(functionObject.value, callbackArgs.values, index);
   return [
     `  ${pointerName} = alloca ptr`,
-    ...thisArg.setup,
-    `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr null, i64 ${thisArg.value})`,
-    ...thisArg.cleanup,
-    emitRootStackPush(functionValue, context),
+    ...functionObject.lines,
     ...source.lines,
     `  ${length} = call i64 @arrayLength(ptr ${source.value})`,
     `  ${output} = call ptr @arrayNew(i64 ${length})`,
@@ -1658,10 +1779,26 @@ function emitFunctionObjectValue(operation: Extract<JsIrOperation, { readonly ki
   useRuntimeHelper(context.runtime, "functionObjectNew");
   useRuntimeHelper(context.runtime, "jsCall");
   const functionValue = `%arr.fnobj.${index}`;
+  const captures = operation.captures ?? [];
+  const captureLines: string[] = [];
+  let environment = "null";
+  if (captures.length > 0) {
+    useRuntimeHelper(context.runtime, "environmentNew");
+    useRuntimeHelper(context.runtime, "environmentSet");
+    const emittedCaptures = captures.map((capture) => emitValueExpression(capture.value, context));
+    for (const capture of emittedCaptures) {
+      captureLines.push(...capture.lines, `  call void @gcRootPush(i64 ${capture.value})`);
+    }
+    environment = `%arr.fnobj.env.${index}`;
+    captureLines.push(`  ${environment} = call ptr @environmentNew(i64 ${captures.length})`);
+    for (let captureIndex = 0; captureIndex < emittedCaptures.length; captureIndex += 1) {
+      captureLines.push(`  call void @environmentSet(ptr ${environment}, i64 ${captureIndex}, i64 ${emittedCaptures[captureIndex].value})`);
+    }
+  }
   const thisArg = emitFunctionObjectThisArg(operation, context, `%arr.fnobj.this.frame.${index}`);
-  const newCall = `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr null, i64 ${thisArg.value})`;
+  const newCall = `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr ${environment}, i64 ${thisArg.value})`;
   const push = emitRootStackPush(functionValue, context);
-  return { lines: [...thisArg.setup, newCall, ...thisArg.cleanup, push], value: functionValue };
+  return { lines: [...captureLines, ...thisArg.setup, newCall, ...thisArg.cleanup, push], value: functionValue };
 }
 
 function emitFunctionObjectThisArg(
@@ -2064,7 +2201,7 @@ function emitFunctionObjectCallbackReturn(
     const slot = `%arr.map.argv.${loopIndex}.${i}`;
     lines.push(`  ${slot} = getelementptr i64, ptr ${argv}, i64 ${i}`, `  store i64 ${rawArgs[i]}, ptr ${slot}`);
   }
-  lines.push(`  ${value} = call i64 @jsCall(i64 ${functionValue}, i64 ${rawArgs.length}, ptr ${argv})`);
+  lines.push(`  ${value} = call i64 @jsCall(i64 ${functionValue}, i64 ${rawArgs.length}, ptr ${argv}, i64 ${jsValueUndefined})`);
   return { lines, value };
 }
 
@@ -3330,6 +3467,35 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     };
   }
 
+  if (expression.kind === "callValue") {
+    return emitValueCallExpression(expression, context);
+  }
+
+  if (expression.kind === "functionObject") {
+    const index = context.callIndex;
+    context.callIndex += 1;
+    const value = `%fnobj.${index}`;
+    useRuntimeHelper(context.runtime, "functionObjectNew");
+    const captures = expression.definition.captures ?? [];
+    const lines: string[] = [];
+    let environment = "null";
+    if (captures.length > 0) {
+      useRuntimeHelper(context.runtime, "environmentNew");
+      useRuntimeHelper(context.runtime, "environmentSet");
+      const emittedCaptures = captures.map((capture) => emitValueExpression(capture.value, context));
+      for (const capture of emittedCaptures) {
+        lines.push(...capture.lines, `  call void @gcRootPush(i64 ${capture.value})`);
+      }
+      environment = `%fnobj.env.${index}`;
+      lines.push(`  ${environment} = call ptr @environmentNew(i64 ${captures.length})`);
+      for (let captureIndex = 0; captureIndex < emittedCaptures.length; captureIndex += 1) {
+        lines.push(`  call void @environmentSet(ptr ${environment}, i64 ${captureIndex}, i64 ${emittedCaptures[captureIndex].value})`);
+      }
+    }
+    lines.push(`  ${value} = call i64 @functionObjectNew(ptr @${expression.definition.codeName}, ptr ${environment}, i64 ${jsValueUndefined})`, emitRootStackPush(value, context));
+    return { lines, value };
+  }
+
   if (expression.kind === "inlineCppValue") {
     const index = context.callIndex;
     context.callIndex += 1;
@@ -3729,6 +3895,31 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
   }
 
   throw new Error("Unsupported value expression");
+}
+
+function emitValueCallExpression(
+  expression: { readonly callee: JsIrValueExpression; readonly arguments: readonly JsIrCallArgument[]; readonly thisValue?: JsIrValueExpression },
+  context: EmitContext
+): JsValue {
+  useRuntimeHelper(context.runtime, "jsCall");
+  const callee = emitValueExpression(expression.callee, context);
+  const args = emitCallArguments(expression.arguments, context);
+  let thisValue: JsValue = { lines: [], value: jsValueUndefined };
+  if (expression.thisValue !== undefined) {
+    thisValue = emitValueExpression(expression.thisValue, context);
+  }
+  const index = context.callIndex;
+  context.callIndex += 1;
+  const argv = `%call.value.argv.${index}`;
+  const result = `%call.value.${index}`;
+  const lines = [...callee.lines, `  call void @gcRootPush(i64 ${callee.value})`, ...thisValue.lines, `  call void @gcRootPush(i64 ${thisValue.value})`, ...args.lines, `  ${argv} = alloca i64, i64 ${args.values.length}`];
+  for (let argumentIndex = 0; argumentIndex < args.values.length; argumentIndex += 1) {
+    const value = args.values[argumentIndex].replace(/^i64 /, "");
+    const slot = `%call.value.argv.${index}.${argumentIndex}`;
+    lines.push(`  call void @gcRootPush(i64 ${value})`, `  ${slot} = getelementptr i64, ptr ${argv}, i64 ${argumentIndex}`, `  store i64 ${value}, ptr ${slot}`);
+  }
+  lines.push(`  ${result} = call i64 @jsCall(i64 ${callee.value}, i64 ${args.values.length}, ptr ${argv}, i64 ${thisValue.value})`, emitRootStackPush(result, context));
+  return { lines, value: result };
 }
 
 function emitRuntimeArrayRemoveValueExpression(

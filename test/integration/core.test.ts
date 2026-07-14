@@ -254,14 +254,100 @@ describe("tscn function declarations and calls", () => {
   });
 
   test("lowers returned closures with captured numeric parameters", async () => {
-    const result = await expectSuccessfulCompile("returning-closure.ts");
+    const result = await expectSuccessfulCompile("returning-closure.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i64 @adder(i64 %p0, i64 %p1)");
-      expect(llvmIr).toContain("%num.0 = fadd double %p0.num, %p1.num");
-      expect(llvmIr).toContain("%call.0 = call i64 @adder(i64 %arg.num.0, i64 %arg.num.1)");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %call.0.num)");
+      expect(llvmIr).toContain("call ptr @environmentNew(i64 1)");
+      expect(llvmIr).toContain("call i64 @environmentGet(ptr %env, i64 0)");
+      expect(llvmIr).toContain("call i64 @jsCall(");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "8\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("calls named functions through first-class values", async () => {
+    const result = await expectSuccessfulCompile("function-value-variable-call.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("call i64 @functionObjectNew(");
+      expect(llvmIr).toContain("call i64 @jsCall(");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "5\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("calls arrow functions through first-class values", async () => {
+    const result = await expectSuccessfulCompile("function-value-arrow-call.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define i64 @__tscn_fnobj_");
+      expect(llvmIr).toContain("call i64 @jsCall(");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "12\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("passes and calls first-class function arguments", async () => {
+    const result = await expectSuccessfulCompile("function-value-argument-call.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "5\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("stores and calls function values through object properties", async () => {
+    const result = await expectSuccessfulCompile("function-value-property-call.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("captures strings in returned function values", async () => {
+    const result = await expectSuccessfulCompile("function-value-string-closure.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "hello Ada\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("keeps closure environments independent between factory calls", async () => {
+    const result = await expectSuccessfulCompile("function-value-independent-closures.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\n12\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("passes the receiver as this for function-valued property calls", async () => {
+    const result = await expectSuccessfulCompile("function-value-method-this.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("materializes stable function identity", async () => {
+    const result = await expectSuccessfulCompile("function-value-identity.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nfunction\n", stderr: "" });
     } finally {
       await result.cleanup();
     }

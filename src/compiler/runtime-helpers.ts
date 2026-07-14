@@ -197,7 +197,10 @@ export type RuntimeHelper =
   | "gcMarkObject"
   | "gcSweep"
   | "gcCollect"
-  | "gcAlloc";
+  | "gcAlloc"
+  | "environmentNew"
+  | "environmentGet"
+  | "environmentSet";
 
 export type RuntimeHelperEmitter = {
   readonly used: Set<RuntimeHelper>;
@@ -419,7 +422,10 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["gcMarkObject", []],
   ["gcSweep", []],
   ["gcCollect", ["gcMarkValue", "gcSweep"]],
-  ["gcAlloc", ["gcCollect", "gcRootPush", "gcRootPop", "gcInit"]]
+  ["gcAlloc", ["gcCollect", "gcRootPush", "gcRootPop", "gcInit"]],
+  ["environmentNew", ["gcAlloc", "malloc"]],
+  ["environmentGet", []],
+  ["environmentSet", []]
 ]);
 
 export function useRuntimeHelper(runtime: RuntimeHelperEmitter, helper: RuntimeHelper): void {
@@ -509,6 +515,7 @@ export function emitRuntimeDefinitions(runtime: RuntimeHelperEmitter): string[] 
 @gcFreeArray = internal global ptr null
 @gcFreeCollection = internal global ptr null
 @gcFreeFunction = internal global ptr null
+@gcFreeEnvironment = internal global ptr null
 @gcMarkStack = internal global ptr null
 @gcMarkStackCount = internal global i64 0
 @gcMarkStackCap = internal global i64 0
@@ -550,6 +557,7 @@ init:
   store ptr null, ptr @gcFreeArray
   store ptr null, ptr @gcFreeCollection
   store ptr null, ptr @gcFreeFunction
+  store ptr null, ptr @gcFreeEnvironment
   %root.cap.bytes = mul i64 64, 8
   %root.stack = call ptr @malloc(i64 %root.cap.bytes)
   store ptr %root.stack, ptr @gcRootStack
@@ -751,6 +759,7 @@ walk:
   %is.array = icmp eq i8 %tag, 3
   %is.collection = icmp eq i8 %tag, 4
   %is.function = icmp eq i8 %tag, 5
+  %is.environment = icmp eq i8 %tag, 6
   br i1 %is.string, label %skip, label %check.object
 check.object:
   br i1 %is.object, label %walk.object, label %check.array
@@ -759,7 +768,9 @@ check.array:
 check.collection:
   br i1 %is.collection, label %walk.collection, label %check.function
 check.function:
-  br i1 %is.function, label %walk.function, label %skip
+  br i1 %is.function, label %walk.function, label %check.environment
+check.environment:
+  br i1 %is.environment, label %walk.environment, label %skip
 walk.object:
   %obj.count.ptr = getelementptr i8, ptr %cell, i64 8
   %obj.count = load i64, ptr %obj.count.ptr
@@ -855,6 +866,25 @@ walk.function:
   %fn.name = load i64, ptr %fn.name.ptr
   call void @gcMarkValue(i64 %fn.name)
   br label %skip
+walk.environment:
+  ; Environment cell: payload+0 holds slot count (i64), payload+8 holds a pointer
+  ; to a malloc'd slots buffer (count * 8 bytes of boxed JSValues). Mark every slot.
+  %env.count.ptr = getelementptr i8, ptr %cell, i64 8
+  %env.count = load i64, ptr %env.count.ptr
+  %env.slots.ptr = getelementptr i8, ptr %cell, i64 16
+  %env.slots = load ptr, ptr %env.slots.ptr
+  br label %walk.environment.loop
+walk.environment.loop:
+  %ei = phi i64 [ 0, %walk.environment ], [ %ei.next, %walk.environment.body ]
+  %edone = icmp eq i64 %ei, %env.count
+  br i1 %edone, label %skip, label %walk.environment.body
+walk.environment.body:
+  %eslot.bytes = mul i64 %ei, 8
+  %eslot = getelementptr i8, ptr %env.slots, i64 %eslot.bytes
+  %evalue = load i64, ptr %eslot
+  call void @gcMarkValue(i64 %evalue)
+  %ei.next = add i64 %ei, 1
+  br label %walk.environment.loop
 skip:
   ret void
 }
@@ -886,6 +916,7 @@ white:
   %is.array = icmp eq i8 %tag, 3
   %is.collection = icmp eq i8 %tag, 4
   %is.function = icmp eq i8 %tag, 5
+  %is.environment = icmp eq i8 %tag, 6
   br i1 %is.string, label %free.string, label %check.free.object
 check.free.object:
   br i1 %is.object, label %free.object, label %check.free.array
@@ -894,7 +925,9 @@ check.free.array:
 check.free.collection:
   br i1 %is.collection, label %free.collection, label %check.free.function
 check.free.function:
-  br i1 %is.function, label %free.function, label %advance
+  br i1 %is.function, label %free.function, label %check.free.environment
+check.free.environment:
+  br i1 %is.environment, label %free.environment, label %advance
 free.string:
   ; The string data buffer is owned by this cell only when the owns-flag (header
   ; byte +4) is set: literal-backed strings borrow constant data and must not be
@@ -954,6 +987,18 @@ free.function:
   %fnf = getelementptr i8, ptr %cur, i64 8
   store ptr %fh, ptr %fnf
   store ptr %cur, ptr @gcFreeFunction
+  store i8 3, ptr %color.ptr
+  br label %advance
+free.environment:
+  ; Slots buffer (cell +16) is a private malloc owned by this env cell. Free it
+  ; before recycling the cell into @gcFreeEnvironment via the payload +8 next ptr.
+  %e.slots.ptr = getelementptr i8, ptr %cur, i64 16
+  %e.slots = load ptr, ptr %e.slots.ptr
+  call void @free(ptr %e.slots)
+  %eh = load ptr, ptr @gcFreeEnvironment
+  %enf = getelementptr i8, ptr %cur, i64 8
+  store ptr %eh, ptr %enf
+  store ptr %cur, ptr @gcFreeEnvironment
   store i8 3, ptr %color.ptr
   br label %advance
 black:
@@ -1038,6 +1083,7 @@ entry:
   %is.array = icmp eq i64 %tag, 3
   %is.collection = icmp eq i64 %tag, 4
   %is.function = icmp eq i64 %tag, 5
+  %is.environment = icmp eq i64 %tag, 6
   br i1 %is.string, label %try.string, label %try.object
 try.string:
   %sh = load ptr, ptr @gcFreeString
@@ -1082,7 +1128,7 @@ reuse.collection:
   store ptr %cn, ptr @gcFreeCollection
   br label %init.header
 try.function:
-  br i1 %is.function, label %try.function.body, label %bump.alloc
+  br i1 %is.function, label %try.function.body, label %try.environment
 try.function.body:
   %fh = load ptr, ptr @gcFreeFunction
   %fe = icmp eq ptr %fh, null
@@ -1091,6 +1137,17 @@ reuse.function:
   %fnf = getelementptr i8, ptr %fh, i64 8
   %fn = load ptr, ptr %fnf
   store ptr %fn, ptr @gcFreeFunction
+  br label %init.header
+try.environment:
+  br i1 %is.environment, label %try.environment.body, label %bump.alloc
+try.environment.body:
+  %eh = load ptr, ptr @gcFreeEnvironment
+  %ee = icmp eq ptr %eh, null
+  br i1 %ee, label %bump.alloc, label %reuse.environment
+reuse.environment:
+  %enf = getelementptr i8, ptr %eh, i64 8
+  %en = load ptr, ptr %enf
+  store ptr %en, ptr @gcFreeEnvironment
   br label %init.header
 bump.alloc:
   %bump = load ptr, ptr @gcBumpPtr
@@ -1105,7 +1162,7 @@ oom:
   call void @exit(i32 1)
   ret ptr null
 init.header:
-  %cell = phi ptr [ %sh, %reuse.string ], [ %oh, %reuse.object ], [ %ah, %reuse.array ], [ %ch, %reuse.collection ], [ %fh, %reuse.function ], [ %bump, %do.bump ]
+  %cell = phi ptr [ %sh, %reuse.string ], [ %oh, %reuse.object ], [ %ah, %reuse.array ], [ %ch, %reuse.collection ], [ %fh, %reuse.function ], [ %eh, %reuse.environment ], [ %bump, %do.bump ]
   %tag.i8 = trunc i64 %tag to i8
   store i8 %tag.i8, ptr %cell
   %color.slot = getelementptr i8, ptr %cell, i64 1
@@ -2696,16 +2753,57 @@ entry:
 `);
   }
   if (runtime.used.has("jsCall")) {
-    definitions.push(`define i64 @jsCall(i64 %fn.value, i64 %argc, ptr %argv) {
+    definitions.push(`define i64 @jsCall(i64 %fn.value, i64 %argc, ptr %argv, i64 %callThis) {
 entry:
   %function = call ptr @valueFunctionPtr(i64 %fn.value)
   %code = load ptr, ptr %function
   %env.slot = getelementptr i8, ptr %function, i64 8
   %env = load ptr, ptr %env.slot
   %this.slot = getelementptr i8, ptr %function, i64 16
-  %this.value = load i64, ptr %this.slot
+  %boundThis = load i64, ptr %this.slot
+  %has.bound.this = icmp ne i64 %boundThis, ${legacyJsValue.immediate("undefined")}
+  %this.value = select i1 %has.bound.this, i64 %boundThis, i64 %callThis
   %result = call i64 %code(i64 %argc, ptr %argv, ptr %env, i64 %this.value)
   ret i64 %result
+}
+`);
+  }
+  if (runtime.used.has("environmentNew")) {
+    definitions.push(`define ptr @environmentNew(i64 %count) {
+entry:
+  %slots.bytes = mul i64 %count, 8
+  %slots = call ptr @malloc(i64 %slots.bytes)
+  %cell = call ptr @gcAlloc(i64 6, i64 16)
+  %env = getelementptr i8, ptr %cell, i64 8
+  %count.slot = getelementptr i8, ptr %env, i64 0
+  store i64 %count, ptr %count.slot
+  %slots.slot = getelementptr i8, ptr %env, i64 8
+  store ptr %slots, ptr %slots.slot
+  ret ptr %env
+}
+`);
+  }
+  if (runtime.used.has("environmentGet")) {
+    definitions.push(`define i64 @environmentGet(ptr %env, i64 %index) {
+entry:
+  %slots.slot = getelementptr i8, ptr %env, i64 8
+  %slots = load ptr, ptr %slots.slot
+  %slot.bytes = mul i64 %index, 8
+  %slot = getelementptr i8, ptr %slots, i64 %slot.bytes
+  %value = load i64, ptr %slot
+  ret i64 %value
+}
+`);
+  }
+  if (runtime.used.has("environmentSet")) {
+    definitions.push(`define void @environmentSet(ptr %env, i64 %index, i64 %value) {
+entry:
+  %slots.slot = getelementptr i8, ptr %env, i64 8
+  %slots = load ptr, ptr %slots.slot
+  %slot.bytes = mul i64 %index, 8
+  %slot = getelementptr i8, ptr %slots, i64 %slot.bytes
+  store i64 %value, ptr %slot
+  ret void
 }
 `);
   }

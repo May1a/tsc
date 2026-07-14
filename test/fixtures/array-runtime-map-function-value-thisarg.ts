@@ -6,4 +6,7 @@ function double(value: unknown): unknown {
   return Number(value) * 2;
 }
 
-print(arr.map(double, { factor: 2 }));
+const mapped = arr.map(double, { factor: 2 });
+print(mapped.length);
+print(mapped[0]);
+print(mapped[1]);

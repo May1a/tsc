@@ -740,14 +740,14 @@ describe("tscn expanded runtime roadmap", () => {
       ["array-runtime-callback-thisarg-methods.ts", "6\n2\n2\n2\n2\n11\n12\n13\n6\n21\n23\n"],
       ["array-runtime-arrow-thisarg-evaluation.ts", "receiver\n2\n"],
       ["array-runtime-thisarg-strict-values.ts", "true\ntrue\ntrue\n"],
-      ["array-runtime-map-thisarg-in-function.ts", "8\n"]
+      ["array-runtime-map-thisarg-in-function.ts", "8\n"],
+      ["array-runtime-map-function-value-thisarg.ts", "2\n2\n4\n"],
+      ["array-runtime-for-each-function-value-thisarg.ts", "1\n2\n"],
+      ["array-runtime-property-thisarg.ts", "2\n"],
+      ["array-runtime-arrow-lexical-this.ts", "6\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
-    await expectUnsupportedDiagnostic("array-runtime-map-thisarg-unsupported.ts");
-    await expectUnsupportedDiagnostic("array-runtime-for-each-thisarg-unsupported.ts");
-    await expectUnsupportedDiagnostic("array-runtime-property-thisarg-unsupported.ts");
-    await expectUnsupportedDiagnostic("array-runtime-arrow-lexical-this-unsupported.ts");
   });
 
   test("supports package BP minimal Date builtin", async () => {
