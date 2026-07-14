@@ -1,3 +1,8 @@
+import { jsValueAbi } from "./js-value-abi/index.js";
+import { llvm, type LlvmModuleBuilder } from "./llvm-ir/index.js";
+
+const legacyJsValue = jsValueAbi.forLegacyLlvm();
+
 export type RuntimeHelper =
   | "malloc"
   | "memcpy"
@@ -200,6 +205,41 @@ export type RuntimeHelperEmitter = {
 
 export const createRuntimeHelperEmitter = (): RuntimeHelperEmitter => ({ used: new Set() });
 
+export function defineStructuredRuntimeHelpers(module: LlvmModuleBuilder, runtime: RuntimeHelperEmitter): void {
+  if (runtime.used.has("valueBoxObject")) {
+    module.defineFunction(
+      {
+        name: "valueBoxObject",
+        parameters: [{ name: "object", type: llvm.ptr }],
+        returns: jsValueAbi.llvmBoundaryType
+      },
+      (fn) => {
+        const object = fn.parameter(0, llvm.ptr);
+        fn.block("entry", (block) => {
+          block.ret(jsValueAbi.forLlvm(block).boxReference("object", object));
+        });
+      }
+    );
+  }
+  module.defineFunction(
+    { name: "valueBoxNumber", parameters: [{ name: "number", type: llvm.double }], returns: jsValueAbi.llvmBoundaryType },
+    (fn) => {
+      const number = fn.parameter(0, llvm.double);
+      fn.block("entry", (block) => block.ret(jsValueAbi.forLlvm(block).boxNumber(number)));
+    }
+  );
+  module.defineFunction(
+    { name: "valueNumber", parameters: [{ name: "value", type: jsValueAbi.llvmBoundaryType }], returns: llvm.double },
+    (fn) => {
+      const value = fn.parameter(0, llvm.i64);
+      fn.block("entry", (block) => {
+        const values = jsValueAbi.forLlvm(block);
+        block.ret(values.unboxNumber(values.fromBoundary(value)));
+      });
+    }
+  );
+}
+
 const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[]>([
   ["strConcat", ["malloc", "memcpy"]],
   ["strEquals", ["memcmp"]],
@@ -296,7 +336,7 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["objectOwnPropertyNames", ["arrayNew", "arraySet", "valueBoxString"]],
   ["arrayOwnPropertyNames", ["arrayLength", "arrayHasOwnIndex", "arrayNew", "arraySet", "arrayPush", "valueBoxString", "indexToString", "objectOwnPropertyNames", "arrayAppendElements"]],
   ["objectOwnPropertyDescriptors", ["objectNew", "objectOwnPropertyDescriptor", "objectSet"]],
-  ["objectIs", ["valueStringLength", "valueStringPtr", "memcmp", "valueObjectPtr", "valueArrayPtr"]],
+  ["objectIs", ["valueStringLength", "valueStringPtr", "memcmp", "valueObjectPtr", "valueArrayPtr", "valueFunctionPtr"]],
   ["valueTruthy", ["valueStringLength"]],
   ["indexToString", ["malloc"]],
   ["arrayGet", ["arrayLength"]],
@@ -594,18 +634,18 @@ skip:
 
 define void @gcMarkValue(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.string = icmp eq i64 %tag, 9221683186994511872
-  %is.object = icmp eq i64 %tag, 9221120237041090560
-  %is.array = icmp eq i64 %tag, 9221401712017801216
-  %is.function = icmp eq i64 %tag, 9221964661971222528
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.string = icmp eq i64 %tag, ${legacyJsValue.referenceTag("string")}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
+  %is.function = icmp eq i64 %tag, ${legacyJsValue.referenceTag("function")}
   br i1 %is.string, label %mark.string, label %check.heap
 check.heap:
   %is.object.or.array = or i1 %is.object, %is.array
   %is.heap = or i1 %is.object.or.array, %is.function
   br i1 %is.heap, label %mark.heap, label %skip
 mark.string:
-  %str.bits = and i64 %value, 281474976710655
+  %str.bits = and i64 %value, ${legacyJsValue.payloadMask()}
   %str.cell = inttoptr i64 %str.bits to ptr
   %str.color.ptr = getelementptr i8, ptr %str.cell, i64 1
   %str.color = load i8, ptr %str.color.ptr
@@ -615,7 +655,7 @@ mark.string.set:
   store i8 2, ptr %str.color.ptr
   br label %skip
 mark.heap:
-  %bits = and i64 %value, 281474976710655
+  %bits = and i64 %value, ${legacyJsValue.payloadMask()}
   %payload = inttoptr i64 %bits to ptr
   %cell = getelementptr i8, ptr %payload, i64 -8
   %color.ptr = getelementptr i8, ptr %cell, i64 1
@@ -1763,10 +1803,10 @@ entry:
   %same = icmp eq i64 %left, %right
   br i1 %same, label %equal, label %check.strings
 check.strings:
-  %left.tag = and i64 %left, -281474976710656
-  %right.tag = and i64 %right, -281474976710656
-  %left.string = icmp eq i64 %left.tag, 9221683186994511872
-  %right.string = icmp eq i64 %right.tag, 9221683186994511872
+  %left.tag = and i64 %left, ${legacyJsValue.tagMask()}
+  %right.tag = and i64 %right, ${legacyJsValue.tagMask()}
+  %left.string = icmp eq i64 %left.tag, ${legacyJsValue.referenceTag("string")}
+  %right.string = icmp eq i64 %right.tag, ${legacyJsValue.referenceTag("string")}
   %both.strings = and i1 %left.string, %right.string
   br i1 %both.strings, label %string.compare, label %not.equal
 string.compare:
@@ -1790,27 +1830,29 @@ not.equal:
   if (runtime.used.has("valueSameValueZero")) {
     definitions.push(`define i1 @valueIsNumberForSameValueZero(i64 %value) {
 entry:
-  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  %is.undefined = icmp eq i64 %value, ${legacyJsValue.immediate("undefined")}
   br i1 %is.undefined, label %false, label %check.false
 check.false:
-  %is.false = icmp eq i64 %value, 9222246136947933185
+  %is.false = icmp eq i64 %value, ${legacyJsValue.immediate("false")}
   br i1 %is.false, label %false, label %check.true
 check.true:
-  %is.true = icmp eq i64 %value, 9222246136947933186
+  %is.true = icmp eq i64 %value, ${legacyJsValue.immediate("true")}
   br i1 %is.true, label %false, label %check.null
 check.null:
-  %is.null = icmp eq i64 %value, 9222246136947933187
+  %is.null = icmp eq i64 %value, ${legacyJsValue.immediate("null")}
   br i1 %is.null, label %false, label %check.hole
 check.hole:
-  %is.hole = icmp eq i64 %value, 9222246136947933191
+  %is.hole = icmp eq i64 %value, ${legacyJsValue.arrayHole()}
   br i1 %is.hole, label %false, label %check.tag
 check.tag:
-  %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
-  %is.array = icmp eq i64 %tag, 9221401712017801216
-  %is.string = icmp eq i64 %tag, 9221683186994511872
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
+  %is.string = icmp eq i64 %tag, ${legacyJsValue.referenceTag("string")}
+  %is.function = icmp eq i64 %tag, ${legacyJsValue.referenceTag("function")}
   %is.object.or.array = or i1 %is.object, %is.array
-  %is.boxed = or i1 %is.object.or.array, %is.string
+  %is.aggregate.or.string = or i1 %is.object.or.array, %is.string
+  %is.boxed = or i1 %is.aggregate.or.string, %is.function
   br i1 %is.boxed, label %false, label %true
 true:
   ret i1 true
@@ -1828,8 +1870,8 @@ number.guard:
   %both.number = and i1 %left.number, %right.number
   br i1 %both.number, label %number.compare, label %false
 number.compare:
-  %left.d = bitcast i64 %left to double
-  %right.d = bitcast i64 %right to double
+  %left.d = call double @valueNumber(i64 %left)
+  %right.d = call double @valueNumber(i64 %right)
   %numeric.equal = fcmp oeq double %left.d, %right.d
   br i1 %numeric.equal, label %true, label %nan.compare
 nan.compare:
@@ -1847,24 +1889,24 @@ false:
   if (runtime.used.has("valueToNumber")) {
     definitions.push(`define double @valueToNumber(i64 %value) {
 entry:
-  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  %is.undefined = icmp eq i64 %value, ${legacyJsValue.immediate("undefined")}
   br i1 %is.undefined, label %nan, label %check.null
 check.null:
-  %is.null = icmp eq i64 %value, 9222246136947933187
+  %is.null = icmp eq i64 %value, ${legacyJsValue.immediate("null")}
   br i1 %is.null, label %zero, label %check.false
 check.false:
-  %is.false = icmp eq i64 %value, 9222246136947933185
+  %is.false = icmp eq i64 %value, ${legacyJsValue.immediate("false")}
   br i1 %is.false, label %zero, label %check.true
 check.true:
-  %is.true = icmp eq i64 %value, 9222246136947933186
+  %is.true = icmp eq i64 %value, ${legacyJsValue.immediate("true")}
   br i1 %is.true, label %one, label %check.string
 check.string:
-  %tag = and i64 %value, -281474976710656
-  %is.string = icmp eq i64 %tag, 9221683186994511872
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.string = icmp eq i64 %tag, ${legacyJsValue.referenceTag("string")}
   br i1 %is.string, label %string, label %check.aggregate
 check.aggregate:
-  %is.object = icmp eq i64 %tag, 9221120237041090560
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   %is.aggregate = or i1 %is.object, %is.array
   br i1 %is.aggregate, label %nan, label %as.number
 string:
@@ -1898,7 +1940,7 @@ string.parse:
   %parsed = call double @strtod(ptr %ptr, ptr null)
   ret double %parsed
 as.number:
-  %number = bitcast i64 %value to double
+  %number = call double @valueNumber(i64 %value)
   ret double %number
 zero:
   ret double 0.0
@@ -1915,10 +1957,10 @@ entry:
   %strict = call i1 @valueStrictEquals(i64 %left, i64 %right)
   br i1 %strict, label %true, label %nullish
 nullish:
-  %left.null = icmp eq i64 %left, 9222246136947933187
-  %left.undefined = icmp eq i64 %left, 9222246136947933184
-  %right.null = icmp eq i64 %right, 9222246136947933187
-  %right.undefined = icmp eq i64 %right, 9222246136947933184
+  %left.null = icmp eq i64 %left, ${legacyJsValue.immediate("null")}
+  %left.undefined = icmp eq i64 %left, ${legacyJsValue.immediate("undefined")}
+  %right.null = icmp eq i64 %right, ${legacyJsValue.immediate("null")}
+  %right.undefined = icmp eq i64 %right, ${legacyJsValue.immediate("undefined")}
   %left.nullish = or i1 %left.null, %left.undefined
   %right.nullish = or i1 %right.null, %right.undefined
   %both.nullish = and i1 %left.nullish, %right.nullish
@@ -1941,10 +1983,10 @@ false:
   if (runtime.used.has("valueRelationalCompare")) {
     definitions.push(`define i1 @valueRelationalCompare(i64 %left, i64 %right, i64 %operator) {
 entry:
-  %left.tag = and i64 %left, -281474976710656
-  %right.tag = and i64 %right, -281474976710656
-  %left.string = icmp eq i64 %left.tag, 9221683186994511872
-  %right.string = icmp eq i64 %right.tag, 9221683186994511872
+  %left.tag = and i64 %left, ${legacyJsValue.tagMask()}
+  %right.tag = and i64 %right, ${legacyJsValue.tagMask()}
+  %left.string = icmp eq i64 %left.tag, ${legacyJsValue.referenceTag("string")}
+  %right.string = icmp eq i64 %right.tag, ${legacyJsValue.referenceTag("string")}
   %both.strings = and i1 %left.string, %right.string
   br i1 %both.strings, label %strings, label %numbers
 strings:
@@ -1996,14 +2038,14 @@ select:
   if (runtime.used.has("valuePlus")) {
     definitions.push(`define i64 @valuePlus(i64 %left, i64 %right) {
 entry:
-  %left.tag = and i64 %left, -281474976710656
-  %right.tag = and i64 %right, -281474976710656
-  %left.string = icmp eq i64 %left.tag, 9221683186994511872
-  %right.string = icmp eq i64 %right.tag, 9221683186994511872
-  %left.object = icmp eq i64 %left.tag, 9221120237041090560
-  %right.object = icmp eq i64 %right.tag, 9221120237041090560
-  %left.array = icmp eq i64 %left.tag, 9221401712017801216
-  %right.array = icmp eq i64 %right.tag, 9221401712017801216
+  %left.tag = and i64 %left, ${legacyJsValue.tagMask()}
+  %right.tag = and i64 %right, ${legacyJsValue.tagMask()}
+  %left.string = icmp eq i64 %left.tag, ${legacyJsValue.referenceTag("string")}
+  %right.string = icmp eq i64 %right.tag, ${legacyJsValue.referenceTag("string")}
+  %left.object = icmp eq i64 %left.tag, ${legacyJsValue.referenceTag("object")}
+  %right.object = icmp eq i64 %right.tag, ${legacyJsValue.referenceTag("object")}
+  %left.array = icmp eq i64 %left.tag, ${legacyJsValue.referenceTag("array")}
+  %right.array = icmp eq i64 %right.tag, ${legacyJsValue.referenceTag("array")}
   %left.aggregate = or i1 %left.object, %left.array
   %right.aggregate = or i1 %right.object, %right.array
   %has.string.0 = or i1 %left.string, %right.string
@@ -2027,7 +2069,7 @@ numbers:
   %sum = fadd double %left.num, %right.num
   %sum.is.nan = fcmp uno double %sum, %sum
   %safe.sum = select i1 %sum.is.nan, double 0x7FF5000000000000, double %sum
-  %boxed.num = bitcast double %safe.sum to i64
+  %boxed.num = call i64 @valueBoxNumber(double %safe.sum)
   ret i64 %boxed.num
 }
 `);
@@ -2045,11 +2087,11 @@ entry:
   if (runtime.used.has("numberIsNaN")) {
     definitions.push(`define i1 @numberIsNaN(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.boxed = icmp eq i64 %tag, 9221683186994511872
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.boxed = icmp eq i64 %tag, ${legacyJsValue.referenceTag("string")}
   br i1 %is.boxed, label %false, label %as.number
 as.number:
-  %number = bitcast i64 %value to double
+  %number = call double @valueNumber(i64 %value)
   %ordered = fcmp ord double %number, %number
   %is.nan = xor i1 %ordered, true
   ret i1 %is.nan
@@ -2061,11 +2103,11 @@ false:
   if (runtime.used.has("numberIsFinite")) {
     definitions.push(`define i1 @numberIsFinite(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.boxed = icmp eq i64 %tag, 9221683186994511872
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.boxed = icmp eq i64 %tag, ${legacyJsValue.referenceTag("string")}
   br i1 %is.boxed, label %false, label %as.number
 as.number:
-  %number = bitcast i64 %value to double
+  %number = call double @valueNumber(i64 %value)
   %not.nan = fcmp ord double %number, %number
   %lt.zero = fcmp olt double %number, 0.0
   %neg = fneg double %number
@@ -2084,7 +2126,7 @@ entry:
   %finite = call i1 @numberIsFinite(i64 %value)
   br i1 %finite, label %check, label %false
 check:
-  %number = bitcast i64 %value to double
+  %number = call double @valueNumber(i64 %value)
   %int = fptosi double %number to i64
   %truncated = sitofp i64 %int to double
   %is.integer = fcmp oeq double %number, %truncated
@@ -2100,7 +2142,7 @@ entry:
   %integer = call i1 @numberIsInteger(i64 %value)
   br i1 %integer, label %check, label %false
 check:
-  %number = bitcast i64 %value to double
+  %number = call double @valueNumber(i64 %value)
   %abs = call double @mathAbs(double %number)
   %safe = fcmp ole double %abs, 9007199254740991.0
   ret i1 %safe
@@ -2556,8 +2598,8 @@ entry:
   %len.slot = getelementptr i8, ptr %payload, i64 8
   store i64 %string.len, ptr %len.slot
   %box.bits = ptrtoint ptr %cell to i64
-  %payload.bits = and i64 %box.bits, 281474976710655
-  %value = or i64 %payload.bits, 9221683186994511872
+  %payload.bits = and i64 %box.bits, ${legacyJsValue.payloadMask()}
+  %value = or i64 %payload.bits, ${legacyJsValue.referenceTag("string")}
   ret i64 %value
 }
 `);
@@ -2565,7 +2607,7 @@ entry:
   if (runtime.used.has("valueStringPtr")) {
     definitions.push(`define ptr @valueStringPtr(i64 %value) {
 entry:
-  %box.bits = and i64 %value, 281474976710655
+  %box.bits = and i64 %value, ${legacyJsValue.payloadMask()}
   %box = inttoptr i64 %box.bits to ptr
   %payload = getelementptr i8, ptr %box, i64 8
   %ptr = load ptr, ptr %payload
@@ -2576,7 +2618,7 @@ entry:
   if (runtime.used.has("valueStringLength")) {
     definitions.push(`define i64 @valueStringLength(i64 %value) {
 entry:
-  %box.bits = and i64 %value, 281474976710655
+  %box.bits = and i64 %value, ${legacyJsValue.payloadMask()}
   %box = inttoptr i64 %box.bits to ptr
   %payload = getelementptr i8, ptr %box, i64 8
   %len.slot = getelementptr i8, ptr %payload, i64 8
@@ -2585,22 +2627,12 @@ entry:
 }
 `);
   }
-  if (runtime.used.has("valueBoxObject")) {
-    definitions.push(`define i64 @valueBoxObject(ptr %object) {
-entry:
-  %bits = ptrtoint ptr %object to i64
-  %payload = and i64 %bits, 281474976710655
-  %value = or i64 %payload, 9221120237041090560
-  ret i64 %value
-}
-`);
-  }
   if (runtime.used.has("valueBoxArray")) {
     definitions.push(`define i64 @valueBoxArray(ptr %array) {
 entry:
   %bits = ptrtoint ptr %array to i64
-  %payload = and i64 %bits, 281474976710655
-  %value = or i64 %payload, 9221401712017801216
+  %payload = and i64 %bits, ${legacyJsValue.payloadMask()}
+  %value = or i64 %payload, ${legacyJsValue.referenceTag("array")}
   ret i64 %value
 }
 `);
@@ -2609,8 +2641,8 @@ entry:
     definitions.push(`define i64 @valueBoxFunction(ptr %function) {
 entry:
   %bits = ptrtoint ptr %function to i64
-  %payload = and i64 %bits, 281474976710655
-  %value = or i64 %payload, 9221964661971222528
+  %payload = and i64 %bits, ${legacyJsValue.payloadMask()}
+  %value = or i64 %payload, ${legacyJsValue.referenceTag("function")}
   ret i64 %value
 }
 `);
@@ -2618,7 +2650,7 @@ entry:
   if (runtime.used.has("valueObjectPtr")) {
     definitions.push(`define ptr @valueObjectPtr(i64 %value) {
 entry:
-  %bits = and i64 %value, 281474976710655
+  %bits = and i64 %value, ${legacyJsValue.payloadMask()}
   %ptr = inttoptr i64 %bits to ptr
   ret ptr %ptr
 }
@@ -2627,7 +2659,7 @@ entry:
   if (runtime.used.has("valueArrayPtr")) {
     definitions.push(`define ptr @valueArrayPtr(i64 %value) {
 entry:
-  %bits = and i64 %value, 281474976710655
+  %bits = and i64 %value, ${legacyJsValue.payloadMask()}
   %ptr = inttoptr i64 %bits to ptr
   ret ptr %ptr
 }
@@ -2636,7 +2668,7 @@ entry:
   if (runtime.used.has("valueFunctionPtr")) {
     definitions.push(`define ptr @valueFunctionPtr(i64 %value) {
 entry:
-  %bits = and i64 %value, 281474976710655
+  %bits = and i64 %value, ${legacyJsValue.payloadMask()}
   %ptr = inttoptr i64 %bits to ptr
   ret ptr %ptr
 }
@@ -2655,7 +2687,7 @@ entry:
   %prototype.slot = getelementptr i8, ptr %payload, i64 24
   store ptr null, ptr %prototype.slot
   %name.slot = getelementptr i8, ptr %payload, i64 32
-  store i64 9222246136947933184, ptr %name.slot
+  store i64 ${legacyJsValue.immediate("undefined")}, ptr %name.slot
   %flags.slot = getelementptr i8, ptr %payload, i64 40
   store i64 0, ptr %flags.slot
   %value = call i64 @valueBoxFunction(ptr %payload)
@@ -2680,8 +2712,8 @@ entry:
   if (runtime.used.has("valueIsObject")) {
     definitions.push(`define i1 @valueIsObject(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
   ret i1 %is.object
 }
 `);
@@ -2689,8 +2721,8 @@ entry:
   if (runtime.used.has("valueIsArray")) {
     definitions.push(`define i1 @valueIsArray(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   ret i1 %is.array
 }
 `);
@@ -2770,15 +2802,15 @@ entry:
   if (runtime.used.has("valueObjectHasOwn")) {
     definitions.push(`define i1 @valueObjectHasOwn(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.has = call i1 @objectHasOwn(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
   ret i1 %object.has
 check.array:
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %missing
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
@@ -2822,15 +2854,15 @@ missing:
   if (runtime.used.has("valueObjectKeys")) {
     definitions.push(`define ptr @valueObjectKeys(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.keys = call ptr @objectKeys(ptr %object.ptr)
   ret ptr %object.keys
 check.array:
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %primitive
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
@@ -2845,15 +2877,15 @@ primitive:
   if (runtime.used.has("valueObjectValues")) {
     definitions.push(`define ptr @valueObjectValues(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.values = call ptr @objectValues(ptr %object.ptr)
   ret ptr %object.values
 check.array:
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %primitive
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
@@ -2868,15 +2900,15 @@ primitive:
   if (runtime.used.has("valueObjectEntries")) {
     definitions.push(`define ptr @valueObjectEntries(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.entries = call ptr @objectEntries(ptr %object.ptr)
   ret ptr %object.entries
 check.array:
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %primitive
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
@@ -2893,15 +2925,15 @@ primitive:
 
 define i64 @valueObjectOwnPropertyDescriptor(i64 %value, i64 %key.len, ptr %key.ptr, i64 %index, i1 %is.length) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.desc = call i64 @objectOwnPropertyDescriptor(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
   ret i64 %object.desc
 check.array:
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %primitive
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
@@ -2913,22 +2945,22 @@ array.index:
   %array.desc = call i64 @arrayOwnPropertyDescriptor(ptr %array.ptr, i64 %key.len, ptr %key.ptr, i64 %index)
   ret i64 %array.desc
 primitive:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
   if (runtime.used.has("valueObjectOwnPropertyNames")) {
     definitions.push(`define ptr @valueObjectOwnPropertyNames(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.names = call ptr @objectOwnPropertyNames(ptr %object.ptr)
   ret ptr %object.names
 check.array:
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %primitive
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
@@ -2943,15 +2975,15 @@ primitive:
   if (runtime.used.has("valueObjectOwnPropertyDescriptors")) {
     definitions.push(`define ptr @valueObjectOwnPropertyDescriptors(i64 %value) {
 entry:
-  %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.descriptors = call ptr @objectOwnPropertyDescriptors(ptr %object.ptr)
   ret ptr %object.descriptors
 check.array:
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %empty
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
@@ -2966,32 +2998,35 @@ empty:
   if (runtime.used.has("valueTruthy")) {
     definitions.push(`define i1 @valueTruthy(i64 %value) {
 entry:
-  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  %is.undefined = icmp eq i64 %value, ${legacyJsValue.immediate("undefined")}
   br i1 %is.undefined, label %false, label %check.null
 check.null:
-  %is.null = icmp eq i64 %value, 9222246136947933187
+  %is.null = icmp eq i64 %value, ${legacyJsValue.immediate("null")}
   br i1 %is.null, label %false, label %check.false
 check.false:
-  %is.false = icmp eq i64 %value, 9222246136947933185
+  %is.false = icmp eq i64 %value, ${legacyJsValue.immediate("false")}
   br i1 %is.false, label %false, label %check.true
 check.true:
-  %is.true = icmp eq i64 %value, 9222246136947933186
+  %is.true = icmp eq i64 %value, ${legacyJsValue.immediate("true")}
   br i1 %is.true, label %true, label %check.string
 check.string:
-  %tagged = and i64 %value, -281474976710656
-  %is.string = icmp eq i64 %tagged, 9221683186994511872
+  %tagged = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.string = icmp eq i64 %tagged, ${legacyJsValue.referenceTag("string")}
   br i1 %is.string, label %string, label %check.aggregate
 string:
   %len = call i64 @valueStringLength(i64 %value)
   %nonempty = icmp ne i64 %len, 0
   ret i1 %nonempty
 check.aggregate:
-  %is.object = icmp eq i64 %tagged, 9221120237041090560
-  %is.array = icmp eq i64 %tagged, 9221401712017801216
+  %is.object = icmp eq i64 %tagged, ${legacyJsValue.referenceTag("object")}
+  %is.array = icmp eq i64 %tagged, ${legacyJsValue.referenceTag("array")}
   %is.aggregate = or i1 %is.object, %is.array
-  br i1 %is.aggregate, label %true, label %number.block
+  br i1 %is.aggregate, label %true, label %check.function
+check.function:
+  %is.function = icmp eq i64 %tagged, ${legacyJsValue.referenceTag("function")}
+  br i1 %is.function, label %true, label %number.block
 number.block:
-  %number.value = bitcast i64 %value to double
+  %number.value = call double @valueNumber(i64 %value)
   %nonzero = fcmp one double %number.value, 0.0
   ret i1 %nonzero
 true:
@@ -3015,28 +3050,28 @@ false:
 
 define void @valuePrint(i64 %value) {
 entry:
-  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  %is.undefined = icmp eq i64 %value, ${legacyJsValue.immediate("undefined")}
   br i1 %is.undefined, label %print.undefined, label %check.false
 check.false:
-  %is.false = icmp eq i64 %value, 9222246136947933185
+  %is.false = icmp eq i64 %value, ${legacyJsValue.immediate("false")}
   br i1 %is.false, label %print.false, label %check.true
 check.true:
-  %is.true = icmp eq i64 %value, 9222246136947933186
+  %is.true = icmp eq i64 %value, ${legacyJsValue.immediate("true")}
   br i1 %is.true, label %print.true, label %check.null
 check.null:
-  %is.null = icmp eq i64 %value, 9222246136947933187
+  %is.null = icmp eq i64 %value, ${legacyJsValue.immediate("null")}
   br i1 %is.null, label %print.null, label %check.object
 check.object:
-  %tagged.object = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tagged.object, 9221120237041090560
+  %tagged.object = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tagged.object, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %print.object, label %check.array
 check.array:
-  %tagged.array = and i64 %value, -281474976710656
-  %is.array = icmp eq i64 %tagged.array, 9221401712017801216
+  %tagged.array = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.array = icmp eq i64 %tagged.array, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %print.array, label %check.string
 check.string:
-  %tagged = and i64 %value, -281474976710656
-  %is.string = icmp eq i64 %tagged, 9221683186994511872
+  %tagged = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.string = icmp eq i64 %tagged, ${legacyJsValue.referenceTag("string")}
   br i1 %is.string, label %print.string, label %print.number
 print.undefined:
   call i32 @puts(ptr @.value.undefined)
@@ -3061,7 +3096,7 @@ print.string:
   call i32 @puts(ptr %ptr)
   ret void
 print.number:
-  %number = bitcast i64 %value to double
+  %number = call double @valueNumber(i64 %value)
   %number.is.nan = fcmp uno double %number, %number
   br i1 %number.is.nan, label %print.number.nan, label %check.number.infinity
 check.number.infinity:
@@ -3098,28 +3133,28 @@ print.number.finite:
 
 define { ptr, i64 } @valueToString(i64 %value) {
 entry:
-  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  %is.undefined = icmp eq i64 %value, ${legacyJsValue.immediate("undefined")}
   br i1 %is.undefined, label %undefined, label %check.false
 check.false:
-  %is.false = icmp eq i64 %value, 9222246136947933185
+  %is.false = icmp eq i64 %value, ${legacyJsValue.immediate("false")}
   br i1 %is.false, label %false, label %check.true
 check.true:
-  %is.true = icmp eq i64 %value, 9222246136947933186
+  %is.true = icmp eq i64 %value, ${legacyJsValue.immediate("true")}
   br i1 %is.true, label %true, label %check.null
 check.null:
-  %is.null = icmp eq i64 %value, 9222246136947933187
+  %is.null = icmp eq i64 %value, ${legacyJsValue.immediate("null")}
   br i1 %is.null, label %null, label %check.object
 check.object:
-  %tagged.object = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tagged.object, 9221120237041090560
+  %tagged.object = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tagged.object, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 check.array:
-  %tagged.array = and i64 %value, -281474976710656
-  %is.array = icmp eq i64 %tagged.array, 9221401712017801216
+  %tagged.array = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.array = icmp eq i64 %tagged.array, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %check.string
 check.string:
-  %tagged.string = and i64 %value, -281474976710656
-  %is.string = icmp eq i64 %tagged.string, 9221683186994511872
+  %tagged.string = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.string = icmp eq i64 %tagged.string, ${legacyJsValue.referenceTag("string")}
   br i1 %is.string, label %string, label %number
 undefined:
   %undefined.0 = insertvalue { ptr, i64 } undef, ptr @.tostring.undefined, 0
@@ -3166,7 +3201,7 @@ string:
   ret { ptr, i64 } %string.1
 number:
   %number.ptr = call ptr @malloc(i64 32)
-  %number.value = bitcast i64 %value to double
+  %number.value = call double @valueNumber(i64 %value)
   %written = call i32 (ptr, ptr, ...) @sprintf(ptr %number.ptr, ptr @.tostring.fmt.number, double %number.value)
   %number.len = sext i32 %written to i64
   %number.0 = insertvalue { ptr, i64 } undef, ptr %number.ptr, 0
@@ -3208,7 +3243,7 @@ fill.cond:
 fill.body:
   %slot.bytes = mul i64 %i, 8
   %slot = getelementptr i8, ptr %elements, i64 %slot.bytes
-  store i64 9222246136947933191, ptr %slot
+  store i64 ${legacyJsValue.arrayHole()}, ptr %slot
   %next = add i64 %i, 1
   br label %fill.cond
 exit:
@@ -3236,12 +3271,12 @@ load:
   %slot.bytes = mul i64 %index, 8
   %slot = getelementptr i8, ptr %elements, i64 %slot.bytes
   %value = load i64, ptr %slot
-  %is.hole = icmp eq i64 %value, 9222246136947933191
+  %is.hole = icmp eq i64 %value, ${legacyJsValue.arrayHole()}
   br i1 %is.hole, label %missing, label %found
 found:
   ret i64 %value
 missing:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -3261,7 +3296,7 @@ check.prototype:
   %properties.slot = getelementptr i8, ptr %array, i64 32
   %properties = load ptr, ptr %properties.slot
   %named = call i64 @objectGet(ptr %properties, i64 %key.len, ptr %key.ptr)
-  %has.named = icmp ne i64 %named, 9222246136947933184
+  %has.named = icmp ne i64 %named, ${legacyJsValue.immediate("undefined")}
   br i1 %has.named, label %array.named, label %prototype.check
 array.named:
   ret i64 %named
@@ -3274,7 +3309,7 @@ prototype.lookup:
   %prototype.value = call i64 @objectGet(ptr %prototype, i64 %key.len, ptr %key.ptr)
   ret i64 %prototype.value
 missing:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -3310,7 +3345,7 @@ load:
   %slot.bytes = mul i64 %index, 8
   %slot = getelementptr i8, ptr %elements, i64 %slot.bytes
   %value = load i64, ptr %slot
-  %is.hole = icmp eq i64 %value, 9222246136947933191
+  %is.hole = icmp eq i64 %value, ${legacyJsValue.arrayHole()}
   br i1 %is.hole, label %missing, label %found
 found:
   ret i1 true
@@ -3359,7 +3394,7 @@ fill.cond:
 fill.body:
   %gap.slot.bytes = mul i64 %i, 8
   %gap.slot = getelementptr i8, ptr %active.elements, i64 %gap.slot.bytes
-  store i64 9222246136947933191, ptr %gap.slot
+  store i64 ${legacyJsValue.arrayHole()}, ptr %gap.slot
   %gap.next = add i64 %i, 1
   br label %fill.cond
 store.grown:
@@ -3382,7 +3417,7 @@ delete:
   %elements = load ptr, ptr %elements.slot
   %slot.bytes = mul i64 %index, 8
   %slot = getelementptr i8, ptr %elements, i64 %slot.bytes
-  store i64 9222246136947933191, ptr %slot
+  store i64 ${legacyJsValue.arrayHole()}, ptr %slot
   ret void
 exit:
   ret void
@@ -3423,7 +3458,7 @@ grow.fill.cond:
 grow.fill.body:
   %grow.slot.bytes = mul i64 %grow.i, 8
   %grow.slot = getelementptr i8, ptr %grow.elements, i64 %grow.slot.bytes
-  store i64 9222246136947933191, ptr %grow.slot
+  store i64 ${legacyJsValue.arrayHole()}, ptr %grow.slot
   %grow.next = add i64 %grow.i, 1
   br label %grow.fill.cond
 shrink.fill:
@@ -3435,7 +3470,7 @@ shrink.fill.cond:
 shrink.fill.body:
   %shrink.slot.bytes = mul i64 %shrink.i, 8
   %shrink.slot = getelementptr i8, ptr %elements, i64 %shrink.slot.bytes
-  store i64 9222246136947933191, ptr %shrink.slot
+  store i64 ${legacyJsValue.arrayHole()}, ptr %shrink.slot
   %shrink.next = add i64 %shrink.i, 1
   br label %shrink.fill.cond
 store.length:
@@ -3717,9 +3752,9 @@ present:
   %value = call i64 @arrayGet(ptr %array, i64 %index)
   %desc = call ptr @objectNew(i64 4)
   call void @objectSet(ptr %desc, i64 5, ptr @.desc.value, i64 %value)
-  call void @objectSet(ptr %desc, i64 8, ptr @.desc.writable, i64 9222246136947933186)
-  call void @objectSet(ptr %desc, i64 10, ptr @.desc.enumerable, i64 9222246136947933186)
-  call void @objectSet(ptr %desc, i64 12, ptr @.desc.configurable, i64 9222246136947933186)
+  call void @objectSet(ptr %desc, i64 8, ptr @.desc.writable, i64 ${legacyJsValue.immediate("true")})
+  call void @objectSet(ptr %desc, i64 10, ptr @.desc.enumerable, i64 ${legacyJsValue.immediate("true")})
+  call void @objectSet(ptr %desc, i64 12, ptr @.desc.configurable, i64 ${legacyJsValue.immediate("true")})
   %boxed = call i64 @valueBoxObject(ptr %desc)
   ret i64 %boxed
 named:
@@ -3735,12 +3770,12 @@ named:
 entry:
   %length.i = call i64 @arrayLength(ptr %array)
   %length = uitofp i64 %length.i to double
-  %length.value = bitcast double %length to i64
+  %length.value = call i64 @valueBoxNumber(double %length)
   %desc = call ptr @objectNew(i64 4)
   call void @objectSet(ptr %desc, i64 5, ptr @.desc.value, i64 %length.value)
-  call void @objectSet(ptr %desc, i64 8, ptr @.desc.writable, i64 9222246136947933186)
-  call void @objectSet(ptr %desc, i64 10, ptr @.desc.enumerable, i64 9222246136947933185)
-  call void @objectSet(ptr %desc, i64 12, ptr @.desc.configurable, i64 9222246136947933185)
+  call void @objectSet(ptr %desc, i64 8, ptr @.desc.writable, i64 ${legacyJsValue.immediate("true")})
+  call void @objectSet(ptr %desc, i64 10, ptr @.desc.enumerable, i64 ${legacyJsValue.immediate("false")})
+  call void @objectSet(ptr %desc, i64 12, ptr @.desc.configurable, i64 ${legacyJsValue.immediate("false")})
   %boxed = call i64 @valueBoxObject(ptr %desc)
   ret i64 %boxed
 }
@@ -3802,14 +3837,14 @@ load:
 hole:
   br label %compare
 compare:
-  %candidate = phi i64 [ %value, %load ], [ 9222246136947933184, %hole ]
+  %candidate = phi i64 [ %value, %load ], [ ${legacyJsValue.immediate("undefined")}, %hole ]
   %same = call i1 @valueStrictEquals(i64 %candidate, i64 %needle)
   br i1 %same, label %found, label %string.check
 string.check:
-  %candidate.tag = and i64 %candidate, -281474976710656
-  %needle.tag = and i64 %needle, -281474976710656
-  %candidate.string = icmp eq i64 %candidate.tag, 9221683186994511872
-  %needle.string = icmp eq i64 %needle.tag, 9221683186994511872
+  %candidate.tag = and i64 %candidate, ${legacyJsValue.tagMask()}
+  %needle.tag = and i64 %needle, ${legacyJsValue.tagMask()}
+  %candidate.string = icmp eq i64 %candidate.tag, ${legacyJsValue.referenceTag("string")}
+  %needle.string = icmp eq i64 %needle.tag, ${legacyJsValue.referenceTag("string")}
   %both.strings = and i1 %candidate.string, %needle.string
   br i1 %both.strings, label %string.compare, label %advance
 string.compare:
@@ -3918,7 +3953,7 @@ found:
   %value = call i64 @arrayGet(ptr %array, i64 %i)
   ret i64 %value
 missing:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -3962,12 +3997,12 @@ load.slot:
   %slot.bytes = mul i64 %actual, 8
   %slot = getelementptr i8, ptr %elements, i64 %slot.bytes
   %stored = load i64, ptr %slot
-  %is.hole = icmp eq i64 %stored, 9222246136947933191
+  %is.hole = icmp eq i64 %stored, ${legacyJsValue.arrayHole()}
   br i1 %is.hole, label %missing, label %found
 found:
   ret i64 %stored
 missing:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -4510,7 +4545,7 @@ size.present:
   %slot.bytes.s = mul i64 %size.i, 8
   %slot.s = getelementptr i8, ptr %elements.s, i64 %slot.bytes.s
   %value.s = load i64, ptr %slot.s
-  %is.undefined.s = icmp eq i64 %value.s, 9222246136947933184
+  %is.undefined.s = icmp eq i64 %value.s, ${legacyJsValue.immediate("undefined")}
   br i1 %is.undefined.s, label %size.advance.empty, label %size.string
 size.string:
   %string.s = call { ptr, i64 } @valueToString(i64 %value.s)
@@ -4550,7 +4585,7 @@ fill.present:
   %slot.bytes.f = mul i64 %fill.i, 8
   %slot.f = getelementptr i8, ptr %elements.f, i64 %slot.bytes.f
   %value.f = load i64, ptr %slot.f
-  %is.undefined.f = icmp eq i64 %value.f, 9222246136947933184
+  %is.undefined.f = icmp eq i64 %value.f, ${legacyJsValue.immediate("undefined")}
   br i1 %is.undefined.f, label %fill.advance.empty, label %copy.value
 copy.value:
   %string.f = call { ptr, i64 } @valueToString(i64 %value.f)
@@ -4596,13 +4631,13 @@ pop:
   %slot.bytes = mul i64 %index, 8
   %slot = getelementptr i8, ptr %elements, i64 %slot.bytes
   %stored = load i64, ptr %slot
-  %is.hole = icmp eq i64 %stored, 9222246136947933191
-  %value = select i1 %is.hole, i64 9222246136947933184, i64 %stored
-  store i64 9222246136947933191, ptr %slot
+  %is.hole = icmp eq i64 %stored, ${legacyJsValue.arrayHole()}
+  %value = select i1 %is.hole, i64 ${legacyJsValue.immediate("undefined")}, i64 %stored
+  store i64 ${legacyJsValue.arrayHole()}, ptr %slot
   store i64 %index, ptr %array
   ret i64 %value
 empty.return:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -4644,8 +4679,8 @@ shift:
   %elements.slot = getelementptr i8, ptr %array, i64 16
   %elements = load ptr, ptr %elements.slot
   %first = load i64, ptr %elements
-  %first.hole = icmp eq i64 %first, 9222246136947933191
-  %value = select i1 %first.hole, i64 9222246136947933184, i64 %first
+  %first.hole = icmp eq i64 %first, ${legacyJsValue.arrayHole()}
+  %value = select i1 %first.hole, i64 ${legacyJsValue.immediate("undefined")}, i64 %first
   %new.length = sub i64 %length, 1
   br label %loop.cond
 loop.cond:
@@ -4664,11 +4699,11 @@ loop.body:
 clear.tail:
   %tail.bytes = mul i64 %new.length, 8
   %tail = getelementptr i8, ptr %elements, i64 %tail.bytes
-  store i64 9222246136947933191, ptr %tail
+  store i64 ${legacyJsValue.arrayHole()}, ptr %tail
   store i64 %new.length, ptr %array
   ret i64 %value
 empty.return:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -4813,7 +4848,7 @@ load:
   %value = load i64, ptr %value.slot
   ret i64 %value
 missing:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -5062,8 +5097,8 @@ loop:
   br i1 %done, label %missing, label %body
 body:
   %entry.value = call i64 @arrayGet(ptr %filter, i64 %i)
-  %tagged = and i64 %entry.value, -281474976710656
-  %is.string = icmp eq i64 %tagged, 9221683186994511872
+  %tagged = and i64 %entry.value, ${legacyJsValue.tagMask()}
+  %is.string = icmp eq i64 %tagged, ${legacyJsValue.referenceTag("string")}
   br i1 %is.string, label %compare.len, label %advance
 compare.len:
   %entry.len = call i64 @valueStringLength(i64 %entry.value)
@@ -5100,36 +5135,36 @@ cycle:
   call void @exit(i32 1)
   unreachable
 check.undefined:
-  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  %is.undefined = icmp eq i64 %value, ${legacyJsValue.immediate("undefined")}
   br i1 %is.undefined, label %skip, label %check.null
 skip:
   %skip.0 = insertvalue { ptr, i64 } undef, ptr null, 0
   %skip.1 = insertvalue { ptr, i64 } %skip.0, i64 0, 1
   ret { ptr, i64 } %skip.1
 check.null:
-  %is.null = icmp eq i64 %value, 9222246136947933187
+  %is.null = icmp eq i64 %value, ${legacyJsValue.immediate("null")}
   br i1 %is.null, label %null, label %check.true
 null:
   %null.0 = insertvalue { ptr, i64 } undef, ptr @.json.null, 0
   %null.1 = insertvalue { ptr, i64 } %null.0, i64 4, 1
   ret { ptr, i64 } %null.1
 check.true:
-  %is.true = icmp eq i64 %value, 9222246136947933186
+  %is.true = icmp eq i64 %value, ${legacyJsValue.immediate("true")}
   br i1 %is.true, label %true, label %check.false
 true:
   %true.0 = insertvalue { ptr, i64 } undef, ptr @.json.true, 0
   %true.1 = insertvalue { ptr, i64 } %true.0, i64 4, 1
   ret { ptr, i64 } %true.1
 check.false:
-  %is.false = icmp eq i64 %value, 9222246136947933185
+  %is.false = icmp eq i64 %value, ${legacyJsValue.immediate("false")}
   br i1 %is.false, label %false, label %check.string
 false:
   %false.0 = insertvalue { ptr, i64 } undef, ptr @.json.false, 0
   %false.1 = insertvalue { ptr, i64 } %false.0, i64 5, 1
   ret { ptr, i64 } %false.1
 check.string:
-  %tagged = and i64 %value, -281474976710656
-  %is.string = icmp eq i64 %tagged, 9221683186994511872
+  %tagged = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.string = icmp eq i64 %tagged, ${legacyJsValue.referenceTag("string")}
   br i1 %is.string, label %string, label %check.object
 string:
   %string.len = call i64 @valueStringLength(i64 %value)
@@ -5137,7 +5172,7 @@ string:
   %quoted = call { ptr, i64 } @jsonQuote(i64 %string.len, ptr %string.ptr)
   ret { ptr, i64 } %quoted
 check.object:
-  %is.object = icmp eq i64 %tagged, 9221120237041090560
+  %is.object = icmp eq i64 %tagged, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
@@ -5145,7 +5180,7 @@ object:
   %object.json = call { ptr, i64 } @jsonStringifyObject(ptr %object.ptr, ptr %filter, i64 %indent, i64 %next.depth.obj)
   ret { ptr, i64 } %object.json
 check.array:
-  %is.array = icmp eq i64 %tagged, 9221401712017801216
+  %is.array = icmp eq i64 %tagged, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %number
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
@@ -5153,7 +5188,7 @@ array:
   %array.json = call { ptr, i64 } @jsonStringifyArray(ptr %array.ptr, ptr %filter, i64 %indent, i64 %next.depth.arr)
   ret { ptr, i64 } %array.json
 number:
-  %number.value = bitcast i64 %value to double
+  %number.value = call double @valueNumber(i64 %value)
   %is.nan = fcmp uno double %number.value, %number.value
   br i1 %is.nan, label %null, label %check.infinite
 check.infinite:
@@ -5390,7 +5425,7 @@ entry:
   %skipped = icmp eq ptr %json.ptr, null
   br i1 %skipped, label %undefined, label %boxed
 undefined:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 boxed:
   %result = call i64 @valueBoxString(ptr %json.ptr, i64 %json.len)
   ret i64 %result
@@ -5441,7 +5476,7 @@ advance:
   br label %scan
 missing:
   %missing.0 = insertvalue { i64, i64 } undef, i64 0, 0
-  %missing.1 = insertvalue { i64, i64 } %missing.0, i64 9222246136947933184, 1
+  %missing.1 = insertvalue { i64, i64 } %missing.0, i64 ${legacyJsValue.immediate("undefined")}, 1
   ret { i64, i64 } %missing.1
 }
 `);
@@ -5467,7 +5502,7 @@ check.prototype:
 advance.prototype:
   br label %lookup
 missing:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -5941,7 +5976,7 @@ load:
   %value = load i64, ptr %value.slot
   ret i64 %value
 miss:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -6043,15 +6078,15 @@ named:
   if (runtime.used.has("valueObjectAssign")) {
     definitions.push(`define void @valueObjectAssign(ptr %target, i64 %source) {
 entry:
-  %tag = and i64 %source, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %tag = and i64 %source, ${legacyJsValue.tagMask()}
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %source)
   call void @objectAssign(ptr %target, ptr %object.ptr)
   ret void
 check.array:
-  %is.array = icmp eq i64 %tag, 9221401712017801216
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
   br i1 %is.array, label %array, label %exit
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %source)
@@ -6173,9 +6208,9 @@ found:
   %writable.ok = icmp ne i64 %writable.bit, 0
   %enumerable.ok = icmp ne i64 %enumerable.bit, 0
   %configurable.ok = icmp ne i64 %configurable.bit, 0
-  %writable.value = select i1 %writable.ok, i64 9222246136947933186, i64 9222246136947933185
-  %enumerable.value = select i1 %enumerable.ok, i64 9222246136947933186, i64 9222246136947933185
-  %configurable.value = select i1 %configurable.ok, i64 9222246136947933186, i64 9222246136947933185
+  %writable.value = select i1 %writable.ok, i64 ${legacyJsValue.immediate("true")}, i64 ${legacyJsValue.immediate("false")}
+  %enumerable.value = select i1 %enumerable.ok, i64 ${legacyJsValue.immediate("true")}, i64 ${legacyJsValue.immediate("false")}
+  %configurable.value = select i1 %configurable.ok, i64 ${legacyJsValue.immediate("true")}, i64 ${legacyJsValue.immediate("false")}
   %desc = call ptr @objectNew(i64 4)
   call void @objectSet(ptr %desc, i64 5, ptr @.desc.value, i64 %value)
   call void @objectSet(ptr %desc, i64 8, ptr @.desc.writable, i64 %writable.value)
@@ -6187,7 +6222,7 @@ advance:
   %next = add i64 %i, 1
   br label %scan
 missing:
-  ret i64 9222246136947933184
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -6292,8 +6327,8 @@ entry.array:
   br i1 %has.pair, label %entry.key, label %advance
 entry.key:
   %key.value = call i64 @arrayGet(ptr %entry.ptr, i64 0)
-  %key.tag = and i64 %key.value, -281474976710656
-  %key.is.string = icmp eq i64 %key.tag, 9221683186994511872
+  %key.tag = and i64 %key.value, ${legacyJsValue.tagMask()}
+  %key.is.string = icmp eq i64 %key.tag, ${legacyJsValue.referenceTag("string")}
   br i1 %key.is.string, label %entry.store, label %advance
 entry.store:
   %value = call i64 @arrayGet(ptr %entry.ptr, i64 1)
@@ -6529,8 +6564,8 @@ exit:
   if (runtime.used.has("objectIs")) {
     definitions.push(`define i1 @objectIs(i64 %left, i64 %right) {
 entry:
-  %left.d = bitcast i64 %left to double
-  %right.d = bitcast i64 %right to double
+  %left.d = call double @valueNumber(i64 %left)
+  %right.d = call double @valueNumber(i64 %right)
   %same.bits = icmp eq i64 %left, %right
   br i1 %same.bits, label %check.signed.zero, label %check.strings
 check.signed.zero:
@@ -6544,10 +6579,10 @@ check.signs:
   %same.sign = icmp eq i64 %left.sign, %right.sign
   br i1 %same.sign, label %true, label %false
 check.strings:
-  %left.tag = and i64 %left, -281474976710656
-  %right.tag = and i64 %right, -281474976710656
-  %left.string = icmp eq i64 %left.tag, 9221683186994511872
-  %right.string = icmp eq i64 %right.tag, 9221683186994511872
+  %left.tag = and i64 %left, ${legacyJsValue.tagMask()}
+  %right.tag = and i64 %right, ${legacyJsValue.tagMask()}
+  %left.string = icmp eq i64 %left.tag, ${legacyJsValue.referenceTag("string")}
+  %right.string = icmp eq i64 %right.tag, ${legacyJsValue.referenceTag("string")}
   %both.strings = and i1 %left.string, %right.string
   br i1 %both.strings, label %string.compare, label %check.objects
 string.compare:
@@ -6562,8 +6597,8 @@ string.bytes:
   %same.bytes = icmp eq i32 %cmp, 0
   br i1 %same.bytes, label %true, label %false
 check.objects:
-  %left.object = icmp eq i64 %left.tag, 9221120237041090560
-  %right.object = icmp eq i64 %right.tag, 9221120237041090560
+  %left.object = icmp eq i64 %left.tag, ${legacyJsValue.referenceTag("object")}
+  %right.object = icmp eq i64 %right.tag, ${legacyJsValue.referenceTag("object")}
   %both.objects = and i1 %left.object, %right.object
   br i1 %both.objects, label %object.compare, label %check.arrays
 object.compare:
@@ -6572,15 +6607,25 @@ object.compare:
   %same.obj.ptr = icmp eq ptr %left.obj.ptr, %right.obj.ptr
   br i1 %same.obj.ptr, label %true, label %false
 check.arrays:
-  %left.array = icmp eq i64 %left.tag, 9221401712017801216
-  %right.array = icmp eq i64 %right.tag, 9221401712017801216
+  %left.array = icmp eq i64 %left.tag, ${legacyJsValue.referenceTag("array")}
+  %right.array = icmp eq i64 %right.tag, ${legacyJsValue.referenceTag("array")}
   %both.arrays = and i1 %left.array, %right.array
-  br i1 %both.arrays, label %array.compare, label %check.nan
+  br i1 %both.arrays, label %array.compare, label %check.functions
 array.compare:
   %left.arr.ptr = call ptr @valueArrayPtr(i64 %left)
   %right.arr.ptr = call ptr @valueArrayPtr(i64 %right)
   %same.arr.ptr = icmp eq ptr %left.arr.ptr, %right.arr.ptr
   br i1 %same.arr.ptr, label %true, label %false
+check.functions:
+  %left.function = icmp eq i64 %left.tag, ${legacyJsValue.referenceTag("function")}
+  %right.function = icmp eq i64 %right.tag, ${legacyJsValue.referenceTag("function")}
+  %both.functions = and i1 %left.function, %right.function
+  br i1 %both.functions, label %function.compare, label %check.nan
+function.compare:
+  %left.fn.ptr = call ptr @valueFunctionPtr(i64 %left)
+  %right.fn.ptr = call ptr @valueFunctionPtr(i64 %right)
+  %same.fn.ptr = icmp eq ptr %left.fn.ptr, %right.fn.ptr
+  br i1 %same.fn.ptr, label %true, label %false
 check.nan:
   %left.nan = fcmp uno double %left.d, 0.0
   %right.nan = fcmp uno double %right.d, 0.0

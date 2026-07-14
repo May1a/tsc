@@ -438,7 +438,7 @@ describe("tscn JSValue ABI", () => {
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("define void @valuePrint(i64 %value)");
-      expect(llvmIr).toContain("bitcast double 42.0 to i64");
+      expect(llvmIr).toContain("call i64 @valueBoxNumber(double 42.0)");
       expect(llvmIr).toContain("select i1 true, i64 9222246136947933186, i64 9222246136947933185");
       expect(llvmIr).toContain("i64 9222246136947933184");
       expect(llvmIr).toContain("define i64 @valueBoxString(ptr %string.ptr, i64 %string.len)");

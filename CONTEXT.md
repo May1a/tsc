@@ -12,6 +12,10 @@ _Avoid_: Full JS semantics, JavaScript replacement, TypeScript-to-JavaScript com
 The runtime support required by compiled programs for JavaScript values, objects, functions, memory management, errors, and platform interaction.
 _Avoid_: Standard library, shim, polyfill
 
+**JSValue ABI**:
+The stable representation and calling convention for JavaScript-visible values shared by generated code, the compiler runtime, and native extensions.
+_Avoid_: Value format, runtime value layout
+
 **Native CLI subset**:
 The initial execution environment for compiled programs, covering command-line process behavior rather than browser or Node compatibility.
 _Avoid_: Node-compatible runtime, browser runtime

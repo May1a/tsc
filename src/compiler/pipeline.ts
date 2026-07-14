@@ -8,8 +8,9 @@ import { loadProgram } from "./frontend.js";
 import { lowerToJsIr } from "./ir.js";
 import { linkerErrorToLinkResult, linkWithClang, linkWithClangxx, type LinkResult } from "./linker.js";
 import { emitInlineCppSource, emitLlvmModule } from "./llvm.js";
-import type { Toolchain } from "./toolchain.js";
+import { Toolchain } from "./toolchain.js";
 import type { CompileOptions, CompileResult } from "./types.js";
+import { jsValueAbi } from "./js-value-abi/index.js";
 
 export const compile = (
   options: CompileOptions
@@ -18,21 +19,30 @@ export const compile = (
   CompilationFailed | PlatformError,
   FileSystem.FileSystem | Path.Path | Toolchain | CommandExecutor.CommandExecutor | Diagnostics
 > =>
+  // eslint-disable-next-line max-statements -- Compilation keeps artifact ordering and early diagnostic failure in one Effect transaction.
   Effect.gen(function* compileProgram() {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const diagnostics = yield* Diagnostics;
+    const toolchain = yield* Toolchain;
+
+    yield* fs.makeDirectory(options.outDir, { recursive: true });
+    const diagnosticsPath = path.join(options.outDir, "diagnostics.txt");
+    const hostDiagnostic = jsValueAbi.validateHost(toolchain.target);
+    if (hostDiagnostic !== undefined) {
+      yield* diagnostics.add(hostDiagnostic);
+      const hostDiagnostics = yield* diagnostics.drain();
+      yield* fs.writeFileString(diagnosticsPath, hostDiagnostics.map(formatDiagnostic).join("\n"));
+      return yield* Effect.fail(new CompilationFailed({ diagnostics: hostDiagnostics }));
+    }
 
     const frontend = yield* loadProgram(options.entry);
     const jsIr = yield* lowerToJsIr(path.resolve(options.entry), frontend.sourceFiles, frontend.program.getTypeChecker(), {
       fcpp: options.fcpp
     });
 
-    yield* fs.makeDirectory(options.outDir, { recursive: true });
-
     const llvmIr = path.join(options.outDir, "main.ll");
     const traceMap = path.join(options.outDir, "trace-map.json");
-    const diagnosticsPath = path.join(options.outDir, "diagnostics.txt");
     const executable = path.join(options.outDir, "main");
     let inlineCpp: string | undefined;
     if (jsIr.module.inlineCppBlocks.length > 0) {

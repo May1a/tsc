@@ -162,9 +162,9 @@ describe("tscn function declarations and calls", () => {
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("define void @add(i64 %p0, i64 %p1)");
-      expect(llvmIr).toContain("%p0.num = bitcast i64 %p0 to double");
+      expect(llvmIr).toContain("%p0.num = call double @valueNumber(i64 %p0)");
       expect(llvmIr).toContain("%num.0 = fadd double %p0.num, %p1.num");
-      expect(llvmIr).toContain("%arg.num.0 = bitcast double 1.0 to i64");
+      expect(llvmIr).toContain("%arg.num.0 = call i64 @valueBoxNumber(double 1.0)");
       expect(llvmIr).toContain("call void @add(i64 %arg.num.0, i64 %arg.num.1)");
     } finally {
       await result.cleanup();
@@ -177,7 +177,7 @@ describe("tscn function declarations and calls", () => {
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("define i64 @double(i64 %p0)");
-      expect(llvmIr).toContain("%arg.num.0 = bitcast double 3.0 to i64");
+      expect(llvmIr).toContain("%arg.num.0 = call i64 @valueBoxNumber(double 3.0)");
       expect(llvmIr).toContain("%call.0 = call i64 @double(i64 %arg.num.0)");
       expect(llvmIr).toContain("ret i64 %ret.num.");
     } finally {

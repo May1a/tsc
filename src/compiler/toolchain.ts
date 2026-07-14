@@ -1,17 +1,70 @@
 import { Command, type CommandExecutor } from "@effect/platform";
 import { Context, Effect, Layer, Option } from "effect";
 import { devNull } from "node:os";
+import process from "node:process";
 
 export type ToolName = "clang" | "clang++" | "llvm-as" | "lli";
+
+const thirtyTwoBitWord = 32;
+const sixtyFourBitWord = 64;
+const jsValuePointerAddressBits = 48;
+
+export type TargetArchitecture = "x86_64" | "aarch64" | "x86" | "arm" | "unknown";
+
+export type TargetFacts = {
+  readonly triple: string;
+  readonly architecture: TargetArchitecture;
+  readonly pointerWidthBits: number | undefined;
+  readonly doubleFormat: "ieee754-binary64" | "other" | "unknown";
+  readonly pointerAddressBits: number | undefined;
+};
 
 export type Toolchain = {
   readonly clang: Option.Option<string>;
   readonly clangxx: Option.Option<string>;
   readonly llvmAs: Option.Option<string>;
   readonly lli: Option.Option<string>;
+  readonly target: TargetFacts;
 };
 
 export const Toolchain = Context.GenericTag<Toolchain>("tscn/Toolchain");
+
+export function normalizeHostTargetFacts(
+  architecture: NodeJS.Architecture,
+  platform: NodeJS.Platform
+): TargetFacts {
+  let normalizedArchitecture: TargetArchitecture = "unknown";
+  let pointerWidthBits: number | undefined;
+  if (architecture === "x64") {
+    normalizedArchitecture = "x86_64";
+    pointerWidthBits = sixtyFourBitWord;
+  } else if (architecture === "arm64") {
+    normalizedArchitecture = "aarch64";
+    pointerWidthBits = sixtyFourBitWord;
+  } else if (architecture === "ia32") {
+    normalizedArchitecture = "x86";
+    pointerWidthBits = thirtyTwoBitWord;
+  } else if (architecture === "arm") {
+    normalizedArchitecture = "arm";
+    pointerWidthBits = thirtyTwoBitWord;
+  }
+  let pointerAddressBits: number | undefined;
+  // This records the active host ABI's default-allocation guarantee, not the CPU's
+  // maximum virtual-address width. These x86-64 OS ABIs keep ordinary image,
+  // stack, and allocator mappings in the low canonical 48-bit range; Linux also
+  // does so on five-level paging unless a caller explicitly requests a high hint.
+  // The compiler runtime and inline extension allocator never request such hints.
+  if (normalizedArchitecture === "x86_64" && (platform === "linux" || platform === "darwin" || platform === "win32")) {
+    pointerAddressBits = jsValuePointerAddressBits;
+  }
+  return {
+    triple: `${normalizedArchitecture}-${platform}`,
+    architecture: normalizedArchitecture,
+    pointerWidthBits,
+    doubleFormat: "ieee754-binary64",
+    pointerAddressBits
+  };
+}
 
 const probeTool = (
   name: ToolName
@@ -66,7 +119,7 @@ const discoverToolchainUncached: Effect.Effect<Toolchain, never, CommandExecutor
       [probeClang(), probeClangxx(), probeTool("llvm-as"), probeTool("lli")],
       { concurrency: "unbounded" }
     );
-    return { clang, clangxx, llvmAs, lli };
+    return { clang, clangxx, llvmAs, lli, target: normalizeHostTargetFacts(process.arch, process.platform) };
   }
 );
 

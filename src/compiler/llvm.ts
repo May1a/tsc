@@ -19,15 +19,18 @@ import {
   type JsIrValueKind,
   type JsIrValueExpression
 } from "./ir.js";
-import { buildTraceMap, traceOperationId, type LlvmLineRange, type TraceMapV1 } from "./trace.js";
+import { buildTraceMap, traceOperationId, type TraceMapV1 } from "./trace.js";
 import {
   createRuntimeHelperEmitter,
+  defineStructuredRuntimeHelpers,
   emitRuntimeDeclarations,
   emitRuntimeDefinitions,
   useRuntimeHelper,
   type RuntimeHelper,
   type RuntimeHelperEmitter
 } from "./runtime-helpers.js";
+import { jsValueAbi } from "./js-value-abi/index.js";
+import { createLlvmModule, type LegacyLlvmTraceMarker, type RenderedLlvmModule } from "./llvm-ir/index.js";
 
 type EmitContext = {
   readonly bindings: Map<string, JsIrBindingValue>;
@@ -55,6 +58,7 @@ type EmitContext = {
   // emitting a static number of pops, so the root stack stays balanced across loops,
   // branches, and multiple returns.
   gcFrameName: string;
+  readonly traceMarkers: Map<string, Omit<LegacyLlvmTraceMarker, "line">>;
 };
 
 type ObjectLayout = ObjectValue;
@@ -123,10 +127,11 @@ const firstPrintableAsciiByte = 32;
 const lastPrintableAsciiByte = 126;
 const hexadecimalRadix = 16;
 const noLines = 0;
-const jsValueUndefined = "9222246136947933184";
-const jsValueFalse = "9222246136947933185";
-const jsValueTrue = "9222246136947933186";
-const jsValueNull = "9222246136947933187";
+const legacyJsValue = jsValueAbi.forLegacyLlvm();
+const jsValueUndefined = legacyJsValue.immediate("undefined");
+const jsValueFalse = legacyJsValue.immediate("false");
+const jsValueTrue = legacyJsValue.immediate("true");
+const jsValueNull = legacyJsValue.immediate("null");
 const descriptorWritableFlag = 1;
 const descriptorEnumerableFlag = 2;
 const descriptorConfigurableFlag = 4;
@@ -172,32 +177,14 @@ export const emitInlineCppSource = (blocks: readonly JsIrInlineCppBlock[]): stri
   `#include <bit>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 
-namespace tscn {
-inline std::uint64_t number(double value) {
-  return std::bit_cast<std::uint64_t>(value);
-}
-
-inline std::uint64_t undefined() {
-  return 9222246136947933184ULL;
-}
-
-inline std::uint64_t false_value() {
-  return 9222246136947933185ULL;
-}
-
-inline std::uint64_t true_value() {
-  return 9222246136947933186ULL;
-}
-
-inline std::uint64_t null() {
-  return 9222246136947933187ULL;
-}
-}
+${jsValueAbi.emitInlineCppSupport()}
 
 ${blocks.map(emitInlineCppFunction).join("\n")}`;
 
-function emitLlvmIr(module: JsIrModule): string {
+// eslint-disable-next-line max-statements -- Legacy section assembly and tracked builder composition remain together during incremental migration.
+function emitLlvmIr(module: JsIrModule): RenderedLlvmModule {
   const moduleComments = module.modules
     .map((sourceModule) => `; source ${sourceModule.fileName} statements=${sourceModule.statementCount}`)
     .join("\n");
@@ -222,7 +209,8 @@ function emitLlvmIr(module: JsIrModule): string {
     arrayIndex: 0,
     objectIndex: 0,
     optionalTargets: [],
-    gcFrameName: "%gc.main.frame"
+    gcFrameName: "%gc.main.frame",
+    traceMarkers: new Map()
   };
   const functionDefs: FunctionDef[] = [];
   const mainOps: JsIrOperation[] = [];
@@ -238,9 +226,7 @@ function emitLlvmIr(module: JsIrModule): string {
     });
   }
 
-  const fnLines = functionDefs
-    .flatMap((fn) => emitFunctionDefinition(fn, context))
-    .join("\n");
+  const fnLines = functionDefs.flatMap((fn) => emitFunctionDefinition(fn, context));
   const mainLines = emitOperations(mainOps, context);
   const stringConstants = context.stringConstants.join("\n");
   const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals].join("\n");
@@ -252,41 +238,61 @@ function emitLlvmIr(module: JsIrModule): string {
 @.fmt.number.negative-infinity = private unnamed_addr constant [10 x i8] c"-Infinity\00"`;
   }
 
-  let mainBody = "";
-  if (mainLines.length > noLines) {
-    mainBody = `${mainLines.join("\n")}\n`;
-  }
   // Phase A: invoke the GC initializer before any user statement so that the
   // call to gcInit lands at the start of @main's entry block. Immediately record
   // the root-stack baseline so top-level roots are released before @main returns
   // (otherwise straight-line top-level temporaries stay pinned until process exit).
-  const mainInit = `  call void @gcInit()\n  %gc.main.frame = call i64 @gcRootSave()\n`;
+  const mainInit = ["  call void @gcInit()", "  %gc.main.frame = call i64 @gcRootSave()"];
 
-  const runtimeDeclarations = emitRuntimeDeclarations(context.runtime).join("\n");
-  const runtimeDefinitions = emitRuntimeDefinitions(context.runtime).join("\n");
-  const inlineCppDeclarations = emitInlineCppDeclarations(module.inlineCppBlocks).join("\n");
-
-  return `; tscn textual LLVM IR placeholder
-; entry ${module.entry}
-${moduleComments}
-
-declare i32 @puts(ptr)
-declare i32 @printf(ptr, ...)
-declare void @exit(i32)
-${inlineCppDeclarations}
-${runtimeDeclarations}
-
-${numberFormat}
-${stringConstants}
-${aggregateGlobals}
-${runtimeDefinitions}
-${fnLines}
-define i32 @main() {
-entry:
-${mainInit}${mainBody}  call void @gcRootRestore(i64 %gc.main.frame)
-  ret i32 0
+  const runtimeDeclarations = emitRuntimeDeclarations(context.runtime);
+  const runtimeDefinitions = emitRuntimeDefinitions(context.runtime);
+  const inlineCppDeclarations = emitInlineCppDeclarations(module.inlineCppBlocks);
+  const traceMarkers: LegacyLlvmTraceMarker[] = [];
+  const legacyLines: string[] = [];
+  const appendLines = (lines: readonly string[]): void => {
+    for (const sourceLine of lines) {
+      for (const line of sourceLine.split("\n")) {
+        const marker = context.traceMarkers.get(line);
+        if (marker !== undefined) {
+          traceMarkers.push({ ...marker, line: legacyLines.length + 1 });
+        }
+        legacyLines.push(line);
+      }
+    }
+  };
+  const appendText = (text: string): void => {
+    if (text.length > 0) {
+      appendLines(text.split("\n"));
+    }
+  };
+  appendLines([`; tscn textual LLVM IR placeholder`, `; entry ${module.entry}`]);
+  appendText(moduleComments);
+  appendLines(["", "declare i32 @puts(ptr)", "declare i32 @printf(ptr, ...)", "declare void @exit(i32)"]);
+  appendLines(inlineCppDeclarations);
+  appendLines(runtimeDeclarations);
+  appendLines([""]);
+  appendText(numberFormat);
+  appendText(stringConstants);
+  appendText(aggregateGlobals);
+  appendLines(runtimeDefinitions.flatMap(splitLegacyDefinition));
+  appendLines(fnLines);
+  appendLines(["define i32 @main() {", "entry:", ...mainInit]);
+  if (mainLines.length > noLines) {
+    appendLines(mainLines);
+  }
+  appendLines(["  call void @gcRootRestore(i64 %gc.main.frame)", "  ret i32 0", "}"]);
+  const legacyText = `${legacyLines.join("\n")}\n`;
+  const llvmModule = createLlvmModule();
+  llvmModule.addLegacyModuleText({ origin: "legacy LLVM backend", text: legacyText, traceMarkers });
+  defineStructuredRuntimeHelpers(llvmModule, context.runtime);
+  return llvmModule.render();
 }
-`;
+
+function splitLegacyDefinition(definition: string): readonly string[] {
+  if (definition.endsWith("\n")) {
+    return definition.slice(0, -1).split("\n");
+  }
+  return definition.split("\n");
 }
 
 export type LlvmEmission = {
@@ -295,9 +301,8 @@ export type LlvmEmission = {
 };
 
 export function emitLlvmModule(module: JsIrModule): LlvmEmission {
-  const llvmIr = emitLlvmIr(module);
-  const ranges = collectTraceRanges(llvmIr, module);
-  return { llvmIr, traceMap: buildTraceMap(module, ranges) };
+  const rendered = emitLlvmIr(module);
+  return { llvmIr: rendered.text, traceMap: buildTraceMap(module, rendered.traceRanges) };
 }
 
 // eslint-disable-next-line complexity -- Top-level operation classification is an explicit dispatch table.
@@ -412,7 +417,7 @@ function emitRootStackRestore(context: EmitContext): string[] {
   return [`  call void @gcRootRestore(i64 ${context.gcFrameName})`];
 }
 
-function traceStartLine(operation: JsIrOperation): string {
+function traceStartLine(operation: JsIrOperation, context: EmitContext): string {
   const { trace } = operation;
   const id = traceOperationId(operation);
   const source = trace?.source;
@@ -420,19 +425,24 @@ function traceStartLine(operation: JsIrOperation): string {
   if (source !== undefined) {
     location = `${source.fileName}:${source.line}:${source.column}`;
   }
-  return `; tscn-trace-start ${id} ${operation.kind} ${location} ${trace?.origin ?? "synthesized"}`;
+  const line = `; tscn-trace-start ${id} ${operation.kind} ${location} ${trace?.origin ?? "synthesized"}`;
+  context.traceMarkers.set(line, { id, kind: "start" });
+  return line;
 }
 
-function traceEndLine(operation: JsIrOperation): string {
-  return `; tscn-trace-end ${traceOperationId(operation)}`;
+function traceEndLine(operation: JsIrOperation, context: EmitContext): string {
+  const id = traceOperationId(operation);
+  const line = `; tscn-trace-end ${id}`;
+  context.traceMarkers.set(line, { id, kind: "end" });
+  return line;
 }
 
-function wrapFunctionTrace(operation: JsIrOperation, lines: readonly string[]): string[] {
+function wrapFunctionTrace(operation: JsIrOperation, lines: readonly string[], context: EmitContext): string[] {
   let content = lines;
   if (lines.at(-1) === "") {
     content = lines.slice(0, -1);
   }
-  return [traceStartLine(operation), ...content, traceEndLine(operation), ""];
+  return [traceStartLine(operation, context), ...content, traceEndLine(operation, context), ""];
 }
 
 function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
@@ -462,7 +472,8 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     arrayIndex: context.arrayIndex,
     objectIndex: context.objectIndex,
     optionalTargets: [],
-    gcFrameName: "%gc.frame"
+    gcFrameName: "%gc.frame",
+    traceMarkers: context.traceMarkers
   };
   for (let i = 0; i < fn.parameters.length; i++) {
     const parameter = fn.parameters[i];
@@ -500,7 +511,7 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     lines.push("  ret void");
   }
   lines.push("}", "");
-  return wrapFunctionTrace(fn.traceOperation, lines);
+  return wrapFunctionTrace(fn.traceOperation, lines, context);
 }
 
 function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): string[] {
@@ -526,7 +537,8 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     arrayIndex: context.arrayIndex,
     objectIndex: context.objectIndex,
     optionalTargets: [],
-    gcFrameName: "%gc.frame"
+    gcFrameName: "%gc.frame",
+    traceMarkers: context.traceMarkers
   };
   const bodyLines = [`  ${fnContext.gcFrameName} = call i64 @gcRootSave()`];
   if (fn.usesDynamicThis === true) {
@@ -550,7 +562,7 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     lines.push(...emitRootStackRestore(fnContext), `  ret i64 ${jsValueUndefined}`);
   }
   lines.push("}", "");
-  return wrapFunctionTrace(fn.traceOperation, lines);
+  return wrapFunctionTrace(fn.traceOperation, lines, context);
 }
 
 // Push heap-capable parameters (strings and arbitrary JSValues) onto the GC root
@@ -584,7 +596,7 @@ function emitNumberParameterUnbox(parameters: readonly JsIrFunctionParameter[]):
     if (parameter.valueKind === "string" || parameter.valueKind === "value") {
       continue;
     }
-    lines.push(`  %p${index}.num = bitcast i64 %p${index} to double`);
+    lines.push(`  %p${index}.num = call double @valueNumber(i64 %p${index})`);
   }
   return lines;
 }
@@ -617,7 +629,7 @@ function emitOperations(operations: readonly JsIrOperation[], context: EmitConte
 
   for (const operation of operations) {
     const emitted = emitOperation(operation, context);
-    lines.push(traceStartLine(operation), ...emitted, traceEndLine(operation));
+    lines.push(traceStartLine(operation, context), ...emitted, traceEndLine(operation, context));
   }
 
   return lines;
@@ -2016,7 +2028,7 @@ function emitArrayCallbackValueArgument(
   if (parameterIndex === 1) {
     const number = `%arr.map.arg.${loopIndex}.idx.num`;
     const value = `%arr.map.arg.${loopIndex}.idx.value`;
-    lines.push(`  ${number} = uitofp i64 ${currentIndex} to double`, `  ${value} = bitcast double ${number} to i64`);
+    lines.push(`  ${number} = uitofp i64 ${currentIndex} to double`, `  ${value} = call i64 @valueBoxNumber(double ${number})`);
     return value;
   }
   const value = `%arr.map.arg.${loopIndex}.array`;
@@ -3140,7 +3152,7 @@ function emitCallExpressionResult(expression: { readonly kind: "call"; readonly 
     const argIndex = context.numIndex;
     context.numIndex += 1;
     const boxed = `%arg.num.${argIndex}`;
-    lines.push(...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`);
+    lines.push(...result.lines, `  ${boxed} = call i64 @valueBoxNumber(double ${llvmDoubleBitcastOperand(result.value)})`);
     argValues.push(`i64 ${boxed}`);
   }
   const args = argValues.join(", ");
@@ -3148,7 +3160,7 @@ function emitCallExpressionResult(expression: { readonly kind: "call"; readonly 
   context.callIndex += 1;
   const name = `%call.${index}`;
   const number = `%call.${index}.num`;
-  lines.push(`  ${name} = call i64 @${expression.name}(${args})`, `  ${number} = bitcast i64 ${name} to double`);
+  lines.push(`  ${name} = call i64 @${expression.name}(${args})`, `  ${number} = call double @valueNumber(i64 ${name})`);
   return { lines, value: number };
 }
 
@@ -3159,7 +3171,7 @@ function emitNumberCallExpressionResult(expression: { readonly kind: "call"; rea
   const name = `%call.${index}`;
   const number = `%call.${index}.num`;
   return {
-    lines: [...args.lines, `  ${name} = call i64 @${expression.name}(${args.values.join(", ")})`, `  ${number} = bitcast i64 ${name} to double`],
+    lines: [...args.lines, `  ${name} = call i64 @${expression.name}(${args.values.join(", ")})`, `  ${number} = call double @valueNumber(i64 ${name})`],
     value: number
   };
 }
@@ -3239,7 +3251,7 @@ function emitCallArguments(args: readonly JsIrCallArgument[], context: EmitConte
     const index = context.numIndex;
     context.numIndex += 1;
     const boxed = `%arg.num.${index}`;
-    lines.push(...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`);
+    lines.push(...result.lines, `  ${boxed} = call i64 @valueBoxNumber(double ${llvmDoubleBitcastOperand(result.value)})`);
     values.push(`i64 ${boxed}`);
   }
   return { lines, values };
@@ -3250,7 +3262,7 @@ function emitNumberReturnOperation(operation: { readonly kind: "returnNumber"; r
   const index = context.numIndex;
   context.numIndex += 1;
   const boxed = `%ret.num.${index}`;
-  return [...result.lines, `  ${boxed} = bitcast double ${llvmDoubleBitcastOperand(result.value)} to i64`, ...emitRootStackRestore(context), `  ret i64 ${boxed}`];
+  return [...result.lines, `  ${boxed} = call i64 @valueBoxNumber(double ${llvmDoubleBitcastOperand(result.value)})`, ...emitRootStackRestore(context), `  ret i64 ${boxed}`];
 }
 
 function emitStringReturnOperation(operation: { readonly kind: "returnString"; readonly expression: JsIrStringExpression }, context: EmitContext): string[] {
@@ -3487,7 +3499,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
       ...receiver.lines,
       ...index.lines,
       `  ${doubleValue} = call double @stringCharCodeAt(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${index.value})`,
-      `  ${value} = bitcast double ${doubleValue} to i64`
+      `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
     ];
     return { lines, value };
   }
@@ -3838,7 +3850,7 @@ function emitNumberValueExpression(expression: Extract<JsIrValueExpression, { re
   const index = context.numIndex;
   context.numIndex += 1;
   const value = `%value.${index}`;
-  return { lines: [...number.lines, `  ${value} = bitcast double ${llvmDoubleBitcastOperand(number.value)} to i64`], value };
+  return { lines: [...number.lines, `  ${value} = call i64 @valueBoxNumber(double ${llvmDoubleBitcastOperand(number.value)})`], value };
 }
 
 function emitBooleanValueExpression(expression: Extract<JsIrValueExpression, { readonly kind: "boolean" }>, context: EmitContext): JsValue {
@@ -6238,7 +6250,7 @@ print.nan.${index}:
   %print.${index}.nan.result = call i32 @puts(ptr @.fmt.number.nan)
   br label %print.end.${index}
 print.check-infinity.${index}:
-  %print.${index}.bits = bitcast double ${value} to i64
+  %print.${index}.bits = call i64 @valueBoxNumber(double ${value})
   %print.${index}.absolute-bits = and i64 %print.${index}.bits, 9223372036854775807
   %print.${index}.infinite = icmp eq i64 %print.${index}.absolute-bits, 9218868437227405312
   br i1 %print.${index}.infinite, label %print.infinity-sign.${index}, label %print.finite.${index}
@@ -6276,88 +6288,4 @@ function emitBooleanValuePrint(value: string, context: EmitContext): string[] {
     `  br label %${endLabel}`,
     `${endLabel}:`
   ];
-}
-
-const traceStartPattern = /^; tscn-trace-start (\S+) /;
-const traceEndPattern = /^; tscn-trace-end (\S+)$/;
-
-function collectInstructionRanges(lines: readonly string[], startIndex: number, endIndex: number): LlvmLineRange[] {
-  const ranges: LlvmLineRange[] = [];
-  let rangeStart: number | undefined;
-  let rangeEnd: number | undefined;
-  for (let index = startIndex + 1; index < endIndex; index += 1) {
-    const line = lines[index];
-    const excluded = line.length === 0 || traceStartPattern.test(line) || traceEndPattern.test(line);
-    if (excluded) {
-      if (rangeStart !== undefined && rangeEnd !== undefined) {
-        ranges.push({ startLine: rangeStart, endLine: rangeEnd });
-        rangeStart = undefined;
-        rangeEnd = undefined;
-      }
-      continue;
-    }
-    const lineNumber = index + 1;
-    rangeStart ??= lineNumber;
-    rangeEnd = lineNumber;
-  }
-  if (rangeStart !== undefined && rangeEnd !== undefined) {
-    ranges.push({ startLine: rangeStart, endLine: rangeEnd });
-  }
-  return ranges;
-}
-
-// eslint-disable-next-line max-statements -- Marker validation and pairing intentionally stay in one linear scan.
-function collectTraceRanges(llvmIr: string, module: JsIrModule): ReadonlyMap<string, readonly LlvmLineRange[]> {
-  const knownIds = new Set<string>();
-  for (const sourceModule of module.modules) {
-    visitJsIrOperations(sourceModule.operations, (operation) => {
-      knownIds.add(traceOperationId(operation));
-    });
-  }
-
-  const lines = llvmIr.split("\n");
-  const openMarkers: { readonly id: string; readonly lineIndex: number }[] = [];
-  const ranges = new Map<string, LlvmLineRange[]>();
-  const closedIds = new Set<string>();
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    const line = lines[lineIndex];
-    const start = traceStartPattern.exec(line);
-    if (start !== null) {
-      const [, id] = start;
-      if (!knownIds.has(id)) {
-        throw new Error(`Internal compiler error: trace marker references unknown ID ${id}`);
-      }
-      openMarkers.push({ id, lineIndex });
-      continue;
-    }
-    const end = traceEndPattern.exec(line);
-    if (end === null) {
-      continue;
-    }
-    const [, id] = end;
-    if (!knownIds.has(id)) {
-      throw new Error(`Internal compiler error: trace marker references unknown ID ${id}`);
-    }
-    const open = openMarkers.pop();
-    if (open === undefined) {
-      throw new Error(`Internal compiler error: unmatched trace end marker ${id}`);
-    }
-    if (open.id !== id) {
-      throw new Error(`Internal compiler error: misnested trace markers ${open.id} and ${id}`);
-    }
-    const operationRanges = ranges.get(id) ?? [];
-    operationRanges.push(...collectInstructionRanges(lines, open.lineIndex, lineIndex));
-    ranges.set(id, operationRanges);
-    closedIds.add(id);
-  }
-  const unclosed = openMarkers.at(-1);
-  if (unclosed !== undefined) {
-    throw new Error(`Internal compiler error: unmatched trace start marker ${unclosed.id}`);
-  }
-  for (const id of knownIds) {
-    if (!closedIds.has(id)) {
-      throw new Error(`Internal compiler error: missing trace marker pair ${id}`);
-    }
-  }
-  return ranges;
 }
