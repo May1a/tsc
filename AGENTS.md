@@ -25,3 +25,7 @@ Use the repository's GitHub labels if they exist. If labels are not configured, 
 ### Domain Docs
 
 This repo uses a single-context layout: `CONTEXT.md` at the repo root plus ADRs in `docs/adr/`.
+
+## Subagents
+Only for opencode:
+Use glm, mimo and minimax subagents only. Do NOT use other subagents
