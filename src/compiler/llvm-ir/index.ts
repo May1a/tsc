@@ -11,9 +11,13 @@ export {
 } from "./builder.js";
 export {
   llvm,
+  renderLlvmType,
+  sameLlvmType,
   type LlvmDoubleType,
   type LlvmIntegerType,
   type LlvmPointerType,
+  type LlvmStructElementType,
+  type LlvmStructType,
   type LlvmType,
   type LlvmValue,
   type LlvmValueType,

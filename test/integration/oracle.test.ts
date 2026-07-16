@@ -37,7 +37,12 @@ const oracleFixtures = [
   "array-runtime-arrow-lexical-this.ts",
   "class-basic-method.ts",
   "gc-retain-live.ts",
-  "throw-string-top-level.ts"
+  "throw-string-top-level.ts",
+  "throw-across-function-caught.ts",
+  "throw-across-function-value.ts",
+  "throw-across-array-callback.ts",
+  "throw-nested-rethrow.ts",
+  "gc-retain-thrown-value.ts"
 ] as const;
 
 describe("Node correctness oracle", () => {

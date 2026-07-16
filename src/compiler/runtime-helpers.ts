@@ -2753,7 +2753,7 @@ entry:
 `);
   }
   if (runtime.used.has("jsCall")) {
-    definitions.push(`define i64 @jsCall(i64 %fn.value, i64 %argc, ptr %argv, i64 %callThis) {
+    definitions.push(`define { i64, i1 } @jsCall(i64 %fn.value, i64 %argc, ptr %argv, i64 %callThis) {
 entry:
   %function = call ptr @valueFunctionPtr(i64 %fn.value)
   %code = load ptr, ptr %function
@@ -2763,8 +2763,8 @@ entry:
   %boundThis = load i64, ptr %this.slot
   %has.bound.this = icmp ne i64 %boundThis, ${legacyJsValue.immediate("undefined")}
   %this.value = select i1 %has.bound.this, i64 %boundThis, i64 %callThis
-  %result = call i64 %code(i64 %argc, ptr %argv, ptr %env, i64 %this.value)
-  ret i64 %result
+  %result = call { i64, i1 } %code(i64 %argc, ptr %argv, ptr %env, i64 %this.value)
+  ret { i64, i1 } %result
 }
 `);
   }

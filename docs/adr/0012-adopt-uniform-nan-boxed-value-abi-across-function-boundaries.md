@@ -12,7 +12,7 @@ The encode/decode primitives and tag constants for the real ABI already existed 
 
 ## Decision
 
-All JavaScript-visible values cross every function boundary as a single `i64` NaN-boxed `JSValue`. This covers function **parameters**, **return types**, **call arguments**, and **array-callback arguments and returns**. Box/unbox happens only at those edges:
+All JavaScript-visible values cross every function boundary as a single `i64` NaN-boxed `JSValue`. This covers function **parameters**, **return payloads**, **call arguments**, and **array-callback arguments and return payloads**. ADR 0008 wraps return payloads with an `i1` exception discriminator in `{ i64, i1 }`; the JavaScript-visible value remains the single `i64` field. Box/unbox happens only at those edges:
 
 - number: `bitcast double <-> i64`.
 - string: `valueBoxString` to box; `valueStringPtr` + `valueStringLength` to unbox into the `(ptr, length)` working form.
@@ -32,7 +32,7 @@ Booleans never had a dedicated boundary ABI: a `boolean`-typed parameter lowers 
 
 ## Consequences
 
-- `LlvmReturnType` for user functions is `"void" | "i64" | "ptr"` (`ptr` for returned closures). The `double` and `{ ptr, i64 }` user-function return ABIs are removed.
+- Generated JavaScript functions return ADR 0008's `{ i64, i1 }` result aggregate. The payload is always an `i64` `JSValue`; `void`, `double`, `ptr`, and `{ ptr, i64 }` user-function return ABIs are removed.
 - Functions, closures, methods, and array callbacks share one calling convention, so values and functions compose uniformly regardless of static type.
 - This supersedes the transitional *boundary-ABI* language in ADRs 0010 and 0011 for scalars. Those ADRs' decisions about runtime aggregate helpers and the internal string-helper convention still hold.
 - Boxing currently allocates (e.g. `valueBoxString` mallocs a 16-byte `{ptr, len}` cell) without reclamation. A non-moving mark-sweep garbage collector (ADR 0009) is the next step this migration unblocks.

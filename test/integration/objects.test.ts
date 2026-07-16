@@ -124,7 +124,7 @@ describe("tscn objects", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%call.0 = call i64 @value()");
+      expect(llvmIr).toContain("call { i64, i1 } @value()");
       expect(llvmIr).toContain("store double %call.0.num, ptr %obj.gep.");
     } finally {
       await result.cleanup();
@@ -510,10 +510,10 @@ describe("tscn JSValue ABI", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).not.toContain("declare i64 @choose(i64)");
-      expect(llvmIr).toContain("define i64 @choose(i64 %p0)");
+      expect(llvmIr).not.toContain("declare { i64, i1 } @choose(i64)");
+      expect(llvmIr).toContain("define { i64, i1 } @choose(i64 %p0)");
       expect(llvmIr).toContain("select i1 %cmp.0, i64 %value.");
-      expect(llvmIr).toContain("%call.0 = call i64 @choose(i64 %arg.num.0)");
+      expect(llvmIr).toContain("call { i64, i1 } @choose(i64 %arg.num.0)");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\n7\n", stderr: "" });
     } finally {
       await result.cleanup();

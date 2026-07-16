@@ -53,9 +53,11 @@ describe("tscn GC scaffolding (phase A)", () => {
       expect(llvmIr).toMatch(/^define void @gcMarkValue\(i64 [^)]+\) \{/m);
       expect(llvmIr).toMatch(/^define void @gcSweep\(\) \{/m);
       expect(llvmIr).toMatch(/^define void @gcCollect\(\) \{/m);
-      // hello.ts only calls @gcInit, never @gcAlloc or @gcRootPush.
-      expect(llvmIr).not.toMatch(/call.+@gcAlloc/);
-      expect(llvmIr).not.toMatch(/call.+@gcRootPush/);
+      // hello.ts's @main never calls @gcAlloc directly (gcAlloc only appears
+      // inside always-emitted helper definitions like valueBoxString).  hello.ts
+      // does not call user-defined functions, so no gcRootPush appears in @main.
+      expect(mainBody).not.toMatch(/call.+@gcAlloc/);
+      expect(mainBody).not.toMatch(/call void @gcRootPush\(/);
     } finally {
       await result.cleanup();
     }
@@ -282,7 +284,7 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
       expect(
         window,
         `valueBoxObject at @build line ${callIndex + 1} not followed by a constructor call within ${windowRadius} lines`
-      ).toMatch(/call void @Greeter\$constructor\(/);
+      ).toMatch(/call \{ i64, i1 \} @Greeter\$constructor\(/);
       const pushWindowRadius = 3;
       const pushWindow = buildLines.slice(callIndex, callIndex + pushWindowRadius).join("\n");
       expect(
@@ -299,7 +301,7 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      const callback = /define i64 @__tscn_fnobj_[^(]+\([^)]*i64 %this\.value\) \{[\s\S]*?\n\}/.exec(llvmIr)?.[0] ?? "";
+      const callback = /define \{ i64, i1 \} @__tscn_fnobj_[^(]+\([^)]*i64 %this\.value\) \{[\s\S]*?\n\}/.exec(llvmIr)?.[0] ?? "";
       expect(callback, "expected an emitted function-object callback").not.toBe("");
       expect(callback).toContain("call void @gcRootPush(i64 %this.value)");
       expect(llvmIr).toContain("call void @gcMarkValue(i64 %fn.this)");
@@ -329,7 +331,7 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      const receiverCall = llvmIr.indexOf("call i64 @receiver(");
+      const receiverCall = llvmIr.indexOf("call { i64, i1 } @receiver(");
       const functionObjectCall = llvmIr.indexOf("call i64 @functionObjectNew(");
       expect(receiverCall).toBeGreaterThanOrEqual(0);
       expect(functionObjectCall).toBeGreaterThan(receiverCall);

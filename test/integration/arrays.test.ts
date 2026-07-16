@@ -137,9 +137,9 @@ describe("tscn arrays", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%call.0 = call i64 @next()");
+      expect(llvmIr).toContain("call { i64, i1 } @next()");
       expect(llvmIr).toContain("load double, ptr %x.addr");
-      expect(llvmIr).toContain("store double %call.0.num, ptr %arr.gep.");
+      expect(llvmIr).toMatch(/store double %call\.\d+\.num, ptr %arr\.gep\./);
     } finally {
       await result.cleanup();
     }

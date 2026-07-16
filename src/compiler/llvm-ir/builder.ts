@@ -2,6 +2,8 @@ import type { LlvmLineRange } from "../trace.js";
 import {
   type LlvmIntegerType,
   type LlvmPointerType,
+  type LlvmStructElementType,
+  type LlvmStructType,
   type LlvmType,
   type LlvmValue,
   type LlvmValueType,
@@ -89,6 +91,7 @@ export type RenderedLlvmModule = {
 
 export interface LlvmBlockBuilder {
   int<T extends LlvmIntegerType>(type: T, value: bigint): LlvmValue<T>;
+  undef<T extends LlvmValueType>(type: T, name: string): LlvmValue<T>;
   nullPtr(): LlvmValue<LlvmPointerType>;
   ptrToInt<T extends LlvmIntegerType>(value: LlvmValue<LlvmPointerType>, type: T, name: string): LlvmValue<T>;
   intToPtr<T extends LlvmIntegerType>(value: LlvmValue<T>, name: string): LlvmValue<LlvmPointerType>;
@@ -98,6 +101,8 @@ export interface LlvmBlockBuilder {
   xor<T extends LlvmIntegerType>(left: LlvmValue<T>, right: LlvmValue<T>, name: string): LlvmValue<T>;
   icmp<T extends LlvmIntegerType>(predicate: "eq" | "ne" | "ugt" | "uge" | "ult" | "ule" | "sgt" | "sge" | "slt" | "sle", left: LlvmValue<T>, right: LlvmValue<T>, name: string): LlvmValue<{ readonly kind: "integer"; readonly bits: 1 }>;
   select<T extends LlvmValueType>(condition: LlvmValue<{ readonly kind: "integer"; readonly bits: 1 }>, whenTrue: LlvmValue<T>, whenFalse: LlvmValue<T>, name: string): LlvmValue<T>;
+  insertValue<T extends LlvmStructType>(aggregate: LlvmValue<T>, element: LlvmValue, index: number, name: string): LlvmValue<T>;
+  extractValue<T extends LlvmStructType>(aggregate: LlvmValue<T>, index: number, name: string): LlvmValue<LlvmStructElementType<T>>;
   call(spec: LlvmFunctionSpec, arguments_: readonly LlvmValue[], name?: string): LlvmValue | undefined;
   load<T extends LlvmValueType>(type: T, pointer: LlvmValue<LlvmPointerType>, name: string): LlvmValue<T>;
   store(value: LlvmValue, pointer: LlvmValue<LlvmPointerType>): void;
@@ -241,6 +246,47 @@ class BlockBuilder implements LlvmBlockBuilder {
     this.#assertValue(whenFalse, whenTrue.type);
     const result = this.#namedValue(whenTrue.type, name);
     this.#instruction(`${this.#text(result)} = select i1 ${this.#text(condition)}, ${renderLlvmType(whenTrue.type)} ${this.#text(whenTrue)}, ${renderLlvmType(whenFalse.type)} ${this.#text(whenFalse)}`);
+    return result;
+  }
+
+  public undef<T extends LlvmValueType>(type: T, name: string): LlvmValue<T> {
+    this.#assertActive();
+    assertName(name, "SSA name hint");
+    let candidate = name;
+    let suffix = 1;
+    while (this.#names.has(candidate)) {
+      candidate = `${name}.${suffix}`;
+      suffix += 1;
+    }
+    this.#names.add(candidate);
+    return createValue(type, this.#owner, "undef", this.#blockOwner);
+  }
+
+  public insertValue<T extends LlvmStructType>(aggregate: LlvmValue<T>, element: LlvmValue, index: number, name: string): LlvmValue<T> {
+    this.#assertActive();
+    this.#assertOwned(aggregate);
+    this.#assertOwned(element);
+    this.#assertStructType(aggregate.type);
+    const aggregateText = renderLlvmType(aggregate.type);
+    const elementCount = aggregate.type.elements.length;
+    const expectedElementType = this.#lookupStructElement(aggregate.type, index, elementCount, "insertvalue", aggregateText);
+    if (!sameLlvmType(element.type, expectedElementType)) {
+      throw internalError(`insertvalue element type ${renderLlvmType(element.type)} does not match struct element ${renderLlvmType(expectedElementType)}`);
+    }
+    const result = this.#namedValue(aggregate.type, name);
+    this.#instruction(`${this.#text(result)} = insertvalue ${aggregateText} ${this.#text(aggregate)}, ${renderLlvmType(element.type)} ${this.#text(element)}, ${index}`);
+    return result;
+  }
+
+  public extractValue<T extends LlvmStructType>(aggregate: LlvmValue<T>, index: number, name: string): LlvmValue<LlvmStructElementType<T>> {
+    this.#assertActive();
+    this.#assertOwned(aggregate);
+    this.#assertStructType(aggregate.type);
+    const aggregateText = renderLlvmType(aggregate.type);
+    const elementCount = aggregate.type.elements.length;
+    const elementType = this.#lookupStructElement(aggregate.type, index, elementCount, "extractvalue", aggregateText);
+    const result = this.#namedValue(elementType, name);
+    this.#instruction(`${this.#text(result)} = extractvalue ${aggregateText} ${this.#text(aggregate)}, ${index}`);
     return result;
   }
 
@@ -394,6 +440,24 @@ class BlockBuilder implements LlvmBlockBuilder {
     if (data.owner !== this.#owner || (data.block !== undefined && data.block !== this.#blockOwner)) {
       throw internalError("incompatible LLVM value");
     }
+  }
+
+  #assertStructType(type: LlvmType): void {
+    if (type.kind !== "struct") {
+      throw internalError(`expected LLVM struct type, found ${renderLlvmType(type)}`);
+    }
+  }
+
+  #isBoundedIndex(index: unknown, length: number): index is number {
+    return typeof index === "number" && Number.isInteger(index) && index >= 0 && index < length;
+  }
+
+  #lookupStructElement<S extends LlvmStructType>(structType: S, index: number, length: number, opcode: "insertvalue" | "extractvalue", renderedType: string): LlvmStructElementType<S> {
+    const message = `${opcode} index ${index} out of bounds for ${renderedType}`;
+    if (!this.#isBoundedIndex(index, length)) {
+      throw internalError(message);
+    }
+    return structType.elements[index] as LlvmStructElementType<S>;
   }
 
   #assertActive(): void {

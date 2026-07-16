@@ -148,8 +148,8 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define void @greet()");
-      expect(llvmIr).toContain("call void @greet()");
+      expect(llvmIr).toContain("define { i64, i1 } @greet()");
+      expect(llvmIr).toContain("call { i64, i1 } @greet()");
       expect(llvmIr).toContain(String.raw`c"hello from function\00"`);
     } finally {
       await result.cleanup();
@@ -161,11 +161,11 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define void @add(i64 %p0, i64 %p1)");
+      expect(llvmIr).toContain("define { i64, i1 } @add(i64 %p0, i64 %p1)");
       expect(llvmIr).toContain("%p0.num = call double @valueNumber(i64 %p0)");
       expect(llvmIr).toContain("%num.0 = fadd double %p0.num, %p1.num");
       expect(llvmIr).toContain("%arg.num.0 = call i64 @valueBoxNumber(double 1.0)");
-      expect(llvmIr).toContain("call void @add(i64 %arg.num.0, i64 %arg.num.1)");
+      expect(llvmIr).toContain("call { i64, i1 } @add(i64 %arg.num.0, i64 %arg.num.1)");
     } finally {
       await result.cleanup();
     }
@@ -176,10 +176,10 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i64 @double(i64 %p0)");
+      expect(llvmIr).toContain("define { i64, i1 } @double(i64 %p0)");
       expect(llvmIr).toContain("%arg.num.0 = call i64 @valueBoxNumber(double 3.0)");
-      expect(llvmIr).toContain("%call.0 = call i64 @double(i64 %arg.num.0)");
-      expect(llvmIr).toContain("ret i64 %ret.num.");
+      expect(llvmIr).toContain("call { i64, i1 } @double(i64 %arg.num.0)");
+      expect(llvmIr).toContain("ret { i64, i1 }");
     } finally {
       await result.cleanup();
     }
@@ -190,9 +190,9 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).not.toContain("declare i64 @fib(i64)");
-      expect(llvmIr).toContain("define i64 @fib(i64 %p0)");
-      expect(llvmIr).toContain("call i64 @fib(i64 %arg.num.");
+      expect(llvmIr).not.toContain("declare { i64, i1 } @fib(i64)");
+      expect(llvmIr).toContain("define { i64, i1 } @fib(i64 %p0)");
+      expect(llvmIr).toContain("call { i64, i1 } @fib(i64 %arg.num.");
     } finally {
       await result.cleanup();
     }
@@ -203,9 +203,9 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define void @getX()");
+      expect(llvmIr).toContain("define { i64, i1 } @getX()");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42.0)");
-      expect(llvmIr).toContain("call void @getX()");
+      expect(llvmIr).toContain("call { i64, i1 } @getX()");
     } finally {
       await result.cleanup();
     }
@@ -216,9 +216,9 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define void @foo()");
+      expect(llvmIr).toContain("define { i64, i1 } @foo()");
       expect(llvmIr).toContain(String.raw`c"from exported function\00"`);
-      expect(llvmIr).toContain("call void @foo()");
+      expect(llvmIr).toContain("call { i64, i1 } @foo()");
     } finally {
       await result.cleanup();
     }
@@ -229,9 +229,9 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i64 @add(i64 %p0, i64 %p1)");
-      expect(llvmIr).toContain("%call.0 = call i64 @add(i64 %arg.num.0, i64 %arg.num.1)");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %call.0.num)");
+      expect(llvmIr).toContain("define { i64, i1 } @add(i64 %p0, i64 %p1)");
+      expect(llvmIr).toContain("call { i64, i1 } @add(i64 %arg.num.0, i64 %arg.num.1)");
+      expect(llvmIr).toContain("call double @valueNumber(i64 %call.0.payload)");
     } finally {
       await result.cleanup();
     }
@@ -242,12 +242,12 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).not.toContain("declare i64 @isEven(i64)");
-      expect(llvmIr).not.toContain("declare i64 @isOdd(i64)");
-      expect(llvmIr).toContain("define i64 @isEven(i64 %p0)");
-      expect(llvmIr).toContain("define i64 @isOdd(i64 %p0)");
-      expect(llvmIr).toContain("call i64 @isOdd(i64 %arg.num.");
-      expect(llvmIr).toContain("call i64 @isEven(i64 %arg.num.");
+      expect(llvmIr).not.toContain("declare { i64, i1 } @isEven(i64)");
+      expect(llvmIr).not.toContain("declare { i64, i1 } @isOdd(i64)");
+      expect(llvmIr).toContain("define { i64, i1 } @isEven(i64 %p0)");
+      expect(llvmIr).toContain("define { i64, i1 } @isOdd(i64 %p0)");
+      expect(llvmIr).toContain("call { i64, i1 } @isOdd(i64 %arg.num.");
+      expect(llvmIr).toContain("call { i64, i1 } @isEven(i64 %arg.num.");
     } finally {
       await result.cleanup();
     }
@@ -260,7 +260,7 @@ describe("tscn function declarations and calls", () => {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("call ptr @environmentNew(i64 1)");
       expect(llvmIr).toContain("call i64 @environmentGet(ptr %env, i64 0)");
-      expect(llvmIr).toContain("call i64 @jsCall(");
+      expect(llvmIr).toContain("call { i64, i1 } @jsCall(");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "8\n", stderr: "" });
     } finally {
       await result.cleanup();
@@ -273,7 +273,7 @@ describe("tscn function declarations and calls", () => {
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("call i64 @functionObjectNew(");
-      expect(llvmIr).toContain("call i64 @jsCall(");
+      expect(llvmIr).toContain("call { i64, i1 } @jsCall(");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "5\n", stderr: "" });
     } finally {
       await result.cleanup();
@@ -285,8 +285,8 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i64 @__tscn_fnobj_");
-      expect(llvmIr).toContain("call i64 @jsCall(");
+      expect(llvmIr).toContain("define { i64, i1 } @__tscn_fnobj_");
+      expect(llvmIr).toContain("call { i64, i1 } @jsCall(");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "12\n", stderr: "" });
     } finally {
       await result.cleanup();
@@ -358,10 +358,10 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define void @greet(i64 %p0)");
+      expect(llvmIr).toContain("define { i64, i1 } @greet(i64 %p0)");
       expect(llvmIr).toContain("%p0.ptr = call ptr @valueStringPtr(i64 %p0)");
       expect(llvmIr).toContain("%arg.str.0 = call i64 @valueBoxString(ptr @.str.2, i64 3)");
-      expect(llvmIr).toContain("call void @greet(i64 %arg.str.0)");
+      expect(llvmIr).toContain("call { i64, i1 } @greet(i64 %arg.str.0)");
       expect(llvmIr).toContain("call ptr @strConcat(i64 6, ptr @.str.");
     } finally {
       await result.cleanup();
@@ -373,10 +373,10 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i64 @suffix()");
-      expect(llvmIr).toContain("%call.0 = call i64 @suffix()");
-      expect(llvmIr).toContain("%call.0.ptr = call ptr @valueStringPtr(i64 %call.0)");
-      expect(llvmIr).toContain("ret i64 %ret.str.");
+      expect(llvmIr).toContain("define { i64, i1 } @suffix()");
+      expect(llvmIr).toContain("call { i64, i1 } @suffix()");
+      expect(llvmIr).toContain("call ptr @valueStringPtr(i64 %call.0.payload)");
+      expect(llvmIr).toContain("ret { i64, i1 }");
       expect(llvmIr).toContain("call ptr @strConcat");
     } finally {
       await result.cleanup();
@@ -388,7 +388,7 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define void @greet(i64 %p0)");
+      expect(llvmIr).toContain("define { i64, i1 } @greet(i64 %p0)");
       expect(llvmIr).toContain("%p0.ptr = call ptr @valueStringPtr(i64 %p0)");
       expect(llvmIr).toContain("call i1 @strEquals(i64 %str.len.");
       expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.else.0");
@@ -402,9 +402,9 @@ describe("tscn function declarations and calls", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define void @add(i64 %p0, i64 %p1)");
-      expect(llvmIr).toContain("call void @add(i64 %arg.num.0, i64 %arg.num.1)");
-      expect(llvmIr).toContain("call void @add(i64 %arg.num.2, i64 %arg.num.3)");
+      expect(llvmIr).toContain("define { i64, i1 } @add(i64 %p0, i64 %p1)");
+      expect(llvmIr).toContain("call { i64, i1 } @add(i64 %arg.num.0, i64 %arg.num.1)");
+      expect(llvmIr).toContain("call { i64, i1 } @add(i64 %arg.num.2, i64 %arg.num.3)");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "11\n7\n", stderr: "" });
     } finally {
       await result.cleanup();
@@ -795,7 +795,7 @@ describe("tscn runtime strings", () => {
       expect(countOccurrences(llvmIr, "define ptr @strConcat")).toBe(1);
       expect(countOccurrences(llvmIr, "define i1 @strEquals")).toBe(1);
       expect(llvmIr.indexOf("declare ptr @malloc(i64)")).toBeLessThan(llvmIr.indexOf("define ptr @strConcat"));
-      expect(llvmIr.indexOf("define ptr @strConcat")).toBeLessThan(llvmIr.indexOf("define void @check"));
+      expect(llvmIr.indexOf("define ptr @strConcat")).toBeLessThan(llvmIr.indexOf("define { i64, i1 } @check("));
     } finally {
       await result.cleanup();
     }

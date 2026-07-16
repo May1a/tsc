@@ -1049,9 +1049,18 @@ describe("tscn expanded runtime roadmap", () => {
       "parse-int-radix-unsupported.ts",
       "array-runtime-map-noarg-unsupported.ts",
       "error-constructor-unsupported.ts",
-      "try-finally-unsupported.ts",
-      "throw-across-function-unsupported.ts"
+      "try-finally-unsupported.ts"
     ].map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
+  });
+
+  test("supports throw across function boundaries via aggregate ABI", async () => {
+    const result = await expectSuccessfulCompile("throw-across-function-unsupported.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 1, stdout: "message\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
   });
 
   test("supports switch statements with fall-through and break", async () => {

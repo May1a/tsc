@@ -1303,6 +1303,12 @@ export type JsIrOperationNode =
       readonly operations: readonly JsIrOperation[];
     }
   | {
+      readonly kind: "tryCatch";
+      readonly tryOperations: readonly JsIrOperation[];
+      readonly catchVariable: string;
+      readonly catchOperations: readonly JsIrOperation[];
+    }
+  | {
       readonly kind: "bindingGroup";
       readonly operations: readonly JsIrOperation[];
     }
@@ -1429,6 +1435,9 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
     case "block":
     case "bindingGroup": {
       return operation.operations;
+    }
+    case "tryCatch": {
+      return [...operation.tryOperations, ...operation.catchOperations];
     }
     case "if": {
       return [...operation.thenOperations, ...operation.elseOperations];
@@ -3524,6 +3533,13 @@ function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObjects: Read
   if (operation.kind === "bindingGroup") {
     return { ...operation, operations: operation.operations.map((nested) => markRuntimeObjectShadow(nested, shadowedObjects)) };
   }
+  if (operation.kind === "tryCatch") {
+    return {
+      ...operation,
+      tryOperations: markRuntimeObjectShadows(operation.tryOperations),
+      catchOperations: markRuntimeObjectShadows(operation.catchOperations)
+    };
+  }
   if (operation.kind === "for") {
     return {
       ...operation,
@@ -3632,6 +3648,11 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
   }
   if (operation.kind === "while" || operation.kind === "doWhile" || operation.kind === "function") {
     for (const nested of operation.body) {
+      collectRuntimeShadowObjectNames(nested, names);
+    }
+  }
+  if (operation.kind === "tryCatch") {
+    for (const nested of [...operation.tryOperations, ...operation.catchOperations]) {
       collectRuntimeShadowObjectNames(nested, names);
     }
   }
@@ -3809,18 +3830,76 @@ function lowerTryCatchStatement(
   statement: ts.TryStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if (statement.finallyBlock !== undefined || statement.catchClause === undefined || statement.tryBlock.statements.length !== 1) {
+  // `finally` is not supported by the IR; fall back so the caller can retry
+  // through the compile-time interpreter.
+  if (statement.finallyBlock !== undefined) {
+    return undefined;
+  }
+
+  // Semantically-equivalent compile-time shortcut for the direct
+  // `try { throw expr; } catch (e) { ... }` shape. It avoids real exception
+  // machinery for the common cases (error construction and plain value throws)
+  // and does not conflict with the general `tryCatch` lowering below, which is
+  // why it is retained.
+  const shortcut = lowerDirectThrowTryCatchShortcut(statement, bindings);
+  if (shortcut !== undefined) {
+    return shortcut;
+  }
+
+  // General path: lower an arbitrary try/catch (without finally) using normal
+  // block statement lowering. The catch variable is bound as a value variable
+  // and is lexically scoped to the catch block (a fresh binding map shadows any
+  // outer binding of the same name without leaking outwards).
+  const tryOperations = lowerBlockStatements(statement.tryBlock, bindings);
+  if (tryOperations === undefined) {
+    return undefined;
+  }
+
+  const { catchClause } = statement;
+  if (catchClause === undefined) {
+    // `try { ... }` with neither catch nor finally is not valid TypeScript;
+    // defensively run the try body as a plain block.
+    return { kind: "block", operations: tryOperations };
+  }
+
+  const catchVariable = catchBindingName(catchClause);
+  const catchBindings = new Map(bindings);
+  if (catchVariable !== "") {
+    catchBindings.set(catchVariable, { kind: "valueVariable", name: catchVariable });
+  }
+  const catchOperations = lowerBlockStatements(catchClause.block, catchBindings);
+  if (catchOperations === undefined) {
+    return undefined;
+  }
+
+  return { kind: "tryCatch", tryOperations, catchVariable, catchOperations };
+}
+
+function catchBindingName(catchClause: ts.CatchClause): string {
+  const variable = catchClause.variableDeclaration?.name;
+  if (variable !== undefined && ts.isIdentifier(variable)) {
+    return variable.text;
+  }
+  return "";
+}
+
+function lowerDirectThrowTryCatchShortcut(
+  statement: ts.TryStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const { catchClause } = statement;
+  if (catchClause === undefined || statement.tryBlock.statements.length !== 1) {
     return undefined;
   }
   const [throwStatement] = statement.tryBlock.statements;
   if (!ts.isThrowStatement(throwStatement)) {
     return undefined;
   }
-  const variable = statement.catchClause.variableDeclaration?.name;
-  if (variable === undefined || !ts.isIdentifier(variable)) {
+  const catchVariable = catchBindingName(catchClause);
+  if (catchVariable === "") {
     return undefined;
   }
-  const errorCatch = lowerErrorTryCatchStatement(statement, throwStatement, variable, bindings);
+  const errorCatch = lowerErrorTryCatchStatement(statement, throwStatement, catchVariable, bindings);
   if (errorCatch !== undefined) {
     return errorCatch;
   }
@@ -3828,29 +3907,29 @@ function lowerTryCatchStatement(
   if (thrown === undefined) {
     return undefined;
   }
-  const catchBindings = new Map(bindings);
-  catchBindings.set(variable.text, { kind: "value", value: thrown });
-  const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
+  const shortcutBindings = new Map(bindings);
+  shortcutBindings.set(catchVariable, { kind: "value", value: thrown });
+  const operations = lowerBlockStatements(catchClause.block, shortcutBindings);
   if (operations === undefined) {
     return undefined;
   }
-  return { kind: "block", operations: [{ kind: "constValue", name: variable.text, value: thrown }, ...operations] };
+  return { kind: "block", operations: [{ kind: "constValue", name: catchVariable, value: thrown }, ...operations] };
 }
 
 function lowerErrorTryCatchStatement(
   statement: ts.TryStatement,
   throwStatement: ts.ThrowStatement,
-  variable: ts.Identifier,
+  variableName: string,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   if (statement.catchClause === undefined) {
     return undefined;
   }
   const thrownExpression = unwrapTypeOnlyExpression(throwStatement.expression);
-  const errorOperation = lowerRuntimeErrorLiteral(`${variable.text}.thrown.${statement.pos}`, thrownExpression, bindings);
+  const errorOperation = lowerRuntimeErrorLiteral(`${variableName}.thrown.${statement.pos}`, thrownExpression, bindings);
   if (errorOperation !== undefined) {
     const catchBindings = new Map(bindings);
-    catchBindings.set(variable.text, { kind: "runtimeObject", name: errorOperation.name, errorName: errorOperation.errorName });
+    catchBindings.set(variableName, { kind: "runtimeObject", name: errorOperation.name, errorName: errorOperation.errorName });
     const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
     if (operations === undefined) {
       return undefined;
@@ -3865,7 +3944,7 @@ function lowerErrorTryCatchStatement(
     return undefined;
   }
   const catchBindings = new Map(bindings);
-  catchBindings.set(variable.text, thrownBinding);
+  catchBindings.set(variableName, thrownBinding);
   const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
   if (operations === undefined) {
     return undefined;
@@ -4502,9 +4581,6 @@ function lowerFunctionDeclaration(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
-    return undefined;
-  }
-  if (statement.body.statements.some((bodyStatement) => ts.isThrowStatement(bodyStatement))) {
     return undefined;
   }
 
