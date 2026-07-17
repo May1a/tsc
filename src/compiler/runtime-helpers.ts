@@ -202,8 +202,21 @@ export type RuntimeHelper =
   | "environmentGet"
   | "environmentSet"
   | "valueIsFunction"
+  | "valueIsString"
+  | "valuePropertyGet"
   | "getIteratorValue"
-  | "callIteratorNext";
+  | "callIteratorNext"
+  | "createArrayIterator"
+  | "createStringIterator"
+  | "createCollectionIterator"
+  | "getCollectionIterator"
+  | "builtinIteratorNext"
+  | "arrayIteratorMethod"
+  | "stringIteratorMethod"
+  | "mapFromIterable"
+  | "setFromIterable"
+  | "arrayFromValue"
+  | "iteratorResultObject";
 
 /**
  * Compiler-owned private-use property key for well-known `Symbol.iterator`.
@@ -329,14 +342,142 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["functionObjectNew", ["gcAlloc", "valueBoxFunction"]],
   ["jsCall", ["valueFunctionPtr"]],
   ["valueIsFunction", []],
+  ["valueIsString", []],
+  [
+    "valuePropertyGet",
+    [
+      "valueIsObject",
+      "valueIsArray",
+      "valueIsString",
+      "valueObjectPtr",
+      "valueArrayPtr",
+      "objectGet",
+      "arrayGetWithKey",
+      "arrayIteratorMethod",
+      "stringIteratorMethod",
+      "functionObjectNew",
+      "memcmp"
+    ]
+  ],
   [
     "getIteratorValue",
-    ["valueIsObject", "valueIsFunction", "valueObjectGet", "valueObjectPtr", "objectGet", "jsCall", "errorNew", "valueBoxObject", "valueBoxString", "gcRootPush"]
+    [
+      "valueIsObject",
+      "valueIsArray",
+      "valueIsString",
+      "valueIsFunction",
+      "valuePropertyGet",
+      "jsCall",
+      "errorNew",
+      "valueBoxObject",
+      "valueBoxString",
+      "gcRootPush"
+    ]
   ],
   [
     "callIteratorNext",
     ["valueIsObject", "valueIsFunction", "valueObjectGet", "jsCall", "errorNew", "valueBoxObject", "valueBoxString", "valueToString", "strConcat", "gcRootPush"]
   ],
+  [
+    "createArrayIterator",
+    ["gcAlloc", "functionObjectNew", "objectNew", "objectSet", "valueBoxObject", "valueBoxString", "builtinIteratorNext", "errorNew", "gcRootPush"]
+  ],
+  [
+    "createStringIterator",
+    ["gcAlloc", "functionObjectNew", "objectNew", "objectSet", "valueBoxObject", "valueBoxString", "builtinIteratorNext", "errorNew", "gcRootPush"]
+  ],
+  [
+    "createCollectionIterator",
+    ["gcAlloc", "functionObjectNew", "objectNew", "objectSet", "valueBoxObject", "valueBoxString", "builtinIteratorNext", "errorNew", "gcRootPush"]
+  ],
+  [
+    "getCollectionIterator",
+    ["createCollectionIterator", "valueIsFunction", "valueIsObject", "jsCall", "iteratorResultObject", "errorNew", "valueBoxObject", "valueBoxString", "valueToString", "strConcat", "gcRootPush"]
+  ],
+  [
+    "builtinIteratorNext",
+    [
+      "arrayLength",
+      "arrayGet",
+      "valueArrayPtr",
+      "valueStringPtr",
+      "valueStringLength",
+      "valueBoxString",
+      "valueBoxArray",
+      "valueBoxObject",
+      "arrayNew",
+      "arraySet",
+      "objectNew",
+      "objectSet",
+      "iteratorResultObject",
+      "malloc",
+      "memcpy",
+      "gcRootPush"
+    ]
+  ],
+  ["arrayIteratorMethod", ["createArrayIterator", "gcRootPush"]],
+  ["stringIteratorMethod", ["createStringIterator", "gcRootPush"]],
+  [
+    "mapFromIterable",
+    [
+      "getIteratorValue",
+      "callIteratorNext",
+      "collectionNew",
+      "collectionSet",
+      "valueIsObject",
+      "valueIsArray",
+      "valueObjectGet",
+      "valueArrayGet",
+      "valueTruthy",
+      "valueBoxString",
+      "errorNew",
+      "valueBoxObject",
+      "gcRootPush"
+    ]
+  ],
+  [
+    "setFromIterable",
+    [
+      "getIteratorValue",
+      "callIteratorNext",
+      "collectionNew",
+      "collectionSet",
+      "valueObjectGet",
+      "valueTruthy",
+      "valueBoxString",
+      "errorNew",
+      "valueBoxObject",
+      "gcRootPush"
+    ]
+  ],
+  [
+    "arrayFromValue",
+    [
+      "valueIsObject",
+      "valueIsArray",
+      "valueIsFunction",
+      "valuePropertyGet",
+      "jsCall",
+      "callIteratorNext",
+      "arrayNew",
+      "arrayPush",
+      "arrayLength",
+      "arrayGet",
+      "arraySet",
+      "arrayFromArray",
+      "arrayFromObject",
+      "valueArrayPtr",
+      "valueObjectPtr",
+      "valueObjectGet",
+      "valueTruthy",
+      "valueBoxArray",
+      "valueBoxString",
+      "errorNew",
+      "valueBoxObject",
+      "gcRootPush"
+    ]
+  ],
+  ["iteratorResultObject", ["objectNew", "objectSet", "valueBoxObject"]],
   ["valueObjectGet", ["valueObjectPtr", "objectGet"]],
   ["valueArrayGet", ["valueArrayPtr", "arrayGetWithKey"]],
   ["valueArrayLength", ["valueArrayPtr", "arrayLength"]],
@@ -535,6 +676,7 @@ export function emitRuntimeDefinitions(runtime: RuntimeHelperEmitter): string[] 
 @gcFreeCollection = internal global ptr null
 @gcFreeFunction = internal global ptr null
 @gcFreeEnvironment = internal global ptr null
+@gcFreeIterator = internal global ptr null
 @gcMarkStack = internal global ptr null
 @gcMarkStackCount = internal global i64 0
 @gcMarkStackCap = internal global i64 0
@@ -577,6 +719,7 @@ init:
   store ptr null, ptr @gcFreeCollection
   store ptr null, ptr @gcFreeFunction
   store ptr null, ptr @gcFreeEnvironment
+  store ptr null, ptr @gcFreeIterator
   %root.cap.bytes = mul i64 64, 8
   %root.stack = call ptr @malloc(i64 %root.cap.bytes)
   store ptr %root.stack, ptr @gcRootStack
@@ -779,6 +922,7 @@ walk:
   %is.collection = icmp eq i8 %tag, 4
   %is.function = icmp eq i8 %tag, 5
   %is.environment = icmp eq i8 %tag, 6
+  %is.iterator = icmp eq i8 %tag, 7
   br i1 %is.string, label %skip, label %check.object
 check.object:
   br i1 %is.object, label %walk.object, label %check.array
@@ -789,7 +933,9 @@ check.collection:
 check.function:
   br i1 %is.function, label %walk.function, label %check.environment
 check.environment:
-  br i1 %is.environment, label %walk.environment, label %skip
+  br i1 %is.environment, label %walk.environment, label %check.iterator
+check.iterator:
+  br i1 %is.iterator, label %walk.iterator, label %skip
 walk.object:
   %obj.count.ptr = getelementptr i8, ptr %cell, i64 8
   %obj.count = load i64, ptr %obj.count.ptr
@@ -849,6 +995,9 @@ walk.collection:
   %col.used = load i64, ptr %col.used.ptr
   %col.entries.ptr = getelementptr i8, ptr %cell, i64 32
   %col.entries = load ptr, ptr %col.entries.ptr
+  %col.iterator.ptr = getelementptr i8, ptr %cell, i64 40
+  %col.iterator = load i64, ptr %col.iterator.ptr
+  call void @gcMarkValue(i64 %col.iterator)
   br label %walk.collection.loop
 walk.collection.loop:
   %ci = phi i64 [ 0, %walk.collection ], [ %ci.next, %walk.collection.skip ]
@@ -904,6 +1053,24 @@ walk.environment.body:
   call void @gcMarkValue(i64 %evalue)
   %ei.next = add i64 %ei, 1
   br label %walk.environment.loop
+walk.iterator:
+  ; Iterator state cell: +0 index, +8 sourceKind, +16 iterationKind, +24 sourceBits, +32 done.
+  ; sourceKind 0/1 (array/string) store a JSValue; 2/3 (map/set) store a collection payload ptr.
+  %it.kind.ptr = getelementptr i8, ptr %cell, i64 16
+  %it.kind = load i64, ptr %it.kind.ptr
+  %it.source.ptr = getelementptr i8, ptr %cell, i64 32
+  %it.source = load i64, ptr %it.source.ptr
+  %it.is.array = icmp eq i64 %it.kind, 0
+  %it.is.string = icmp eq i64 %it.kind, 1
+  %it.is.boxed = or i1 %it.is.array, %it.is.string
+  br i1 %it.is.boxed, label %walk.iterator.boxed, label %walk.iterator.collection
+walk.iterator.boxed:
+  call void @gcMarkValue(i64 %it.source)
+  br label %skip
+walk.iterator.collection:
+  %it.collection = inttoptr i64 %it.source to ptr
+  call void @gcMarkPayloadPtr(ptr %it.collection)
+  br label %skip
 skip:
   ret void
 }
@@ -936,6 +1103,7 @@ white:
   %is.collection = icmp eq i8 %tag, 4
   %is.function = icmp eq i8 %tag, 5
   %is.environment = icmp eq i8 %tag, 6
+  %is.iterator = icmp eq i8 %tag, 7
   br i1 %is.string, label %free.string, label %check.free.object
 check.free.object:
   br i1 %is.object, label %free.object, label %check.free.array
@@ -946,7 +1114,9 @@ check.free.collection:
 check.free.function:
   br i1 %is.function, label %free.function, label %check.free.environment
 check.free.environment:
-  br i1 %is.environment, label %free.environment, label %advance
+  br i1 %is.environment, label %free.environment, label %check.free.iterator
+check.free.iterator:
+  br i1 %is.iterator, label %free.iterator, label %advance
 free.string:
   ; The string data buffer is owned by this cell only when the owns-flag (header
   ; byte +4) is set: literal-backed strings borrow constant data and must not be
@@ -1018,6 +1188,13 @@ free.environment:
   %enf = getelementptr i8, ptr %cur, i64 8
   store ptr %eh, ptr %enf
   store ptr %cur, ptr @gcFreeEnvironment
+  store i8 3, ptr %color.ptr
+  br label %advance
+free.iterator:
+  %ih = load ptr, ptr @gcFreeIterator
+  %inf = getelementptr i8, ptr %cur, i64 8
+  store ptr %ih, ptr %inf
+  store ptr %cur, ptr @gcFreeIterator
   store i8 3, ptr %color.ptr
   br label %advance
 black:
@@ -1103,6 +1280,7 @@ entry:
   %is.collection = icmp eq i64 %tag, 4
   %is.function = icmp eq i64 %tag, 5
   %is.environment = icmp eq i64 %tag, 6
+  %is.iterator = icmp eq i64 %tag, 7
   br i1 %is.string, label %try.string, label %try.object
 try.string:
   %sh = load ptr, ptr @gcFreeString
@@ -1158,7 +1336,7 @@ reuse.function:
   store ptr %fn, ptr @gcFreeFunction
   br label %init.header
 try.environment:
-  br i1 %is.environment, label %try.environment.body, label %bump.alloc
+  br i1 %is.environment, label %try.environment.body, label %try.iterator
 try.environment.body:
   %eh = load ptr, ptr @gcFreeEnvironment
   %ee = icmp eq ptr %eh, null
@@ -1167,6 +1345,17 @@ reuse.environment:
   %enf = getelementptr i8, ptr %eh, i64 8
   %en = load ptr, ptr %enf
   store ptr %en, ptr @gcFreeEnvironment
+  br label %init.header
+try.iterator:
+  br i1 %is.iterator, label %try.iterator.body, label %bump.alloc
+try.iterator.body:
+  %ih = load ptr, ptr @gcFreeIterator
+  %ie = icmp eq ptr %ih, null
+  br i1 %ie, label %bump.alloc, label %reuse.iterator
+reuse.iterator:
+  %inf = getelementptr i8, ptr %ih, i64 8
+  %in = load ptr, ptr %inf
+  store ptr %in, ptr @gcFreeIterator
   br label %init.header
 bump.alloc:
   %bump = load ptr, ptr @gcBumpPtr
@@ -1181,7 +1370,7 @@ oom:
   call void @exit(i32 1)
   ret ptr null
 init.header:
-  %cell = phi ptr [ %sh, %reuse.string ], [ %oh, %reuse.object ], [ %ah, %reuse.array ], [ %ch, %reuse.collection ], [ %fh, %reuse.function ], [ %eh, %reuse.environment ], [ %bump, %do.bump ]
+  %cell = phi ptr [ %sh, %reuse.string ], [ %oh, %reuse.object ], [ %ah, %reuse.array ], [ %ch, %reuse.collection ], [ %fh, %reuse.function ], [ %eh, %reuse.environment ], [ %ih, %reuse.iterator ], [ %bump, %do.bump ]
   %tag.i8 = trunc i64 %tag to i8
   store i8 %tag.i8, ptr %cell
   %color.slot = getelementptr i8, ptr %cell, i64 1
@@ -2853,7 +3042,31 @@ entry:
 }
 `);
   }
-  if (runtime.used.has("getIteratorValue") || runtime.used.has("callIteratorNext")) {
+  if (runtime.used.has("valueIsString")) {
+    definitions.push(`define i1 @valueIsString(i64 %value) {
+entry:
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.string = icmp eq i64 %tag, ${legacyJsValue.referenceTag("string")}
+  ret i1 %is.string
+}
+`);
+  }
+  if (
+    runtime.used.has("getIteratorValue") ||
+    runtime.used.has("callIteratorNext") ||
+    runtime.used.has("valuePropertyGet") ||
+    runtime.used.has("createArrayIterator") ||
+    runtime.used.has("createStringIterator") ||
+    runtime.used.has("createCollectionIterator") ||
+    runtime.used.has("getCollectionIterator") ||
+    runtime.used.has("builtinIteratorNext") ||
+    runtime.used.has("arrayIteratorMethod") ||
+    runtime.used.has("stringIteratorMethod") ||
+    runtime.used.has("iteratorResultObject") ||
+    runtime.used.has("mapFromIterable") ||
+    runtime.used.has("setFromIterable") ||
+    runtime.used.has("arrayFromValue")
+  ) {
     const firstPrintableAscii = 32;
     const lastPrintableAscii = 126;
     const doubleQuote = 34;
@@ -2871,6 +3084,10 @@ entry:
     const iteratorKeyLen = iteratorKey.length;
     definitions.push(`@.symbol.iterator.key = private unnamed_addr constant [${iteratorKeyLen + 1} x i8] c"${iteratorKeyEncoded}"
 @.iter.key.next = private unnamed_addr constant [5 x i8] c"next\\00"
+@.iter.key.value = private unnamed_addr constant [6 x i8] c"value\\00"
+@.iter.key.done = private unnamed_addr constant [5 x i8] c"done\\00"
+@.iter.key.0 = private unnamed_addr constant [2 x i8] c"0\\00"
+@.iter.key.1 = private unnamed_addr constant [2 x i8] c"1\\00"
 @.iter.err.name = private unnamed_addr constant [10 x i8] c"TypeError\\00"
 @.iter.msg.iter.not.object = private unnamed_addr constant [54 x i8] c"Result of the Symbol.iterator method is not an object\\00"
 @.iter.msg.prefix.number = private unnamed_addr constant [8 x i8] c"number \\00"
@@ -2882,26 +3099,394 @@ entry:
 @.iter.msg.quoted.not.fn = private unnamed_addr constant [20 x i8] c"\\22 is not a function\\00"
 @.iter.msg.result.prefix = private unnamed_addr constant [17 x i8] c"Iterator result \\00"
 @.iter.msg.not.object = private unnamed_addr constant [18 x i8] c" is not an object\\00"
+@.iter.msg.entry.prefix = private unnamed_addr constant [16 x i8] c"Iterator value \\00"
+@.iter.msg.entry.suffix = private unnamed_addr constant [24 x i8] c" is not an entry object\\00"
+@.iter.msg.from.undefined = private unnamed_addr constant [73 x i8] c"undefined is not iterable (cannot read property Symbol(Symbol.iterator))\\00"
+@.iter.msg.from.null = private unnamed_addr constant [75 x i8] c"object null is not iterable (cannot read property Symbol(Symbol.iterator))\\00"
 
 define { i64, i1 } @iteratorTypeError(i64 %message) {
 entry:
+  %frame = call i64 @gcRootSave()
   call void @gcRootPush(i64 %message)
   %error = call ptr @errorNew(i64 2, i64 9, ptr @.iter.err.name, i64 %message)
   %error.value = call i64 @valueBoxObject(ptr %error)
   %result.0 = insertvalue { i64, i1 } undef, i64 %error.value, 0
   %result.1 = insertvalue { i64, i1 } %result.0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %result.1
 }
 `);
+    if (runtime.used.has("iteratorResultObject") || runtime.used.has("builtinIteratorNext")) {
+      definitions.push(`define i64 @iteratorResultObject(i64 %value, i1 %done) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %value)
+  %object = call ptr @objectNew(i64 2)
+  call void @objectSet(ptr %object, i64 5, ptr @.iter.key.value, i64 %value)
+  %done.value = select i1 %done, i64 ${legacyJsValue.immediate("true")}, i64 ${legacyJsValue.immediate("false")}
+  call void @objectSet(ptr %object, i64 4, ptr @.iter.key.done, i64 %done.value)
+  %boxed = call i64 @valueBoxObject(ptr %object)
+  call void @gcRootRestore(i64 %frame)
+  ret i64 %boxed
+}
+`);
+    }
+    if (
+      runtime.used.has("createArrayIterator") ||
+      runtime.used.has("createStringIterator") ||
+      runtime.used.has("createCollectionIterator") ||
+      runtime.used.has("builtinIteratorNext")
+    ) {
+      definitions.push(`define i64 @createIteratorObject(i64 %source.bits, i64 %source.kind, i64 %iteration.kind) {
+entry:
+  %frame = call i64 @gcRootSave()
+  ; Only array/string sources are JSValues safe to root. Map/Set pass a raw
+  ; collection payload pointer that the iterator state cell keeps alive via GC.
+  %is.array = icmp eq i64 %source.kind, 0
+  %is.string = icmp eq i64 %source.kind, 1
+  %is.boxed = or i1 %is.array, %is.string
+  br i1 %is.boxed, label %root.source, label %alloc
+root.source:
+  call void @gcRootPush(i64 %source.bits)
+  br label %alloc
+alloc:
+  %cell = call ptr @gcAlloc(i64 7, i64 40)
+  %state = getelementptr i8, ptr %cell, i64 8
+  store i64 0, ptr %state
+  %kind.slot = getelementptr i8, ptr %state, i64 8
+  store i64 %source.kind, ptr %kind.slot
+  %iter.slot = getelementptr i8, ptr %state, i64 16
+  store i64 %iteration.kind, ptr %iter.slot
+  %source.slot = getelementptr i8, ptr %state, i64 24
+  store i64 %source.bits, ptr %source.slot
+  %done.slot = getelementptr i8, ptr %state, i64 32
+  store i64 0, ptr %done.slot
+  %next.fn = call i64 @functionObjectNew(ptr @builtinIteratorNext, ptr %state, i64 ${legacyJsValue.immediate("undefined")})
+  call void @gcRootPush(i64 %next.fn)
+  %object = call ptr @objectNew(i64 1)
+  call void @objectSet(ptr %object, i64 4, ptr @.iter.key.next, i64 %next.fn)
+  %boxed = call i64 @valueBoxObject(ptr %object)
+  call void @gcRootRestore(i64 %frame)
+  ret i64 %boxed
+}
+
+define i64 @createArrayIterator(i64 %array.value) {
+entry:
+  %result = call i64 @createIteratorObject(i64 %array.value, i64 0, i64 1)
+  ret i64 %result
+}
+
+define i64 @createStringIterator(i64 %string.value) {
+entry:
+  %result = call i64 @createIteratorObject(i64 %string.value, i64 1, i64 1)
+  ret i64 %result
+}
+
+define i64 @createCollectionIterator(ptr %collection, i64 %source.kind, i64 %iteration.kind) {
+entry:
+  %bits = ptrtoint ptr %collection to i64
+  %result = call i64 @createIteratorObject(i64 %bits, i64 %source.kind, i64 %iteration.kind)
+  ret i64 %result
+}
+`);
+    }
+    if (runtime.used.has("getCollectionIterator")) {
+      definitions.push(`define { i64, i1 } @getCollectionIterator(ptr %collection, i64 %source.kind, i64 %iteration.kind) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %method.slot = getelementptr i8, ptr %collection, i64 32
+  %method = load i64, ptr %method.slot
+  call void @gcRootPush(i64 %method)
+  %missing = icmp eq i64 %method, ${legacyJsValue.immediate("undefined")}
+  br i1 %missing, label %default, label %check.method
+default:
+  %default.iterator = call i64 @createCollectionIterator(ptr %collection, i64 %source.kind, i64 %iteration.kind)
+  br label %success
+check.method:
+  %callable = call i1 @valueIsFunction(i64 %method)
+  br i1 %callable, label %call.method, label %not.callable
+call.method:
+  %argv = alloca i64, i64 0
+  %call = call { i64, i1 } @jsCall(i64 %method, i64 0, ptr %argv, i64 ${legacyJsValue.immediate("undefined")})
+  %custom.iterator = extractvalue { i64, i1 } %call, 0
+  %call.exc = extractvalue { i64, i1 } %call, 1
+  call void @gcRootPush(i64 %custom.iterator)
+  br i1 %call.exc, label %propagate, label %check.result
+check.result:
+  %is.object = call i1 @valueIsObject(i64 %custom.iterator)
+  br i1 %is.object, label %success, label %not.object
+success:
+  %iterator = phi i64 [ %default.iterator, %default ], [ %custom.iterator, %check.result ]
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %iterator, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok.1
+propagate:
+  %prop.0 = insertvalue { i64, i1 } undef, i64 %custom.iterator, 0
+  %prop.1 = insertvalue { i64, i1 } %prop.0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %prop.1
+not.callable:
+  %callable.msg = call i64 @iteratorNotCallableMessage(i64 %method)
+  %callable.error = call { i64, i1 } @iteratorTypeError(i64 %callable.msg)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %callable.error
+not.object:
+  %object.msg = call i64 @valueBoxString(ptr @.iter.msg.iter.not.object, i64 53)
+  %object.error = call { i64, i1 } @iteratorTypeError(i64 %object.msg)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %object.error
+}
+`);
+    }
+    if (runtime.used.has("arrayIteratorMethod") || runtime.used.has("valuePropertyGet")) {
+      definitions.push(`define { i64, i1 } @arrayIteratorMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %iterator = call i64 @createArrayIterator(i64 %this.value)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %iterator, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok.1
+}
+`);
+    }
+    if (runtime.used.has("stringIteratorMethod") || runtime.used.has("valuePropertyGet")) {
+      definitions.push(`define { i64, i1 } @stringIteratorMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %iterator = call i64 @createStringIterator(i64 %this.value)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %iterator, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok.1
+}
+`);
+    }
+    if (runtime.used.has("builtinIteratorNext")) {
+      definitions.push(`define { i64, i1 } @builtinIteratorNext(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %done.slot = getelementptr i8, ptr %env, i64 32
+  %done.flag = load i64, ptr %done.slot
+  %is.done = icmp ne i64 %done.flag, 0
+  br i1 %is.done, label %exhausted, label %load.state
+load.state:
+  %index = load i64, ptr %env
+  %kind.slot = getelementptr i8, ptr %env, i64 8
+  %source.kind = load i64, ptr %kind.slot
+  %iter.slot = getelementptr i8, ptr %env, i64 16
+  %iteration.kind = load i64, ptr %iter.slot
+  %source.slot = getelementptr i8, ptr %env, i64 24
+  %source.bits = load i64, ptr %source.slot
+  %is.array = icmp eq i64 %source.kind, 0
+  br i1 %is.array, label %array, label %check.string
+check.string:
+  %is.string = icmp eq i64 %source.kind, 1
+  br i1 %is.string, label %string, label %collection
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %source.bits)
+  %array.len = call i64 @arrayLength(ptr %array.ptr)
+  %array.done = icmp uge i64 %index, %array.len
+  br i1 %array.done, label %mark.done, label %array.yield
+array.yield:
+  %array.value = call i64 @arrayGet(ptr %array.ptr, i64 %index)
+  call void @gcRootPush(i64 %array.value)
+  %array.next = add i64 %index, 1
+  store i64 %array.next, ptr %env
+  %array.result = call i64 @iteratorResultObject(i64 %array.value, i1 false)
+  br label %success
+string:
+  %str.ptr = call ptr @valueStringPtr(i64 %source.bits)
+  %str.len = call i64 @valueStringLength(i64 %source.bits)
+  %string.done = icmp uge i64 %index, %str.len
+  br i1 %string.done, label %mark.done, label %string.decode
+string.decode:
+  %byte.ptr = getelementptr i8, ptr %str.ptr, i64 %index
+  %byte0 = load i8, ptr %byte.ptr
+  %b0 = zext i8 %byte0 to i64
+  %is.ascii = icmp ult i8 %byte0, 128
+  br i1 %is.ascii, label %string.ascii, label %string.multi
+string.ascii:
+  %ascii.out = call ptr @malloc(i64 2)
+  store i8 %byte0, ptr %ascii.out
+  %ascii.nul = getelementptr i8, ptr %ascii.out, i64 1
+  store i8 0, ptr %ascii.nul
+  %ascii.next = add i64 %index, 1
+  store i64 %ascii.next, ptr %env
+  %ascii.value = call i64 @valueBoxString(ptr %ascii.out, i64 1)
+  call void @gcRootPush(i64 %ascii.value)
+  %ascii.result = call i64 @iteratorResultObject(i64 %ascii.value, i1 false)
+  br label %success
+string.multi:
+  %is.2 = icmp ult i8 %byte0, 224
+  %is.3 = icmp ult i8 %byte0, 240
+  br i1 %is.2, label %string.2, label %string.check3
+string.check3:
+  br i1 %is.3, label %string.3, label %string.4
+string.2:
+  %seq.len.2 = add i64 0, 2
+  br label %string.copy
+string.3:
+  %seq.len.3 = add i64 0, 3
+  br label %string.copy
+string.4:
+  %seq.len.4 = add i64 0, 4
+  br label %string.copy
+string.copy:
+  %seq.len = phi i64 [ %seq.len.2, %string.2 ], [ %seq.len.3, %string.3 ], [ %seq.len.4, %string.4 ]
+  %remain = sub i64 %str.len, %index
+  %fits = icmp ule i64 %seq.len, %remain
+  %copy.len = select i1 %fits, i64 %seq.len, i64 1
+  %alloc.size = add i64 %copy.len, 1
+  %seq.out = call ptr @malloc(i64 %alloc.size)
+  %seq.src = getelementptr i8, ptr %str.ptr, i64 %index
+  call ptr @memcpy(ptr %seq.out, ptr %seq.src, i64 %copy.len)
+  %seq.nul = getelementptr i8, ptr %seq.out, i64 %copy.len
+  store i8 0, ptr %seq.nul
+  %seq.next = add i64 %index, %copy.len
+  store i64 %seq.next, ptr %env
+  %seq.value = call i64 @valueBoxString(ptr %seq.out, i64 %copy.len)
+  call void @gcRootPush(i64 %seq.value)
+  %seq.result = call i64 @iteratorResultObject(i64 %seq.value, i1 false)
+  br label %success
+collection:
+  %col.ptr = inttoptr i64 %source.bits to ptr
+  br label %collection.scan
+collection.scan:
+  %scan.index = phi i64 [ %index, %collection ], [ %scan.next, %collection.advance ]
+  %used.slot = getelementptr i8, ptr %col.ptr, i64 8
+  %used = load i64, ptr %used.slot
+  %in.range = icmp ult i64 %scan.index, %used
+  br i1 %in.range, label %collection.check, label %mark.done
+collection.check:
+  %entries.slot = getelementptr i8, ptr %col.ptr, i64 24
+  %entries = load ptr, ptr %entries.slot
+  %entry.bytes = mul i64 %scan.index, 24
+  %entry.ptr = getelementptr i8, ptr %entries, i64 %entry.bytes
+  %active = load i64, ptr %entry.ptr
+  %is.active = icmp ne i64 %active, 0
+  br i1 %is.active, label %collection.found, label %collection.advance
+collection.advance:
+  %scan.next = add i64 %scan.index, 1
+  br label %collection.scan
+collection.found:
+  %found.next = add i64 %scan.index, 1
+  store i64 %found.next, ptr %env
+  %key.slot = getelementptr i8, ptr %entry.ptr, i64 8
+  %key = load i64, ptr %key.slot
+  call void @gcRootPush(i64 %key)
+  %is.keys = icmp eq i64 %iteration.kind, 0
+  br i1 %is.keys, label %collection.keys, label %collection.not.keys
+collection.not.keys:
+  %is.map = icmp eq i64 %source.kind, 2
+  br i1 %is.map, label %collection.map.value, label %collection.set.value
+collection.map.value:
+  %value.slot = getelementptr i8, ptr %entry.ptr, i64 16
+  %map.value = load i64, ptr %value.slot
+  call void @gcRootPush(i64 %map.value)
+  %is.values = icmp eq i64 %iteration.kind, 1
+  br i1 %is.values, label %collection.values.map, label %collection.entries.map
+collection.set.value:
+  %is.values.set = icmp eq i64 %iteration.kind, 1
+  br i1 %is.values.set, label %collection.values.set, label %collection.entries.set
+collection.keys:
+  %keys.result = call i64 @iteratorResultObject(i64 %key, i1 false)
+  br label %success
+collection.values.map:
+  %values.map.result = call i64 @iteratorResultObject(i64 %map.value, i1 false)
+  br label %success
+collection.values.set:
+  %values.set.result = call i64 @iteratorResultObject(i64 %key, i1 false)
+  br label %success
+collection.entries.map:
+  %pair.map = call ptr @arrayNew(i64 2)
+  call void @arraySet(ptr %pair.map, i64 0, i64 %key)
+  call void @arraySet(ptr %pair.map, i64 1, i64 %map.value)
+  %pair.map.boxed = call i64 @valueBoxArray(ptr %pair.map)
+  call void @gcRootPush(i64 %pair.map.boxed)
+  %entries.map.result = call i64 @iteratorResultObject(i64 %pair.map.boxed, i1 false)
+  br label %success
+collection.entries.set:
+  %pair.set = call ptr @arrayNew(i64 2)
+  call void @arraySet(ptr %pair.set, i64 0, i64 %key)
+  call void @arraySet(ptr %pair.set, i64 1, i64 %key)
+  %pair.set.boxed = call i64 @valueBoxArray(ptr %pair.set)
+  call void @gcRootPush(i64 %pair.set.boxed)
+  %entries.set.result = call i64 @iteratorResultObject(i64 %pair.set.boxed, i1 false)
+  br label %success
+mark.done:
+  store i64 1, ptr %done.slot
+  br label %exhausted
+exhausted:
+  %exhausted.result = call i64 @iteratorResultObject(i64 ${legacyJsValue.immediate("undefined")}, i1 true)
+  br label %success
+success:
+  %result.value = phi i64 [ %array.result, %array.yield ], [ %ascii.result, %string.ascii ], [ %seq.result, %string.copy ], [ %keys.result, %collection.keys ], [ %values.map.result, %collection.values.map ], [ %values.set.result, %collection.values.set ], [ %entries.map.result, %collection.entries.map ], [ %entries.set.result, %collection.entries.set ], [ %exhausted.result, %exhausted ]
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %result.value, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok.1
+}
+`);
+    }
+    if (runtime.used.has("valuePropertyGet")) {
+      definitions.push(`define i64 @valuePropertyGet(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %is.object = call i1 @valueIsObject(i64 %value)
+  br i1 %is.object, label %object, label %check.array
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %object.result = call i64 @objectGet(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
+  ret i64 %object.result
+check.array:
+  %is.array = call i1 @valueIsArray(i64 %value)
+  br i1 %is.array, label %array, label %check.string
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %array.result = call i64 @arrayGetWithKey(ptr %array.ptr, i64 -1, i64 %key.len, ptr %key.ptr)
+  %array.missing = icmp eq i64 %array.result, ${legacyJsValue.immediate("undefined")}
+  br i1 %array.missing, label %array.builtin, label %array.hit
+array.hit:
+  ret i64 %array.result
+array.builtin:
+  %array.is.iter = icmp eq i64 %key.len, ${iteratorKeyLen}
+  br i1 %array.is.iter, label %array.iter.cmp, label %missing
+array.iter.cmp:
+  %array.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.symbol.iterator.key, i64 ${iteratorKeyLen})
+  %array.key.same = icmp eq i32 %array.key.cmp, 0
+  br i1 %array.key.same, label %array.iter, label %missing
+array.iter:
+  %array.method = call i64 @functionObjectNew(ptr @arrayIteratorMethod, ptr null, i64 ${legacyJsValue.immediate("undefined")})
+  ret i64 %array.method
+check.string:
+  %is.string = call i1 @valueIsString(i64 %value)
+  br i1 %is.string, label %string.builtin, label %missing
+string.builtin:
+  %string.is.iter = icmp eq i64 %key.len, ${iteratorKeyLen}
+  br i1 %string.is.iter, label %string.iter.cmp, label %missing
+string.iter.cmp:
+  %string.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.symbol.iterator.key, i64 ${iteratorKeyLen})
+  %string.key.same = icmp eq i32 %string.key.cmp, 0
+  br i1 %string.key.same, label %string.iter, label %missing
+string.iter:
+  %string.method = call i64 @functionObjectNew(ptr @stringIteratorMethod, ptr null, i64 ${legacyJsValue.immediate("undefined")})
+  ret i64 %string.method
+missing:
+  ret i64 ${legacyJsValue.immediate("undefined")}
+}
+`);
+    }
     if (runtime.used.has("getIteratorValue")) {
       definitions.push(`define { i64, i1 } @getIteratorValue(i64 %iterable, i64 %not.iterable.message) {
 entry:
+  %frame = call i64 @gcRootSave()
   call void @gcRootPush(i64 %iterable)
   call void @gcRootPush(i64 %not.iterable.message)
   %is.object = call i1 @valueIsObject(i64 %iterable)
-  br i1 %is.object, label %lookup, label %not.iterable
+  %is.array = call i1 @valueIsArray(i64 %iterable)
+  %is.string = call i1 @valueIsString(i64 %iterable)
+  %is.obj.or.arr = or i1 %is.object, %is.array
+  %is.iterable.tag = or i1 %is.obj.or.arr, %is.string
+  br i1 %is.iterable.tag, label %lookup, label %not.iterable
 lookup:
-  %method = call i64 @valueObjectGet(i64 %iterable, i64 ${iteratorKeyLen}, ptr @.symbol.iterator.key)
+  %method = call i64 @valuePropertyGet(i64 %iterable, i64 ${iteratorKeyLen}, ptr @.symbol.iterator.key)
   call void @gcRootPush(i64 %method)
   %is.fn = call i1 @valueIsFunction(i64 %method)
   br i1 %is.fn, label %call.method, label %not.iterable
@@ -2915,6 +3500,7 @@ call.method:
 propagate:
   %prop.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
   %prop.1 = insertvalue { i64, i1 } %prop.0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %prop.1
 check.iterator:
   %iter.is.object = call i1 @valueIsObject(i64 %call.payload)
@@ -2922,18 +3508,21 @@ check.iterator:
 success:
   %ok.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
   %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %ok.1
 not.iterable:
   %not.iterable.error = call { i64, i1 } @iteratorTypeError(i64 %not.iterable.message)
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %not.iterable.error
 iter.not.object:
   %msg.ino = call i64 @valueBoxString(ptr @.iter.msg.iter.not.object, i64 53)
   %iter.not.object.error = call { i64, i1 } @iteratorTypeError(i64 %msg.ino)
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %iter.not.object.error
 }
 `);
     }
-    if (runtime.used.has("callIteratorNext")) {
+    if (runtime.used.has("callIteratorNext") || runtime.used.has("getCollectionIterator")) {
       definitions.push(`define i64 @iteratorNotCallableMessage(i64 %value) {
 entry:
   %raw = call { ptr, i64 } @valueToString(i64 %value)
@@ -3004,8 +3593,22 @@ entry:
   ret i64 %message
 }
 
+define i64 @iteratorEntryNotObjectMessage(i64 %value) {
+entry:
+  %raw = call { ptr, i64 } @valueToString(i64 %value)
+  %raw.ptr = extractvalue { ptr, i64 } %raw, 0
+  %raw.len = extractvalue { ptr, i64 } %raw, 1
+  %prefixed.ptr = call ptr @strConcat(i64 15, ptr @.iter.msg.entry.prefix, i64 %raw.len, ptr %raw.ptr)
+  %prefixed.len = add i64 %raw.len, 15
+  %message.ptr = call ptr @strConcat(i64 %prefixed.len, ptr %prefixed.ptr, i64 23, ptr @.iter.msg.entry.suffix)
+  %message.len = add i64 %prefixed.len, 23
+  %message = call i64 @valueBoxString(ptr %message.ptr, i64 %message.len)
+  ret i64 %message
+}
+
 define { i64, i1 } @callIteratorNext(i64 %iterator) {
 entry:
+  %frame = call i64 @gcRootSave()
   call void @gcRootPush(i64 %iterator)
   %is.object = call i1 @valueIsObject(i64 %iterator)
   br i1 %is.object, label %lookup, label %result.not.object
@@ -3024,6 +3627,7 @@ call.next:
 propagate:
   %prop.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
   %prop.1 = insertvalue { i64, i1 } %prop.0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %prop.1
 check.result:
   %res.is.object = call i1 @valueIsObject(i64 %call.payload)
@@ -3031,16 +3635,339 @@ check.result:
 success:
   %ok.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
   %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %ok.1
 next.not.fn:
   %msg.nn = call i64 @iteratorNotCallableMessage(i64 %next)
   %next.not.fn.error = call { i64, i1 } @iteratorTypeError(i64 %msg.nn)
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %next.not.fn.error
 result.not.object:
   %invalid.result = phi i64 [ %iterator, %entry ], [ %call.payload, %check.result ]
   %msg.rno = call i64 @iteratorResultNotObjectMessage(i64 %invalid.result)
   %result.not.object.error = call { i64, i1 } @iteratorTypeError(i64 %msg.rno)
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %result.not.object.error
+}
+`);
+    }
+    if (runtime.used.has("mapFromIterable")) {
+      definitions.push(`define { i64, i1 } @mapFromIterable(i64 %iterable, i64 %not.iterable.message) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %iterable)
+  call void @gcRootPush(i64 %not.iterable.message)
+  %iter.call = call { i64, i1 } @getIteratorValue(i64 %iterable, i64 %not.iterable.message)
+  %iter = extractvalue { i64, i1 } %iter.call, 0
+  %iter.exc = extractvalue { i64, i1 } %iter.call, 1
+  call void @gcRootPush(i64 %iter)
+  br i1 %iter.exc, label %fail, label %create
+create:
+  %collection = call ptr @collectionNew()
+  %collection.root = call i64 @valueBoxObject(ptr %collection)
+  call void @gcRootPush(i64 %collection.root)
+  %loop.frame = call i64 @gcRootSave()
+  br label %loop
+loop:
+  call void @gcRootRestore(i64 %loop.frame)
+  call void @gcSafepoint()
+  %next.call = call { i64, i1 } @callIteratorNext(i64 %iter)
+  %next = extractvalue { i64, i1 } %next.call, 0
+  %next.exc = extractvalue { i64, i1 } %next.call, 1
+  call void @gcRootPush(i64 %next)
+  br i1 %next.exc, label %fail.next, label %check.done
+check.done:
+  %done.value = call i64 @valueObjectGet(i64 %next, i64 4, ptr @.iter.key.done)
+  %is.done = call i1 @valueTruthy(i64 %done.value)
+  br i1 %is.done, label %success, label %read.value
+read.value:
+  %entry.value = call i64 @valueObjectGet(i64 %next, i64 5, ptr @.iter.key.value)
+  call void @gcRootPush(i64 %entry.value)
+  %entry.is.object = call i1 @valueIsObject(i64 %entry.value)
+  %entry.is.array = call i1 @valueIsArray(i64 %entry.value)
+  %entry.ok = or i1 %entry.is.object, %entry.is.array
+  br i1 %entry.ok, label %read.entry, label %bad.entry
+read.entry:
+  br i1 %entry.is.array, label %entry.array, label %entry.object
+entry.array:
+  %key.a = call i64 @valueArrayGet(i64 %entry.value, i64 0, i64 1, ptr @.iter.key.0)
+  %val.a = call i64 @valueArrayGet(i64 %entry.value, i64 1, i64 1, ptr @.iter.key.1)
+  call void @gcRootPush(i64 %key.a)
+  call void @gcRootPush(i64 %val.a)
+  call void @collectionSet(ptr %collection, i64 %key.a, i64 %val.a)
+  br label %loop
+entry.object:
+  %key.o = call i64 @valueObjectGet(i64 %entry.value, i64 1, ptr @.iter.key.0)
+  %val.o = call i64 @valueObjectGet(i64 %entry.value, i64 1, ptr @.iter.key.1)
+  call void @gcRootPush(i64 %key.o)
+  call void @gcRootPush(i64 %val.o)
+  call void @collectionSet(ptr %collection, i64 %key.o, i64 %val.o)
+  br label %loop
+bad.entry:
+  %entry.msg = call i64 @iteratorEntryNotObjectMessage(i64 %entry.value)
+  %entry.err = call { i64, i1 } @iteratorTypeError(i64 %entry.msg)
+  %entry.err.value = extractvalue { i64, i1 } %entry.err, 0
+  br label %fail.payload
+success:
+  %collection.bits = ptrtoint ptr %collection to i64
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %collection.bits, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok.1
+fail:
+  br label %fail.payload
+fail.next:
+  br label %fail.payload
+fail.payload:
+  %err = phi i64 [ %iter, %fail ], [ %next, %fail.next ], [ %entry.err.value, %bad.entry ]
+  %fail.0 = insertvalue { i64, i1 } undef, i64 %err, 0
+  %fail.1 = insertvalue { i64, i1 } %fail.0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %fail.1
+}
+`);
+    }
+    if (runtime.used.has("setFromIterable")) {
+      definitions.push(`define { i64, i1 } @setFromIterable(i64 %iterable, i64 %not.iterable.message) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %iterable)
+  call void @gcRootPush(i64 %not.iterable.message)
+  %iter.call = call { i64, i1 } @getIteratorValue(i64 %iterable, i64 %not.iterable.message)
+  %iter = extractvalue { i64, i1 } %iter.call, 0
+  %iter.exc = extractvalue { i64, i1 } %iter.call, 1
+  call void @gcRootPush(i64 %iter)
+  br i1 %iter.exc, label %fail, label %create
+create:
+  %collection = call ptr @collectionNew()
+  %collection.root = call i64 @valueBoxObject(ptr %collection)
+  call void @gcRootPush(i64 %collection.root)
+  %loop.frame = call i64 @gcRootSave()
+  br label %loop
+loop:
+  call void @gcRootRestore(i64 %loop.frame)
+  call void @gcSafepoint()
+  %next.call = call { i64, i1 } @callIteratorNext(i64 %iter)
+  %next = extractvalue { i64, i1 } %next.call, 0
+  %next.exc = extractvalue { i64, i1 } %next.call, 1
+  call void @gcRootPush(i64 %next)
+  br i1 %next.exc, label %fail.next, label %check.done
+check.done:
+  %done.value = call i64 @valueObjectGet(i64 %next, i64 4, ptr @.iter.key.done)
+  %is.done = call i1 @valueTruthy(i64 %done.value)
+  br i1 %is.done, label %success, label %read.value
+read.value:
+  %item = call i64 @valueObjectGet(i64 %next, i64 5, ptr @.iter.key.value)
+  call void @gcRootPush(i64 %item)
+  call void @collectionSet(ptr %collection, i64 %item, i64 ${legacyJsValue.immediate("true")})
+  br label %loop
+success:
+  %collection.bits = ptrtoint ptr %collection to i64
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %collection.bits, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok.1
+fail:
+  br label %fail.payload
+fail.next:
+  br label %fail.payload
+fail.payload:
+  %err = phi i64 [ %iter, %fail ], [ %next, %fail.next ]
+  %fail.0 = insertvalue { i64, i1 } undef, i64 %err, 0
+  %fail.1 = insertvalue { i64, i1 } %fail.0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %fail.1
+}
+`);
+    }
+    if (runtime.used.has("arrayFromValue")) {
+      definitions.push(`define { i64, i1 } @arrayFromValue(i64 %source, i64 %mapper, i64 %this.arg) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %source)
+  call void @gcRootPush(i64 %mapper)
+  call void @gcRootPush(i64 %this.arg)
+  %is.undefined = icmp eq i64 %source, ${legacyJsValue.immediate("undefined")}
+  %is.null = icmp eq i64 %source, ${legacyJsValue.immediate("null")}
+  br i1 %is.undefined, label %undefined.source, label %check.null
+check.null:
+  br i1 %is.null, label %null.source, label %check.mapper
+undefined.source:
+  %undefined.msg = call i64 @valueBoxString(ptr @.iter.msg.from.undefined, i64 72)
+  %undefined.err = call { i64, i1 } @iteratorTypeError(i64 %undefined.msg)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %undefined.err
+null.source:
+  %null.msg = call i64 @valueBoxString(ptr @.iter.msg.from.null, i64 74)
+  %null.err = call { i64, i1 } @iteratorTypeError(i64 %null.msg)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %null.err
+check.mapper:
+  %mapper.missing = icmp eq i64 %mapper, ${legacyJsValue.immediate("undefined")}
+  br i1 %mapper.missing, label %lookup.method, label %validate.mapper
+validate.mapper:
+  %mapper.is.fn = call i1 @valueIsFunction(i64 %mapper)
+  br i1 %mapper.is.fn, label %lookup.method, label %mapper.not.fn
+mapper.not.fn:
+  %mapper.msg = call i64 @iteratorNotCallableMessage(i64 %mapper)
+  %mapper.err = call { i64, i1 } @iteratorTypeError(i64 %mapper.msg)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %mapper.err
+lookup.method:
+  %method = call i64 @valuePropertyGet(i64 %source, i64 ${iteratorKeyLen}, ptr @.symbol.iterator.key)
+  call void @gcRootPush(i64 %method)
+  %is.undefined.method = icmp eq i64 %method, ${legacyJsValue.immediate("undefined")}
+  %is.null.method = icmp eq i64 %method, ${legacyJsValue.immediate("null")}
+  %method.missing = or i1 %is.undefined.method, %is.null.method
+  br i1 %method.missing, label %array.like, label %check.method
+check.method:
+  %is.fn = call i1 @valueIsFunction(i64 %method)
+  br i1 %is.fn, label %call.method, label %method.not.fn
+method.not.fn:
+  %msg.nn = call i64 @iteratorNotCallableMessage(i64 %method)
+  %method.err = call { i64, i1 } @iteratorTypeError(i64 %msg.nn)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %method.err
+call.method:
+  %argv = alloca i64, i64 0
+  %call = call { i64, i1 } @jsCall(i64 %method, i64 0, ptr %argv, i64 %source)
+  %iter = extractvalue { i64, i1 } %call, 0
+  %call.exc = extractvalue { i64, i1 } %call, 1
+  call void @gcRootPush(i64 %iter)
+  br i1 %call.exc, label %fail, label %check.iter
+check.iter:
+  %iter.is.object = call i1 @valueIsObject(i64 %iter)
+  br i1 %iter.is.object, label %create.array, label %iter.not.object
+iter.not.object:
+  %msg.ino = call i64 @valueBoxString(ptr @.iter.msg.iter.not.object, i64 53)
+  %iter.err = call { i64, i1 } @iteratorTypeError(i64 %msg.ino)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %iter.err
+create.array:
+  %out = call ptr @arrayNew(i64 0)
+  %out.root = call i64 @valueBoxArray(ptr %out)
+  call void @gcRootPush(i64 %out.root)
+  %index.addr = alloca i64
+  store i64 0, ptr %index.addr
+  %loop.frame = call i64 @gcRootSave()
+  br label %loop
+loop:
+  call void @gcRootRestore(i64 %loop.frame)
+  call void @gcSafepoint()
+  %next.call = call { i64, i1 } @callIteratorNext(i64 %iter)
+  %next = extractvalue { i64, i1 } %next.call, 0
+  %next.exc = extractvalue { i64, i1 } %next.call, 1
+  call void @gcRootPush(i64 %next)
+  br i1 %next.exc, label %fail.next, label %check.done
+check.done:
+  %done.value = call i64 @valueObjectGet(i64 %next, i64 4, ptr @.iter.key.done)
+  %is.done = call i1 @valueTruthy(i64 %done.value)
+  br i1 %is.done, label %success, label %read.item
+read.item:
+  %item = call i64 @valueObjectGet(i64 %next, i64 5, ptr @.iter.key.value)
+  call void @gcRootPush(i64 %item)
+  %index = load i64, ptr %index.addr
+  br i1 %mapper.missing, label %push.item, label %map.item
+map.item:
+  %index.number = uitofp i64 %index to double
+  %index.value = call i64 @valueBoxNumber(double %index.number)
+  %map.argv = alloca i64, i64 2
+  %map.arg0 = getelementptr i64, ptr %map.argv, i64 0
+  store i64 %item, ptr %map.arg0
+  %map.arg1 = getelementptr i64, ptr %map.argv, i64 1
+  store i64 %index.value, ptr %map.arg1
+  %map.call = call { i64, i1 } @jsCall(i64 %mapper, i64 2, ptr %map.argv, i64 %this.arg)
+  %mapped = extractvalue { i64, i1 } %map.call, 0
+  %map.exc = extractvalue { i64, i1 } %map.call, 1
+  call void @gcRootPush(i64 %mapped)
+  br i1 %map.exc, label %fail.map, label %push.mapped
+push.item:
+  br label %push.value
+push.mapped:
+  br label %push.value
+push.value:
+  %pushed = phi i64 [ %item, %push.item ], [ %mapped, %push.mapped ]
+  call i64 @arrayPush(ptr %out, i64 %pushed)
+  %index.next = add i64 %index, 1
+  store i64 %index.next, ptr %index.addr
+  br label %loop
+success:
+  %boxed = call i64 @valueBoxArray(ptr %out)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok.1
+array.like:
+  %is.array = call i1 @valueIsArray(i64 %source)
+  br i1 %is.array, label %from.array, label %from.object
+from.array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %source)
+  %copied.array = call ptr @arrayFromArray(ptr %array.ptr)
+  br label %array.like.ready
+from.object:
+  %is.object = call i1 @valueIsObject(i64 %source)
+  br i1 %is.object, label %from.object.body, label %from.empty
+from.object.body:
+  %object.ptr = call ptr @valueObjectPtr(i64 %source)
+  %copied.object = call ptr @arrayFromObject(ptr %object.ptr)
+  br label %array.like.ready
+from.empty:
+  %empty = call ptr @arrayNew(i64 0)
+  br label %array.like.ready
+array.like.ready:
+  %array.like.out = phi ptr [ %copied.array, %from.array ], [ %copied.object, %from.object.body ], [ %empty, %from.empty ]
+  %array.like.root = call i64 @valueBoxArray(ptr %array.like.out)
+  call void @gcRootPush(i64 %array.like.root)
+  br i1 %mapper.missing, label %array.like.success, label %array.like.map.init
+array.like.map.init:
+  %array.like.length = call i64 @arrayLength(ptr %array.like.out)
+  %array.like.index.addr = alloca i64
+  store i64 0, ptr %array.like.index.addr
+  %array.like.loop.frame = call i64 @gcRootSave()
+  br label %array.like.map.cond
+array.like.map.cond:
+  %array.like.index = load i64, ptr %array.like.index.addr
+  %array.like.done = icmp uge i64 %array.like.index, %array.like.length
+  br i1 %array.like.done, label %array.like.success, label %array.like.map.body
+array.like.map.body:
+  call void @gcRootRestore(i64 %array.like.loop.frame)
+  %array.like.item = call i64 @arrayGet(ptr %array.like.out, i64 %array.like.index)
+  %array.like.index.number = uitofp i64 %array.like.index to double
+  %array.like.index.value = call i64 @valueBoxNumber(double %array.like.index.number)
+  %array.like.argv = alloca i64, i64 2
+  %array.like.arg0 = getelementptr i64, ptr %array.like.argv, i64 0
+  store i64 %array.like.item, ptr %array.like.arg0
+  %array.like.arg1 = getelementptr i64, ptr %array.like.argv, i64 1
+  store i64 %array.like.index.value, ptr %array.like.arg1
+  %array.like.call = call { i64, i1 } @jsCall(i64 %mapper, i64 2, ptr %array.like.argv, i64 %this.arg)
+  %array.like.mapped = extractvalue { i64, i1 } %array.like.call, 0
+  %array.like.exc = extractvalue { i64, i1 } %array.like.call, 1
+  br i1 %array.like.exc, label %fail.array.like.map, label %array.like.store
+array.like.store:
+  call void @arraySet(ptr %array.like.out, i64 %array.like.index, i64 %array.like.mapped)
+  %array.like.next = add i64 %array.like.index, 1
+  store i64 %array.like.next, ptr %array.like.index.addr
+  br label %array.like.map.cond
+array.like.success:
+  %array.like.boxed = call i64 @valueBoxArray(ptr %array.like.out)
+  %array.like.ok.0 = insertvalue { i64, i1 } undef, i64 %array.like.boxed, 0
+  %array.like.ok.1 = insertvalue { i64, i1 } %array.like.ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %array.like.ok.1
+fail:
+  br label %fail.payload
+fail.next:
+  br label %fail.payload
+fail.map:
+  br label %fail.payload
+fail.array.like.map:
+  br label %fail.payload
+fail.payload:
+  %failure = phi i64 [ %iter, %fail ], [ %next, %fail.next ], [ %mapped, %fail.map ], [ %array.like.mapped, %fail.array.like.map ]
+  %fail.0 = insertvalue { i64, i1 } undef, i64 %failure, 0
+  %fail.1 = insertvalue { i64, i1 } %fail.0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %fail.1
 }
 `);
     }
@@ -5056,6 +5983,8 @@ entry:
   store i64 4, ptr %capacity.slot
   %entries.slot = getelementptr i8, ptr %collection, i64 24
   store ptr %entries, ptr %entries.slot
+  %iterator.slot = getelementptr i8, ptr %collection, i64 32
+  store i64 ${legacyJsValue.immediate("undefined")}, ptr %iterator.slot
   ret ptr %collection
 }
 `);

@@ -1040,6 +1040,22 @@ export type JsIrOperationNode =
       readonly targetKind: "array" | "object";
     }
   | {
+      readonly kind: "runtimeArrayFromValue";
+      readonly name: string;
+      readonly source: JsIrValueExpression;
+      readonly mapper?: JsIrValueExpression;
+      readonly thisArg?: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "runtimeArrayFromCollection";
+      readonly name: string;
+      readonly collectionName: string;
+      readonly sourceKind: "map" | "set";
+      readonly iterationKind: "keys" | "values" | "entries";
+      readonly mapper?: JsIrValueExpression;
+      readonly thisArg?: JsIrValueExpression;
+    }
+  | {
       readonly kind: "runtimeArrayFilterCallback";
       readonly name: string;
       readonly arrayName: string;
@@ -1175,9 +1191,26 @@ export type JsIrOperationNode =
       readonly sourceName: string;
     }
   | {
+      readonly kind: "runtimeMapFromIterable" | "runtimeSetFromIterable";
+      readonly name: string;
+      readonly iterable: JsIrValueExpression;
+      readonly notIterableMessage: string;
+    }
+  | {
+      readonly kind: "runtimeMapFromCollection" | "runtimeSetFromCollection";
+      readonly name: string;
+      readonly sourceName: string;
+      readonly sourceKind: "map" | "set";
+    }
+  | {
       readonly kind: "runtimeMapSet";
       readonly mapName: string;
       readonly key: JsIrValueExpression;
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "runtimeCollectionSetIterator";
+      readonly collectionName: string;
       readonly value: JsIrValueExpression;
     }
   | {
@@ -1204,13 +1237,7 @@ export type JsIrOperationNode =
       readonly collectionName: string;
       readonly sourceKind: "map" | "set";
       readonly iterationKind: "keys" | "values" | "entries";
-    }
-  | {
-      readonly kind: "runtimeIteratorNext";
-      readonly name: string;
-      readonly iteratorName: string;
-      readonly sourceKind: "map" | "set";
-      readonly iterationKind: "keys" | "values" | "entries";
+      readonly observeOverride?: boolean;
     }
   | {
       readonly kind: "runtimeArrayCopyWithin";
@@ -1530,6 +1557,7 @@ const minimumNumberRadix = 2;
 const maximumNumberRadix = 36;
 const maximumToFixedDigits = 100;
 const regexpConstructorArgumentCount = 2;
+const arrayFromArgumentCount = 3;
 const maxAsciiCodePoint = 127;
 const traceOperationIdWidth = 6;
 
@@ -1598,17 +1626,30 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   if (operation.kind === "runtimeArrayMutatorResult") {
     return { kind: "runtimeArray", name: operation.name };
   }
-  if (operation.kind === "runtimeMapNew" || operation.kind === "runtimeMapFromArray" || operation.kind === "runtimeMapSetResult") {
+  if (
+    operation.kind === "runtimeMapNew" ||
+    operation.kind === "runtimeMapFromArray" ||
+    operation.kind === "runtimeMapFromIterable" ||
+    operation.kind === "runtimeMapFromCollection" ||
+    operation.kind === "runtimeMapSetResult"
+  ) {
     return { kind: "runtimeMap", name: operation.name };
   }
-  if (operation.kind === "runtimeSetNew" || operation.kind === "runtimeSetFromArray" || operation.kind === "runtimeSetAddResult") {
+  if (
+    operation.kind === "runtimeSetNew" ||
+    operation.kind === "runtimeSetFromArray" ||
+    operation.kind === "runtimeSetFromIterable" ||
+    operation.kind === "runtimeSetFromCollection" ||
+    operation.kind === "runtimeSetAddResult"
+  ) {
     return { kind: "runtimeSet", name: operation.name };
   }
   if (operation.kind === "runtimeIteratorNew") {
-    return { kind: "runtimeIterator", name: operation.name, sourceKind: operation.sourceKind, iterationKind: operation.iterationKind };
+    // Protocol-compatible iterators are ordinary objects with a callable `.next`.
+    return { kind: "valueVariable", name: operation.name };
   }
-  if (operation.kind === "runtimeIteratorNext") {
-    return { kind: "runtimeObject", name: operation.name };
+  if (operation.kind === "runtimeArrayFromValue" || operation.kind === "runtimeArrayFromCollection") {
+    return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeObjectGetPrototype") {
     return { kind: "runtimeObject", name: operation.name };
@@ -6217,15 +6258,16 @@ function lowerRuntimeIteratorBinding(
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
+  const defaultIterator = lowerRuntimeCollectionDefaultIteratorBinding(name, initializer, bindings);
+  if (defaultIterator !== undefined) {
+    return defaultIterator;
+  }
   if (!ts.isCallExpression(initializer) || initializer.arguments.length > 0 || !ts.isPropertyAccessExpression(initializer.expression) || !ts.isIdentifier(initializer.expression.expression)) {
     return undefined;
   }
   const receiver = initializer.expression.expression.text;
   const binding = bindings.get(receiver);
   const method = initializer.expression.name.text;
-  if (binding?.kind === "runtimeIterator" && method === "next") {
-    return { kind: "runtimeIteratorNext", name, iteratorName: binding.name, sourceKind: binding.sourceKind, iterationKind: binding.iterationKind };
-  }
   if (method !== "keys" && method !== "values" && method !== "entries") {
     return undefined;
   }
@@ -6234,6 +6276,30 @@ function lowerRuntimeIteratorBinding(
   }
   if (binding?.kind === "runtimeSet") {
     return { kind: "runtimeIteratorNew", name, collectionName: binding.name, sourceKind: "set", iterationKind: method };
+  }
+  return undefined;
+}
+
+function lowerRuntimeCollectionDefaultIteratorBinding(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (
+    ts.isCallExpression(initializer) &&
+    initializer.arguments.length === 0 &&
+    ts.isElementAccessExpression(initializer.expression) &&
+    ts.isIdentifier(initializer.expression.expression) &&
+    lowerSymbolIteratorKeyExpression(initializer.expression.argumentExpression, bindings) !== undefined
+  ) {
+    const receiver = initializer.expression.expression.text;
+    const binding = bindings.get(receiver);
+    if (binding?.kind === "runtimeMap") {
+      return { kind: "runtimeIteratorNew", name, collectionName: binding.name, sourceKind: "map", iterationKind: "entries", observeOverride: true };
+    }
+    if (binding?.kind === "runtimeSet") {
+      return { kind: "runtimeIteratorNew", name, collectionName: binding.name, sourceKind: "set", iterationKind: "values", observeOverride: true };
+    }
   }
   return undefined;
 }
@@ -6284,19 +6350,53 @@ function lowerRuntimeCollectionConstructorBinding(
   if (argumentCount === 0 && initializer.expression.text === "Set" && !bindings.has("Set")) {
     return { kind: "runtimeSetNew", name };
   }
-  if (argumentCount !== 1 || initializer.arguments === undefined || !ts.isIdentifier(initializer.arguments[0])) {
+  if (argumentCount !== 1 || initializer.arguments === undefined) {
     return undefined;
   }
-  const sourceName = initializer.arguments[0].text;
-  const source = bindings.get(sourceName);
-  if (source?.kind !== "runtimeArray") {
+  const [sourceExpression] = initializer.arguments;
+  const isMap = initializer.expression.text === "Map" && !bindings.has("Map");
+  const isSet = initializer.expression.text === "Set" && !bindings.has("Set");
+  if (!isMap && !isSet) {
     return undefined;
   }
-  if (initializer.expression.text === "Map" && !bindings.has("Map")) {
-    return { kind: "runtimeMapFromArray", name, sourceName };
+  const fromCollection = lowerRuntimeCollectionCopyConstructor(name, sourceExpression, isMap, bindings);
+  if (fromCollection !== undefined) {
+    return fromCollection;
   }
-  if (initializer.expression.text === "Set" && !bindings.has("Set")) {
-    return { kind: "runtimeSetFromArray", name, sourceName };
+  const iterable = lowerValueExpression(sourceExpression, bindings);
+  if (iterable === undefined) {
+    return undefined;
+  }
+  const notIterableMessage = `${iteratorErrorSubject(sourceExpression)} is not iterable`;
+  if (isMap) {
+    return { kind: "runtimeMapFromIterable", name, iterable, notIterableMessage };
+  }
+  return { kind: "runtimeSetFromIterable", name, iterable, notIterableMessage };
+}
+
+// Collection-to-collection copy keeps a specialized path that does not require
+// Map/Set values to be boxed as JSValues.
+function lowerRuntimeCollectionCopyConstructor(
+  name: string,
+  sourceExpression: ts.Expression,
+  isMap: boolean,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isIdentifier(sourceExpression)) {
+    return undefined;
+  }
+  const source = bindings.get(sourceExpression.text);
+  if (source?.kind === "runtimeMap") {
+    if (isMap) {
+      return { kind: "runtimeMapFromCollection", name, sourceName: source.name, sourceKind: "map" };
+    }
+    return { kind: "runtimeSetFromCollection", name, sourceName: source.name, sourceKind: "map" };
+  }
+  if (source?.kind === "runtimeSet") {
+    if (isMap) {
+      return { kind: "runtimeMapFromCollection", name, sourceName: source.name, sourceKind: "set" };
+    }
+    return { kind: "runtimeSetFromCollection", name, sourceName: source.name, sourceKind: "set" };
   }
   return undefined;
 }
@@ -6439,6 +6539,7 @@ function lowerRuntimeAggregateExpansionBinding(
   return undefined;
 }
 
+// eslint-disable-next-line complexity, max-statements -- Array static routing distinguishes value, aggregate, and collection source representations.
 function lowerRuntimeArrayStaticBinding(
   name: string,
   initializer: ts.Expression,
@@ -6459,10 +6560,25 @@ function lowerRuntimeArrayStaticBinding(
     }
     return { kind: "runtimeArrayLiteral", name, elements };
   }
-  if (method !== "from" || initializer.arguments.length !== 1 || !ts.isIdentifier(initializer.arguments[0])) {
+  if (method !== "from" || initializer.arguments.length === 0 || initializer.arguments.length > arrayFromArgumentCount) {
     return undefined;
   }
-  const targetName = initializer.arguments[0].text;
+  const [sourceExpression] = initializer.arguments;
+  const callbacks = lowerArrayFromCallbacks(initializer.arguments, bindings);
+  if (callbacks === undefined) {
+    return undefined;
+  }
+  const { mapper, thisArg } = callbacks;
+  // Prefer the protocol path for every supported value so Symbol.iterator overrides
+  // are observed before any array-like fallback inside the runtime helper.
+  const source = lowerValueExpression(sourceExpression, bindings);
+  if (source !== undefined) {
+    return { kind: "runtimeArrayFromValue", name, source, mapper, thisArg };
+  }
+  if (!ts.isIdentifier(sourceExpression)) {
+    return undefined;
+  }
+  const targetName = sourceExpression.text;
   const target = bindings.get(targetName);
   if (target?.kind === "runtimeArray") {
     return { kind: "runtimeArrayFrom", name, targetName, targetKind: "array" };
@@ -6470,7 +6586,36 @@ function lowerRuntimeArrayStaticBinding(
   if (target?.kind === "runtimeObject") {
     return { kind: "runtimeArrayFrom", name, targetName, targetKind: "object" };
   }
+  if (target?.kind === "runtimeMap") {
+    return { kind: "runtimeArrayFromCollection", name, collectionName: target.name, sourceKind: "map", iterationKind: "entries", mapper, thisArg };
+  }
+  if (target?.kind === "runtimeSet") {
+    return { kind: "runtimeArrayFromCollection", name, collectionName: target.name, sourceKind: "set", iterationKind: "values", mapper, thisArg };
+  }
   return undefined;
+}
+
+function lowerArrayFromCallbacks(
+  arguments_: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): { readonly mapper?: JsIrValueExpression; readonly thisArg?: JsIrValueExpression } | undefined {
+  const mapperExpression = arguments_.at(1);
+  const thisArgExpression = arguments_.at(2);
+  let mapper: JsIrValueExpression | undefined;
+  if (mapperExpression !== undefined) {
+    mapper = lowerValueExpression(mapperExpression, bindings);
+  }
+  if (mapperExpression !== undefined && mapper === undefined) {
+    return undefined;
+  }
+  let thisArg: JsIrValueExpression | undefined;
+  if (thisArgExpression !== undefined) {
+    thisArg = lowerValueExpression(thisArgExpression, bindings);
+  }
+  if (thisArgExpression !== undefined && thisArg === undefined) {
+    return undefined;
+  }
+  return { mapper, thisArg };
 }
 
 function lowerRuntimeArraySortBinding(
@@ -7413,6 +7558,15 @@ function lowerElementAssignment(
   }
 
   const arrayBinding = bindings.get(left.expression.text);
+  if (
+    (arrayBinding?.kind === "runtimeMap" || arrayBinding?.kind === "runtimeSet") &&
+    lowerSymbolIteratorKeyExpression(left.argumentExpression, bindings) !== undefined
+  ) {
+    const iteratorMethod = lowerValueExpression(right, bindings);
+    if (iteratorMethod !== undefined) {
+      return { kind: "runtimeCollectionSetIterator", collectionName: arrayBinding.name, value: iteratorMethod };
+    }
+  }
   let index = lowerNumberExpression(left.argumentExpression, bindings);
   if (arrayBinding?.kind === "runtimeArray" && index === undefined) {
     const stringIndex = lowerCanonicalArrayIndexString(left.argumentExpression);

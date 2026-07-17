@@ -993,8 +993,8 @@ function emitBindingOperation(operation: JsIrOperation, context: EmitContext): s
     return emitRuntimeCollectionResultOperation(operation, context);
   }
 
-  if (operation.kind === "runtimeIteratorNew" || operation.kind === "runtimeIteratorNext") {
-    return emitRuntimeIteratorOperation(operation, context);
+  if (operation.kind === "runtimeIteratorNew") {
+    return emitRuntimeIteratorNewOperation(operation, context);
   }
 
   return emitMutationOperation(operation, context);
@@ -1027,6 +1027,13 @@ function emitMutationOperation(operation: JsIrOperation, context: EmitContext): 
 }
 
 function emitRuntimeCollectionMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+  if (operation.kind === "runtimeCollectionSetIterator") {
+    const collection = emitRuntimeCollectionPointer(operation.collectionName, context);
+    const value = emitValueExpression(operation.value, context);
+    const slot = `%collection.iterator.slot.${context.objectIndex}`;
+    context.objectIndex += 1;
+    return [...collection.lines, ...value.lines, `  ${slot} = getelementptr i8, ptr ${collection.value}, i64 32`, `  store i64 ${value.value}, ptr ${slot}`];
+  }
   if (operation.kind === "runtimeMapSet") {
     const collection = emitRuntimeCollectionPointer(operation.mapName, context);
     const key = emitValueExpression(operation.key, context);
@@ -1173,6 +1180,14 @@ function emitAggregateLiteralBindingOperation(operation: JsIrOperation, context:
     return emitRuntimeCollectionFromArrayOperation(operation, context);
   }
 
+  if (operation.kind === "runtimeMapFromIterable" || operation.kind === "runtimeSetFromIterable") {
+    return emitRuntimeCollectionFromIterableOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeMapFromCollection" || operation.kind === "runtimeSetFromCollection") {
+    return emitRuntimeCollectionFromCollectionOperation(operation, context);
+  }
+
   return undefined;
 }
 
@@ -1262,8 +1277,8 @@ function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, con
     return emitRuntimeArraySortOperation(operation, context);
   }
 
-  if (operation.kind === "runtimeArrayFrom") {
-    return emitRuntimeArrayFromOperation(operation, context);
+  if (operation.kind === "runtimeArrayFrom" || operation.kind === "runtimeArrayFromValue" || operation.kind === "runtimeArrayFromCollection") {
+    return emitRuntimeArrayFromFamilyOperation(operation, context);
   }
 
   if (operation.kind === "runtimeObjectGetPrototype") {
@@ -1271,6 +1286,19 @@ function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, con
   }
 
   return undefined;
+}
+
+function emitRuntimeArrayFromFamilyOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFrom" | "runtimeArrayFromValue" | "runtimeArrayFromCollection" }>,
+  context: EmitContext
+): string[] {
+  if (operation.kind === "runtimeArrayFromValue") {
+    return emitRuntimeArrayFromValueOperation(operation, context);
+  }
+  if (operation.kind === "runtimeArrayFromCollection") {
+    return emitRuntimeArrayFromCollectionOperation(operation, context);
+  }
+  return emitRuntimeArrayFromOperation(operation, context);
 }
 
 function emitConstBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
@@ -1618,45 +1646,37 @@ function emitRuntimeCollectionResultOperation(
   return lines;
 }
 
-function emitRuntimeIteratorOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeIteratorNew" | "runtimeIteratorNext" }>,
-  context: EmitContext
-): string[] {
-  if (operation.kind === "runtimeIteratorNew") {
-    return emitRuntimeIteratorNewOperation(operation, context);
-  }
-  return emitRuntimeIteratorNextOperation(operation, context);
-}
-
 function emitRuntimeIteratorNewOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeIteratorNew" }>,
   context: EmitContext
 ): string[] {
   const pointerName = variablePointerName(operation.name);
   const collection = emitRuntimeCollectionPointer(operation.collectionName, context);
-  const iterator = `%${operation.name}.iterator`;
-  const indexSlot = `%${operation.name}.iterator.index.slot`;
-  const modeSlot = `%${operation.name}.iterator.mode.slot`;
-  const sourceSlot = `%${operation.name}.iterator.source.slot`;
   const modeCode = runtimeIteratorKindCode(operation.iterationKind);
-  let sourceCode = 1;
+  let sourceCode = 3;
   if (operation.sourceKind === "map") {
-    sourceCode = 0;
+    sourceCode = 2;
   }
-  context.bindings.set(operation.name, { kind: "runtimeIterator", name: operation.name, sourceKind: operation.sourceKind, iterationKind: operation.iterationKind });
-  useRuntimeHelper(context.runtime, "malloc");
+  const iteratorValue = `%${operation.name}.iterator.value`;
+  context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
+  useRuntimeHelper(context.runtime, "createCollectionIterator");
+  if (operation.observeOverride === true) {
+    useRuntimeHelper(context.runtime, "getCollectionIterator");
+    const acquired = emitGeneratedJsCall("getCollectionIterator", [`ptr ${collection.value}`, `i64 ${sourceCode}`, `i64 ${modeCode}`], context);
+    return [
+      `  ${pointerName} = alloca i64`,
+      ...collection.lines,
+      ...acquired.lines,
+      `  store i64 ${acquired.value}, ptr ${pointerName}`,
+      `  call void @gcRootPush(i64 ${acquired.value})`
+    ];
+  }
   return [
-    `  ${pointerName} = alloca ptr`,
+    `  ${pointerName} = alloca i64`,
     ...collection.lines,
-    `  ${iterator} = call ptr @malloc(i64 32)`,
-    `  store ptr ${collection.value}, ptr ${iterator}`,
-    `  ${indexSlot} = getelementptr i8, ptr ${iterator}, i64 8`,
-    `  store i64 0, ptr ${indexSlot}`,
-    `  ${modeSlot} = getelementptr i8, ptr ${iterator}, i64 16`,
-    `  store i64 ${modeCode}, ptr ${modeSlot}`,
-    `  ${sourceSlot} = getelementptr i8, ptr ${iterator}, i64 24`,
-    `  store i64 ${sourceCode}, ptr ${sourceSlot}`,
-    `  store ptr ${iterator}, ptr ${pointerName}`
+    `  ${iteratorValue} = call i64 @createCollectionIterator(ptr ${collection.value}, i64 ${sourceCode}, i64 ${modeCode})`,
+    `  store i64 ${iteratorValue}, ptr ${pointerName}`,
+    `  call void @gcRootPush(i64 ${iteratorValue})`
   ];
 }
 
@@ -1668,125 +1688,6 @@ function runtimeIteratorKindCode(kind: "keys" | "values" | "entries"): number {
     return 1;
   }
   return 2;
-}
-
-// eslint-disable-next-line max-statements -- Iterator .next() emission builds the scan loop and result object in one LLVM block.
-function emitRuntimeIteratorNextOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeIteratorNext" }>,
-  context: EmitContext
-): string[] {
-  const index = context.objectIndex;
-  context.objectIndex += 1;
-  const pointerName = variablePointerName(operation.name);
-  const iterator = emitRuntimeIteratorPointer(operation.iteratorName, context);
-  const collection = `%iterator.collection.${index}`;
-  const indexSlot = `%iterator.index.slot.${index}`;
-  const currentIndex = `%iterator.index.${index}`;
-  const usedSlot = `%iterator.used.slot.${index}`;
-  const used = `%iterator.used.${index}`;
-  const inRange = `%iterator.in.range.${index}`;
-  const entriesSlot = `%iterator.entries.slot.${index}`;
-  const entries = `%iterator.entries.${index}`;
-  const entryBytes = `%iterator.entry.bytes.${index}`;
-  const entryPointer = `%iterator.entry.${index}`;
-  const active = `%iterator.active.${index}`;
-  const isActive = `%iterator.is.active.${index}`;
-  const nextIndex = `%iterator.next.index.${index}`;
-  const resultValue = emitRuntimeIteratorResultValue(operation, entryPointer, context);
-  const foundObject = `%iterator.result.object.${index}`;
-  const exhaustedObject = `%iterator.exhausted.object.${index}`;
-  const valueKey = addStringConstant("value", context);
-  const doneKey = addStringConstant("done", context);
-  const condLabel = `iterator.cond.${index}`;
-  const checkLabel = `iterator.check.${index}`;
-  const advanceLabel = `iterator.advance.${index}`;
-  const foundLabel = `iterator.found.${index}`;
-  const exhaustedLabel = `iterator.exhausted.${index}`;
-  const endLabel = `iterator.end.${index}`;
-  context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
-  useRuntimeHelper(context.runtime, "objectNew");
-  useRuntimeHelper(context.runtime, "objectSet");
-  return [
-    `  ${pointerName} = alloca ptr`,
-    ...iterator.lines,
-    `  ${collection} = load ptr, ptr ${iterator.value}`,
-    `  ${indexSlot} = getelementptr i8, ptr ${iterator.value}, i64 8`,
-    `  br label %${condLabel}`,
-    `${condLabel}:`,
-    `  ${currentIndex} = load i64, ptr ${indexSlot}`,
-    `  ${usedSlot} = getelementptr i8, ptr ${collection}, i64 8`,
-    `  ${used} = load i64, ptr ${usedSlot}`,
-    `  ${inRange} = icmp ult i64 ${currentIndex}, ${used}`,
-    `  br i1 ${inRange}, label %${checkLabel}, label %${exhaustedLabel}`,
-    `${checkLabel}:`,
-    `  ${entriesSlot} = getelementptr i8, ptr ${collection}, i64 24`,
-    `  ${entries} = load ptr, ptr ${entriesSlot}`,
-    `  ${entryBytes} = mul i64 ${currentIndex}, 24`,
-    `  ${entryPointer} = getelementptr i8, ptr ${entries}, i64 ${entryBytes}`,
-    `  ${active} = load i64, ptr ${entryPointer}`,
-    `  ${isActive} = icmp ne i64 ${active}, 0`,
-    `  br i1 ${isActive}, label %${foundLabel}, label %${advanceLabel}`,
-    `${advanceLabel}:`,
-    `  ${nextIndex} = add i64 ${currentIndex}, 1`,
-    `  store i64 ${nextIndex}, ptr ${indexSlot}`,
-    `  br label %${condLabel}`,
-    `${foundLabel}:`,
-    `  ${nextIndex}.found = add i64 ${currentIndex}, 1`,
-    `  store i64 ${nextIndex}.found, ptr ${indexSlot}`,
-    ...resultValue.lines,
-    `  ${foundObject} = call ptr @objectNew(i64 2)`,
-    `  call void @objectSet(ptr ${foundObject}, i64 5, ptr ${valueKey}, i64 ${resultValue.value})`,
-    `  call void @objectSet(ptr ${foundObject}, i64 4, ptr ${doneKey}, i64 ${jsValueFalse})`,
-    `  store ptr ${foundObject}, ptr ${pointerName}`,
-    `  br label %${endLabel}`,
-    `${exhaustedLabel}:`,
-    `  store i64 ${used}, ptr ${indexSlot}`,
-    `  ${exhaustedObject} = call ptr @objectNew(i64 2)`,
-    `  call void @objectSet(ptr ${exhaustedObject}, i64 5, ptr ${valueKey}, i64 ${jsValueUndefined})`,
-    `  call void @objectSet(ptr ${exhaustedObject}, i64 4, ptr ${doneKey}, i64 ${jsValueTrue})`,
-    `  store ptr ${exhaustedObject}, ptr ${pointerName}`,
-    `  br label %${endLabel}`,
-    `${endLabel}:`
-  ];
-}
-
-function emitRuntimeIteratorResultValue(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeIteratorNext" }>,
-  entryPointer: string,
-  context: EmitContext
-): JsValue {
-  const index = context.objectIndex;
-  context.objectIndex += 1;
-  const keySlot = `%iterator.key.slot.${index}`;
-  const key = `%iterator.key.${index}`;
-  const valueSlot = `%iterator.value.slot.${index}`;
-  const storedValue = `%iterator.value.${index}`;
-  const lines = [`  ${keySlot} = getelementptr i8, ptr ${entryPointer}, i64 8`, `  ${key} = load i64, ptr ${keySlot}`];
-  if (operation.iterationKind === "keys") {
-    return { lines, value: key };
-  }
-  if (operation.sourceKind === "map") {
-    lines.push(`  ${valueSlot} = getelementptr i8, ptr ${entryPointer}, i64 16`, `  ${storedValue} = load i64, ptr ${valueSlot}`);
-  }
-  let value = key;
-  if (operation.sourceKind === "map") {
-    value = storedValue;
-  }
-  if (operation.iterationKind === "values") {
-    return { lines, value };
-  }
-  const pair = `%iterator.pair.${index}`;
-  const boxed = `%iterator.pair.boxed.${index}`;
-  useRuntimeHelper(context.runtime, "arrayNew");
-  useRuntimeHelper(context.runtime, "arraySet");
-  useRuntimeHelper(context.runtime, "valueBoxArray");
-  lines.push(
-    `  ${pair} = call ptr @arrayNew(i64 2)`,
-    `  call void @arraySet(ptr ${pair}, i64 0, i64 ${key})`,
-    `  call void @arraySet(ptr ${pair}, i64 1, i64 ${value})`,
-    `  ${boxed} = call i64 @valueBoxArray(ptr ${pair})`
-  );
-  return { lines, value: boxed };
 }
 
 function runtimeArrayLiteralInitialLength(elements: readonly JsIrRuntimeArrayElement[]): number {
@@ -2820,6 +2721,263 @@ function emitRuntimeArrayFromOperation(
   context.arrayIndex += 1;
   useRuntimeHelper(context.runtime, helper);
   return [`  ${pointerName} = alloca ptr`, ...source.lines, `  ${result} = call ptr @${helper}(ptr ${source.value})`, `  store ptr ${result}, ptr ${pointerName}`];
+}
+
+function emitRuntimeArrayFromValueOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFromValue" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const source = emitValueExpression(operation.source, context);
+  let mapper: JsValue = { lines: [], value: jsValueUndefined };
+  if (operation.mapper !== undefined) {
+    mapper = emitValueExpression(operation.mapper, context);
+  }
+  let thisArg: JsValue = { lines: [], value: jsValueUndefined };
+  if (operation.thisArg !== undefined) {
+    thisArg = emitValueExpression(operation.thisArg, context);
+  }
+  useRuntimeHelper(context.runtime, "arrayFromValue");
+  useRuntimeHelper(context.runtime, "valueArrayPtr");
+  const generated = emitGeneratedJsCall("arrayFromValue", [`i64 ${source.value}`, `i64 ${mapper.value}`, `i64 ${thisArg.value}`], context);
+  const arrayPtr = `%arr.from.value.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...source.lines,
+    ...mapper.lines,
+    `  call void @gcRootPush(i64 ${mapper.value})`,
+    ...thisArg.lines,
+    `  call void @gcRootPush(i64 ${thisArg.value})`,
+    ...generated.lines,
+    `  ${arrayPtr} = call ptr @valueArrayPtr(i64 ${generated.value})`,
+    `  store ptr ${arrayPtr}, ptr ${pointerName}`
+  ];
+}
+
+// Consumes a Map/Set through its protocol-compatible collection iterator into a new runtime array.
+// eslint-disable-next-line max-statements -- Iterator setup, optional mapping, and collection are one control-flow operation.
+function emitRuntimeArrayFromCollectionOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFromCollection" }>,
+  context: EmitContext
+): string[] {
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const collection = emitRuntimeCollectionPointer(operation.collectionName, context);
+  let mapper: JsValue = { lines: [], value: jsValueUndefined };
+  if (operation.mapper !== undefined) {
+    mapper = emitValueExpression(operation.mapper, context);
+  }
+  let thisArg: JsValue = { lines: [], value: jsValueUndefined };
+  if (operation.thisArg !== undefined) {
+    thisArg = emitValueExpression(operation.thisArg, context);
+  }
+  const modeCode = runtimeIteratorKindCode(operation.iterationKind);
+  let sourceCode = 3;
+  if (operation.sourceKind === "map") {
+    sourceCode = 2;
+  }
+  const iteratorCall = emitGeneratedJsCall("getCollectionIterator", [`ptr ${collection.value}`, `i64 ${sourceCode}`, `i64 ${modeCode}`], context);
+  const iterator = iteratorCall.value;
+  const out = `%arr.from.col.out.${index}`;
+  const outRoot = `%arr.from.col.out.root.${index}`;
+  const loopFrame = `%arr.from.col.loop.frame.${index}`;
+  useRuntimeHelper(context.runtime, "getCollectionIterator");
+  useRuntimeHelper(context.runtime, "callIteratorNext");
+  useRuntimeHelper(context.runtime, "valueObjectGet");
+  useRuntimeHelper(context.runtime, "valueTruthy");
+  useRuntimeHelper(context.runtime, "arrayNew");
+  useRuntimeHelper(context.runtime, "arrayPush");
+  const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iterator}`], context);
+  const doneKey = addStringConstant("done", context);
+  const valueKey = addStringConstant("value", context);
+  const doneValue = `%arr.from.col.done.${index}`;
+  const isDone = `%arr.from.col.is.done.${index}`;
+  const item = `%arr.from.col.item.${index}`;
+  const mappedItem = `%arr.from.col.mapped.${index}`;
+  const currentIndex = `%arr.from.col.index.${index}`;
+  const nextIndex = `%arr.from.col.index.next.${index}`;
+  const indexPointer = `%arr.from.col.index.addr.${index}`;
+  const condLabel = `arr.from.col.cond.${index}`;
+  const bodyLabel = `arr.from.col.body.${index}`;
+  const endLabel = `arr.from.col.end.${index}`;
+  let pushedValue = item;
+  const mappingLines: string[] = [];
+  if (operation.mapper !== undefined) {
+    useRuntimeHelper(context.runtime, "jsCall");
+    const indexNumber = `%arr.from.col.index.number.${index}`;
+    const indexValue = `%arr.from.col.index.value.${index}`;
+    const argv = `%arr.from.col.map.argv.${index}`;
+    const arg0 = `%arr.from.col.map.arg0.${index}`;
+    const arg1 = `%arr.from.col.map.arg1.${index}`;
+    const mapped = emitGeneratedJsCall("jsCall", [`i64 ${mapper.value}`, "i64 2", `ptr ${argv}`, `i64 ${thisArg.value}`], context);
+    mappingLines.push(
+      `  ${indexNumber} = uitofp i64 ${currentIndex} to double`,
+      `  ${indexValue} = call i64 @valueBoxNumber(double ${indexNumber})`,
+      `  ${argv} = alloca i64, i64 2`,
+      `  ${arg0} = getelementptr i64, ptr ${argv}, i64 0`,
+      `  store i64 ${item}, ptr ${arg0}`,
+      `  ${arg1} = getelementptr i64, ptr ${argv}, i64 1`,
+      `  store i64 ${indexValue}, ptr ${arg1}`,
+      ...mapped.lines,
+      `  ${mappedItem} = add i64 ${mapped.value}, 0`
+    );
+    pushedValue = mappedItem;
+  }
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...collection.lines,
+    ...mapper.lines,
+    `  call void @gcRootPush(i64 ${mapper.value})`,
+    ...thisArg.lines,
+    `  call void @gcRootPush(i64 ${thisArg.value})`,
+    ...iteratorCall.lines,
+    `  call void @gcRootPush(i64 ${iterator})`,
+    `  ${out} = call ptr @arrayNew(i64 0)`,
+    `  store ptr ${out}, ptr ${pointerName}`,
+    `  ${outRoot} = call i64 @valueBoxArray(ptr ${out})`,
+    `  call void @gcRootPush(i64 ${outRoot})`,
+    `  ${indexPointer} = alloca i64`,
+    `  store i64 0, ptr ${indexPointer}`,
+    `  ${loopFrame} = call i64 @gcRootSave()`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  call void @gcRootRestore(i64 ${loopFrame})`,
+    `  call void @gcSafepoint()`,
+    ...nextCall.lines,
+    `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
+    `  ${isDone} = call i1 @valueTruthy(i64 ${doneValue})`,
+    `  br i1 ${isDone}, label %${endLabel}, label %${bodyLabel}`,
+    `${bodyLabel}:`,
+    `  ${item} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+    `  ${currentIndex} = load i64, ptr ${indexPointer}`,
+    ...mappingLines,
+    `  call void @gcRootPush(i64 ${pushedValue})`,
+    `  call i64 @arrayPush(ptr ${out}, i64 ${pushedValue})`,
+    `  ${nextIndex} = add i64 ${currentIndex}, 1`,
+    `  store i64 ${nextIndex}, ptr ${indexPointer}`,
+    `  br label %${condLabel}`,
+    `${endLabel}:`
+  ];
+}
+
+function emitRuntimeCollectionFromIterableOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeMapFromIterable" | "runtimeSetFromIterable" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  let bindingKind: "runtimeMap" | "runtimeSet" = "runtimeSet";
+  let helper: RuntimeHelper = "setFromIterable";
+  if (operation.kind === "runtimeMapFromIterable") {
+    bindingKind = "runtimeMap";
+    helper = "mapFromIterable";
+  }
+  context.bindings.set(operation.name, { kind: bindingKind, name: operation.name });
+  const iterable = emitValueExpression(operation.iterable, context);
+  const messageConstant = addStringConstant(operation.notIterableMessage, context);
+  const message = `%${operation.name}.not.iterable`;
+  useRuntimeHelper(context.runtime, helper);
+  useRuntimeHelper(context.runtime, "valueBoxString");
+  const generated = emitGeneratedJsCall(helper, [`i64 ${iterable.value}`, `i64 ${message}`], context);
+  const collection = `%${operation.name}.collection`;
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...iterable.lines,
+    `  call void @gcRootPush(i64 ${iterable.value})`,
+    `  ${message} = call i64 @valueBoxString(ptr ${messageConstant}, i64 ${utf8ByteLength(operation.notIterableMessage)})`,
+    ...generated.lines,
+    `  ${collection} = inttoptr i64 ${generated.value} to ptr`,
+    `  store ptr ${collection}, ptr ${pointerName}`
+  ];
+}
+
+// Copies entries/values from one collection into a new Map or Set using the
+// protocol-compatible collection iterator (entries for maps, values for sets).
+// eslint-disable-next-line max-statements -- Collection copy emits iterator acquisition, next loop, and Map/Set insertion together.
+function emitRuntimeCollectionFromCollectionOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeMapFromCollection" | "runtimeSetFromCollection" }>,
+  context: EmitContext
+): string[] {
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  const pointerName = variablePointerName(operation.name);
+  let bindingKind: "runtimeMap" | "runtimeSet" = "runtimeSet";
+  if (operation.kind === "runtimeMapFromCollection") {
+    bindingKind = "runtimeMap";
+  }
+  context.bindings.set(operation.name, { kind: bindingKind, name: operation.name });
+  const source = emitRuntimeCollectionPointer(operation.sourceName, context);
+  let sourceCode = 3;
+  let iterationKind = 1;
+  if (operation.sourceKind === "map") {
+    sourceCode = 2;
+    iterationKind = 2;
+  }
+  const iteratorCall = emitGeneratedJsCall("getCollectionIterator", [`ptr ${source.value}`, `i64 ${sourceCode}`, `i64 ${iterationKind}`], context);
+  const iterator = iteratorCall.value;
+  const collection = `%${operation.name}.collection`;
+  const collectionRoot = `%${operation.name}.collection.root`;
+  const loopFrame = `%col.from.col.loop.frame.${index}`;
+  useRuntimeHelper(context.runtime, "getCollectionIterator");
+  useRuntimeHelper(context.runtime, "callIteratorNext");
+  useRuntimeHelper(context.runtime, "valueObjectGet");
+  useRuntimeHelper(context.runtime, "valueTruthy");
+  useRuntimeHelper(context.runtime, "collectionNew");
+  useRuntimeHelper(context.runtime, "collectionSet");
+  const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iterator}`], context);
+  const doneKey = addStringConstant("done", context);
+  const valueKey = addStringConstant("value", context);
+  const doneValue = `%col.from.col.done.${index}`;
+  const isDone = `%col.from.col.is.done.${index}`;
+  const item = `%col.from.col.item.${index}`;
+  const condLabel = `col.from.col.cond.${index}`;
+  const bodyLabel = `col.from.col.body.${index}`;
+  const endLabel = `col.from.col.end.${index}`;
+  const lines = [
+    `  ${pointerName} = alloca ptr`,
+    ...source.lines,
+    `  ${collection} = call ptr @collectionNew()`,
+    `  store ptr ${collection}, ptr ${pointerName}`,
+    `  ${collectionRoot} = call i64 @valueBoxObject(ptr ${collection})`,
+    `  call void @gcRootPush(i64 ${collectionRoot})`,
+    ...iteratorCall.lines,
+    `  call void @gcRootPush(i64 ${iterator})`,
+    `  ${loopFrame} = call i64 @gcRootSave()`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  call void @gcRootRestore(i64 ${loopFrame})`,
+    `  call void @gcSafepoint()`,
+    ...nextCall.lines,
+    `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
+    `  ${isDone} = call i1 @valueTruthy(i64 ${doneValue})`,
+    `  br i1 ${isDone}, label %${endLabel}, label %${bodyLabel}`,
+    `${bodyLabel}:`,
+    `  ${item} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+    `  call void @gcRootPush(i64 ${item})`
+  ];
+  if (operation.kind === "runtimeMapFromCollection") {
+    const keyConstant = addStringConstant("0", context);
+    const valueConstant = addStringConstant("1", context);
+    const key = `%col.from.col.key.${index}`;
+    const value = `%col.from.col.value.${index}`;
+    useRuntimeHelper(context.runtime, "valueArrayGet");
+    useRuntimeHelper(context.runtime, "valueIsArray");
+    useRuntimeHelper(context.runtime, "valueIsObject");
+    useRuntimeHelper(context.runtime, "valueObjectGet");
+    // Entry objects and arrays both support property keys "0"/"1".
+    lines.push(
+      `  ${key} = call i64 @valueArrayGet(i64 ${item}, i64 0, i64 1, ptr ${keyConstant})`,
+      `  ${value} = call i64 @valueArrayGet(i64 ${item}, i64 1, i64 1, ptr ${valueConstant})`,
+      `  call void @collectionSet(ptr ${collection}, i64 ${key}, i64 ${value})`
+    );
+  } else {
+    lines.push(`  call void @collectionSet(ptr ${collection}, i64 ${item}, i64 ${jsValueTrue})`);
+  }
+  lines.push(`  br label %${condLabel}`, `${endLabel}:`);
+  return lines;
 }
 
 function emitRuntimeArraySortOperation(
@@ -4069,6 +4227,24 @@ function emitRuntimeArrayValueExpression(
   const value = `%value.${valueIndex}`;
   if (expression.key !== undefined) {
     const key = emitStringExpression(expression.key, context);
+    // Non-index keys (e.g. Symbol.iterator sentinel) use valuePropertyGet so
+    // built-in iterator method thunks resolve. Numeric indices keep arrayGetWithKey.
+    const isNonIndexKey = expression.index.kind === "literal" && expression.index.value < 0;
+    if (isNonIndexKey) {
+      const boxed = `%value.arr.box.${valueIndex}`;
+      useRuntimeHelper(context.runtime, "valueBoxArray");
+      useRuntimeHelper(context.runtime, "valuePropertyGet");
+      return {
+        lines: [
+          ...array.lines,
+          ...index.lines,
+          ...key.lines,
+          `  ${boxed} = call i64 @valueBoxArray(ptr ${array.value})`,
+          `  ${value} = call i64 @valuePropertyGet(i64 ${boxed}, i64 ${key.length}, ptr ${key.value})`
+        ],
+        value
+      };
+    }
     useRuntimeHelper(context.runtime, "arrayGetWithKey");
     return {
       lines: [...array.lines, ...index.lines, ...key.lines, `  ${value} = call i64 @arrayGetWithKey(ptr ${array.value}, i64 ${index.value}, i64 ${key.length}, ptr ${key.value})`],
@@ -4121,6 +4297,15 @@ function emitValueArrayValueExpression(
   const valueIndex = context.numIndex;
   context.numIndex += 1;
   const value = `%value.${valueIndex}`;
+  // Prefer valuePropertyGet for named keys so built-in iterator methods resolve.
+  // Numeric index access still uses valueArrayGet for correct hole/index semantics.
+  if (expression.index.kind === "literal" && expression.index.value < 0) {
+    useRuntimeHelper(context.runtime, "valuePropertyGet");
+    return {
+      lines: [...receiver.lines, ...index.lines, ...key.lines, `  ${value} = call i64 @valuePropertyGet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value})`],
+      value
+    };
+  }
   useRuntimeHelper(context.runtime, "valueArrayGet");
   return {
     lines: [...receiver.lines, ...index.lines, ...key.lines, `  ${value} = call i64 @valueArrayGet(i64 ${receiver.value}, i64 ${index.value}, i64 ${key.length}, ptr ${key.value})`],
@@ -4749,12 +4934,19 @@ function emitForOfArrayOperation(operation: Extract<JsIrOperation, { readonly ki
   ];
 }
 
-// eslint-disable-next-line max-statements -- String for...of emission materializes byte-sized string elements and scoped loop bindings together.
+// eslint-disable-next-line max-statements -- String for...of emission walks UTF-8 code points and materializes scoped loop bindings.
 function emitForOfStringOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfString" }>, context: EmitContext): string[] {
   const { loopIndex } = context;
   context.loopIndex += 1;
   const condLabel = `for.of.cond.${loopIndex}`;
   const bodyLabel = `for.of.body.${loopIndex}`;
+  const asciiLabel = `for.of.ascii.${loopIndex}`;
+  const multiLabel = `for.of.multi.${loopIndex}`;
+  const multi2Label = `for.of.multi2.${loopIndex}`;
+  const multi3Label = `for.of.multi3.${loopIndex}`;
+  const multi4Label = `for.of.multi4.${loopIndex}`;
+  const copyLabel = `for.of.copy.${loopIndex}`;
+  const afterCopyLabel = `for.of.after.copy.${loopIndex}`;
   const stepLabel = `for.of.step.${loopIndex}`;
   const endLabel = `for.of.end.${loopIndex}`;
   const indexPointer = `%for.of.index.${loopIndex}.addr`;
@@ -4779,10 +4971,19 @@ function emitForOfStringOperation(operation: Extract<JsIrOperation, { readonly k
   const inRange = `%for.of.in.range.${loopIndex}`;
   const charSource = `%for.of.char.src.${loopIndex}`;
   const charValue = `%for.of.char.${loopIndex}`;
+  const isAscii = `%for.of.is.ascii.${loopIndex}`;
+  const is2 = `%for.of.is2.${loopIndex}`;
+  const is3 = `%for.of.is3.${loopIndex}`;
+  const seqLen = `%for.of.seq.len.${loopIndex}`;
+  const remain = `%for.of.remain.${loopIndex}`;
+  const fits = `%for.of.fits.${loopIndex}`;
+  const copyLen = `%for.of.copy.len.${loopIndex}`;
+  const allocSize = `%for.of.alloc.${loopIndex}`;
   const charString = `%for.of.char.string.${loopIndex}`;
   const charStringNul = `%for.of.char.string.nul.${loopIndex}`;
   const nextIndex = `%for.of.next.${loopIndex}`;
   useRuntimeHelper(context.runtime, "malloc");
+  useRuntimeHelper(context.runtime, "memcpy");
 
   return [
     ...source.lines,
@@ -4800,17 +5001,49 @@ function emitForOfStringOperation(operation: Extract<JsIrOperation, { readonly k
     ...emitLoopIterationPrologue(loopIndex),
     `  ${charSource} = getelementptr i8, ptr ${source.value}, i64 ${currentIndex}`,
     `  ${charValue} = load i8, ptr ${charSource}`,
-    `  ${charString} = call ptr @malloc(i64 2)`,
-    `  store i8 ${charValue}, ptr ${charString}`,
-    `  ${charStringNul} = getelementptr i8, ptr ${charString}, i64 1`,
+    `  ${isAscii} = icmp ult i8 ${charValue}, 128`,
+    `  br i1 ${isAscii}, label %${asciiLabel}, label %${multiLabel}`,
+    `${asciiLabel}:`,
+    `  ${charString}.a = call ptr @malloc(i64 2)`,
+    `  store i8 ${charValue}, ptr ${charString}.a`,
+    `  ${charStringNul}.a = getelementptr i8, ptr ${charString}.a, i64 1`,
+    `  store i8 0, ptr ${charStringNul}.a`,
+    `  store ptr ${charString}.a, ptr ${itemPointer}`,
+    `  store i64 1, ptr ${itemLengthPointer}`,
+    `  ${nextIndex}.a = add i64 ${currentIndex}, 1`,
+    `  store i64 ${nextIndex}.a, ptr ${indexPointer}`,
+    `  br label %${afterCopyLabel}`,
+    `${multiLabel}:`,
+    `  ${is2} = icmp ult i8 ${charValue}, 224`,
+    `  br i1 ${is2}, label %${multi2Label}, label %${multi3Label}`,
+    `${multi2Label}:`,
+    `  br label %${copyLabel}`,
+    `${multi3Label}:`,
+    `  ${is3} = icmp ult i8 ${charValue}, 240`,
+    `  br i1 ${is3}, label %${multi4Label}.pre3, label %${multi4Label}`,
+    `${multi4Label}.pre3:`,
+    `  br label %${copyLabel}`,
+    `${multi4Label}:`,
+    `  br label %${copyLabel}`,
+    `${copyLabel}:`,
+    `  ${seqLen} = phi i64 [ 2, %${multi2Label} ], [ 3, %${multi4Label}.pre3 ], [ 4, %${multi4Label} ]`,
+    `  ${remain} = sub i64 ${source.length}, ${currentIndex}`,
+    `  ${fits} = icmp ule i64 ${seqLen}, ${remain}`,
+    `  ${copyLen} = select i1 ${fits}, i64 ${seqLen}, i64 1`,
+    `  ${allocSize} = add i64 ${copyLen}, 1`,
+    `  ${charString} = call ptr @malloc(i64 ${allocSize})`,
+    `  call ptr @memcpy(ptr ${charString}, ptr ${charSource}, i64 ${copyLen})`,
+    `  ${charStringNul} = getelementptr i8, ptr ${charString}, i64 ${copyLen}`,
     `  store i8 0, ptr ${charStringNul}`,
     `  store ptr ${charString}, ptr ${itemPointer}`,
-     `  store i64 1, ptr ${itemLengthPointer}`,
-     ...bodyLines,
-     ...emitLoopBackEdge(stepLabel, operation.body),
-     `${stepLabel}:`,
-    `  ${nextIndex} = add i64 ${currentIndex}, 1`,
-    `  store i64 ${nextIndex}, ptr ${indexPointer}`,
+    `  store i64 ${copyLen}, ptr ${itemLengthPointer}`,
+    `  ${nextIndex}.m = add i64 ${currentIndex}, ${copyLen}`,
+    `  store i64 ${nextIndex}.m, ptr ${indexPointer}`,
+    `  br label %${afterCopyLabel}`,
+    `${afterCopyLabel}:`,
+    ...bodyLines,
+    ...emitLoopBackEdge(stepLabel, operation.body),
+    `${stepLabel}:`,
     `  br label %${condLabel}`,
     `${endLabel}:`
   ];
@@ -6108,13 +6341,6 @@ function emitRuntimeCollectionPointer(collectionName: string, context: EmitConte
   context.objectIndex += 1;
   const value = `%collection.ptr.${index}`;
   return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(collectionName)}`], value };
-}
-
-function emitRuntimeIteratorPointer(iteratorName: string, context: EmitContext): NumberValue {
-  const index = context.objectIndex;
-  context.objectIndex += 1;
-  const value = `%iterator.ptr.${index}`;
-  return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(iteratorName)}`], value };
 }
 
 function emitRuntimeObjectPointer(objectName: string, context: EmitContext): NumberValue {

@@ -769,10 +769,18 @@ describe("tscn expanded runtime roadmap", () => {
       ["map-same-value-zero.ts", "nan\nzero\n2\nnegzero\n"],
       ["map-object-identity-keys.ts", "object\nfalse\narray\n"],
       ["map-constructor-iterable.ts", "1\n1\n"],
+      ["map-constructor-user-iterable.ts", "2\n1\n2\n"],
+      ["map-constructor-from-map.ts", "1\n42\n"],
+      ["map-constructor-malformed-entry.ts", "TypeError\nIterator value 1 is not an entry object\n"],
+      ["map-set-default-iterator.ts", "key\n42\nfalse\nvalue\nfalse\n"],
+      ["collection-iterator-override.ts", "1\n9\n1\ntrue\n1\noverride\n"],
+      ["gc-map-from-iterable.ts", "6000\n1\n6000\n"],
       ["set-basic-add-has.ts", "0\ntrue\n2\ntrue\nfalse\n"],
       ["set-size-delete.ts", "2\ntrue\ntrue\ntrue\nfalse\n1\n"],
       ["set-object-identity-values.ts", "true\nfalse\ntrue\n"],
-      ["set-constructor-iterable.ts", "2\ntrue\nfalse\n"]
+      ["set-constructor-iterable.ts", "2\ntrue\nfalse\n"],
+      ["set-constructor-user-iterable.ts", "2\ntrue\ntrue\nfalse\n"],
+      ["set-constructor-from-set.ts", "2\ntrue\ntrue\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
@@ -784,7 +792,10 @@ describe("tscn expanded runtime roadmap", () => {
     const cases = [
       ["for-of-array.ts", "1\n2\n3\n"],
       ["for-of-array-break-continue.ts", "1\n3\ndone\n"],
+      ["for-of-runtime-array.ts", "10\n20\n30\n"],
+      ["for-of-runtime-array-override.ts", "100\n101\n"],
       ["for-of-string.ts", "a\nb\nc\n"],
+      ["for-of-string-unicode.ts", "a\n😀\nb\n"],
       ["for-of-set.ts", "true\nfirst\nthird\nfourth\n"],
       ["for-of-map.ts", "true\nfirst\n1\nthird\n3\nfourth\n4\n"],
       ["for-of-user-iterator.ts", "1\n2\n"],
@@ -802,7 +813,9 @@ describe("tscn expanded runtime roadmap", () => {
       ["for-of-iterator-throws.ts", "from-iterator\n"],
       ["for-of-iterator-next-throws.ts", "from-next\n"],
       ["gc-for-of-user-iterator.ts", "1275\n"],
+      ["gc-for-of-runtime-array.ts", "1225\n"],
       ["iterator-next-basic.ts", "only\nfalse\nundefined\ntrue\n"],
+      ["builtin-array-iterator-next.ts", "1\nfalse\nundefined\nfalse\n3\nfalse\nundefined\ntrue\ntrue\n"],
       ["map-keys-values-entries.ts", "a\nfalse\nb\nfalse\ntrue\n1\nfalse\n2\nfalse\na\n1\nfalse\nb\n2\nfalse\ntrue\n"],
       ["set-keys-values-entries.ts", "x\nfalse\ny\nfalse\ntrue\nx\nfalse\ny\nfalse\nx\nx\nfalse\ny\ny\nfalse\ntrue\n"]
     ] as const;
@@ -1119,12 +1132,17 @@ describe("tscn expanded runtime roadmap", () => {
       ["array-sort-comparator.ts", "3\n2\n1\n"],
       ["array-flat-map.ts", "4\n1\n1\n2\n2\n"],
       ["array-from-array-like.ts", "2\na\nb\n"],
+      ["array-from-array-like-map.ts", "2\n6\n8\n"],
+      ["array-from-symbol-iterator.ts", "2\n0\n1\n"],
+      ["array-from-prefers-iterator.ts", "2\nv0\nv1\n"],
+      ["array-from-iterable-map-thisarg.ts", "2\n3\n7\n"],
+      ["gc-array-from-iterable.ts", "12000\n0\n11999\n"],
+      ["array-from-errors.ts", "undefined is not iterable (cannot read property Symbol(Symbol.iterator))\nobject null is not iterable (cannot read property Symbol(Symbol.iterator))\nnumber 1 is not a function\n"],
       ["array-of.ts", "3\na\n1\ntrue\n"],
       ["array-reduce-right.ts", "cba\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
-    await expectUnsupportedDiagnostic("array-from-symbol-iterator-unsupported.ts");
   }, roadmapIntegrationTimeoutMs);
 
   test("supports first explicit throw and catch groundwork", async () => {
