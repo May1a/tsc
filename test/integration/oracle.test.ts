@@ -42,7 +42,19 @@ const oracleFixtures = [
   "throw-across-function-value.ts",
   "throw-across-array-callback.ts",
   "throw-nested-rethrow.ts",
-  "gc-retain-thrown-value.ts"
+  "gc-retain-thrown-value.ts",
+  "for-of-user-iterator.ts",
+  "for-of-iterator-assigned.ts",
+  "for-of-class-iterator.ts",
+  "for-of-iterator-nested-break.ts",
+  "for-of-iterator-caught-throw.ts",
+  "for-of-iterator-missing.ts",
+  "for-of-iterator-non-callable.ts",
+  "for-of-iterator-method-primitive.ts",
+  "for-of-iterator-next-non-callable.ts",
+  "for-of-iterator-result-primitive.ts",
+  "for-of-iterator-throws.ts",
+  "for-of-iterator-next-throws.ts"
 ] as const;
 
 describe("Node correctness oracle", () => {

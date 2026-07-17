@@ -200,7 +200,17 @@ export type RuntimeHelper =
   | "gcAlloc"
   | "environmentNew"
   | "environmentGet"
-  | "environmentSet";
+  | "environmentSet"
+  | "valueIsFunction"
+  | "getIteratorValue"
+  | "callIteratorNext";
+
+/**
+ * Compiler-owned private-use property key for well-known `Symbol.iterator`.
+ * Starts with U+F8FF (BMP private-use) so ordinary user-authored keys are
+ * vanishingly unlikely to collide; general Symbol values remain out of scope.
+ */
+export const SYMBOL_ITERATOR_SENTINEL = "\uF8FFSymbol.iterator";
 
 export type RuntimeHelperEmitter = {
   readonly used: Set<RuntimeHelper>;
@@ -318,6 +328,15 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["valueFunctionPtr", []],
   ["functionObjectNew", ["gcAlloc", "valueBoxFunction"]],
   ["jsCall", ["valueFunctionPtr"]],
+  ["valueIsFunction", []],
+  [
+    "getIteratorValue",
+    ["valueIsObject", "valueIsFunction", "valueObjectGet", "valueObjectPtr", "objectGet", "jsCall", "errorNew", "valueBoxObject", "valueBoxString", "gcRootPush"]
+  ],
+  [
+    "callIteratorNext",
+    ["valueIsObject", "valueIsFunction", "valueObjectGet", "jsCall", "errorNew", "valueBoxObject", "valueBoxString", "valueToString", "strConcat", "gcRootPush"]
+  ],
   ["valueObjectGet", ["valueObjectPtr", "objectGet"]],
   ["valueArrayGet", ["valueArrayPtr", "arrayGetWithKey"]],
   ["valueArrayLength", ["valueArrayPtr", "arrayLength"]],
@@ -2824,6 +2843,207 @@ entry:
   ret i1 %is.array
 }
 `);
+  }
+  if (runtime.used.has("valueIsFunction")) {
+    definitions.push(`define i1 @valueIsFunction(i64 %value) {
+entry:
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.function = icmp eq i64 %tag, ${legacyJsValue.referenceTag("function")}
+  ret i1 %is.function
+}
+`);
+  }
+  if (runtime.used.has("getIteratorValue") || runtime.used.has("callIteratorNext")) {
+    const firstPrintableAscii = 32;
+    const lastPrintableAscii = 126;
+    const doubleQuote = 34;
+    const backslash = 92;
+    const hexRadix = 16;
+    const iteratorKey = Buffer.from(SYMBOL_ITERATOR_SENTINEL, "utf8");
+    const iteratorKeyEncoded = [...iteratorKey, 0]
+      .map((byte) => {
+        if (byte >= firstPrintableAscii && byte <= lastPrintableAscii && byte !== doubleQuote && byte !== backslash) {
+          return String.fromCharCode(byte);
+        }
+        return `\\${byte.toString(hexRadix).toUpperCase().padStart(2, "0")}`;
+      })
+      .join("");
+    const iteratorKeyLen = iteratorKey.length;
+    definitions.push(`@.symbol.iterator.key = private unnamed_addr constant [${iteratorKeyLen + 1} x i8] c"${iteratorKeyEncoded}"
+@.iter.key.next = private unnamed_addr constant [5 x i8] c"next\\00"
+@.iter.err.name = private unnamed_addr constant [10 x i8] c"TypeError\\00"
+@.iter.msg.iter.not.object = private unnamed_addr constant [54 x i8] c"Result of the Symbol.iterator method is not an object\\00"
+@.iter.msg.prefix.number = private unnamed_addr constant [8 x i8] c"number \\00"
+@.iter.msg.prefix.boolean = private unnamed_addr constant [9 x i8] c"boolean \\00"
+@.iter.msg.prefix.object = private unnamed_addr constant [8 x i8] c"object \\00"
+@.iter.msg.prefix.string = private unnamed_addr constant [9 x i8] c"string \\22\\00"
+@.iter.msg.object.not.fn = private unnamed_addr constant [25 x i8] c"object is not a function\\00"
+@.iter.msg.not.fn = private unnamed_addr constant [19 x i8] c" is not a function\\00"
+@.iter.msg.quoted.not.fn = private unnamed_addr constant [20 x i8] c"\\22 is not a function\\00"
+@.iter.msg.result.prefix = private unnamed_addr constant [17 x i8] c"Iterator result \\00"
+@.iter.msg.not.object = private unnamed_addr constant [18 x i8] c" is not an object\\00"
+
+define { i64, i1 } @iteratorTypeError(i64 %message) {
+entry:
+  call void @gcRootPush(i64 %message)
+  %error = call ptr @errorNew(i64 2, i64 9, ptr @.iter.err.name, i64 %message)
+  %error.value = call i64 @valueBoxObject(ptr %error)
+  %result.0 = insertvalue { i64, i1 } undef, i64 %error.value, 0
+  %result.1 = insertvalue { i64, i1 } %result.0, i1 true, 1
+  ret { i64, i1 } %result.1
+}
+`);
+    if (runtime.used.has("getIteratorValue")) {
+      definitions.push(`define { i64, i1 } @getIteratorValue(i64 %iterable, i64 %not.iterable.message) {
+entry:
+  call void @gcRootPush(i64 %iterable)
+  call void @gcRootPush(i64 %not.iterable.message)
+  %is.object = call i1 @valueIsObject(i64 %iterable)
+  br i1 %is.object, label %lookup, label %not.iterable
+lookup:
+  %method = call i64 @valueObjectGet(i64 %iterable, i64 ${iteratorKeyLen}, ptr @.symbol.iterator.key)
+  call void @gcRootPush(i64 %method)
+  %is.fn = call i1 @valueIsFunction(i64 %method)
+  br i1 %is.fn, label %call.method, label %not.iterable
+call.method:
+  %argv = alloca i64, i64 0
+  %call = call { i64, i1 } @jsCall(i64 %method, i64 0, ptr %argv, i64 %iterable)
+  %call.payload = extractvalue { i64, i1 } %call, 0
+  %call.exc = extractvalue { i64, i1 } %call, 1
+  call void @gcRootPush(i64 %call.payload)
+  br i1 %call.exc, label %propagate, label %check.iterator
+propagate:
+  %prop.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
+  %prop.1 = insertvalue { i64, i1 } %prop.0, i1 true, 1
+  ret { i64, i1 } %prop.1
+check.iterator:
+  %iter.is.object = call i1 @valueIsObject(i64 %call.payload)
+  br i1 %iter.is.object, label %success, label %iter.not.object
+success:
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok.1
+not.iterable:
+  %not.iterable.error = call { i64, i1 } @iteratorTypeError(i64 %not.iterable.message)
+  ret { i64, i1 } %not.iterable.error
+iter.not.object:
+  %msg.ino = call i64 @valueBoxString(ptr @.iter.msg.iter.not.object, i64 53)
+  %iter.not.object.error = call { i64, i1 } @iteratorTypeError(i64 %msg.ino)
+  ret { i64, i1 } %iter.not.object.error
+}
+`);
+    }
+    if (runtime.used.has("callIteratorNext")) {
+      definitions.push(`define i64 @iteratorNotCallableMessage(i64 %value) {
+entry:
+  %raw = call { ptr, i64 } @valueToString(i64 %value)
+  %raw.ptr = extractvalue { ptr, i64 } %raw, 0
+  %raw.len = extractvalue { ptr, i64 } %raw, 1
+  %tag = and i64 %value, ${legacyJsValue.tagMask()}
+  %is.string = icmp eq i64 %tag, ${legacyJsValue.referenceTag("string")}
+  br i1 %is.string, label %string, label %check.undefined
+check.undefined:
+  %is.undefined = icmp eq i64 %value, ${legacyJsValue.immediate("undefined")}
+  br i1 %is.undefined, label %without.prefix, label %check.null
+check.null:
+  %is.null = icmp eq i64 %value, ${legacyJsValue.immediate("null")}
+  br i1 %is.null, label %null, label %check.boolean
+check.boolean:
+  %is.false = icmp eq i64 %value, ${legacyJsValue.immediate("false")}
+  %is.true = icmp eq i64 %value, ${legacyJsValue.immediate("true")}
+  %is.boolean = or i1 %is.false, %is.true
+  br i1 %is.boolean, label %boolean, label %check.reference
+check.reference:
+  %is.object = icmp eq i64 %tag, ${legacyJsValue.referenceTag("object")}
+  %is.array = icmp eq i64 %tag, ${legacyJsValue.referenceTag("array")}
+  %is.reference = or i1 %is.object, %is.array
+  br i1 %is.reference, label %object, label %number
+null:
+  br label %with.prefix
+boolean:
+  br label %with.prefix
+number:
+  br label %with.prefix
+with.prefix:
+  %prefix.ptr = phi ptr [ @.iter.msg.prefix.object, %null ], [ @.iter.msg.prefix.boolean, %boolean ], [ @.iter.msg.prefix.number, %number ]
+  %prefix.len = phi i64 [ 7, %null ], [ 8, %boolean ], [ 7, %number ]
+  %prefixed.ptr = call ptr @strConcat(i64 %prefix.len, ptr %prefix.ptr, i64 %raw.len, ptr %raw.ptr)
+  %prefixed.len = add i64 %prefix.len, %raw.len
+  br label %append.suffix
+without.prefix:
+  br label %append.suffix
+append.suffix:
+  %base.ptr = phi ptr [ %prefixed.ptr, %with.prefix ], [ %raw.ptr, %without.prefix ]
+  %base.len = phi i64 [ %prefixed.len, %with.prefix ], [ %raw.len, %without.prefix ]
+  %message.ptr = call ptr @strConcat(i64 %base.len, ptr %base.ptr, i64 18, ptr @.iter.msg.not.fn)
+  %message.len = add i64 %base.len, 18
+  %message = call i64 @valueBoxString(ptr %message.ptr, i64 %message.len)
+  ret i64 %message
+string:
+  %quoted.ptr = call ptr @strConcat(i64 8, ptr @.iter.msg.prefix.string, i64 %raw.len, ptr %raw.ptr)
+  %quoted.len = add i64 %raw.len, 8
+  %string.message.ptr = call ptr @strConcat(i64 %quoted.len, ptr %quoted.ptr, i64 19, ptr @.iter.msg.quoted.not.fn)
+  %string.message.len = add i64 %quoted.len, 19
+  %string.message = call i64 @valueBoxString(ptr %string.message.ptr, i64 %string.message.len)
+  ret i64 %string.message
+object:
+  %object.message = call i64 @valueBoxString(ptr @.iter.msg.object.not.fn, i64 24)
+  ret i64 %object.message
+}
+
+define i64 @iteratorResultNotObjectMessage(i64 %value) {
+entry:
+  %raw = call { ptr, i64 } @valueToString(i64 %value)
+  %raw.ptr = extractvalue { ptr, i64 } %raw, 0
+  %raw.len = extractvalue { ptr, i64 } %raw, 1
+  %prefixed.ptr = call ptr @strConcat(i64 16, ptr @.iter.msg.result.prefix, i64 %raw.len, ptr %raw.ptr)
+  %prefixed.len = add i64 %raw.len, 16
+  %message.ptr = call ptr @strConcat(i64 %prefixed.len, ptr %prefixed.ptr, i64 17, ptr @.iter.msg.not.object)
+  %message.len = add i64 %prefixed.len, 17
+  %message = call i64 @valueBoxString(ptr %message.ptr, i64 %message.len)
+  ret i64 %message
+}
+
+define { i64, i1 } @callIteratorNext(i64 %iterator) {
+entry:
+  call void @gcRootPush(i64 %iterator)
+  %is.object = call i1 @valueIsObject(i64 %iterator)
+  br i1 %is.object, label %lookup, label %result.not.object
+lookup:
+  %next = call i64 @valueObjectGet(i64 %iterator, i64 4, ptr @.iter.key.next)
+  call void @gcRootPush(i64 %next)
+  %is.fn = call i1 @valueIsFunction(i64 %next)
+  br i1 %is.fn, label %call.next, label %next.not.fn
+call.next:
+  %argv = alloca i64, i64 0
+  %call = call { i64, i1 } @jsCall(i64 %next, i64 0, ptr %argv, i64 %iterator)
+  %call.payload = extractvalue { i64, i1 } %call, 0
+  %call.exc = extractvalue { i64, i1 } %call, 1
+  call void @gcRootPush(i64 %call.payload)
+  br i1 %call.exc, label %propagate, label %check.result
+propagate:
+  %prop.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
+  %prop.1 = insertvalue { i64, i1 } %prop.0, i1 true, 1
+  ret { i64, i1 } %prop.1
+check.result:
+  %res.is.object = call i1 @valueIsObject(i64 %call.payload)
+  br i1 %res.is.object, label %success, label %result.not.object
+success:
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok.1
+next.not.fn:
+  %msg.nn = call i64 @iteratorNotCallableMessage(i64 %next)
+  %next.not.fn.error = call { i64, i1 } @iteratorTypeError(i64 %msg.nn)
+  ret { i64, i1 } %next.not.fn.error
+result.not.object:
+  %invalid.result = phi i64 [ %iterator, %entry ], [ %call.payload, %check.result ]
+  %msg.rno = call i64 @iteratorResultNotObjectMessage(i64 %invalid.result)
+  %result.not.object.error = call { i64, i1 } @iteratorTypeError(i64 %msg.rno)
+  ret { i64, i1 } %result.not.object.error
+}
+`);
+    }
   }
   if (runtime.used.has("valueObjectGet")) {
     definitions.push(`define i64 @valueObjectGet(i64 %value, i64 %key.len, ptr %key.ptr) {

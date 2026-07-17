@@ -693,7 +693,6 @@ describe("tscn expanded runtime roadmap", () => {
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
-    await expectUnsupportedDiagnostic("for-of-user-iterator-unsupported.ts");
   });
 
   test("supports package X runtime array indexOf and lastIndexOf", async () => {
@@ -788,12 +787,31 @@ describe("tscn expanded runtime roadmap", () => {
       ["for-of-string.ts", "a\nb\nc\n"],
       ["for-of-set.ts", "true\nfirst\nthird\nfourth\n"],
       ["for-of-map.ts", "true\nfirst\n1\nthird\n3\nfourth\n4\n"],
+      ["for-of-user-iterator.ts", "1\n2\n"],
+      ["for-of-iterator-assigned.ts", "1\n2\n"],
+      ["for-of-iterator-sum.ts", "15\n"],
+      ["for-of-iterator-done-truthiness.ts", "10\n20\n"],
+      ["for-of-class-iterator.ts", "1\n"],
+      ["for-of-iterator-nested-break.ts", "1\n"],
+      ["for-of-iterator-caught-throw.ts", "1\n"],
+      ["for-of-iterator-missing.ts", "TypeError\niterable is not iterable\n"],
+      ["for-of-iterator-non-callable.ts", "TypeError\niterable is not iterable\n"],
+      ["for-of-iterator-method-primitive.ts", "TypeError\nResult of the Symbol.iterator method is not an object\n"],
+      ["for-of-iterator-next-non-callable.ts", "TypeError\nnumber 1 is not a function\n"],
+      ["for-of-iterator-result-primitive.ts", "TypeError\nIterator result 1 is not an object\n"],
+      ["for-of-iterator-throws.ts", "from-iterator\n"],
+      ["for-of-iterator-next-throws.ts", "from-next\n"],
+      ["gc-for-of-user-iterator.ts", "1275\n"],
       ["iterator-next-basic.ts", "only\nfalse\nundefined\ntrue\n"],
       ["map-keys-values-entries.ts", "a\nfalse\nb\nfalse\ntrue\n1\nfalse\n2\nfalse\na\n1\nfalse\nb\n2\nfalse\ntrue\n"],
       ["set-keys-values-entries.ts", "x\nfalse\ny\nfalse\ntrue\nx\nfalse\ny\nfalse\nx\nx\nfalse\ny\ny\nfalse\ntrue\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
+    await expectUnsupportedMessage(
+      "for-of-iterator-propagated-throw-unsupported.ts",
+      "Generic for...of abrupt completion requires IteratorClose, which is not supported yet"
+    );
   });
 
   test("supports package BS string method expansion", async () => {

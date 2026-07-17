@@ -2,6 +2,7 @@ import { Chunk, Effect } from "effect";
 import ts from "typescript";
 import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic, SourceSpan } from "./diagnostics.js";
+import { SYMBOL_ITERATOR_SENTINEL } from "./runtime-helpers.js";
 
 // The TypeScript checker for the program currently being lowered. Set by
 // `lowerToJsIr` and read by the class-lowering path for static method dispatch.
@@ -30,6 +31,7 @@ type ClassInfo = {
   readonly staticFields: ReadonlySet<string>;
   readonly getters: ReadonlySet<string>;
   readonly setters: ReadonlySet<string>;
+  readonly iteratorMethod: ts.MethodDeclaration | undefined;
 };
 
 // Registry of classes in the file being lowered, consulted by the deep value
@@ -1365,6 +1367,13 @@ export type JsIrOperationNode =
       readonly body: readonly JsIrOperation[];
     }
   | {
+      readonly kind: "forOfProtocol";
+      readonly itemName: string;
+      readonly iterable: JsIrValueExpression;
+      readonly notIterableMessage: string;
+      readonly body: readonly JsIrOperation[];
+    }
+  | {
       readonly kind: "forInObject";
       readonly itemName: string;
       readonly objectName: string;
@@ -1451,6 +1460,7 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
     case "forOfString":
     case "forOfSet":
     case "forOfMap":
+    case "forOfProtocol":
     case "forInObject":
     case "forInArray":
     case "function":
@@ -1911,7 +1921,7 @@ function lowerClassDeclaration(
     throw new ClassLoweringUnsupportedError(); // inheritance handled in a later phase
   }
 
-  const members = collectClassMembers(statement);
+  const members = collectClassMembers(statement, bindings);
   const info: ClassInfo = {
     name: statement.name.text,
     fields: members.fields,
@@ -1921,7 +1931,8 @@ function lowerClassDeclaration(
     staticMethods: classMethodInfoMap(members.staticMethodDeclarations),
     staticFields: new Set(members.staticFields.map((field) => field.name)),
     getters: new Set(members.getAccessors.map((accessor) => accessorName(accessor))),
-    setters: new Set(members.setAccessors.map((accessor) => accessorName(accessor)))
+    setters: new Set(members.setAccessors.map((accessor) => accessorName(accessor))),
+    iteratorMethod: members.iteratorMethod
   };
   classes.set(info.name, info);
   activeClassRegistry = classes;
@@ -1998,9 +2009,14 @@ type CollectedClassMembers = {
   readonly staticMethodDeclarations: readonly ts.MethodDeclaration[];
   readonly getAccessors: readonly ts.GetAccessorDeclaration[];
   readonly setAccessors: readonly ts.SetAccessorDeclaration[];
+  readonly iteratorMethod: ts.MethodDeclaration | undefined;
 };
 
-function collectClassMembers(statement: ts.ClassDeclaration): CollectedClassMembers {
+// eslint-disable-next-line complexity -- Class member classification keeps mutually exclusive syntax forms in declaration order.
+function collectClassMembers(
+  statement: ts.ClassDeclaration,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): CollectedClassMembers {
   const fields: ClassFieldInfo[] = [];
   const staticFields: ClassFieldInfo[] = [];
   const methodDeclarations: ts.MethodDeclaration[] = [];
@@ -2008,6 +2024,7 @@ function collectClassMembers(statement: ts.ClassDeclaration): CollectedClassMemb
   const getAccessors: ts.GetAccessorDeclaration[] = [];
   const setAccessors: ts.SetAccessorDeclaration[] = [];
   let constructorDeclaration: ts.ConstructorDeclaration | undefined;
+  let iteratorMethod: ts.MethodDeclaration | undefined;
   for (const member of statement.members) {
     if (ts.isPropertyDeclaration(member)) {
       if (!ts.isIdentifier(member.name)) {
@@ -2020,6 +2037,11 @@ function collectClassMembers(statement: ts.ClassDeclaration): CollectedClassMemb
       target.push({ name: member.name.text, initializer: member.initializer });
     } else if (ts.isConstructorDeclaration(member)) {
       constructorDeclaration = member;
+    } else if (ts.isMethodDeclaration(member) && member.body !== undefined && isSymbolIteratorPropertyName(member.name, bindings)) {
+      if (classMemberHasStaticModifier(member) || iteratorMethod !== undefined) {
+        throw new ClassLoweringUnsupportedError();
+      }
+      iteratorMethod = member;
     } else if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.body !== undefined) {
       if (classMemberHasStaticModifier(member)) {
         staticMethodDeclarations.push(member);
@@ -2035,7 +2057,7 @@ function collectClassMembers(statement: ts.ClassDeclaration): CollectedClassMemb
       throw new ClassLoweringUnsupportedError();
     }
   }
-  return { fields, staticFields, constructorDeclaration, methodDeclarations, staticMethodDeclarations, getAccessors, setAccessors };
+  return { fields, staticFields, constructorDeclaration, methodDeclarations, staticMethodDeclarations, getAccessors, setAccessors, iteratorMethod };
 }
 
 function lowerClassAccessor(
@@ -2186,6 +2208,10 @@ function lowerClassConstructor(
   classThisInScope = true;
   try {
     const body: JsIrOperation[] = [];
+    const iteratorStore = lowerClassIteratorStore(info, fnBindings);
+    if (iteratorStore !== undefined) {
+      body.push(iteratorStore);
+    }
     for (const field of info.fields) {
       body.push({
         kind: "valueObjectStore",
@@ -2211,6 +2237,32 @@ function lowerClassConstructor(
   } finally {
     classThisInScope = previousThis;
   }
+}
+
+function lowerClassIteratorStore(
+  info: ClassInfo,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (info.iteratorMethod === undefined) {
+    return undefined;
+  }
+  const previousClassThisInScope = classThisInScope;
+  classThisInScope = false;
+  let iteratorMethod: JsIrValueExpression | undefined;
+  try {
+    iteratorMethod = lowerObjectMethodFunctionValue(info.iteratorMethod, bindings);
+  } finally {
+    classThisInScope = previousClassThisInScope;
+  }
+  if (iteratorMethod === undefined) {
+    throw new ClassLoweringUnsupportedError();
+  }
+  return {
+    kind: "valueObjectStore",
+    targetName: CLASS_THIS_NAME,
+    key: { kind: "literal", value: SYMBOL_ITERATOR_SENTINEL },
+    value: iteratorMethod
+  };
 }
 
 function lowerClassFieldInitializer(
@@ -4213,7 +4265,7 @@ function lowerForStatement(
   };
 }
 
-// eslint-disable-next-line max-statements -- for...of lowering dispatches supported source kinds explicitly while unsupported iterables stay diagnostic-only.
+// eslint-disable-next-line complexity, max-statements -- for...of lowering dispatches specialized source kinds first, then the generic Symbol.iterator protocol.
 function lowerForOfStatement(
   statement: ts.ForOfStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -4225,49 +4277,146 @@ function lowerForOfStatement(
   if (!ts.isIdentifier(declaration.name) || declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
     return undefined;
   }
-  const sourceString = lowerStringRuntimeExpression(statement.expression, bindings);
+  const itemName = declaration.name.text;
+  const bodyBlock = statement.statement;
+  const specialized = lowerSpecializedForOf(statement.expression, itemName, bodyBlock, bindings);
+  if (specialized !== undefined) {
+    return specialized;
+  }
+  // Generic sync iteration protocol: for-of over any value that may implement Symbol.iterator.
+  const iterable = lowerValueExpression(statement.expression, bindings);
+  if (iterable === undefined) {
+    return undefined;
+  }
+  const bodyBindings = new Map(bindings);
+  bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
+  const body = lowerBlockStatements(bodyBlock, bodyBindings);
+  if (body === undefined) {
+    return undefined;
+  }
+  // IteratorClose is not implemented yet; reject bodies that can complete abruptly.
+  if (bodyRequiresIteratorClose(bodyBlock)) {
+    return undefined;
+  }
+  return {
+    kind: "forOfProtocol",
+    itemName,
+    iterable,
+    notIterableMessage: `${iteratorErrorSubject(statement.expression)} is not iterable`,
+    body
+  };
+}
+
+// eslint-disable-next-line max-statements -- Specialized for-of branches cover string, Set, Map, and fixed array sources.
+function lowerSpecializedForOf(
+  sourceExpression: ts.Expression,
+  itemName: string,
+  bodyBlock: ts.Block,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const sourceString = lowerStringRuntimeExpression(sourceExpression, bindings);
   if (sourceString !== undefined) {
     const bodyBindings = new Map(bindings);
-    bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
+    const body = lowerBlockStatements(bodyBlock, bodyBindings);
     if (body === undefined) {
       return undefined;
     }
-    return { kind: "forOfString", itemName: declaration.name.text, source: sourceString, body };
+    return { kind: "forOfString", itemName, source: sourceString, body };
   }
-  if (!ts.isIdentifier(statement.expression)) {
+  if (!ts.isIdentifier(sourceExpression)) {
     return undefined;
   }
-  const sourceName = statement.expression.text;
+  const sourceName = sourceExpression.text;
   const sourceBinding = bindings.get(sourceName);
   if (sourceBinding?.kind === "runtimeSet") {
     const bodyBindings = new Map(bindings);
-    bodyBindings.set(declaration.name.text, { kind: "valueVariable", name: declaration.name.text });
-    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
+    const body = lowerBlockStatements(bodyBlock, bodyBindings);
     if (body === undefined) {
       return undefined;
     }
-    return { kind: "forOfSet", itemName: declaration.name.text, setName: sourceBinding.name, body };
+    return { kind: "forOfSet", itemName, setName: sourceBinding.name, body };
   }
   if (sourceBinding?.kind === "runtimeMap") {
     const bodyBindings = new Map(bindings);
-    bodyBindings.set(declaration.name.text, { kind: "runtimeArray", name: declaration.name.text });
-    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    bodyBindings.set(itemName, { kind: "runtimeArray", name: itemName });
+    const body = lowerBlockStatements(bodyBlock, bodyBindings);
     if (body === undefined) {
       return undefined;
     }
-    return { kind: "forOfMap", itemName: declaration.name.text, mapName: sourceBinding.name, body };
+    return { kind: "forOfMap", itemName, mapName: sourceBinding.name, body };
   }
   if (sourceBinding?.kind !== "array") {
     return undefined;
   }
   const bodyBindings = new Map(bindings);
-  bodyBindings.set(declaration.name.text, { kind: "number", value: { kind: "variable", name: declaration.name.text } });
-  const body = lowerBlockStatements(statement.statement, bodyBindings);
+  bodyBindings.set(itemName, { kind: "number", value: { kind: "variable", name: itemName } });
+  const body = lowerBlockStatements(bodyBlock, bodyBindings);
   if (body === undefined) {
     return undefined;
   }
-  return { kind: "forOfArray", itemName: declaration.name.text, arrayName: sourceName, body };
+  return { kind: "forOfArray", itemName, arrayName: sourceName, body };
+}
+
+function iteratorErrorSubject(expression: ts.Expression): string {
+  let current = expression;
+  while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) || ts.isTypeAssertionExpression(current) || ts.isNonNullExpression(current)) {
+    current = current.expression;
+  }
+  if (ts.isIdentifier(current)) {
+    return current.text;
+  }
+  return "value";
+}
+
+function bodyRequiresIteratorClose(block: ts.Block): boolean {
+  return nodeCanAbruptlyExitIterator(block, 0, false);
+}
+
+// eslint-disable-next-line complexity -- Abrupt-completion analysis distinguishes control flow, exception handling, and nested break targets.
+function nodeCanAbruptlyExitIterator(node: ts.Node, nestedBreakableDepth: number, exceptionsCaught: boolean): boolean {
+  if (ts.isFunctionLike(node) || ts.isClassLike(node)) {
+    return false;
+  }
+  if (ts.isReturnStatement(node)) {
+    return true;
+  }
+  if (ts.isBreakStatement(node)) {
+    return nestedBreakableDepth === 0;
+  }
+  if (ts.isThrowStatement(node)) {
+    return !exceptionsCaught;
+  }
+  if (ts.isCallExpression(node) || ts.isNewExpression(node) || ts.isTaggedTemplateExpression(node)) {
+    const isNonThrowingBuiltin = ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+      (node.expression.text === "print" || node.expression.text === "Number" || node.expression.text === "String" || node.expression.text === "Boolean");
+    if (!isNonThrowingBuiltin && !exceptionsCaught) {
+      return true;
+    }
+  }
+  if (ts.isTryStatement(node)) {
+    const tryCatchesExceptions = exceptionsCaught || node.catchClause !== undefined;
+    if (nodeCanAbruptlyExitIterator(node.tryBlock, nestedBreakableDepth, tryCatchesExceptions)) {
+      return true;
+    }
+    if (node.catchClause !== undefined && nodeCanAbruptlyExitIterator(node.catchClause.block, nestedBreakableDepth, exceptionsCaught)) {
+      return true;
+    }
+    return node.finallyBlock !== undefined && nodeCanAbruptlyExitIterator(node.finallyBlock, nestedBreakableDepth, exceptionsCaught);
+  }
+
+  let childBreakableDepth = nestedBreakableDepth;
+  if (ts.isIterationStatement(node, false) || ts.isSwitchStatement(node)) {
+    childBreakableDepth += 1;
+  }
+  let abrupt = false;
+  ts.forEachChild(node, (child) => {
+    if (!abrupt && nodeCanAbruptlyExitIterator(child, childBreakableDepth, exceptionsCaught)) {
+      abrupt = true;
+    }
+  });
+  return abrupt;
 }
 
 // eslint-disable-next-line max-statements -- for...in lowering dispatches supported source kinds explicitly while unsupported iterables stay diagnostic-only.
@@ -4716,6 +4865,15 @@ function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValueKind {
   return "number";
 }
 
+/** True for TypeScript's type-only `this: T` parameter (not a runtime argv slot). */
+function isTypeOnlyThisParameter(parameter: ts.ParameterDeclaration): boolean {
+  return ts.isIdentifier(parameter.name) && parameter.name.text === "this";
+}
+
+function runtimeParameters(parameters: readonly ts.ParameterDeclaration[]): readonly ts.ParameterDeclaration[] {
+  return parameters.filter((parameter) => !isTypeOnlyThisParameter(parameter));
+}
+
 function lowerCallStatement(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -5075,7 +5233,7 @@ function lowerObjectMethodFunctionValue(
   const parameters: JsIrFunctionParameter[] = [];
   const methodBindings = new Map(bindings);
   methodBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-  for (const parameter of method.parameters) {
+  for (const parameter of runtimeParameters(method.parameters)) {
     if (!ts.isIdentifier(parameter.name) || parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined) {
       return undefined;
     }
@@ -5323,7 +5481,7 @@ function lowerReturnedFunctionExpression(
   const parameters: JsIrFunctionParameter[] = [];
   const nestedBindings = new Map(bindings);
   const localNames = new Set<string>();
-  for (const param of expression.parameters) {
+  for (const param of runtimeParameters(expression.parameters)) {
     if (!ts.isIdentifier(param.name)) {
       return undefined;
     }
@@ -7326,18 +7484,15 @@ function lowerObjectElementAssignment(
   return { kind: "runtimeObjectStore", objectName: left.expression.text, key, value: runtimeValue };
 }
 
-// eslint-disable-next-line max-statements -- Property-assignment routing dispatches class, runtime, boxed, and fixed targets in one place.
+// eslint-disable-next-line complexity, max-statements -- Property-assignment routing dispatches class, runtime, boxed, and fixed targets in one place.
 function lowerObjectPropertyAssignment(
   left: ts.PropertyAccessExpression,
   right: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if (classThisInScope && left.expression.kind === ts.SyntaxKind.ThisKeyword) {
-    const value = lowerValueExpression(right, bindings);
-    if (value === undefined) {
-      throw new ClassLoweringUnsupportedError();
-    }
-    return { kind: "valueObjectStore", targetName: CLASS_THIS_NAME, key: { kind: "literal", value: left.name.text }, value };
+  const thisStore = lowerThisPropertyAssignment(left, right, bindings);
+  if (thisStore !== undefined) {
+    return thisStore;
   }
 
   const classAssignment = lowerClassPropertyAssignment(left, right, bindings);
@@ -7380,6 +7535,25 @@ function lowerObjectPropertyAssignment(
   }
 
   return { kind: "objectStore", objectName: access.objectName, path: access.path, value };
+}
+
+function lowerThisPropertyAssignment(
+  left: ts.PropertyAccessExpression,
+  right: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  // Object-literal methods and class methods both bind `this` as a valueVariable.
+  if (left.expression.kind !== ts.SyntaxKind.ThisKeyword || bindings.get(CLASS_THIS_NAME)?.kind !== "valueVariable") {
+    return undefined;
+  }
+  const value = lowerValueExpression(right, bindings);
+  if (value === undefined) {
+    if (classThisInScope) {
+      throw new ClassLoweringUnsupportedError();
+    }
+    return undefined;
+  }
+  return { kind: "valueObjectStore", targetName: CLASS_THIS_NAME, key: { kind: "literal", value: left.name.text }, value };
 }
 
 function lowerClosureFactoryCall(
@@ -7671,6 +7845,10 @@ function lowerPropertyKeyExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrStringExpression | undefined {
+  const symbolIterator = lowerSymbolIteratorKeyExpression(expression, bindings);
+  if (symbolIterator !== undefined) {
+    return symbolIterator;
+  }
   if (ts.isNumericLiteral(expression)) {
     return { kind: "literal", value: expression.text };
   }
@@ -7681,6 +7859,45 @@ function lowerPropertyKeyExpression(
     return { kind: "literal", value: "false" };
   }
   return lowerStringRuntimeExpression(expression, bindings);
+}
+
+/**
+ * Recognise the well-known `Symbol.iterator` member access as the compiler-owned
+ * sentinel key. General `Symbol()` / `Symbol.for` remain unsupported.
+ */
+function lowerSymbolIteratorKeyExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrStringExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression) || !ts.isIdentifier(expression.expression)) {
+    return undefined;
+  }
+  if (expression.expression.text !== "Symbol" || bindings.has("Symbol")) {
+    return undefined;
+  }
+  if (expression.name.text !== "iterator") {
+    return undefined;
+  }
+  return { kind: "literal", value: SYMBOL_ITERATOR_SENTINEL };
+}
+
+function isUnsupportedSymbolExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): boolean {
+  if (bindings.has("Symbol")) {
+    return false;
+  }
+  let member: ts.Expression = expression;
+  let isCall = false;
+  if (ts.isCallExpression(member)) {
+    isCall = true;
+    member = member.expression;
+  }
+  if (ts.isIdentifier(member)) {
+    return member.text === "Symbol";
+  }
+  return ts.isPropertyAccessExpression(member) && ts.isIdentifier(member.expression) && member.expression.text === "Symbol" && (isCall || member.name.text !== "iterator");
 }
 
 function lowerStringConcatExpression(
@@ -8969,7 +9186,7 @@ function lowerFunctionObjectValue(
   if (functionKind === "ordinary") {
     functionBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
   }
-  for (const parameter of expression.parameters) {
+  for (const parameter of runtimeParameters(expression.parameters)) {
     if (!ts.isIdentifier(parameter.name) || parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined) {
       return undefined;
     }
@@ -10706,6 +10923,13 @@ function lowerRuntimeObjectFieldName(
     return lowerPropertyKeyExpression(name.expression, bindings);
 }
 
+function isSymbolIteratorPropertyName(
+  name: ts.PropertyName,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): boolean {
+  return ts.isComputedPropertyName(name) && lowerSymbolIteratorKeyExpression(name.expression, bindings) !== undefined;
+}
+
 function lowerObjectFieldName(name: ts.PropertyName): string | undefined {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) {
     return name.text;
@@ -10714,6 +10938,9 @@ function lowerObjectFieldName(name: ts.PropertyName): string | undefined {
 }
 
 function unsupportedStatementMessage(statement: ts.Statement): string {
+  if (ts.isForOfStatement(statement) && ts.isBlock(statement.statement) && bodyRequiresIteratorClose(statement.statement)) {
+    return "Generic for...of abrupt completion requires IteratorClose, which is not supported yet";
+  }
   if (ts.isVariableStatement(statement)) {
     const [declaration] = statement.declarationList.declarations;
     if (declaration.initializer !== undefined) {
@@ -10744,6 +10971,9 @@ function unsupportedStatementMessage(statement: ts.Statement): string {
 }
 
 function unsupportedExpressionMessage(expression: ts.Expression): string | undefined {
+  if (isUnsupportedSymbolExpression(expression, new Map())) {
+    return "General Symbol values are not supported; only the well-known Symbol.iterator key is available";
+  }
   const inlineCppMessage = unsupportedInlineCppExpressionMessage(expression);
   if (inlineCppMessage !== undefined) {
     return inlineCppMessage;

@@ -122,8 +122,9 @@ type FunctionDef = {
   returnType: LlvmReturnType;
 };
 
-// Generated JavaScript functions use an explicit payload/status ABI. Runtime
-// helpers remain scalar; jsCall is the sole runtime helper using this aggregate.
+// Generated JavaScript functions use an explicit payload/status ABI. Most runtime
+// helpers remain scalar; jsCall / getIteratorValue / callIteratorNext use the
+// explicit value-or-exception aggregate return.
 type LlvmReturnType = "aggregate";
 const generatedReturnType = "{ i64, i1 }";
 
@@ -1338,6 +1339,10 @@ function emitLoopControlOperation(operation: JsIrOperation, context: EmitContext
 
   if (operation.kind === "forOfMap") {
     return emitForOfMapOperation(operation, context);
+  }
+
+  if (operation.kind === "forOfProtocol") {
+    return emitForOfProtocolOperation(operation, context);
   }
 
   if (operation.kind === "forInObject") {
@@ -4822,6 +4827,85 @@ function emitForOfSetOperation(operation: Extract<JsIrOperation, { readonly kind
       binding: { kind: "valueVariable", name: operation.itemName }
     };
   });
+}
+
+// eslint-disable-next-line max-statements -- Protocol for-of acquires an iterator once, then loops on next/done/value with GC roots across allocating calls.
+function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfProtocol" }>, context: EmitContext): string[] {
+  const { loopIndex } = context;
+  context.loopIndex += 1;
+  const condLabel = `for.of.proto.cond.${loopIndex}`;
+  const bodyLabel = `for.of.proto.body.${loopIndex}`;
+  const stepLabel = `for.of.proto.step.${loopIndex}`;
+  const endLabel = `for.of.proto.end.${loopIndex}`;
+  const itemPointer = variablePointerName(operation.itemName);
+  const iteratorSlot = `%for.of.proto.iter.${loopIndex}.addr`;
+
+  useRuntimeHelper(context.runtime, "getIteratorValue");
+  useRuntimeHelper(context.runtime, "callIteratorNext");
+  useRuntimeHelper(context.runtime, "valueObjectGet");
+  useRuntimeHelper(context.runtime, "valueTruthy");
+  useRuntimeHelper(context.runtime, "valueBoxString");
+
+  const iterable = emitValueExpression(operation.iterable, context);
+  const notIterableMessageConstant = addStringConstant(operation.notIterableMessage, context);
+  const notIterableMessage = `%for.of.proto.not.iterable.${loopIndex}`;
+  const getIterator = emitGeneratedJsCall("getIteratorValue", [`i64 ${iterable.value}`, `i64 ${notIterableMessage}`], context);
+
+  const bodyBindings = new Map(context.bindings);
+  bodyBindings.set(operation.itemName, { kind: "valueVariable", name: operation.itemName });
+  const previousBindings = new Map(context.bindings);
+  context.bindings.clear();
+  for (const [name, value] of bodyBindings) {
+    context.bindings.set(name, value);
+  }
+  // continue re-enters at cond so the next iteration re-calls next() after the prologue.
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel });
+  const bodyLines = emitOperations(operation.body, context);
+  context.loopLabels.pop();
+  context.bindings.clear();
+  for (const [name, value] of previousBindings) {
+    context.bindings.set(name, value);
+  }
+
+  // Call next after the per-iteration root restore so the iterator result and
+  // item stay live across body allocations (same shape as specialized for-of).
+  const iteratorLoad = `%for.of.proto.iter.${loopIndex}`;
+  const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iteratorLoad}`], context);
+  const doneKey = addStringConstant("done", context);
+  const valueKey = addStringConstant("value", context);
+  const doneValue = `%for.of.proto.done.${loopIndex}`;
+  const isDone = `%for.of.proto.is.done.${loopIndex}`;
+  const itemValue = `%for.of.proto.item.${loopIndex}`;
+
+  return [
+    ...iterable.lines,
+    `  call void @gcRootPush(i64 ${iterable.value})`,
+    `  ${notIterableMessage} = call i64 @valueBoxString(ptr ${notIterableMessageConstant}, i64 ${utf8ByteLength(operation.notIterableMessage)})`,
+    ...getIterator.lines,
+    `  ${iteratorSlot} = alloca i64`,
+    `  store i64 ${getIterator.value}, ptr ${iteratorSlot}`,
+    `  call void @gcRootPush(i64 ${getIterator.value})`,
+    `  ${itemPointer} = alloca i64`,
+    emitLoopFrameSave(loopIndex),
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  br label %${bodyLabel}`,
+    `${bodyLabel}:`,
+    ...emitLoopIterationPrologue(loopIndex),
+    `  ${iteratorLoad} = load i64, ptr ${iteratorSlot}`,
+    `  call void @gcRootPush(i64 ${iteratorLoad})`,
+    ...nextCall.lines,
+    `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
+    `  ${isDone} = call i1 @valueTruthy(i64 ${doneValue})`,
+    `  br i1 ${isDone}, label %${endLabel}, label %${stepLabel}`,
+    `${stepLabel}:`,
+    `  ${itemValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+    `  store i64 ${itemValue}, ptr ${itemPointer}`,
+    `  call void @gcRootPush(i64 ${itemValue})`,
+    ...bodyLines,
+    ...emitLoopBackEdge(condLabel, operation.body),
+    `${endLabel}:`
+  ];
 }
 
 function emitForOfMapOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfMap" }>, context: EmitContext): string[] {
