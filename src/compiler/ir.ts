@@ -168,6 +168,11 @@ export type JsIrValueExpression =
       readonly alternate: JsIrValueExpression;
     }
   | {
+      readonly kind: "lazyDefault";
+      readonly value: JsIrValueExpression;
+      readonly defaultValue: JsIrValueExpression;
+    }
+  | {
       readonly kind: "arrayAccess";
       readonly arrayName: string;
       readonly index: JsIrNumberExpression;
@@ -635,6 +640,12 @@ export type JsIrBindingValue =
       readonly parameters: readonly JsIrFunctionParameter[];
       readonly returnKind: JsIrValueKind | "void";
       readonly body: readonly JsIrOperation[];
+      readonly constructibleByObjectReturn?: boolean;
+    }
+  | {
+      readonly kind: "functionReference";
+      readonly parameters: readonly JsIrFunctionParameter[];
+      readonly returnKind: JsIrValueKind | "void";
     };
 
 export type JsIrCondition =
@@ -1434,6 +1445,7 @@ export type JsIrOperationNode =
       readonly parameters: readonly JsIrFunctionParameter[];
       readonly body: readonly JsIrOperation[];
       readonly enclosingCaptureNames?: readonly string[];
+      readonly constructibleByObjectReturn?: boolean;
     }
   | {
       readonly kind: "call";
@@ -3605,7 +3617,8 @@ function updateBindings(
       kind: "function",
       parameters: operation.parameters,
       returnKind: functionReturnKind(operation.body),
-      body: operation.body
+      body: operation.body,
+      constructibleByObjectReturn: operation.constructibleByObjectReturn
     });
     const returnClosure = operation.body.find((bodyOperation) => bodyOperation.kind === "returnClosure");
     if (returnClosure?.kind === "returnClosure") {
@@ -4015,16 +4028,12 @@ function lowerTryCatchStatement(
   let catchOperations: readonly JsIrOperation[] = [];
   const hasCatch = catchClause !== undefined;
   if (catchClause !== undefined) {
-    catchVariable = catchBindingName(catchClause);
-    const catchBindings = new Map(bindings);
-    if (catchVariable !== "") {
-      catchBindings.set(catchVariable, { kind: "valueVariable", name: catchVariable });
-    }
-    const loweredCatch = lowerBlockStatements(catchClause.block, catchBindings);
+    const loweredCatch = lowerCatchClause(statement, catchClause, bindings);
     if (loweredCatch === undefined) {
       return undefined;
     }
-    catchOperations = loweredCatch;
+    catchVariable = loweredCatch.variable;
+    catchOperations = loweredCatch.operations;
   }
 
   let finallyOperations: readonly JsIrOperation[] | undefined;
@@ -4050,6 +4059,38 @@ function lowerTryCatchStatement(
     hasCatch,
     finallyOperations
   };
+}
+
+function lowerCatchClause(
+  statement: ts.TryStatement,
+  catchClause: ts.CatchClause,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): { readonly variable: string; readonly operations: readonly JsIrOperation[] } | undefined {
+  const catchBindings = new Map(bindings);
+  const catchBinding = catchClause.variableDeclaration?.name;
+  const destructuringOperations: JsIrOperation[] = [];
+  let variable = catchBindingName(catchClause);
+  if (catchBinding !== undefined && (ts.isArrayBindingPattern(catchBinding) || ts.isObjectBindingPattern(catchBinding))) {
+    variable = `__catch${statement.pos}`;
+    catchBindings.set(variable, { kind: "valueVariable", name: variable });
+    const source: DestructuringSource = { name: variable, binding: { kind: "valueVariable", name: variable } };
+    let lowered: boolean;
+    if (ts.isArrayBindingPattern(catchBinding)) {
+      lowered = lowerArrayDestructuringElements(catchBinding, source, catchBindings, destructuringOperations, true);
+    } else {
+      lowered = lowerObjectDestructuringElements(catchBinding, source, catchBindings, destructuringOperations, true);
+    }
+    if (!lowered) {
+      return undefined;
+    }
+  } else if (variable !== "") {
+    catchBindings.set(variable, { kind: "valueVariable", name: variable });
+  }
+  const blockOperations = lowerBlockStatements(catchClause.block, catchBindings);
+  if (blockOperations === undefined) {
+    return undefined;
+  }
+  return { variable, operations: [...destructuringOperations, ...blockOperations] };
 }
 
 function catchBindingName(catchClause: ts.CatchClause): string {
@@ -4880,6 +4921,12 @@ function lowerFunctionDeclaration(
     }
   }
 
+  fnBindings.set(statement.name.text, {
+    kind: "functionReference",
+    parameters,
+    returnKind: declaredFunctionReturnKind(statement.type)
+  });
+
   const bodyStatements = lowerBlockStatements(statement.body, fnBindings);
   if (bodyStatements === undefined) {
     return undefined;
@@ -4897,8 +4944,79 @@ function lowerFunctionDeclaration(
     name: statement.name.text,
     parameters,
     body,
-    enclosingCaptureNames: collectFunctionDeclarationEnclosingCaptureNames(statement, bindings)
+    enclosingCaptureNames: collectFunctionDeclarationEnclosingCaptureNames(statement, bindings),
+    constructibleByObjectReturn: isPlainObjectReturningConstructor(statement)
   };
+}
+
+function declaredFunctionReturnKind(type: ts.TypeNode | undefined): JsIrValueKind | "void" {
+  if (type?.kind === ts.SyntaxKind.NumberKeyword) {
+    return "number";
+  }
+  if (type?.kind === ts.SyntaxKind.StringKeyword) {
+    return "string";
+  }
+  if (type?.kind === ts.SyntaxKind.VoidKeyword) {
+    return "void";
+  }
+  return "value";
+}
+
+function isPlainObjectReturningConstructor(declaration: ts.FunctionDeclaration): boolean {
+  if (declaration.body === undefined || containsLexicalThis(declaration.body)) {
+    return false;
+  }
+  const { statements } = declaration.body;
+  const finalStatement = statements.at(-1);
+  if (finalStatement === undefined || !ts.isReturnStatement(finalStatement) || finalStatement.expression === undefined) {
+    return false;
+  }
+  if (statements.slice(0, -1).some(containsReturnStatement)) {
+    return false;
+  }
+  const returned = unwrapTypeOnlyExpression(finalStatement.expression);
+  if (ts.isObjectLiteralExpression(returned)) {
+    return true;
+  }
+  if (!ts.isIdentifier(returned)) {
+    return false;
+  }
+  for (const statement of statements.slice(0, -1)) {
+    if (!ts.isVariableStatement(statement)) {
+      continue;
+    }
+    for (const variable of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(variable.name) || variable.name.text !== returned.text || variable.initializer === undefined) {
+        continue;
+      }
+      if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0) {
+        return false;
+      }
+      const initializer = unwrapTypeOnlyExpression(variable.initializer);
+      if (ts.isObjectLiteralExpression(initializer)) {
+        return true;
+      }
+      return ts.isNewExpression(initializer) && ts.isIdentifier(initializer.expression) &&
+        errorConstructorNames.has(initializer.expression.text);
+    }
+  }
+  return false;
+}
+
+function containsReturnStatement(node: ts.Node): boolean {
+  if (ts.isFunctionLike(node)) {
+    return false;
+  }
+  if (ts.isReturnStatement(node)) {
+    return true;
+  }
+  let found = false;
+  ts.forEachChild(node, (child) => {
+    if (!found && containsReturnStatement(child)) {
+      found = true;
+    }
+  });
+  return found;
 }
 
 function collectFunctionDeclarationEnclosingCaptureNames(
@@ -5927,7 +6045,8 @@ function lowerArrayDestructuringElements(
   pattern: ts.ArrayBindingPattern,
   source: DestructuringSource,
   working: Map<string, JsIrBindingValue>,
-  operations: JsIrOperation[]
+  operations: JsIrOperation[],
+  lazyDefaults = false
 ): boolean {
   const sourceBinding = source.binding;
   if (sourceBinding.kind !== "runtimeArray" && sourceBinding.kind !== "array" && sourceBinding.kind !== "valueVariable") {
@@ -5964,7 +6083,7 @@ function lowerArrayDestructuringElements(
         index: { kind: "literal", value: index },
         key: { kind: "literal", value: String(index) }
       };
-      const operation = lowerDestructuredValueBinding(name, access, element.initializer, working);
+      const operation = lowerDestructuredValueBinding(name, access, element.initializer, working, lazyDefaults);
       if (operation === undefined) {
         return false;
       }
@@ -5978,7 +6097,7 @@ function lowerArrayDestructuringElements(
       index: { kind: "literal", value: index },
       key: { kind: "literal", value: String(index) }
     };
-    const operation = lowerDestructuredValueBinding(name, access, element.initializer, working);
+    const operation = lowerDestructuredValueBinding(name, access, element.initializer, working, lazyDefaults);
     if (operation === undefined) {
       return false;
     }
@@ -6015,7 +6134,8 @@ function lowerDestructuredValueBinding(
   name: string,
   access: JsIrValueExpression,
   defaultInitializer: ts.Expression | undefined,
-  working: ReadonlyMap<string, JsIrBindingValue>
+  working: ReadonlyMap<string, JsIrBindingValue>,
+  lazyDefault = false
 ): JsIrOperation | undefined {
   let value: JsIrValueExpression = access;
   if (defaultInitializer !== undefined) {
@@ -6023,12 +6143,19 @@ function lowerDestructuredValueBinding(
     if (defaultValue === undefined) {
       return undefined;
     }
-    value = {
-      kind: "ternary",
-      condition: { kind: "valueComparison", operator: "===", left: access, right: { kind: "undefined" } },
-      consequent: defaultValue,
-      alternate: access
-    };
+    if (lazyDefault) {
+      value = { kind: "lazyDefault", value: access, defaultValue };
+    } else {
+      value = {
+        kind: "ternary",
+        condition: { kind: "valueComparison", operator: "===", left: access, right: { kind: "undefined" } },
+        consequent: defaultValue,
+        alternate: access
+      };
+    }
+  }
+  if (lazyDefault || (defaultInitializer !== undefined && ts.isCallExpression(unwrapTypeOnlyExpression(defaultInitializer)))) {
+    return { kind: "letValue", name, value };
   }
   return { kind: "constValue", name, value };
 }
@@ -6038,7 +6165,8 @@ function lowerObjectDestructuringElements(
   pattern: ts.ObjectBindingPattern,
   source: DestructuringSource,
   working: Map<string, JsIrBindingValue>,
-  operations: JsIrOperation[]
+  operations: JsIrOperation[],
+  lazyDefaults = false
 ): boolean {
   const sourceBinding = source.binding;
   if (sourceBinding.kind !== "runtimeObject" && sourceBinding.kind !== "object" && sourceBinding.kind !== "valueVariable") {
@@ -6079,7 +6207,7 @@ function lowerObjectDestructuringElements(
     } else {
       access = { kind: "objectDynamicAccess", objectName: source.name, key: { kind: "literal", value: key } };
     }
-    const operation = lowerDestructuredValueBinding(element.name.text, access, element.initializer, working);
+    const operation = lowerDestructuredValueBinding(element.name.text, access, element.initializer, working, lazyDefaults);
     if (operation === undefined) {
       return false;
     }
@@ -6153,7 +6281,11 @@ function lowerDestructuredFallbackOperation(
     return accessOperation;
   }
   if (defaultInitializer !== undefined) {
-    return lowerConstVariableBinding(name, defaultInitializer, working);
+    const fallback = lowerConstVariableBinding(name, defaultInitializer, working);
+    if (fallback?.kind === "constValue" && ts.isCallExpression(unwrapTypeOnlyExpression(defaultInitializer))) {
+      return { kind: "letValue", name, value: fallback.value };
+    }
+    return fallback;
   }
   return { kind: "constValue", name, value: { kind: "undefined" } };
 }
@@ -9358,6 +9490,15 @@ function lowerDirectValueExpression(
 
   if (ts.isNewExpression(expression) && ts.isIdentifier(expression.expression)) {
     const constructorName = expression.expression.text;
+    const constructor = bindings.get(constructorName);
+    if (constructor?.kind === "function" && constructor.constructibleByObjectReturn === true) {
+      const constructorArguments = expression.arguments ?? ts.factory.createNodeArray<ts.Expression>();
+      const args = lowerPlainConstructorArguments(constructor.parameters, constructorArguments, bindings);
+      if (args === undefined) {
+        return undefined;
+      }
+      return { kind: "call", name: constructorName, arguments: args };
+    }
     if (constructorName === "Number" || constructorName === "Boolean" || constructorName === "String") {
       const args = expression.arguments ?? [];
       if (args.length !== 1) {
@@ -9478,6 +9619,34 @@ function lowerDirectValueExpression(
   return undefined;
 }
 
+function lowerPlainConstructorArguments(
+  parameters: readonly JsIrFunctionParameter[],
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrCallArgument[] | undefined {
+  if (args.length > parameters.length || parameters.some((parameter) => parameter.isRest === true)) {
+    return undefined;
+  }
+  const lowered: JsIrCallArgument[] = [];
+  for (let index = 0; index < parameters.length; index += 1) {
+    const parameter = parameters[index];
+    if (index < args.length) {
+      const value = lowerTypedCallArgument(parameter, args[index], bindings);
+      if (value === undefined) {
+        return undefined;
+      }
+      lowered.push(value);
+    } else if (parameter.valueKind === "value") {
+      lowered.push({ valueKind: "value", value: { kind: "undefined" } });
+    } else if (parameter.valueKind === "number" && parameter.defaultValue !== undefined) {
+      lowered.push({ valueKind: "number", value: parameter.defaultValue });
+    } else {
+      return undefined;
+    }
+  }
+  return lowered;
+}
+
 // eslint-disable-next-line complexity, max-statements -- Function value lowering validates both declaration references and inline function syntax.
 function lowerFunctionObjectValue(
   expression: ts.Expression,
@@ -9485,7 +9654,7 @@ function lowerFunctionObjectValue(
 ): JsIrValueExpression | undefined {
   if (ts.isIdentifier(expression)) {
     const binding = bindings.get(expression.text);
-    if (binding?.kind !== "function") {
+    if (binding?.kind !== "function" && binding?.kind !== "functionReference") {
       return undefined;
     }
     const codeName = `__tscn_fnobj_ref_${expression.text}_${nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");

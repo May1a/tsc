@@ -18,6 +18,7 @@ export const assertionPrelude = `declare function print(value: unknown): void;
 function Test262Error(message: any): any {
   const error = new Error(message);
   error.name = "Test262Error";
+  error.constructor = Test262Error;
   return error;
 }
 

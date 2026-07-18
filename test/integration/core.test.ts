@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   compileFixture,
   expectSuccessfulCompile,
+  expectUnsupportedDiagnostic,
   expectNativeBehaviorIfAvailable,
   countOccurrences
 } from "./helpers.js";
@@ -413,10 +414,26 @@ describe("tscn function declarations and calls", () => {
     const result = await expectSuccessfulCompile("function-value-identity.ts", { link: true });
 
     try {
-      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\nfunction\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\ntrue\ntrue\nfunction\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
+  });
+
+  test("constructs plain functions only when they unconditionally return an object", async () => {
+    const result = await expectSuccessfulCompile("function-constructor-object-return.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+    await expectUnsupportedDiagnostic("function-constructor-this-unsupported.ts");
+    await expectUnsupportedDiagnostic("function-constructor-mutable-return-unsupported.ts");
+  });
+
+  test("rejects unsupported catch binding patterns", async () => {
+    await expectUnsupportedDiagnostic("catch-destructure-unsupported.ts");
   });
 
   test("lowers string function parameters through pointer and length arguments", async () => {

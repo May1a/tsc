@@ -243,6 +243,16 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
     }
   });
 
+  test("keeps catch destructuring exceptions alive across collection", async () => {
+    const result = await expectSuccessfulCompile("gc-catch-destructure-default.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("valueBoxObject call site pins the new instance with gcRootPush before the constructor", async () => {
     // The class-field fixture exercises newInstance: a valueBoxObject call
     // followed by the constructor call inside `build()`. The instance cell is

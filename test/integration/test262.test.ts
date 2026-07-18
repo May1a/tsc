@@ -295,6 +295,22 @@ describe("Test262 assembly and reporting", () => {
     expect(entry).not.toMatch(/\b(?:import|export|await)\b/);
   });
 
+  test("preserves Test262Error constructor identity under Node", async () => {
+    const workDir = await mkdtemp(path.join(tmpdir(), "t262-error-identity-"));
+    const entry = path.join(workDir, "entry.ts");
+    await writeFile(entry, assembleEntry("print(new Test262Error().constructor === Test262Error);", { kind: "positive" }));
+    try {
+      const run = await captureProcessWithTimeout(
+        process.execPath,
+        ["--input-type=commonjs", "--eval", nodeScriptWrapperSource, entry],
+        { cwd: repoRoot, timeoutMs: hangTimeoutMs }
+      );
+      expect(nodeBehavior(run)).toEqual({ exitCode: 0, stdout: "true\n", stderr: "" });
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
   test("rewrites supported assertion calls without changing strings or comments", () => {
     const source = `// assert.sameValue(0, 1)\nconst text = "assert.throws";\nassert.sameValue(1, 1);\nassert.notSameValue(0, -0);\nassert.throws(TypeError, callback);`;
     const entry = assembleEntry(source, { kind: "positive" });

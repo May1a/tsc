@@ -400,9 +400,18 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
     ...functionObjectThunks.flatMap((definition) => emitFunctionObjectThunk(definition, context)),
     ...functionDefs.flatMap((fn) => emitFunctionDefinition(fn, context))
   ];
+  const internedFunctions = new Map<string, JsIrFunctionObjectDefinition>();
+  for (const sourceModule of module.modules) {
+    for (const definition of sourceModule.functionObjects) {
+      if (definition.directTarget !== undefined && (definition.captures?.length ?? 0) === 0 && !internedFunctions.has(definition.directTarget)) {
+        internedFunctions.set(definition.directTarget, definition);
+      }
+    }
+  }
   const mainLines = emitOperations(mainOps, context);
   const stringConstants = context.stringConstants.join("\n");
-  const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals].join("\n");
+  const functionObjectGlobals = [...internedFunctions].map(([target]) => `@${internedFunctionGlobal(target)} = internal global i64 ${jsValueUndefined}`);
+  const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals, ...functionObjectGlobals].join("\n");
   let numberFormat = "";
   if (context.hasNumberPrint) {
     numberFormat = String.raw`@.fmt.number = private unnamed_addr constant [4 x i8] c"%g\0A\00"
@@ -415,7 +424,21 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
   // call to gcInit lands at the start of @main's entry block. Immediately record
   // the root-stack baseline so top-level roots are released before @main returns
   // (otherwise straight-line top-level temporaries stay pinned until process exit).
-  const mainInit = ["  call void @gcInit()", "  %gc.main.frame = call i64 @gcRootSave()"];
+  if (internedFunctions.size > 0) {
+    useRuntimeHelper(context.runtime, "functionObjectNew");
+  }
+  const mainInit = [
+    "  call void @gcInit()",
+    "  %gc.main.frame = call i64 @gcRootSave()",
+    ...[...internedFunctions].flatMap(([target, definition], index) => {
+      const value = `%fnobj.intern.${index}`;
+      return [
+        `  ${value} = call i64 @functionObjectNew(ptr @${definition.codeName}, ptr null, i64 ${jsValueUndefined})`,
+        `  store i64 ${value}, ptr @${internedFunctionGlobal(target)}`,
+        `  call void @gcRootPush(i64 ${value})`
+      ];
+    })
+  ];
 
   useRuntimeHelper(context.runtime, "valuePrint");
   const runtimeDeclarations = emitRuntimeDeclarations(context.runtime);
@@ -4298,6 +4321,12 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const index = context.callIndex;
     context.callIndex += 1;
     const value = `%fnobj.${index}`;
+    if (expression.definition.directTarget !== undefined && (expression.definition.captures?.length ?? 0) === 0) {
+      return {
+        lines: [`  ${value} = load i64, ptr @${internedFunctionGlobal(expression.definition.directTarget)}`],
+        value
+      };
+    }
     useRuntimeHelper(context.runtime, "functionObjectNew");
     const captures = expression.definition.captures ?? [];
     const lines: string[] = [];
@@ -4335,6 +4364,10 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   if (expression.kind === "ternary") {
     return emitTernaryValueExpression(expression, context);
+  }
+
+  if (expression.kind === "lazyDefault") {
+    return emitLazyDefaultValueExpression(expression, context);
   }
 
   if (expression.kind === "arrayAccess") {
@@ -4716,6 +4749,10 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
   throw new Error("Unsupported value expression");
 }
 
+function internedFunctionGlobal(target: string): string {
+  return `fnobj.singleton.${target}`.replace(/[^A-Za-z0-9_.]/g, "_");
+}
+
 function emitValueCallExpression(
   expression: { readonly callee: JsIrValueExpression; readonly arguments: readonly JsIrCallArgument[]; readonly thisValue?: JsIrValueExpression },
   context: EmitContext
@@ -4954,6 +4991,41 @@ function emitTernaryValueExpression(
       ...consequent.lines,
       ...alternate.lines,
       `  ${value} = select i1 ${condition.value}, i64 ${consequent.value}, i64 ${alternate.value}`
+    ],
+    value
+  };
+}
+
+function emitLazyDefaultValueExpression(
+  expression: Extract<JsIrValueExpression, { readonly kind: "lazyDefault" }>,
+  context: EmitContext
+): JsValue {
+  const index = context.logicIndex;
+  context.logicIndex += 1;
+  const checkLabel = `default.check.${index}`;
+  const defaultLabel = `default.value.${index}`;
+  const defaultJoinLabel = `default.join.${index}`;
+  const endLabel = `default.end.${index}`;
+  const current = emitValueExpression(expression.value, context);
+  const fallback = emitValueExpression(expression.defaultValue, context);
+  const isUndefined = `%cmp.${context.cmpIndex}`;
+  context.cmpIndex += 1;
+  const value = `%value.${context.numIndex}`;
+  context.numIndex += 1;
+  return {
+    lines: [
+      ...current.lines,
+      `  br label %${checkLabel}`,
+      `${checkLabel}:`,
+      `  ${isUndefined} = icmp eq i64 ${current.value}, ${jsValueUndefined}`,
+      `  br i1 ${isUndefined}, label %${defaultLabel}, label %${endLabel}`,
+      `${defaultLabel}:`,
+      ...fallback.lines,
+      `  br label %${defaultJoinLabel}`,
+      `${defaultJoinLabel}:`,
+      `  br label %${endLabel}`,
+      `${endLabel}:`,
+      `  ${value} = phi i64 [ ${current.value}, %${checkLabel} ], [ ${fallback.value}, %${defaultJoinLabel} ]`
     ],
     value
   };
