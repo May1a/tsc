@@ -11,6 +11,8 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "vitest --run",
     "test:watch": "vitest --watch",
+    "test262:fetch": "npm run build && node dist/test262/fetch.js",
+    "test262:run": "npm run build && node dist/test262/run.js",
     "lint": "npx oxlint --type-aware"
   },
   "dependencies": {

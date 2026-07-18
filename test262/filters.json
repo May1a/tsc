@@ -1,0 +1,79 @@
+{
+  "groups": [
+    {
+      "id": "statements",
+      "include": ["language/statements"],
+      "exclude": [
+        "language/statements/async-function",
+        "language/statements/async-generator",
+        "language/statements/await-using",
+        "language/statements/for-await-of",
+        "language/statements/generators",
+        "language/statements/using",
+        "language/statements/with"
+      ]
+    },
+    {
+      "id": "iteration",
+      "include": [
+        "language/statements/for",
+        "language/statements/for-in",
+        "language/statements/for-of",
+        "language/statements/while",
+        "language/statements/do-while"
+      ],
+      "exclude": []
+    },
+    {
+      "id": "exceptions",
+      "include": ["language/statements/try", "language/statements/throw"],
+      "exclude": []
+    }
+  ],
+  "unsupportedFlags": ["async", "module", "raw", "onlyStrict"],
+  "unsupportedFeatures": [
+    "async-functions",
+    "async-iteration",
+    "generators",
+    "Promise",
+    "BigInt",
+    "Proxy",
+    "Reflect",
+    "Reflect.construct",
+    "dynamic-import",
+    "eval",
+    "import.meta",
+    "import-attributes",
+    "top-level-await",
+    "FinalizationRegistry",
+    "WeakRef",
+    "WeakMap",
+    "WeakSet",
+    "SharedArrayBuffer",
+    "Atomics",
+    "TypedArray",
+    "ArrayBuffer",
+    "DataView",
+    "Symbol",
+    "Symbol.asyncIterator",
+    "Symbol.hasInstance",
+    "Symbol.species",
+    "Symbol.toPrimitive",
+    "Symbol.toStringTag",
+    "Symbol.unscopables",
+    "RegExp",
+    "regexp-named-groups",
+    "regexp-unicode-property-escapes",
+    "regexp-dotall",
+    "regexp-lookbehind",
+    "regexp-match-indices",
+    "Date",
+    "Intl",
+    "Temporal",
+    "Iterator",
+    "iterator-helpers",
+    "explicit-resource-management",
+    "with"
+  ],
+  "supportedIncludes": ["assert.js", "sta.js"]
+}
