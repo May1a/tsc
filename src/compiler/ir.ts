@@ -1433,6 +1433,7 @@ export type JsIrOperationNode =
       readonly name: string;
       readonly parameters: readonly JsIrFunctionParameter[];
       readonly body: readonly JsIrOperation[];
+      readonly enclosingCaptureNames?: readonly string[];
     }
   | {
       readonly kind: "call";
@@ -4895,8 +4896,96 @@ function lowerFunctionDeclaration(
     kind: "function",
     name: statement.name.text,
     parameters,
-    body
+    body,
+    enclosingCaptureNames: collectFunctionDeclarationEnclosingCaptureNames(statement, bindings)
   };
+}
+
+function collectFunctionDeclarationEnclosingCaptureNames(
+  declaration: ts.FunctionDeclaration,
+  outerBindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly string[] {
+  const captures: string[] = [];
+  const seen = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (node !== declaration && ts.isFunctionLike(node)) {
+      return;
+    }
+    if (
+      ts.isIdentifier(node) &&
+      outerBindings.has(node.text) &&
+      !seen.has(node.text) &&
+      isRuntimeIdentifierReference(node) &&
+      identifierResolvesInEnclosingFunction(node, declaration)
+    ) {
+      seen.add(node.text);
+      captures.push(node.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  if (declaration.body !== undefined) {
+    ts.forEachChild(declaration.body, visit);
+  }
+  for (const parameter of declaration.parameters) {
+    visit(parameter.name);
+    if (parameter.initializer !== undefined) {
+      visit(parameter.initializer);
+    }
+  }
+  return captures;
+}
+
+function identifierResolvesInEnclosingFunction(identifier: ts.Identifier, declaration: ts.FunctionDeclaration): boolean {
+  const symbol = activeTypeChecker?.getSymbolAtLocation(identifier);
+  if (symbol?.declarations === undefined) {
+    return true;
+  }
+  return symbol.declarations.some((symbolDeclaration) => {
+    if (
+      symbolDeclaration === declaration ||
+      (symbolDeclaration.getSourceFile() === declaration.getSourceFile() &&
+        symbolDeclaration.pos >= declaration.pos &&
+        symbolDeclaration.end <= declaration.end)
+    ) {
+      return false;
+    }
+    let ancestor = symbolDeclaration.parent;
+    while (!ts.isSourceFile(ancestor)) {
+      if (ts.isFunctionLike(ancestor)) {
+        return true;
+      }
+      ancestor = ancestor.parent;
+    }
+    return false;
+  });
+}
+
+function isRuntimeIdentifierReference(identifier: ts.Identifier): boolean {
+  if (ts.isPartOfTypeNode(identifier)) {
+    return false;
+  }
+  const { parent } = identifier;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === identifier) {
+    return false;
+  }
+  if (
+    (ts.isPropertyAssignment(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isPropertyDeclaration(parent)) &&
+    parent.name === identifier
+  ) {
+    return false;
+  }
+  if (ts.isBindingElement(parent) && parent.propertyName === identifier) {
+    return false;
+  }
+  if (
+    (ts.isLabeledStatement(parent) || ts.isBreakStatement(parent) || ts.isContinueStatement(parent)) &&
+    parent.label === identifier
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function lowerNumericDefaultValue(

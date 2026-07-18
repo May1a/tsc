@@ -58,6 +58,9 @@ export const compile = (
       yield* fs.writeFileString(inlineCpp, emitInlineCppSource(jsIr.module.inlineCppBlocks));
     }
 
+    for (const diagnostic of emission.diagnostics) {
+      yield* diagnostics.add(diagnostic);
+    }
     const frontendAndIrDiagnostics = yield* diagnostics.drain();
     let link: LinkResult = { diagnostics: [] };
     if (options.link !== false && !frontendAndIrDiagnostics.some((diagnostic) => diagnostic.category === "error")) {

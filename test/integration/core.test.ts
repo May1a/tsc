@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  compileFixture,
   expectSuccessfulCompile,
   expectNativeBehaviorIfAvailable,
   countOccurrences
@@ -206,6 +207,71 @@ describe("tscn function declarations and calls", () => {
       expect(llvmIr).toContain("define { i64, i1 } @getX()");
       expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42.0)");
       expect(llvmIr).toContain("call { i64, i1 } @getX()");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("emits definitions for nested function declarations", async () => {
+    const result = await expectSuccessfulCompile("nested-function-declaration.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define { i64, i1 } @outer(i64 %p0)");
+      expect(llvmIr).toContain("define { i64, i1 } @identity(i64 %p0)");
+      expect(llvmIr).toContain("call { i64, i1 } @identity(");
+      expect(llvmIr).toContain("call { i64, i1 } @outer(");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("rejects nested function declarations that capture enclosing locals", async () => {
+    const result = await compileFixture("nested-function-capture.ts");
+
+    try {
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "test/fixtures/nested-function-capture.ts:6:3: error TSCN1002: " +
+          "Nested function 'captured' captures unsupported enclosing bindings: value"
+      );
+      expect(result.stderr).toContain(
+        "test/fixtures/nested-function-capture.ts:13:3: error TSCN1002: " +
+          "Nested function 'defaultCaptured' captures unsupported enclosing bindings: value"
+      );
+      expect(result.stderr).toContain(
+        "test/fixtures/nested-function-capture.ts:16:3: error TSCN1002: " +
+          "Nested function 'destructuredCaptured' captures unsupported enclosing bindings: value"
+      );
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("reports the source location of duplicate nested function definitions", async () => {
+    const result = await compileFixture("nested-function-duplicate.ts");
+
+    try {
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "test/fixtures/nested-function-duplicate.ts:11:3: error TSCN1002: Duplicate function definition 'sameName'"
+      );
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("emits nested functions declared beside try/catch", async () => {
+    const result = await expectSuccessfulCompile("nested-function-in-try.ts");
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("define { i64, i1 } @innerf(i64 %p0, i64 %p1)");
+      expect(llvmIr).toContain("define { i64, i1 } @fromTry(i64 %p0)");
+      expect(llvmIr).toContain("define { i64, i1 } @fromOuter(i64 %p0)");
+      expect(llvmIr).toContain("call { i64, i1 } @innerf(");
+      expect(llvmIr).toContain("call { i64, i1 } @fromTry(");
+      expect(llvmIr).toContain("call { i64, i1 } @fromOuter(");
     } finally {
       await result.cleanup();
     }

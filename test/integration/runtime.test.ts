@@ -1105,7 +1105,9 @@ describe("tscn expanded runtime roadmap", () => {
       ["try-finally-precedence.ts", "catch-finally\n3\nreplacement\n"],
       ["try-finally-break-continue.ts", "b0f0b1f1\nb0f0f1b2f2\n"],
       ["gc-try-finally-return.ts", "1\n42\n"],
-      ["gc-cleanup-pending-values.ts", "[object Object]\n1\nalive\n"]
+      ["gc-cleanup-pending-values.ts", "[object Object]\n1\nalive\n"],
+      ["nested-function-declaration.ts", "7\n"],
+      ["nested-function-in-try.ts", "42\n7\nok\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });

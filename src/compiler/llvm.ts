@@ -20,6 +20,7 @@ import {
   type JsIrValueKind,
   type JsIrValueExpression
 } from "./ir.js";
+import type { CompilerDiagnostic } from "./diagnostics.js";
 import { buildTraceMap, traceOperationId, type TraceMapV1 } from "./trace.js";
 import {
   createRuntimeHelperEmitter,
@@ -319,8 +320,13 @@ ${jsValueAbi.emitInlineCppSupport()}
 
 ${blocks.map(emitInlineCppFunction).join("\n")}`;
 
+type LlvmIrEmission = {
+  readonly rendered: RenderedLlvmModule;
+  readonly diagnostics: readonly CompilerDiagnostic[];
+};
+
 // eslint-disable-next-line max-statements -- Legacy section assembly and tracked builder composition remain together during incremental migration.
-function emitLlvmIr(module: JsIrModule): RenderedLlvmModule {
+function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
   const moduleComments = module.modules
     .map((sourceModule) => `; source ${sourceModule.fileName} statements=${sourceModule.statementCount}`)
     .join("\n");
@@ -328,13 +334,27 @@ function emitLlvmIr(module: JsIrModule): RenderedLlvmModule {
   const functionDefs: FunctionDef[] = [];
   const functionObjectThunks: JsIrFunctionObjectDefinition[] = [];
   const mainOps: JsIrOperation[] = [];
+  const definedFunctionNames = new Set<string>();
+  const diagnostics: CompilerDiagnostic[] = [];
+
+  const registerFunctionDef = (definition: FunctionDef): void => {
+    if (definedFunctionNames.has(definition.name)) {
+      diagnostics.push(functionDefinitionDiagnostic(
+        `Duplicate function definition '${definition.name}'`,
+        definition.traceOperation
+      ));
+      return;
+    }
+    definedFunctionNames.add(definition.name);
+    functionDefs.push(definition);
+  };
 
   for (const sourceModule of module.modules) {
     for (const definition of sourceModule.functionObjects) {
       if (definition.body === undefined) {
         functionObjectThunks.push(definition);
       } else {
-        functionDefs.push({
+        registerFunctionDef({
           name: definition.codeName,
           parameters: definition.parameters,
           body: definition.body,
@@ -347,11 +367,31 @@ function emitLlvmIr(module: JsIrModule): RenderedLlvmModule {
       }
     }
     for (const op of sourceModule.operations) {
-      classifyAndProcessOperation(op, context, functionDefs, mainOps);
+      classifyAndProcessOperation(op, context, registerFunctionDef, mainOps);
     }
+    // Nested `function` ops (and nested callback objects) live inside enclosing
+    // bodies. Top-level classification only sees module-scope operations, so collect
+    // nested definitions here and hoist them to module-level `define`s.
     visitJsIrOperations(sourceModule.operations, (operation, parent) => {
-      if (parent !== undefined && operation.kind === "runtimeArrayMapFunctionObject") {
-        functionDefs.push(functionObjectDefinition(operation));
+      if (parent === undefined) {
+        return;
+      }
+      if (operation.kind === "runtimeArrayMapFunctionObject") {
+        registerFunctionDef(functionObjectDefinition(operation));
+        return;
+      }
+      if (operation.kind === "function") {
+        const unsupportedCaptures = operation.enclosingCaptureNames ?? [];
+        if (unsupportedCaptures.length > 0) {
+          diagnostics.push(functionDefinitionDiagnostic(
+            `Nested function '${operation.name}' captures unsupported enclosing bindings: ${unsupportedCaptures.join(", ")}`,
+            operation
+          ));
+          return;
+        }
+        for (const definition of functionDefinitionsFromOperation(operation, new Map(context.bindings))) {
+          registerFunctionDef(definition);
+        }
       }
     });
   }
@@ -446,7 +486,16 @@ function emitLlvmIr(module: JsIrModule): RenderedLlvmModule {
   const llvmModule = createLlvmModule();
   llvmModule.addLegacyModuleText({ origin: "legacy LLVM backend", text: legacyText, traceMarkers });
   defineStructuredRuntimeHelpers(llvmModule, context.runtime);
-  return llvmModule.render();
+  return { rendered: llvmModule.render(), diagnostics };
+}
+
+function functionDefinitionDiagnostic(message: string, operation: JsIrOperation | undefined): CompilerDiagnostic {
+  const diagnostic: CompilerDiagnostic = { code: "TSCN1002", category: "error", message };
+  const span = operation?.trace?.source;
+  if (span === undefined) {
+    return diagnostic;
+  }
+  return { ...diagnostic, span };
 }
 
 function splitLegacyDefinition(definition: string): readonly string[] {
@@ -459,18 +508,50 @@ function splitLegacyDefinition(definition: string): readonly string[] {
 export type LlvmEmission = {
   readonly llvmIr: string;
   readonly traceMap: TraceMapV1;
+  readonly diagnostics: readonly CompilerDiagnostic[];
 };
 
 export function emitLlvmModule(module: JsIrModule): LlvmEmission {
-  const rendered = emitLlvmIr(module);
-  return { llvmIr: rendered.text, traceMap: buildTraceMap(module, rendered.traceRanges) };
+  const { rendered, diagnostics } = emitLlvmIr(module);
+  return {
+    llvmIr: rendered.text,
+    traceMap: buildTraceMap(module, rendered.traceRanges),
+    diagnostics
+  };
+}
+
+function functionDefinitionsFromOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "function" }>,
+  outerBindings: Map<string, JsIrBindingValue>
+): readonly FunctionDef[] {
+  const definitions: FunctionDef[] = [];
+  const returnClosure = operation.body.find((op) => op.kind === "returnClosure");
+  if (returnClosure?.kind === "returnClosure") {
+    definitions.push({
+      name: returnClosure.functionName,
+      parameters: [...returnClosure.captures, ...returnClosure.parameters].map((name) => ({ name, valueKind: "number" })),
+      body: returnClosure.body,
+      outerBindings: new Map(),
+      traceOperation: returnClosure,
+      returnType: "aggregate"
+    });
+  }
+  definitions.push({
+    name: operation.name,
+    parameters: operation.parameters,
+    body: operation.body,
+    outerBindings,
+    traceOperation: operation,
+    returnType: "aggregate"
+  });
+  return definitions;
 }
 
 // eslint-disable-next-line complexity, max-statements -- Top-level operation classification is an explicit dispatch table.
 function classifyAndProcessOperation(
   operation: JsIrOperation,
   context: EmitContext,
-  functionDefs: FunctionDef[],
+  registerFunctionDef: (definition: FunctionDef) => void,
   mainOps: JsIrOperation[]
 ): void {
   if (operation.kind === "constNumber") {
@@ -500,31 +581,13 @@ function classifyAndProcessOperation(
   } else if (operation.kind === "letBoolean") {
     context.bindings.set(operation.name, { kind: "booleanVariable", name: operation.name });
   } else if (operation.kind === "runtimeArrayMapFunctionObject") {
-    functionDefs.push(functionObjectDefinition(operation));
+    registerFunctionDef(functionObjectDefinition(operation));
   } else if (classifyAggregateOperation(operation, context)) {
     // Binding recorded; the operation still belongs in the emitted body below.
   } else if (operation.kind === "function") {
-    const outerBindings = new Map(context.bindings);
-    const returnClosure = operation.body.find((op) => op.kind === "returnClosure");
-    if (returnClosure?.kind === "returnClosure") {
-      functionDefs.push({
-        name: returnClosure.functionName,
-        parameters: [...returnClosure.captures, ...returnClosure.parameters].map((name) => ({ name, valueKind: "number" })),
-        body: returnClosure.body,
-        outerBindings: new Map(),
-        traceOperation: returnClosure,
-        returnType: "aggregate"
-      });
+    for (const definition of functionDefinitionsFromOperation(operation, new Map(context.bindings))) {
+      registerFunctionDef(definition);
     }
-    const returnType: LlvmReturnType = "aggregate";
-    functionDefs.push({
-      name: operation.name,
-      parameters: operation.parameters,
-      body: operation.body,
-      outerBindings,
-      traceOperation: operation,
-      returnType
-    });
     return;
   }
 

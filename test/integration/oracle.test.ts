@@ -9,6 +9,8 @@ const oracleFixtures = [
   "const-number-addition.ts",
   "boolean-coercion-supported-values.ts",
   "function-call.ts",
+  "nested-function-declaration.ts",
+  "nested-function-in-try.ts",
   "function-value-variable-call.ts",
   "function-value-arrow-call.ts",
   "function-value-argument-call.ts",
