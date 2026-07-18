@@ -1,10 +1,11 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
-import type { Expectation, HarnessFilters, SelectedTest, TestCaseResult, Test262Frontmatter } from "./types.js";
+import type { Expectation, HarnessFilters, ParseGoal, SelectedTest, TestCaseResult, Test262Frontmatter } from "./types.js";
 
 // Flags Test262 uses that do not change how the harness assembles a test.
 const benignFlags = new Set(["noStrict", "generated", "CanBlockIsFalse", "CanBlockIsTrue"]);
+const recognizedFlags = new Set([...benignFlags, "module"]);
 
 // Negative phases that must be rejected while compiling, before any execution.
 const compileTimeNegativePhases = new Set(["parse", "early", "resolution"]);
@@ -48,7 +49,7 @@ const walkTestFiles = async (directory: string, prefix: string): Promise<readonl
 
 const classifyFlags = (flags: readonly string[], filters: HarnessFilters): string | undefined => {
   for (const flag of flags) {
-    if (filters.unsupportedFlags.includes(flag) || !benignFlags.has(flag)) {
+    if (filters.unsupportedFlags.includes(flag) || !recognizedFlags.has(flag)) {
       return `unsupported-flag:${flag}`;
     }
   }
@@ -72,7 +73,7 @@ const classifyNegative = (negative: Test262Frontmatter["negative"]): Expectation
 };
 
 type Classification =
-  | { readonly kind: "selected"; readonly expectation: Expectation }
+  | { readonly kind: "selected"; readonly expectation: Expectation; readonly parseGoal: ParseGoal }
   | { readonly kind: "skipped"; readonly reason: string };
 
 const classifyTest = (id: string, source: string, filters: HarnessFilters): Classification => {
@@ -85,6 +86,10 @@ const classifyTest = (id: string, source: string, filters: HarnessFilters): Clas
   const frontmatter = parseFrontmatter(source);
   if (frontmatter === undefined) {
     return { kind: "skipped", reason: "invalid-frontmatter" };
+  }
+  let parseGoal: ParseGoal = "script";
+  if (frontmatter.flags.includes("module")) {
+    parseGoal = "module";
   }
   const flagReason = classifyFlags(frontmatter.flags, filters);
   if (flagReason !== undefined) {
@@ -102,7 +107,7 @@ const classifyTest = (id: string, source: string, filters: HarnessFilters): Clas
   if (typeof expectation === "string") {
     return { kind: "skipped", reason: expectation };
   }
-  return { kind: "selected", expectation };
+  return { kind: "selected", expectation, parseGoal };
 };
 
 export type Selection = {
@@ -131,7 +136,13 @@ export const selectTests = async (suiteRoot: string, filters: HarnessFilters): P
   for (const { id, filePath, source } of sources) {
     const classification = classifyTest(id, source, filters);
     if (classification.kind === "selected") {
-      selected.push({ id, filePath, source, expectation: classification.expectation });
+      selected.push({
+        id,
+        filePath,
+        source,
+        expectation: classification.expectation,
+        parseGoal: classification.parseGoal
+      });
       continue;
     }
     skipped.push({ id, classification: "skip", reason: classification.reason });

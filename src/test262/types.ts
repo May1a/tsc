@@ -31,11 +31,14 @@ export type Expectation =
   | { readonly kind: "negative-compile" }
   | { readonly kind: "negative-runtime"; readonly errorName: string };
 
+export type ParseGoal = "script" | "module";
+
 export type SelectedTest = {
   readonly id: string;
   readonly filePath: string;
   readonly source: string;
   readonly expectation: Expectation;
+  readonly parseGoal: ParseGoal;
 };
 
 export type Classification = "pass" | "fail" | "skip" | "coverage-gap";

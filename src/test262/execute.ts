@@ -9,7 +9,14 @@ import { DiagnosticsLive } from "../compiler/diagnostics-service.js";
 import { CompilationFailed } from "../compiler/errors.js";
 import { compile } from "../compiler/pipeline.js";
 import { ToolchainLive } from "../compiler/toolchain.js";
-import { behaviorsEqual, nativeBehavior, nodeBehavior, nodeWrapperSource, type ObservedBehavior } from "./behavior.js";
+import {
+  behaviorsEqual,
+  nativeBehavior,
+  nodeBehavior,
+  nodeScriptWrapperSource,
+  nodeWrapperSource,
+  type ObservedBehavior
+} from "./behavior.js";
 import { repoRoot } from "./paths.js";
 import { assembleEntry, assembledTsConfig, missingThrowMarker, unexpectedThrowMarker } from "./prelude.js";
 import { captureProcessWithTimeout, type CapturedProcess } from "./process.js";
@@ -113,9 +120,13 @@ const runAndCompare = async (context: OutcomeContext, executable: string): Promi
   if (nativeRun.timedOut) {
     return result(test, "fail", "timeout", `Native execution exceeded ${options.timeoutMs}ms and was killed\nArtifacts: ${outDir}`);
   }
+  let nodeArguments = ["--input-type=commonjs", "--eval", nodeScriptWrapperSource, entry];
+  if (test.parseGoal === "module") {
+    nodeArguments = ["--input-type=module", "--eval", nodeWrapperSource, pathToFileURL(entry).href];
+  }
   const nodeRun = await captureProcessWithTimeout(
     process.execPath,
-    ["--input-type=module", "--eval", nodeWrapperSource, pathToFileURL(entry).href],
+    nodeArguments,
     { cwd: repoRoot, timeoutMs: options.timeoutMs }
   );
   if (nodeRun.timedOut) {

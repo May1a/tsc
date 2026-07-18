@@ -56,6 +56,38 @@ try {
 }
 `;
 
+// Node's built-in .ts loader applies Module identifier restrictions before a
+// CommonJS require reaches Script parsing. Strip types with an explicit Script
+// module kind, then let CommonJS _compile perform the goal-sensitive parse.
+export const nodeScriptWrapperSource = `
+globalThis.print = (value) => {
+  process.stdout.write(String(value) + "\\n");
+};
+const fs = require("node:fs");
+const ts = require("typescript");
+require.extensions[".ts"] = (module, filename) => {
+  const source = fs.readFileSync(filename, "utf8");
+  const transpiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ESNext },
+    fileName: filename,
+    reportDiagnostics: true
+  });
+  if (transpiled.diagnostics.length > 0) {
+    throw new SyntaxError(ts.flattenDiagnosticMessageText(transpiled.diagnostics[0].messageText, "\\n"));
+  }
+  module._compile(transpiled.outputText, filename);
+};
+try {
+  require(process.argv[1]);
+} catch (thrown) {
+  const payload = thrown instanceof Error
+    ? { kind: "error", name: thrown.name, message: thrown.message }
+    : { kind: "value", display: String(thrown) };
+  process.stderr.write(${JSON.stringify(thrownSentinel)} + JSON.stringify(payload) + "\\n");
+  process.exitCode = 1;
+}
+`;
+
 export const nodeBehavior = (run: { readonly status: number; readonly stdout: string; readonly stderr: string }): ObservedBehavior => {
   const terminalRecord = new RegExp(`(?:^|\\n)${thrownSentinel}([^\\n]+)\\n$`);
   const match = terminalRecord.exec(run.stderr);

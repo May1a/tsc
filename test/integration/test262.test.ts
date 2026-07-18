@@ -3,22 +3,25 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { nodeBehavior, nodeScriptWrapperSource, nodeWrapperSource } from "../../src/test262/behavior.js";
 import { loadFilters } from "../../src/test262/config.js";
 import { ensureSuiteFetched, FetchError, verifyCheckout } from "../../src/test262/fetch.js";
 import { assembleEntry } from "../../src/test262/prelude.js";
 import { captureProcessWithTimeout } from "../../src/test262/process.js";
 import { buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite, type RunOptions } from "../../src/test262/runner.js";
 import { parseRunArguments } from "../../src/test262/run.js";
+import { selectTests } from "../../src/test262/selection.js";
 import type { Classification, HarnessFilters, TestCaseResult } from "../../src/test262/types.js";
 import { repoRoot, roadmapIntegrationTimeoutMs, toolExecutable } from "./helpers.js";
 
 const suiteRoot = path.join(repoRoot, "test/fixtures/test262/suite");
 const hangTimeoutMs = 3000;
 const gitTimeoutMs = 30_000;
-const expectedTotalTests = 18;
-const expectedPassCount = 4;
+const expectedTotalTests = 20;
+const expectedPassCount = 5;
 const expectedFailCount = 4;
-const expectedSkipCount = 8;
+const expectedSkipCount = 9;
 const shaHashLength = 40;
 
 let filters: HarnessFilters;
@@ -60,6 +63,22 @@ describe("filtered Test262 harness", () => {
     const results = completedResults(await runSuite({ only: ["language/statements/while/pass-count-down.js"] }));
     expect(results).toHaveLength(1);
     expectClassification(results[0], "pass");
+  }, roadmapIntegrationTimeoutMs);
+
+  test("executes unflagged tests under the Script parse goal", async () => {
+    const results = completedResults(
+      await runSuite({ only: ["language/statements/class/script-goal-await-ident.js"] })
+    );
+    expect(results).toHaveLength(1);
+    expectClassification(results[0], "pass");
+  }, roadmapIntegrationTimeoutMs);
+
+  test("keeps module-flagged tests skipped with a stable reason", async () => {
+    const results = completedResults(
+      await runSuite({ only: ["language/statements/class/module-flagged.js"] })
+    );
+    expect(results).toHaveLength(1);
+    expectClassification(results[0], "skip", "unsupported-flag:module");
   }, roadmapIntegrationTimeoutMs);
 
   test("reports a behavioral mismatch with native and Node behavior shown", async () => {
@@ -224,13 +243,58 @@ describe("filtered Test262 harness", () => {
     const report = formatReport(run);
     expect(report).toContain("PASS language/statements/while/pass-count-down.js");
     expect(report).toContain("COVERAGE-GAP language/statements/for-in/for-in-coverage-gap.js [compiler-unsupported]");
-    expect(report).toContain("Summary: 4 pass, 4 fail, 2 coverage-gap, 8 skip (18 total)");
+    expect(report).toContain("Summary: 5 pass, 4 fail, 2 coverage-gap, 9 skip (20 total)");
     expect(report).not.toContain("plain-addition");
     await Promise.all(results.map(cleanupArtifacts));
   }, roadmapIntegrationTimeoutMs);
 });
 
 describe("Test262 assembly and reporting", () => {
+  test("carries the declared parse goal on selected tests", async () => {
+    const moduleEnabledFilters: HarnessFilters = {
+      ...filters,
+      unsupportedFlags: filters.unsupportedFlags.filter((flag) => flag !== "module")
+    };
+    const selection = await selectTests(suiteRoot, moduleEnabledFilters);
+    const byId = new Map(selection.selected.map((selected) => [selected.id, selected]));
+    expect(byId.get("language/statements/class/script-goal-await-ident.js")?.parseGoal).toBe("script");
+    expect(byId.get("language/statements/class/module-flagged.js")?.parseGoal).toBe("module");
+  });
+
+  test("runs Script-only syntax under distinct Node parse goals", async () => {
+    const workDir = await mkdtemp(path.join(tmpdir(), "t262-node-goals-"));
+    const entry = path.join(workDir, "entry.ts");
+    await writeFile(entry, assembleEntry('class aw\\u0061it {}\nprint("script goal");', { kind: "positive" }));
+    try {
+      const [scriptRun, moduleRun] = await Promise.all([
+        captureProcessWithTimeout(
+          process.execPath,
+          ["--input-type=commonjs", "--eval", nodeScriptWrapperSource, entry],
+          { cwd: repoRoot, timeoutMs: hangTimeoutMs }
+        ),
+        captureProcessWithTimeout(
+          process.execPath,
+          ["--input-type=module", "--eval", nodeWrapperSource, pathToFileURL(entry).href],
+          { cwd: repoRoot, timeoutMs: hangTimeoutMs }
+        )
+      ]);
+      expect(nodeBehavior(scriptRun)).toEqual({ exitCode: 0, stdout: "script goal\n", stderr: "" });
+      expect(nodeBehavior(moduleRun)).toEqual(
+        expect.objectContaining({
+          exitCode: 1,
+          thrown: expect.objectContaining({ kind: "error", name: "SyntaxError" })
+        })
+      );
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps the assembled assertion prelude neutral across parse goals", () => {
+    const entry = assembleEntry("", { kind: "positive" });
+    expect(entry).not.toMatch(/\b(?:import|export|await)\b/);
+  });
+
   test("rewrites supported assertion calls without changing strings or comments", () => {
     const source = `// assert.sameValue(0, 1)\nconst text = "assert.throws";\nassert.sameValue(1, 1);\nassert.notSameValue(0, -0);\nassert.throws(TypeError, callback);`;
     const entry = assembleEntry(source, { kind: "positive" });
