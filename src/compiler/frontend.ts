@@ -394,7 +394,8 @@ const rejectPackageImports = (
   });
 
 export const loadProgram = (
-  entry: string
+  entry: string,
+  options: { readonly suppressSemanticDiagnostics?: boolean } = {}
 ): Effect.Effect<FrontendResult, PlatformError, FileSystem.FileSystem | Path.Path | Diagnostics> =>
   Effect.gen(function* loadProgramEffect() {
     const fs = yield* FileSystem.FileSystem;
@@ -426,11 +427,15 @@ export const loadProgram = (
       .getSourceFiles()
       .filter((sourceFile) => !sourceFile.isDeclarationFile && !sourceFile.fileName.includes("/node_modules/"));
 
+    let semanticDiagnostics: readonly ts.Diagnostic[] = [];
+    if (options.suppressSemanticDiagnostics !== true) {
+      semanticDiagnostics = program.getSemanticDiagnostics();
+    }
     const tsDiagnostics = tsDiagnosticsToCompiler([
       ...program.getOptionsDiagnostics(),
       ...program.getGlobalDiagnostics(),
       ...program.getSyntacticDiagnostics(),
-      ...program.getSemanticDiagnostics()
+      ...semanticDiagnostics
     ].filter((diagnostic) => !isSyntheticInlineCppDiagnostic(diagnostic)));
     yield* Effect.forEach(tsDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
 

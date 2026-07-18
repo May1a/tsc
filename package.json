@@ -13,6 +13,7 @@
     "test:watch": "vitest --watch",
     "test262:fetch": "npm run build && node dist/test262/fetch.js",
     "test262:run": "npm run build && node dist/test262/run.js",
+    "test262:baseline": "npm run build && node dist/test262/run.js --classification fail --baseline test262/baseline.json",
     "lint": "npx oxlint --type-aware"
   },
   "dependencies": {

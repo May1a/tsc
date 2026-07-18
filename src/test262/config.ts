@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { filtersPath, pinPath } from "./paths.js";
-import type { FilterGroup, HarnessFilters, SuitePin } from "./types.js";
+import type { FilterGroup, HarnessFilters, SuitePin, Test262Baseline } from "./types.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
@@ -48,3 +48,22 @@ export const loadPin = async (filePath: string = pinPath): Promise<SuitePin> =>
 
 export const loadFilters = async (filePath: string = filtersPath): Promise<HarnessFilters> =>
   parseFilters(JSON.parse(await readFile(filePath, "utf8")));
+
+export const loadBaseline = async (filePath: string): Promise<Test262Baseline> => {
+  const value: unknown = JSON.parse(await readFile(filePath, "utf8"));
+  if (
+    !isRecord(value) ||
+    typeof value.pinRevision !== "string" ||
+    typeof value.minimumPass !== "number" ||
+    typeof value.maximumFail !== "number" ||
+    typeof value.maximumBehaviorMismatch !== "number"
+  ) {
+    throw new Error("Test262 baseline must declare pinRevision and numeric pass/failure thresholds");
+  }
+  return {
+    pinRevision: value.pinRevision,
+    minimumPass: value.minimumPass,
+    maximumFail: value.maximumFail,
+    maximumBehaviorMismatch: value.maximumBehaviorMismatch
+  };
+};

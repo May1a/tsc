@@ -1,3 +1,4 @@
+import ts from "typescript";
 import type { Expectation } from "./types.js";
 
 // Marker lines printed by the negative-runtime wrapper when the observed throw
@@ -6,12 +7,9 @@ import type { Expectation } from "./types.js";
 export const unexpectedThrowMarker = "__T262_UNEXPECTED_THROW__";
 export const missingThrowMarker = "__T262_MISSING_THROW__";
 
-// Compiler-owned minimal assertion prelude. It mirrors the Test262 `sta.js` /
-// `assert.js` subset that fits the supported synchronous surface: a standalone
-// test error, `$ERROR`, and bare `assert(...)` calls with optional messages.
-// Wider assertion APIs (assert.sameValue, assert.throws, ...) are not yet
-// expressible within the supported surface; tests using them surface as
-// coverage gaps instead of being approximated.
+// Compiler-owned minimal assertion prelude. Test262's function-property API is
+// rewritten to these identifier calls because function properties are outside
+// the current lowering surface. Both oracle sides receive the same source.
 //
 // The prelude must stay behaviorally identical under tscn and Node: it is fed
 // unchanged to both sides of the correctness oracle.
@@ -32,7 +30,83 @@ function assert(...args: any[]): void {
     throw Test262Error(args[1]);
   }
 }
+
+function __t262SameValue(...args: any[]): void {
+  if (Object.is(args[0], args[1])) {
+  } else {
+    throw Test262Error(args[2]);
+  }
+}
+
+function __t262NotSameValue(...args: any[]): void {
+  if (Object.is(args[0], args[1])) {
+    throw Test262Error(args[2]);
+  }
+}
+
+function __t262Throws(...args: any[]): void {
+  let caught = false;
+  const callback = args[1];
+  try {
+    callback();
+  } catch (thrown) {
+    caught = true;
+    if (thrown === null) {
+      throw Test262Error(args[2]);
+    }
+    if (thrown === undefined) {
+      throw Test262Error(args[2]);
+    }
+    if (thrown.constructor !== args[0]) {
+      throw Test262Error(args[2]);
+    }
+  }
+  if (caught === false) {
+    throw Test262Error(args[2]);
+  }
+}
 `;
+
+const assertionMethodNames = new Map([
+  ["sameValue", "__t262SameValue"],
+  ["notSameValue", "__t262NotSameValue"],
+  ["throws", "__t262Throws"]
+]);
+
+type SourceReplacement = {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+};
+
+const rewriteAssertionCalls = (source: string): string => {
+  const sourceFile = ts.createSourceFile("test262.js", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const replacements: SourceReplacement[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "assert"
+    ) {
+      const replacement = assertionMethodNames.get(node.expression.name.text);
+      if (replacement !== undefined) {
+        replacements.push({
+          start: node.expression.getStart(sourceFile),
+          end: node.expression.end,
+          text: replacement
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  let rewritten = source;
+  for (const replacement of replacements.toSorted((left, right) => right.start - left.start)) {
+    rewritten = `${rewritten.slice(0, replacement.start)}${replacement.text}${rewritten.slice(replacement.end)}`;
+  }
+  return rewritten;
+};
 
 // Compiler options for the assembled entry module. Test262 sources are plain
 // JavaScript, so type checking is relaxed to keep TS strictness from rejecting
@@ -83,8 +157,9 @@ ${source}
  * The identical assembled source is fed to tscn and to Node.
  */
 export const assembleEntry = (source: string, expectation: Expectation): string => {
+  const rewrittenSource = rewriteAssertionCalls(source);
   if (expectation.kind === "negative-runtime") {
-    return `${assertionPrelude}\n${assembleNegativeRuntime(source, expectation.errorName)}`;
+    return `${assertionPrelude}\n${assembleNegativeRuntime(rewrittenSource, expectation.errorName)}`;
   }
-  return `${assertionPrelude}\n${source}\n`;
+  return `${assertionPrelude}\n${rewrittenSource}\n`;
 };

@@ -33,8 +33,10 @@ type CompileOutcome =
   | { readonly kind: "compiled"; readonly executable?: string; readonly diagnostics: string }
   | { readonly kind: "failed"; readonly diagnostics: string };
 
-const runCompile = async (entry: string, outDir: string): Promise<CompileOutcome> => {
-  const exit = await Effect.runPromiseExit(compile({ entry, outDir, link: true }).pipe(Effect.provide(compileLayer)));
+const runCompile = async (entry: string, outDir: string, suppressSemanticDiagnostics: boolean): Promise<CompileOutcome> => {
+  const exit = await Effect.runPromiseExit(
+    compile({ entry, outDir, link: true, suppressSemanticDiagnostics }).pipe(Effect.provide(compileLayer))
+  );
   if (Exit.isSuccess(exit)) {
     return {
       kind: "compiled",
@@ -154,7 +156,7 @@ export const executeTest = async (test: SelectedTest, options: ExecuteTestOption
   const entry = path.join(workDir, "entry.ts");
   await writeFile(entry, assembleEntry(test.source, test.expectation));
   await writeFile(path.join(workDir, "tsconfig.json"), assembledTsConfig);
-  const outcome = await runCompile(entry, outDir);
+  const outcome = await runCompile(entry, outDir, test.expectation.kind !== "negative-compile");
   await mkdir(outDir, { recursive: true });
   await writeFile(path.join(outDir, "diagnostics.txt"), outcome.diagnostics);
   if (outcome.kind === "failed") {

@@ -1803,12 +1803,28 @@ function lowerStatements(
     }
   }
 
-  const nativeB683 = lowerB683NativeFeatureStatements(sourceFile);
-  if (nativeB683 !== undefined) {
-    return nativeB683;
-  }
+  try {
+    const nativeB683 = lowerB683NativeFeatureStatements(sourceFile);
+    if (nativeB683 !== undefined) {
+      return nativeB683;
+    }
 
-  return lowerTopLevelStatements(sourceFile, false).result;
+    return lowerTopLevelStatements(sourceFile, false).result;
+  } catch (error) {
+    if (!(error instanceof ClassLoweringUnsupportedError)) {
+      throw error;
+    }
+    return {
+      operations: [],
+      diagnostics: Chunk.of({
+        code: "TSCN1002",
+        category: "error",
+        message: error.message,
+        span: sourceSpan(sourceFile, 0)
+      }),
+      loweringMode: "native"
+    };
+  }
 }
 
 function isInlineCppTaggedTemplate(expression: ts.Expression): expression is ts.TaggedTemplateExpression {

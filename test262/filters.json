@@ -32,6 +32,7 @@
   ],
   "unsupportedFlags": ["async", "module", "raw", "onlyStrict"],
   "unsupportedFeatures": [
+    "decorators",
     "async-functions",
     "async-iteration",
     "generators",

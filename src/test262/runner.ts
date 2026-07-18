@@ -2,12 +2,22 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { executeTest } from "./execute.js";
 import { selectTests } from "./selection.js";
-import type { HarnessFilters, SuiteRun, SuiteSummary, TestCaseResult } from "./types.js";
+import type {
+  Classification,
+  HarnessFilters,
+  SuiteRun,
+  SuiteSummary,
+  Test262Baseline,
+  Test262MachineReport,
+  TestCaseResult,
+  TestFamilySummary
+} from "./types.js";
 
 export type RunOptions = {
   readonly suiteRoot: string;
   readonly filters: HarnessFilters;
   readonly only?: readonly string[];
+  readonly pathPrefixes?: readonly string[];
   readonly concurrency?: number;
   readonly timeoutMs?: number;
   readonly keepArtifactsOnFailure?: boolean;
@@ -41,8 +51,9 @@ const countReasons = (results: readonly TestCaseResult[], classification: "skip"
   return counts;
 };
 
-const summarize = (results: readonly TestCaseResult[]): SuiteSummary => ({
+const summarize = (results: readonly TestCaseResult[], selected: number): SuiteSummary => ({
   total: results.length,
+  selected,
   pass: results.filter((result) => result.classification === "pass").length,
   fail: results.filter((result) => result.classification === "fail").length,
   skip: results.filter((result) => result.classification === "skip").length,
@@ -50,6 +61,15 @@ const summarize = (results: readonly TestCaseResult[]): SuiteSummary => ({
   skipReasons: countReasons(results, "skip"),
   failReasons: countReasons(results, "fail")
 });
+
+const matchesPathPrefix = (id: string, prefix: string): boolean => id === prefix || id.startsWith(`${prefix}/`);
+
+const includedByOptions = (id: string, options: RunOptions): boolean => {
+  if (options.only !== undefined && !options.only.includes(id)) {
+    return false;
+  }
+  return options.pathPrefixes === undefined || options.pathPrefixes.length === 0 || options.pathPrefixes.some((prefix) => matchesPathPrefix(id, prefix));
+};
 
 /**
  * Runs the filtered Test262 suite: enumerates the checkout's language tree,
@@ -66,19 +86,8 @@ export const runFilteredSuite = async (options: RunOptions): Promise<SuiteRun> =
     };
   }
   const { selected, skipped } = await selectTests(options.suiteRoot, options.filters);
-  const { only } = options;
-  let selectedToRun: typeof selected;
-  if (only === undefined) {
-    selectedToRun = selected;
-  } else {
-    selectedToRun = selected.filter((test) => only.includes(test.id));
-  }
-  let skippedToReport: typeof skipped;
-  if (only === undefined) {
-    skippedToReport = skipped;
-  } else {
-    skippedToReport = skipped.filter((result) => only.includes(result.id));
-  }
+  const selectedToRun = selected.filter((test) => includedByOptions(test.id, options));
+  const skippedToReport = skipped.filter((result) => includedByOptions(result.id, options));
   const executed: TestCaseResult[] = [];
   await runWithConcurrency(selectedToRun, options.concurrency ?? defaultConcurrency, async (test) => {
     const result = await executeTest(test, {
@@ -90,7 +99,7 @@ export const runFilteredSuite = async (options: RunOptions): Promise<SuiteRun> =
     options.onResult?.(result);
   });
   const results = [...skippedToReport, ...executed].toSorted((left, right) => left.id.localeCompare(right.id));
-  return { kind: "completed", results, summary: summarize(results) };
+  return { kind: "completed", results, summary: summarize(results, selectedToRun.length) };
 };
 
 const formatResultLine = (result: TestCaseResult): string => {
@@ -121,13 +130,13 @@ const formatDetail = (result: TestCaseResult): readonly string[] => {
  * skipped test (filtered-out tests appear in the aggregate counts only),
  * followed by the summary with counts by classification and by reason.
  */
-export const formatReport = (run: SuiteRun): string => {
+export const formatReport = (run: SuiteRun, options: { readonly classification?: Classification } = {}): string => {
   if (run.kind === "missing-checkout") {
     return `SKIP ${run.message}`;
   }
   const lines: string[] = [];
   for (const result of run.results) {
-    if (result.reason === "filtered-out") {
+    if (result.reason === "filtered-out" || (options.classification !== undefined && result.classification !== options.classification)) {
       continue;
     }
     lines.push(formatResultLine(result));
@@ -145,4 +154,61 @@ export const formatReport = (run: SuiteRun): string => {
     lines.push(`  fail ${reason}: ${count}`);
   }
   return `${lines.join("\n")}\n`;
+};
+
+const statementFamily = (id: string): string | undefined => {
+  const parts = id.split("/");
+  const [language, statements] = parts;
+  const family = parts.at(2);
+  if (language !== "language" || statements !== "statements" || family === undefined) {
+    return undefined;
+  }
+  return family;
+};
+
+const summarizeFamily = (family: string, results: readonly TestCaseResult[]): TestFamilySummary => {
+  const familyResults = results.filter((result) => statementFamily(result.id) === family);
+  return {
+    family,
+    total: familyResults.length,
+    pass: familyResults.filter((result) => result.classification === "pass").length,
+    fail: familyResults.filter((result) => result.classification === "fail").length,
+    skip: familyResults.filter((result) => result.classification === "skip").length,
+    coverageGap: familyResults.filter((result) => result.classification === "coverage-gap").length
+  };
+};
+
+export const buildMachineReport = (run: Extract<SuiteRun, { readonly kind: "completed" }>, pinRevision: string): Test262MachineReport => {
+  const families = new Set<string>();
+  for (const result of run.results) {
+    const family = statementFamily(result.id);
+    if (family !== undefined) {
+      families.add(family);
+    }
+  }
+  return {
+    pinRevision,
+    nodeVersion: process.version,
+    selected: run.summary.selected,
+    summary: run.summary,
+    families: [...families].toSorted().map((family) => summarizeFamily(family, run.results))
+  };
+};
+
+export const evaluateBaseline = (report: Test262MachineReport, baseline: Test262Baseline): readonly string[] => {
+  const regressions: string[] = [];
+  if (report.pinRevision !== baseline.pinRevision) {
+    regressions.push(`pin revision ${report.pinRevision} does not match baseline ${baseline.pinRevision}`);
+  }
+  if (report.summary.pass < baseline.minimumPass) {
+    regressions.push(`pass count ${report.summary.pass} is below baseline minimum ${baseline.minimumPass}`);
+  }
+  if (report.summary.fail > baseline.maximumFail) {
+    regressions.push(`failure count ${report.summary.fail} exceeds baseline maximum ${baseline.maximumFail}`);
+  }
+  const behaviorMismatch = report.summary.failReasons["behavior-mismatch"] ?? 0;
+  if (behaviorMismatch > baseline.maximumBehaviorMismatch) {
+    regressions.push(`behavior mismatch count ${behaviorMismatch} exceeds baseline maximum ${baseline.maximumBehaviorMismatch}`);
+  }
+  return regressions;
 };

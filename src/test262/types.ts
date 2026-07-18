@@ -50,12 +50,37 @@ export type TestCaseResult = {
 
 export type SuiteSummary = {
   readonly total: number;
+  readonly selected: number;
   readonly pass: number;
   readonly fail: number;
   readonly skip: number;
   readonly coverageGap: number;
   readonly skipReasons: Readonly<Record<string, number>>;
   readonly failReasons: Readonly<Record<string, number>>;
+};
+
+export type TestFamilySummary = {
+  readonly family: string;
+  readonly total: number;
+  readonly pass: number;
+  readonly fail: number;
+  readonly skip: number;
+  readonly coverageGap: number;
+};
+
+export type Test262MachineReport = {
+  readonly pinRevision: string;
+  readonly nodeVersion: string;
+  readonly selected: number;
+  readonly summary: SuiteSummary;
+  readonly families: readonly TestFamilySummary[];
+};
+
+export type Test262Baseline = {
+  readonly pinRevision: string;
+  readonly minimumPass: number;
+  readonly maximumFail: number;
+  readonly maximumBehaviorMismatch: number;
 };
 
 export type SuiteRun =

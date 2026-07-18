@@ -5,6 +5,7 @@ export type CompileOptions = {
   readonly outDir: string;
   readonly link?: boolean;
   readonly fcpp?: boolean;
+  readonly suppressSemanticDiagnostics?: boolean;
 };
 
 export type BuildArtifacts = {

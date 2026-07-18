@@ -36,7 +36,9 @@ export const compile = (
       return yield* Effect.fail(new CompilationFailed({ diagnostics: hostDiagnostics }));
     }
 
-    const frontend = yield* loadProgram(options.entry);
+    const frontend = yield* loadProgram(options.entry, {
+      suppressSemanticDiagnostics: options.suppressSemanticDiagnostics
+    });
     const jsIr = yield* lowerToJsIr(path.resolve(options.entry), frontend.sourceFiles, frontend.program.getTypeChecker(), {
       fcpp: options.fcpp
     });

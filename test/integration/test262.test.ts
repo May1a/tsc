@@ -5,18 +5,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadFilters } from "../../src/test262/config.js";
 import { ensureSuiteFetched, FetchError, verifyCheckout } from "../../src/test262/fetch.js";
+import { assembleEntry } from "../../src/test262/prelude.js";
 import { captureProcessWithTimeout } from "../../src/test262/process.js";
-import { formatReport, runFilteredSuite, type RunOptions } from "../../src/test262/runner.js";
+import { buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite, type RunOptions } from "../../src/test262/runner.js";
+import { parseRunArguments } from "../../src/test262/run.js";
 import type { Classification, HarnessFilters, TestCaseResult } from "../../src/test262/types.js";
 import { repoRoot, roadmapIntegrationTimeoutMs, toolExecutable } from "./helpers.js";
 
 const suiteRoot = path.join(repoRoot, "test/fixtures/test262/suite");
 const hangTimeoutMs = 3000;
 const gitTimeoutMs = 30_000;
-const expectedTotalTests = 15;
-const expectedPassCount = 3;
+const expectedTotalTests = 18;
+const expectedPassCount = 4;
 const expectedFailCount = 4;
-const expectedSkipCount = 7;
+const expectedSkipCount = 8;
 const shaHashLength = 40;
 
 let filters: HarnessFilters;
@@ -137,6 +139,30 @@ describe("filtered Test262 harness", () => {
     expectClassification(byId.get("language/statements/while/only-strict.js") ?? results[0], "skip", "unsupported-flag:onlyStrict");
   }, roadmapIntegrationTimeoutMs);
 
+  test("skips decorators when Node cannot serve as the oracle", async () => {
+    const results = completedResults(
+      await runSuite({ only: ["language/statements/class/decorator-feature.js"] })
+    );
+    expect(results).toHaveLength(1);
+    expectClassification(results[0], "skip", "unsupported-feature:decorators");
+  }, roadmapIntegrationTimeoutMs);
+
+  test("executes the minimal Test262 assertion methods", async () => {
+    const results = completedResults(
+      await runSuite({ only: ["language/statements/while/assert-methods.js"] })
+    );
+    expect(results).toHaveLength(1);
+    expectClassification(results[0], "pass");
+  }, roadmapIntegrationTimeoutMs);
+
+  test("reports leaked unsupported class lowering as a coverage gap", async () => {
+    const results = completedResults(
+      await runSuite({ only: ["language/statements/class/unsupported-static-block.js"] })
+    );
+    expect(results).toHaveLength(1);
+    expectClassification(results[0], "coverage-gap", "compiler-unsupported");
+  }, roadmapIntegrationTimeoutMs);
+
   test("skips out-of-filter and fixture files", async () => {
     const results = completedResults(
       await runSuite({
@@ -188,7 +214,7 @@ describe("filtered Test262 harness", () => {
     }
     expect(summary.pass).toBe(expectedPassCount);
     expect(summary.fail).toBe(expectedFailCount);
-    expect(summary.coverageGap).toBe(1);
+    expect(summary.coverageGap).toBe(2);
     expect(summary.skip).toBe(expectedSkipCount);
     expect(summary.skipReasons["filtered-out"]).toBe(2);
     expect(summary.failReasons["behavior-mismatch"]).toBe(1);
@@ -198,9 +224,83 @@ describe("filtered Test262 harness", () => {
     const report = formatReport(run);
     expect(report).toContain("PASS language/statements/while/pass-count-down.js");
     expect(report).toContain("COVERAGE-GAP language/statements/for-in/for-in-coverage-gap.js [compiler-unsupported]");
-    expect(report).toContain("Summary: 3 pass, 4 fail, 1 coverage-gap, 7 skip (15 total)");
+    expect(report).toContain("Summary: 4 pass, 4 fail, 2 coverage-gap, 8 skip (18 total)");
     expect(report).not.toContain("plain-addition");
     await Promise.all(results.map(cleanupArtifacts));
+  }, roadmapIntegrationTimeoutMs);
+});
+
+describe("Test262 assembly and reporting", () => {
+  test("rewrites supported assertion calls without changing strings or comments", () => {
+    const source = `// assert.sameValue(0, 1)\nconst text = "assert.throws";\nassert.sameValue(1, 1);\nassert.notSameValue(0, -0);\nassert.throws(TypeError, callback);`;
+    const entry = assembleEntry(source, { kind: "positive" });
+    expect(entry).toContain("// assert.sameValue(0, 1)");
+    expect(entry).toContain('"assert.throws"');
+    expect(entry).toContain("__t262SameValue(1, 1)");
+    expect(entry).toContain("__t262NotSameValue(0, -0)");
+    expect(entry).toContain("__t262Throws(TypeError, callback)");
+  });
+
+  test("parses focused runner arguments", () => {
+    expect(
+      parseRunArguments([
+        "--path",
+        "language/statements/for-of",
+        "--classification",
+        "coverage-gap",
+        "--json",
+        "report.json"
+      ])
+    ).toEqual({
+      pathPrefixes: ["language/statements/for-of"],
+      classification: "coverage-gap",
+      jsonPath: "report.json",
+      baselinePath: undefined
+    });
+    expect(() => parseRunArguments(["--classification", "unknown"])).toThrow("invalid --classification");
+    expect(() => parseRunArguments(["--path", "language/statements/for-of", "--baseline", "baseline.json"])).toThrow(
+      "--baseline cannot be combined with --path"
+    );
+  });
+
+  test("builds a machine-readable report with statement-family rollups", async () => {
+    const run = await runSuite({ pathPrefixes: ["language/statements/while"] });
+    if (run.kind !== "completed") {
+      throw new Error("expected a completed run");
+    }
+    const revision = "a".repeat(shaHashLength);
+    const report = buildMachineReport(run, revision);
+    expect(report.pinRevision).toBe(revision);
+    expect(report.nodeVersion).toBe(process.version);
+    expect(report.selected).toBeGreaterThan(0);
+    expect(report.families).toEqual([
+      expect.objectContaining({ family: "while", total: run.summary.total })
+    ]);
+    expect(report.summary).toEqual(run.summary);
+    expect(
+      evaluateBaseline(report, {
+        pinRevision: revision,
+        minimumPass: report.summary.pass,
+        maximumFail: report.summary.fail,
+        maximumBehaviorMismatch: report.summary.failReasons["behavior-mismatch"] ?? 0
+      })
+    ).toEqual([]);
+    expect(
+      evaluateBaseline(report, {
+        pinRevision: revision,
+        minimumPass: report.summary.pass + 1,
+        maximumFail: report.summary.fail,
+        maximumBehaviorMismatch: report.summary.failReasons["behavior-mismatch"] ?? 0
+      })
+    ).toEqual([expect.stringContaining("pass count")]);
+  }, roadmapIntegrationTimeoutMs);
+
+  test("filters text details by classification without changing the summary", async () => {
+    const run = await runSuite({ pathPrefixes: ["language/statements/while"] });
+    const report = formatReport(run, { classification: "pass" });
+    expect(report).toContain("PASS language/statements/while/pass-count-down.js");
+    expect(report).not.toContain("SKIP language/statements/while/bigint-feature.js");
+    expect(report).toContain("Summary:");
   }, roadmapIntegrationTimeoutMs);
 });
 
