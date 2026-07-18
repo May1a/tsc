@@ -16,6 +16,7 @@ This plan describes the first path toward a TypeScript compiler written in TypeS
 - The backend initially emits textual LLVM IR and uses the clang driver to build native executables for the active host toolchain.
 - Runtime values use a 64-bit NaN-boxed `JSValue` ABI.
 - JavaScript exceptions lower to explicit value-or-exception returns, not native unwinding.
+- Abrupt synchronous control flow uses completion-aware cleanup regions for `try...finally` and iterator closing.
 - GC uses a non-moving mark-sweep collector with an explicit root stack maintained by generated code.
 - Objects start as dictionary objects with prototype-aware lookup; object layout fast paths require shape version guards.
 - Strings may be stored as UTF-8 internally, but all JavaScript-visible string behavior observes UTF-16 code-unit semantics.
@@ -66,7 +67,7 @@ This plan describes the first path toward a TypeScript compiler written in TypeS
 - Implement core coercions: truthiness, `ToPrimitive`, `ToNumber`, `ToString`, property-key conversion, `+`, comparisons, strict equality, and loose equality.
 - Implement dictionary objects, data property descriptors, prototype lookup, and shape version metadata for guarded fast paths.
 - Implement unified function objects with code pointer, environment pointer, prototype metadata, and explicit `this` argument.
-- Implement runtime exception objects, `throw`, `try`, and `catch` through explicit error returns.
+- Implement runtime exception objects, `throw`, `try`, `catch`, and `finally` through explicit error returns and completion-aware cleanup.
 - Implement minimal built-ins: `Object`, `Array`, `Function`, `String`, `Number`, `Boolean`, `Error`, `Math`, and the global `print` builtin.
 
 ## Milestone 6: First Vertical Slice
@@ -80,6 +81,7 @@ This plan describes the first path toward a TypeScript compiler written in TypeS
 
 - Add basic classes after unified function objects and prototype lookup are stable.
 - Add accessors, richer property descriptors, richer built-ins, source-map or DWARF support, package support, and broader Test262 coverage incrementally.
+- Route generic synchronous iterator abrupt exits through `IteratorClose`; use that cleanup foundation before iterator-based destructuring and spread.
 - Add guarded fast paths for primitives, calls, and object layout assumptions, always falling back to baseline JavaScript semantics.
 - Add async functions, promises, fibers, and microtask scheduling only after the synchronous runtime milestone is stable.
 

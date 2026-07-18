@@ -206,6 +206,7 @@ export type RuntimeHelper =
   | "valuePropertyGet"
   | "getIteratorValue"
   | "callIteratorNext"
+  | "iteratorClose"
   | "createArrayIterator"
   | "createStringIterator"
   | "createCollectionIterator"
@@ -377,6 +378,21 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   [
     "callIteratorNext",
     ["valueIsObject", "valueIsFunction", "valueObjectGet", "jsCall", "errorNew", "valueBoxObject", "valueBoxString", "valueToString", "strConcat", "gcRootPush"]
+  ],
+  [
+    "iteratorClose",
+    [
+      "valueIsObject",
+      "valueIsFunction",
+      "valuePropertyGet",
+      "jsCall",
+      "errorNew",
+      "valueBoxObject",
+      "valueBoxString",
+      "valueToString",
+      "strConcat",
+      "gcRootPush"
+    ]
   ],
   [
     "createArrayIterator",
@@ -3054,6 +3070,7 @@ entry:
   if (
     runtime.used.has("getIteratorValue") ||
     runtime.used.has("callIteratorNext") ||
+    runtime.used.has("iteratorClose") ||
     runtime.used.has("valuePropertyGet") ||
     runtime.used.has("createArrayIterator") ||
     runtime.used.has("createStringIterator") ||
@@ -3084,6 +3101,7 @@ entry:
     const iteratorKeyLen = iteratorKey.length;
     definitions.push(`@.symbol.iterator.key = private unnamed_addr constant [${iteratorKeyLen + 1} x i8] c"${iteratorKeyEncoded}"
 @.iter.key.next = private unnamed_addr constant [5 x i8] c"next\\00"
+@.iter.key.return = private unnamed_addr constant [7 x i8] c"return\\00"
 @.iter.key.value = private unnamed_addr constant [6 x i8] c"value\\00"
 @.iter.key.done = private unnamed_addr constant [5 x i8] c"done\\00"
 @.iter.key.0 = private unnamed_addr constant [2 x i8] c"0\\00"
@@ -3522,7 +3540,7 @@ iter.not.object:
 }
 `);
     }
-    if (runtime.used.has("callIteratorNext") || runtime.used.has("getCollectionIterator")) {
+    if (runtime.used.has("callIteratorNext") || runtime.used.has("getCollectionIterator") || runtime.used.has("iteratorClose")) {
       definitions.push(`define i64 @iteratorNotCallableMessage(i64 %value) {
 entry:
   %raw = call { ptr, i64 } @valueToString(i64 %value)
@@ -3645,6 +3663,61 @@ next.not.fn:
 result.not.object:
   %invalid.result = phi i64 [ %iterator, %entry ], [ %call.payload, %check.result ]
   %msg.rno = call i64 @iteratorResultNotObjectMessage(i64 %invalid.result)
+  %result.not.object.error = call { i64, i1 } @iteratorTypeError(i64 %msg.rno)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %result.not.object.error
+}
+`);
+    }
+    if (runtime.used.has("iteratorClose")) {
+      // IteratorClose protocol mechanics only. Resolution against a pending throw
+      // completion is owned by compiler control flow (ES IteratorClose steps 5–7).
+      definitions.push(`define { i64, i1 } @iteratorClose(i64 %iterator) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %iterator)
+  %return.method = call i64 @valuePropertyGet(i64 %iterator, i64 6, ptr @.iter.key.return)
+  call void @gcRootPush(i64 %return.method)
+  %is.undefined = icmp eq i64 %return.method, ${legacyJsValue.immediate("undefined")}
+  br i1 %is.undefined, label %absent, label %check.null
+check.null:
+  %is.null = icmp eq i64 %return.method, ${legacyJsValue.immediate("null")}
+  br i1 %is.null, label %absent, label %check.callable
+absent:
+  %abs.0 = insertvalue { i64, i1 } undef, i64 ${legacyJsValue.immediate("undefined")}, 0
+  %abs.1 = insertvalue { i64, i1 } %abs.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %abs.1
+check.callable:
+  %is.fn = call i1 @valueIsFunction(i64 %return.method)
+  br i1 %is.fn, label %call.return, label %not.callable
+call.return:
+  %argv = alloca i64, i64 0
+  %call = call { i64, i1 } @jsCall(i64 %return.method, i64 0, ptr %argv, i64 %iterator)
+  %call.payload = extractvalue { i64, i1 } %call, 0
+  %call.exc = extractvalue { i64, i1 } %call, 1
+  call void @gcRootPush(i64 %call.payload)
+  br i1 %call.exc, label %propagate, label %check.result
+propagate:
+  %prop.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
+  %prop.1 = insertvalue { i64, i1 } %prop.0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %prop.1
+check.result:
+  %res.is.object = call i1 @valueIsObject(i64 %call.payload)
+  br i1 %res.is.object, label %success, label %result.not.object
+success:
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %call.payload, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok.1
+not.callable:
+  %msg.nc = call i64 @iteratorNotCallableMessage(i64 %return.method)
+  %not.callable.error = call { i64, i1 } @iteratorTypeError(i64 %msg.nc)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %not.callable.error
+result.not.object:
+  %msg.rno = call i64 @iteratorResultNotObjectMessage(i64 %call.payload)
   %result.not.object.error = call { i64, i1 } @iteratorTypeError(i64 %msg.rno)
   call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %result.not.object.error

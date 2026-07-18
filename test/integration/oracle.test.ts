@@ -54,7 +54,26 @@ const oracleFixtures = [
   "for-of-iterator-next-non-callable.ts",
   "for-of-iterator-result-primitive.ts",
   "for-of-iterator-throws.ts",
-  "for-of-iterator-next-throws.ts"
+  "for-of-iterator-next-throws.ts",
+  "try-finally-basic.ts",
+  "try-catch-finally.ts",
+  "try-finally-return.ts",
+  "try-finally-throw.ts",
+  "try-finally-nested.ts",
+  "try-finally-nested-pending.ts",
+  "try-finally-precedence.ts",
+  "try-finally-break-continue.ts",
+  "for-of-iterator-break-close.ts",
+  "for-of-iterator-return-close.ts",
+  "for-of-iterator-throw-close.ts",
+  "for-of-iterator-continue-no-close.ts",
+  "for-of-iterator-close-order.ts",
+  "for-of-iterator-return-throws.ts",
+  "for-of-iterator-return-non-callable.ts",
+  "for-of-iterator-close-semantics.ts",
+  "for-of-iterator-propagated-throw.ts",
+  "gc-try-finally-return.ts",
+  "gc-cleanup-pending-values.ts"
 ] as const;
 
 describe("Node correctness oracle", () => {

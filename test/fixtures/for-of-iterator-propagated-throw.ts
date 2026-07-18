@@ -9,6 +9,10 @@ const iterable = {
     return {
       next() {
         return { value: 1, done: false };
+      },
+      return() {
+        print("close");
+        return { value: undefined, done: true };
       }
     };
   }

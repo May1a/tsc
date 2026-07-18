@@ -812,6 +812,14 @@ describe("tscn expanded runtime roadmap", () => {
       ["for-of-iterator-result-primitive.ts", "TypeError\nIterator result 1 is not an object\n"],
       ["for-of-iterator-throws.ts", "from-iterator\n"],
       ["for-of-iterator-next-throws.ts", "from-next\n"],
+      ["for-of-iterator-break-close.ts", "1\n2\nclose\n"],
+      ["for-of-iterator-return-close.ts", "1\nclose\n99\n"],
+      ["for-of-iterator-throw-close.ts", "1\nclose\nboom\n"],
+      ["for-of-iterator-continue-no-close.ts", "1\n2\n0\n"],
+      ["for-of-iterator-close-order.ts", "1\nclose\nfinally\n1\ninner-finally\nclose\n"],
+      ["for-of-iterator-return-throws.ts", "1\nclose\nfrom-return\n1\nclose\nfrom-body\n"],
+      ["for-of-iterator-return-non-callable.ts", "1\nTypeError\nnumber 5 is not a function\n"],
+      ["for-of-iterator-close-semantics.ts", "1\n7\n2\nTypeError\nIterator result 1 is not an object\n3\noriginal\n4\nclose-return\n"],
       ["gc-for-of-user-iterator.ts", "1275\n"],
       ["gc-for-of-runtime-array.ts", "1225\n"],
       ["iterator-next-basic.ts", "only\nfalse\nundefined\ntrue\n"],
@@ -821,10 +829,14 @@ describe("tscn expanded runtime roadmap", () => {
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
-    await expectUnsupportedMessage(
-      "for-of-iterator-propagated-throw-unsupported.ts",
-      "Generic for...of abrupt completion requires IteratorClose, which is not supported yet"
-    );
+
+    const propagated = await expectSuccessfulCompile("for-of-iterator-propagated-throw.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(propagated, { status: 1, stdout: "1\nclose\nfailure\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(propagated);
+    } finally {
+      await propagated.cleanup();
+    }
   });
 
   test("supports package BS string method expansion", async () => {
@@ -1079,9 +1091,32 @@ describe("tscn expanded runtime roadmap", () => {
       "number-to-locale-string-unsupported.ts",
       "parse-int-radix-unsupported.ts",
       "array-runtime-map-noarg-unsupported.ts",
-      "error-constructor-unsupported.ts",
-      "try-finally-unsupported.ts"
+      "error-constructor-unsupported.ts"
     ].map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
+  });
+
+  test("supports try/finally and try/catch/finally with native lowering", async () => {
+    const cases = [
+      ["try-finally-basic.ts", "try\nfinally\n"],
+      ["try-catch-finally.ts", "err\nfinally\n"],
+      ["try-finally-return.ts", "cleanup\n1\n2\n"],
+      ["try-finally-nested.ts", "try\ninner\nouter\n"],
+      ["try-finally-nested-pending.ts", "inner-try\ninner-finally\n1\n"],
+      ["try-finally-precedence.ts", "catch-finally\n3\nreplacement\n"],
+      ["try-finally-break-continue.ts", "b0f0b1f1\nb0f0f1b2f2\n"],
+      ["gc-try-finally-return.ts", "1\n42\n"],
+      ["gc-cleanup-pending-values.ts", "[object Object]\n1\nalive\n"]
+    ] as const;
+
+    await expectNativeFixtures(cases, { verifyLlvm: true });
+
+    const uncaught = await expectSuccessfulCompile("try-finally-throw.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(uncaught, { status: 1, stdout: "cleanup\nmessage\n", stderr: "" });
+      await expectLlvmAsVerificationIfAvailable(uncaught);
+    } finally {
+      await uncaught.cleanup();
+    }
   });
 
   test("supports throw across function boundaries via aggregate ABI", async () => {

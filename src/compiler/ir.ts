@@ -1336,6 +1336,8 @@ export type JsIrOperationNode =
       readonly tryOperations: readonly JsIrOperation[];
       readonly catchVariable: string;
       readonly catchOperations: readonly JsIrOperation[];
+      readonly hasCatch: boolean;
+      readonly finallyOperations?: readonly JsIrOperation[];
     }
   | {
       readonly kind: "bindingGroup";
@@ -1463,6 +1465,7 @@ export type JsIrOperation = JsIrOperationNode & {
   readonly trace?: JsIrOperationTrace;
 };
 
+// eslint-disable-next-line complexity -- Exhaustive IR child walk covers every nested operation form.
 export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOperation[] {
   switch (operation.kind) {
     case "runtimeArrayMapFunctionObject": {
@@ -1473,7 +1476,14 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
       return operation.operations;
     }
     case "tryCatch": {
-      return [...operation.tryOperations, ...operation.catchOperations];
+      const children = [...operation.tryOperations];
+      if (operation.hasCatch) {
+        children.push(...operation.catchOperations);
+      }
+      if (operation.finallyOperations !== undefined) {
+        children.push(...operation.finallyOperations);
+      }
+      return children;
     }
     case "if": {
       return [...operation.thenOperations, ...operation.elseOperations];
@@ -3606,6 +3616,15 @@ function markRuntimeObjectShadows(operations: readonly JsIrOperation[]): readonl
   return operations.map((operation) => markRuntimeObjectShadow(operation, shadowedObjects));
 }
 
+function markFinallyOperations(
+  finallyOperations: readonly JsIrOperation[] | undefined
+): readonly JsIrOperation[] | undefined {
+  if (finallyOperations === undefined) {
+    return undefined;
+  }
+  return markRuntimeObjectShadows(finallyOperations);
+}
+
 function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObjects: ReadonlySet<string>): JsIrOperation {
   if (operation.kind === "objectLiteral") {
     return { ...operation, needsRuntimeShadow: shadowedObjects.has(operation.name) };
@@ -3630,7 +3649,8 @@ function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObjects: Read
     return {
       ...operation,
       tryOperations: markRuntimeObjectShadows(operation.tryOperations),
-      catchOperations: markRuntimeObjectShadows(operation.catchOperations)
+      catchOperations: markRuntimeObjectShadows(operation.catchOperations),
+      finallyOperations: markFinallyOperations(operation.finallyOperations)
     };
   }
   if (operation.kind === "for") {
@@ -3745,7 +3765,8 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
     }
   }
   if (operation.kind === "tryCatch") {
-    for (const nested of [...operation.tryOperations, ...operation.catchOperations]) {
+    const nestedOps = [...operation.tryOperations, ...operation.catchOperations, ...(operation.finallyOperations ?? [])];
+    for (const nested of nestedOps) {
       collectRuntimeShadowObjectNames(nested, names);
     }
   }
@@ -3787,16 +3808,7 @@ function collectValueExpressionObjectNames(expression: JsIrValueExpression, name
 }
 
 function functionReturnKind(operations: readonly JsIrOperation[]): JsIrValueKind | "void" {
-  const flattened: JsIrOperation[] = [];
-  for (const operation of operations) {
-    if (operation.kind === "switch") {
-      for (const clause of operation.clauses) {
-        flattened.push(...clause.operations);
-      }
-      continue;
-    }
-    flattened.push(operation);
-  }
+  const flattened = functionControlFlowOperations(operations);
   if (flattened.some((operation) => operation.kind === "returnValue")) {
     return "value";
   }
@@ -3807,6 +3819,23 @@ function functionReturnKind(operations: readonly JsIrOperation[]): JsIrValueKind
     return "number";
   }
   return "void";
+}
+
+function functionControlFlowOperations(operations: readonly JsIrOperation[]): readonly JsIrOperation[] {
+  const flattened: JsIrOperation[] = [];
+  const visit = (operation: JsIrOperation): void => {
+    flattened.push(operation);
+    if (operation.kind === "function" || operation.kind === "returnClosure" || operation.kind === "runtimeArrayMapFunctionObject") {
+      return;
+    }
+    for (const child of jsIrOperationChildren(operation)) {
+      visit(child);
+    }
+  };
+  for (const operation of operations) {
+    visit(operation);
+  }
+  return flattened;
 }
 
 function isNonExecutableDeclaration(statement: ts.Statement): boolean {
@@ -3923,49 +3952,67 @@ function lowerTryCatchStatement(
   statement: ts.TryStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  // `finally` is not supported by the IR; fall back so the caller can retry
-  // through the compile-time interpreter.
-  if (statement.finallyBlock !== undefined) {
-    return undefined;
-  }
-
   // Semantically-equivalent compile-time shortcut for the direct
-  // `try { throw expr; } catch (e) { ... }` shape. It avoids real exception
-  // machinery for the common cases (error construction and plain value throws)
-  // and does not conflict with the general `tryCatch` lowering below, which is
-  // why it is retained.
-  const shortcut = lowerDirectThrowTryCatchShortcut(statement, bindings);
-  if (shortcut !== undefined) {
-    return shortcut;
+  // `try { throw expr; } catch (e) { ... }` shape without finally. It avoids real
+  // exception machinery for the common cases (error construction and plain value
+  // throws) and does not conflict with the general `tryCatch` lowering below.
+  if (statement.finallyBlock === undefined) {
+    const shortcut = lowerDirectThrowTryCatchShortcut(statement, bindings);
+    if (shortcut !== undefined) {
+      return shortcut;
+    }
   }
 
-  // General path: lower an arbitrary try/catch (without finally) using normal
-  // block statement lowering. The catch variable is bound as a value variable
-  // and is lexically scoped to the catch block (a fresh binding map shadows any
-  // outer binding of the same name without leaking outwards).
+  // General path: lower try/catch/finally using normal block statement lowering.
+  // The catch variable is bound as a value variable and is lexically scoped to the
+  // catch block (a fresh binding map shadows any outer binding of the same name
+  // without leaking outwards). Cleanup/completion routing for finally is owned by
+  // the LLVM backend's shared cleanup stack.
   const tryOperations = lowerBlockStatements(statement.tryBlock, bindings);
   if (tryOperations === undefined) {
     return undefined;
   }
 
   const { catchClause } = statement;
-  if (catchClause === undefined) {
+  let catchVariable = "";
+  let catchOperations: readonly JsIrOperation[] = [];
+  const hasCatch = catchClause !== undefined;
+  if (catchClause !== undefined) {
+    catchVariable = catchBindingName(catchClause);
+    const catchBindings = new Map(bindings);
+    if (catchVariable !== "") {
+      catchBindings.set(catchVariable, { kind: "valueVariable", name: catchVariable });
+    }
+    const loweredCatch = lowerBlockStatements(catchClause.block, catchBindings);
+    if (loweredCatch === undefined) {
+      return undefined;
+    }
+    catchOperations = loweredCatch;
+  }
+
+  let finallyOperations: readonly JsIrOperation[] | undefined;
+  if (statement.finallyBlock !== undefined) {
+    const loweredFinally = lowerBlockStatements(statement.finallyBlock, bindings);
+    if (loweredFinally === undefined) {
+      return undefined;
+    }
+    finallyOperations = loweredFinally;
+  }
+
+  if (!hasCatch && finallyOperations === undefined) {
     // `try { ... }` with neither catch nor finally is not valid TypeScript;
     // defensively run the try body as a plain block.
     return { kind: "block", operations: tryOperations };
   }
 
-  const catchVariable = catchBindingName(catchClause);
-  const catchBindings = new Map(bindings);
-  if (catchVariable !== "") {
-    catchBindings.set(catchVariable, { kind: "valueVariable", name: catchVariable });
-  }
-  const catchOperations = lowerBlockStatements(catchClause.block, catchBindings);
-  if (catchOperations === undefined) {
-    return undefined;
-  }
-
-  return { kind: "tryCatch", tryOperations, catchVariable, catchOperations };
+  return {
+    kind: "tryCatch",
+    tryOperations,
+    catchVariable,
+    catchOperations,
+    hasCatch,
+    finallyOperations
+  };
 }
 
 function catchBindingName(catchClause: ts.CatchClause): string {
@@ -4335,10 +4382,6 @@ function lowerForOfStatement(
   if (body === undefined) {
     return undefined;
   }
-  // IteratorClose is not implemented yet; reject bodies that can complete abruptly.
-  if (bodyRequiresIteratorClose(bodyBlock)) {
-    return undefined;
-  }
   return {
     kind: "forOfProtocol",
     itemName,
@@ -4409,55 +4452,6 @@ function iteratorErrorSubject(expression: ts.Expression): string {
     return current.text;
   }
   return "value";
-}
-
-function bodyRequiresIteratorClose(block: ts.Block): boolean {
-  return nodeCanAbruptlyExitIterator(block, 0, false);
-}
-
-// eslint-disable-next-line complexity -- Abrupt-completion analysis distinguishes control flow, exception handling, and nested break targets.
-function nodeCanAbruptlyExitIterator(node: ts.Node, nestedBreakableDepth: number, exceptionsCaught: boolean): boolean {
-  if (ts.isFunctionLike(node) || ts.isClassLike(node)) {
-    return false;
-  }
-  if (ts.isReturnStatement(node)) {
-    return true;
-  }
-  if (ts.isBreakStatement(node)) {
-    return nestedBreakableDepth === 0;
-  }
-  if (ts.isThrowStatement(node)) {
-    return !exceptionsCaught;
-  }
-  if (ts.isCallExpression(node) || ts.isNewExpression(node) || ts.isTaggedTemplateExpression(node)) {
-    const isNonThrowingBuiltin = ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
-      (node.expression.text === "print" || node.expression.text === "Number" || node.expression.text === "String" || node.expression.text === "Boolean");
-    if (!isNonThrowingBuiltin && !exceptionsCaught) {
-      return true;
-    }
-  }
-  if (ts.isTryStatement(node)) {
-    const tryCatchesExceptions = exceptionsCaught || node.catchClause !== undefined;
-    if (nodeCanAbruptlyExitIterator(node.tryBlock, nestedBreakableDepth, tryCatchesExceptions)) {
-      return true;
-    }
-    if (node.catchClause !== undefined && nodeCanAbruptlyExitIterator(node.catchClause.block, nestedBreakableDepth, exceptionsCaught)) {
-      return true;
-    }
-    return node.finallyBlock !== undefined && nodeCanAbruptlyExitIterator(node.finallyBlock, nestedBreakableDepth, exceptionsCaught);
-  }
-
-  let childBreakableDepth = nestedBreakableDepth;
-  if (ts.isIterationStatement(node, false) || ts.isSwitchStatement(node)) {
-    childBreakableDepth += 1;
-  }
-  let abrupt = false;
-  ts.forEachChild(node, (child) => {
-    if (!abrupt && nodeCanAbruptlyExitIterator(child, childBreakableDepth, exceptionsCaught)) {
-      abrupt = true;
-    }
-  });
-  return abrupt;
 }
 
 // eslint-disable-next-line max-statements -- for...in lowering dispatches supported source kinds explicitly while unsupported iterables stay diagnostic-only.
@@ -11092,9 +11086,6 @@ function lowerObjectFieldName(name: ts.PropertyName): string | undefined {
 }
 
 function unsupportedStatementMessage(statement: ts.Statement): string {
-  if (ts.isForOfStatement(statement) && ts.isBlock(statement.statement) && bodyRequiresIteratorClose(statement.statement)) {
-    return "Generic for...of abrupt completion requires IteratorClose, which is not supported yet";
-  }
   if (ts.isVariableStatement(statement)) {
     const [declaration] = statement.declarationList.declarations;
     if (declaration.initializer !== undefined) {

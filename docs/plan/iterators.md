@@ -13,8 +13,9 @@ truthy `done` coercion, exception propagation, function values, closure
 environments, and GC rooting have all been exercised end to end.
 
 This slice makes built-in synchronous iterables participate in that protocol and
-adds the first protocol-consuming built-ins. It intentionally does not add weak
-collections, iterator closing, destructuring, or spread.
+adds the first protocol-consuming built-ins. Abrupt completion and `IteratorClose`
+are delivered by the follow-up plan in `plan.md` (completion-aware cleanup stack).
+Weak collections, iterator helpers, destructuring, and spread remain out of scope.
 
 ## Goal
 
@@ -145,17 +146,18 @@ In particular:
 - Map and Set constructors must observe the supplied iterator method.
 - Runtime-array `for...of` must not silently ignore a custom iterator method.
 
-### Normal Completion Only
+### Abrupt Completion And IteratorClose
 
-This slice supports iterator consumption that reaches `done: true`. Generic
-iterator consumption that can terminate abruptly through `break`, `return`, or
-an escaping exception still requires `IteratorClose`.
+Generic `for...of` now shares the compiler's completion/cleanup stack with
+`try...finally`. On `break`, function `return`, and escaping throw, the backend
+calls the iterator's optional `return` method through `@iteratorClose`, roots
+pending payloads, and resolves close failures against the pending completion in
+Node order. Same-loop `continue` and normal exhaustion do not close.
 
-Existing compile-time rejection for unsupported abrupt generic `for...of`
-remains. Constructor and `Array.from` error paths may propagate errors, but this
-slice does not invoke an iterator's optional `return` method. Tests must document
-this temporary boundary rather than claiming complete ECMAScript iterator-close
-semantics.
+Constructor and `Array.from` consumption paths still do not install a full
+for-of-style cleanup region for mid-consumption `break` (they have no user loop
+body); they continue to propagate acquisition and `.next()` errors through the
+exception ABI.
 
 ## Implementation Plan
 

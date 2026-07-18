@@ -33,6 +33,37 @@ import {
 import { jsValueAbi } from "./js-value-abi/index.js";
 import { createLlvmModule, type LegacyLlvmTraceMarker, type RenderedLlvmModule } from "./llvm-ir/index.js";
 
+/** Pending abrupt/normal completion kinds for finally / IteratorClose cleanup. */
+const COMPLETION_NORMAL = 0;
+const COMPLETION_RETURN = 1;
+const COMPLETION_THROW = 2;
+const COMPLETION_BREAK = 3;
+const COMPLETION_CONTINUE = 4;
+
+type CleanupFrame = {
+  readonly index: number;
+  readonly entryLabel: string;
+  readonly finalDispatchLabel: string;
+  readonly joinLabel: string;
+  readonly throwEntryLabel: string;
+  readonly rootFrameName: string;
+  /** Entry label of the next outer cleanup frame, if any. */
+  readonly outerEntryLabel?: string;
+  /** Break/continue destinations resumed when this frame is the outermost cleanup. */
+  readonly resumeDests: Map<number, string>;
+  readonly kind: "finally" | "iteratorClose";
+  /** Same-loop continue targets this label and must not run IteratorClose. */
+  readonly skipContinueLabel?: string;
+  iteratorSlot?: string;
+};
+
+type CompletionSlots = {
+  readonly kind: string;
+  readonly value: string;
+  readonly destination: string;
+  readonly until: string;
+};
+
 type EmitContext = {
   readonly bindings: Map<string, JsIrBindingValue>;
   readonly stringConstants: string[];
@@ -41,6 +72,10 @@ type EmitContext = {
   readonly objectLayouts: Map<string, ObjectLayout>;
   readonly runtime: RuntimeHelperEmitter;
   readonly loopLabels: LoopLabels[];
+  /** Innermost-to-outermost cleanup regions (finally / IteratorClose). */
+  readonly cleanupStack: CleanupFrame[];
+  /** Cleanup bodies currently being emitted, outermost first. */
+  readonly activeCleanupBodies: CleanupFrame[];
   hasNumberPrint: boolean;
   printIndex: number;
   ifIndex: number;
@@ -54,9 +89,17 @@ type EmitContext = {
   arrayIndex: number;
   objectIndex: number;
   tryIndex: number;
+  cleanupSeq: number;
   readonly optionalTargets: string[];
   exceptionTarget: string;
   exceptionSlot: string;
+  // Pending completion slots (function-scoped); shared by all cleanup regions.
+  readonly completionSlots: CompletionSlots;
+  nextDestId: number;
+  /** True when emitting @main rather than a generated JS function. */
+  readonly isMain: boolean;
+  /** Label for normal @main exit (ignored for generated functions). */
+  readonly normalExitLabel?: string;
   // GC root protocol: the SSA name holding this function's saved root-stack depth
   // (from @gcRootSave at entry). Every ret/throw restores to this depth instead of
   // emitting a static number of pops, so the root stack stays balanced across loops,
@@ -108,6 +151,8 @@ type RuntimeObjectValue = {
 type LoopLabels = {
   readonly breakLabel: string;
   readonly continueLabel?: string;
+  /** cleanupStack.length when the loop was entered; cleanups at or above this depth run on break. */
+  readonly cleanupDepth: number;
 };
 
 type FunctionDef = {
@@ -142,6 +187,90 @@ const jsValueNull = legacyJsValue.immediate("null");
 const descriptorWritableFlag = 1;
 const descriptorEnumerableFlag = 2;
 const descriptorConfigurableFlag = 4;
+
+function createMainEmitContext(): EmitContext {
+  return {
+    bindings: new Map(),
+    stringConstants: [],
+    arrayGlobals: [],
+    objectTypes: [],
+    objectLayouts: new Map(),
+    runtime: createRuntimeHelperEmitter(),
+    loopLabels: [],
+    cleanupStack: [],
+    activeCleanupBodies: [],
+    hasNumberPrint: false,
+    printIndex: 0,
+    ifIndex: 0,
+    cmpIndex: 0,
+    numIndex: 0,
+    callIndex: 0,
+    loopIndex: 0,
+    logicIndex: 0,
+    boolIndex: 0,
+    stringIndex: 0,
+    arrayIndex: 0,
+    objectIndex: 0,
+    tryIndex: 0,
+    cleanupSeq: 0,
+    optionalTargets: [],
+    exceptionTarget: "main.unhandled",
+    exceptionSlot: "%main.exception.slot",
+    completionSlots: {
+      kind: "%main.completion.kind",
+      value: "%main.completion.value",
+      destination: "%main.completion.dest",
+      until: "%main.completion.until"
+    },
+    nextDestId: 0,
+    isMain: true,
+    normalExitLabel: "main.normal",
+    gcFrameName: "%gc.main.frame",
+    traceMarkers: new Map()
+  };
+}
+
+function createFunctionEmitContext(fn: FunctionDef, parent: EmitContext): EmitContext {
+  return {
+    bindings: new Map(fn.outerBindings),
+    stringConstants: parent.stringConstants,
+    arrayGlobals: parent.arrayGlobals,
+    objectTypes: parent.objectTypes,
+    objectLayouts: new Map(parent.objectLayouts),
+    runtime: parent.runtime,
+    loopLabels: [],
+    cleanupStack: [],
+    activeCleanupBodies: [],
+    hasNumberPrint: parent.hasNumberPrint,
+    printIndex: parent.printIndex,
+    ifIndex: 0,
+    cmpIndex: 0,
+    numIndex: 0,
+    callIndex: 0,
+    loopIndex: 0,
+    logicIndex: 0,
+    boolIndex: 0,
+    stringIndex: 0,
+    arrayIndex: parent.arrayIndex,
+    objectIndex: parent.objectIndex,
+    tryIndex: 0,
+    cleanupSeq: 0,
+    optionalTargets: [],
+    exceptionTarget: "fn.exception",
+    exceptionSlot: "%fn.exception.slot",
+    completionSlots: {
+      kind: "%fn.completion.kind",
+      value: "%fn.completion.value",
+      destination: "%fn.completion.dest",
+      until: "%fn.completion.until"
+    },
+    nextDestId: 0,
+    isMain: false,
+    gcFrameName: "%gc.frame",
+    traceMarkers: parent.traceMarkers,
+    suppressTrace: fn.traceOperation === undefined
+  };
+}
 
 const encodeCString = (value: string): { readonly value: string; readonly length: number } => {
   const bytes = [...Buffer.from(value, "utf8"), 0];
@@ -195,33 +324,7 @@ function emitLlvmIr(module: JsIrModule): RenderedLlvmModule {
   const moduleComments = module.modules
     .map((sourceModule) => `; source ${sourceModule.fileName} statements=${sourceModule.statementCount}`)
     .join("\n");
-  const context: EmitContext = {
-    bindings: new Map(),
-    stringConstants: [],
-    arrayGlobals: [],
-    objectTypes: [],
-    objectLayouts: new Map(),
-    runtime: createRuntimeHelperEmitter(),
-    loopLabels: [],
-    hasNumberPrint: false,
-    printIndex: 0,
-    ifIndex: 0,
-    cmpIndex: 0,
-    numIndex: 0,
-    callIndex: 0,
-    loopIndex: 0,
-    logicIndex: 0,
-    boolIndex: 0,
-    stringIndex: 0,
-    arrayIndex: 0,
-    objectIndex: 0,
-    tryIndex: 0,
-    optionalTargets: [],
-    exceptionTarget: "main.unhandled",
-    exceptionSlot: "%main.exception.slot",
-    gcFrameName: "%gc.main.frame",
-    traceMarkers: new Map()
-  };
+  const context = createMainEmitContext();
   const functionDefs: FunctionDef[] = [];
   const functionObjectThunks: JsIrFunctionObjectDefinition[] = [];
   const mainOps: JsIrOperation[] = [];
@@ -307,7 +410,20 @@ function emitLlvmIr(module: JsIrModule): RenderedLlvmModule {
   appendText(aggregateGlobals);
   appendLines(runtimeDefinitions.flatMap(splitLegacyDefinition));
   appendLines(fnLines);
-  appendLines(["define i32 @main() {", "entry:", ...mainInit, `  ${context.exceptionSlot} = alloca i64`]);
+  appendLines([
+    "define i32 @main() {",
+    "entry:",
+    ...mainInit,
+    `  ${context.exceptionSlot} = alloca i64`,
+    `  ${context.completionSlots.kind} = alloca i8`,
+    `  ${context.completionSlots.value} = alloca i64`,
+    `  ${context.completionSlots.destination} = alloca i32`,
+    `  ${context.completionSlots.until} = alloca i32`,
+    `  store i8 ${COMPLETION_NORMAL}, ptr ${context.completionSlots.kind}`,
+    `  store i64 ${jsValueUndefined}, ptr ${context.completionSlots.value}`,
+    `  store i32 0, ptr ${context.completionSlots.destination}`,
+    `  store i32 0, ptr ${context.completionSlots.until}`
+  ]);
   if (mainLines.length > noLines) {
     appendLines(mainLines);
   }
@@ -489,7 +605,254 @@ function emitPackedGeneratedReturn(value: string, status: string, context: EmitC
 }
 
 function emitNormalGeneratedReturn(value: string, context: EmitContext): string[] {
+  if (context.cleanupStack.length > 0) {
+    return emitCompletionTransfer(context, {
+      kind: COMPLETION_RETURN,
+      value,
+      untilDepth: 0
+    });
+  }
+  if (context.isMain) {
+    return [`  br label %${context.normalExitLabel ?? "main.normal"}`];
+  }
   return [...emitRootStackRestore(context), ...emitPackedGeneratedReturn(value, "false", context, "generated.return")];
+}
+
+function internCompletionDest(context: EmitContext, label: string, frame: CleanupFrame): number {
+  for (const [id, existing] of frame.resumeDests) {
+    if (existing === label) {
+      return id;
+    }
+  }
+  const id = context.nextDestId;
+  context.nextDestId += 1;
+  frame.resumeDests.set(id, label);
+  return id;
+}
+
+type CompletionTransfer = {
+  readonly kind: number;
+  readonly value?: string;
+  readonly destLabel?: string;
+  readonly untilDepth: number;
+};
+
+/**
+ * Route a completion through active cleanup frames (innermost first), or execute it
+ * directly when no cleanup is required.
+ */
+function emitCompletionTransfer(context: EmitContext, transfer: CompletionTransfer): string[] {
+  const { cleanupStack } = context;
+  if (cleanupStack.length === 0 || transfer.untilDepth >= cleanupStack.length) {
+    return emitDirectCompletion(context, transfer);
+  }
+  const untilFrame = cleanupStack[transfer.untilDepth];
+  const firstFrame = cleanupStack[cleanupStack.length - 1];
+  const lines: string[] = [
+    ...emitActiveCleanupRootRestore(context),
+    `  store i8 ${transfer.kind}, ptr ${context.completionSlots.kind}`
+  ];
+  if (transfer.value !== undefined) {
+    lines.push(`  store i64 ${transfer.value}, ptr ${context.completionSlots.value}`, emitRootStackPush(transfer.value, context));
+  }
+  if (transfer.destLabel !== undefined) {
+    const destId = internCompletionDest(context, transfer.destLabel, untilFrame);
+    lines.push(`  store i32 ${destId}, ptr ${context.completionSlots.destination}`);
+  }
+  lines.push(`  store i32 ${transfer.untilDepth}, ptr ${context.completionSlots.until}`, `  br label %${firstFrame.entryLabel}`);
+  return lines;
+}
+
+/** An abrupt completion exits every cleanup body currently on the emission stack. */
+function emitActiveCleanupRootRestore(context: EmitContext): string[] {
+  const outermost = context.activeCleanupBodies.at(0);
+  if (outermost === undefined) {
+    return [];
+  }
+  return [`  call void @gcRootRestore(i64 ${outermost.rootFrameName})`];
+}
+
+function emitDirectCompletion(context: EmitContext, transfer: CompletionTransfer): string[] {
+  switch (transfer.kind) {
+    case COMPLETION_NORMAL: {
+      return [];
+    }
+    case COMPLETION_RETURN: {
+      const value = transfer.value ?? jsValueUndefined;
+      if (context.isMain) {
+        return [`  br label %${context.normalExitLabel ?? "main.normal"}`];
+      }
+      return [...emitRootStackRestore(context), ...emitPackedGeneratedReturn(value, "false", context, "generated.return")];
+    }
+    case COMPLETION_THROW: {
+      const value = transfer.value ?? jsValueUndefined;
+      return [
+        ...emitActiveCleanupRootRestore(context),
+        `  store i64 ${value}, ptr ${context.exceptionSlot}`,
+        emitRootStackPush(value, context),
+        `  br label %${context.exceptionTarget}`
+      ];
+    }
+    case COMPLETION_BREAK:
+    case COMPLETION_CONTINUE: {
+      if (transfer.destLabel === undefined) {
+        return [];
+      }
+      return [...emitActiveCleanupRootRestore(context), `  br label %${transfer.destLabel}`];
+    }
+    default: {
+      return [];
+    }
+  }
+}
+
+/** After a cleanup frame's body: chain to the next outer frame or final-dispatch. */
+function emitCleanupAfterBody(context: EmitContext, frame: CleanupFrame): string[] {
+  const seq = context.cleanupSeq;
+  context.cleanupSeq += 1;
+  const untilValue = `%cleanup.until.${seq}`;
+  const more = `%cleanup.more.${seq}`;
+  if (frame.index === 0 || frame.outerEntryLabel === undefined) {
+    return [`  br label %${frame.finalDispatchLabel}`];
+  }
+  return [
+    `  ${untilValue} = load i32, ptr ${context.completionSlots.until}`,
+    `  ${more} = icmp sgt i32 ${frame.index}, ${untilValue}`,
+    `  br i1 ${more}, label %${frame.outerEntryLabel}, label %${frame.finalDispatchLabel}`
+  ];
+}
+
+function emitCleanupFinalDispatch(context: EmitContext, frame: CleanupFrame): string[] {
+  const seq = context.cleanupSeq;
+  context.cleanupSeq += 1;
+  const kind = `%cleanup.kind.${seq}`;
+  const value = `%cleanup.value.${seq}`;
+  const dest = `%cleanup.dest.${seq}`;
+  const lines: string[] = [
+    `${frame.finalDispatchLabel}:`,
+    `  ${kind} = load i8, ptr ${context.completionSlots.kind}`,
+    `  switch i8 ${kind}, label %${frame.joinLabel} [`
+  ];
+  const returnLabel = `cleanup.ret.${seq}`;
+  const throwLabel = `cleanup.throw.${seq}`;
+  const breakLabel = `cleanup.break.${seq}`;
+  const continueLabel = `cleanup.cont.${seq}`;
+  lines.push(
+    `    i8 ${COMPLETION_NORMAL}, label %${frame.joinLabel}`,
+    `    i8 ${COMPLETION_RETURN}, label %${returnLabel}`,
+    `    i8 ${COMPLETION_THROW}, label %${throwLabel}`,
+    `    i8 ${COMPLETION_BREAK}, label %${breakLabel}`,
+    `    i8 ${COMPLETION_CONTINUE}, label %${continueLabel}`,
+    "  ]",
+    `${returnLabel}:`,
+    `  ${value} = load i64, ptr ${context.completionSlots.value}`,
+    ...emitDirectCompletion(context, { kind: COMPLETION_RETURN, value, untilDepth: 0 }),
+    `${throwLabel}:`,
+    `  %cleanup.throw.val.${seq} = load i64, ptr ${context.completionSlots.value}`,
+    `  store i64 %cleanup.throw.val.${seq}, ptr ${context.exceptionSlot}`,
+    `  br label %${context.exceptionTarget}`,
+    `${breakLabel}:`,
+    `  ${dest} = load i32, ptr ${context.completionSlots.destination}`,
+    ...emitDestSwitch(dest, frame, frame.joinLabel),
+    `${continueLabel}:`,
+    `  %cleanup.cont.dest.${seq} = load i32, ptr ${context.completionSlots.destination}`,
+    ...emitDestSwitch(`%cleanup.cont.dest.${seq}`, frame, frame.joinLabel)
+  );
+  return lines;
+}
+
+function emitDestSwitch(destValue: string, frame: CleanupFrame, fallback: string): string[] {
+  if (frame.resumeDests.size === 0) {
+    return [`  br label %${fallback}`];
+  }
+  const lines: string[] = [`  switch i32 ${destValue}, label %${fallback} [`];
+  for (const [id, label] of frame.resumeDests) {
+    lines.push(`    i32 ${id}, label %${label}`);
+  }
+  lines.push("  ]");
+  return lines;
+}
+
+function createCleanupFrame(
+  context: EmitContext,
+  kind: "finally" | "iteratorClose",
+  options: { readonly skipContinueLabel?: string; readonly iteratorSlot?: string } = {}
+): CleanupFrame {
+  const index = context.cleanupStack.length;
+  const id = context.tryIndex;
+  context.tryIndex += 1;
+  let outerEntryLabel: string | undefined;
+  if (index > 0) {
+    outerEntryLabel = context.cleanupStack[index - 1]?.entryLabel;
+  }
+  return {
+    index,
+    entryLabel: `cleanup.entry.${id}`,
+    finalDispatchLabel: `cleanup.dispatch.${id}`,
+    joinLabel: `cleanup.join.${id}`,
+    throwEntryLabel: `cleanup.throw.entry.${id}`,
+    rootFrameName: `%gc.cleanup.${id}`,
+    outerEntryLabel,
+    resumeDests: new Map(),
+    kind,
+    skipContinueLabel: options.skipContinueLabel,
+    iteratorSlot: options.iteratorSlot
+  };
+}
+
+function emitThrowEntryBlock(context: EmitContext, frame: CleanupFrame): string[] {
+  const seq = context.cleanupSeq;
+  context.cleanupSeq += 1;
+  const value = `%cleanup.throw.entry.val.${seq}`;
+  return [
+    `${frame.throwEntryLabel}:`,
+    `  ${value} = load i64, ptr ${context.exceptionSlot}`,
+    `  store i8 ${COMPLETION_THROW}, ptr ${context.completionSlots.kind}`,
+    `  store i64 ${value}, ptr ${context.completionSlots.value}`,
+    `  store i32 ${frame.index}, ptr ${context.completionSlots.until}`,
+    `  br label %${frame.entryLabel}`
+  ];
+}
+
+function emitIteratorCloseBody(context: EmitContext, frame: CleanupFrame): string[] {
+  useRuntimeHelper(context.runtime, "iteratorClose");
+  const seq = context.cleanupSeq;
+  context.cleanupSeq += 1;
+  const iterator = `%iter.close.iter.${seq}`;
+  const result = `%iter.close.result.${seq}`;
+  const payload = `%iter.close.payload.${seq}`;
+  const exception = `%iter.close.exc.${seq}`;
+  const kind = `%iter.close.kind.${seq}`;
+  const isThrow = `%iter.close.is.throw.${seq}`;
+  const cont = `iter.close.cont.${seq}`;
+  const replace = `iter.close.replace.${seq}`;
+  const keep = `iter.close.keep.${seq}`;
+  const slot = frame.iteratorSlot ?? "ptr null";
+  return [
+    `  ${iterator} = load i64, ptr ${slot}`,
+    `  ${result} = call ${generatedReturnType} @iteratorClose(i64 ${iterator})`,
+    `  ${payload} = extractvalue ${generatedReturnType} ${result}, 0`,
+    `  ${exception} = extractvalue ${generatedReturnType} ${result}, 1`,
+    emitRootStackPush(payload, context),
+    `  br i1 ${exception}, label %${replace}.check, label %${cont}.restore`,
+    `${replace}.check:`,
+    `  ${kind} = load i8, ptr ${context.completionSlots.kind}`,
+    `  ${isThrow} = icmp eq i8 ${kind}, ${COMPLETION_THROW}`,
+    `  br i1 ${isThrow}, label %${keep}, label %${replace}`,
+    `${replace}:`,
+    `  store i8 ${COMPLETION_THROW}, ptr ${context.completionSlots.kind}`,
+    `  store i64 ${payload}, ptr ${context.completionSlots.value}`,
+    `  call void @gcRootRestore(i64 ${frame.rootFrameName})`,
+    emitRootStackPush(payload, context),
+    `  br label %${cont}`,
+    `${keep}:`,
+    `  call void @gcRootRestore(i64 ${frame.rootFrameName})`,
+    `  br label %${cont}`,
+    `${cont}.restore:`,
+    `  call void @gcRootRestore(i64 ${frame.rootFrameName})`,
+    `  br label %${cont}`,
+    `${cont}:`
+  ];
 }
 
 function emitExceptionReturnBlock(context: EmitContext): string[] {
@@ -535,34 +898,7 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
   }
   const paramList = emitFunctionParameters(fn.parameters).join(", ");
   const lines: string[] = [`define ${generatedReturnType} @${fn.name}(${paramList}) {`];
-  const fnContext: EmitContext = {
-    bindings: new Map(fn.outerBindings),
-    stringConstants: context.stringConstants,
-    arrayGlobals: context.arrayGlobals,
-    objectTypes: context.objectTypes,
-    objectLayouts: new Map(context.objectLayouts),
-    runtime: context.runtime,
-    loopLabels: [],
-    hasNumberPrint: context.hasNumberPrint,
-    printIndex: context.printIndex,
-    ifIndex: 0,
-    cmpIndex: 0,
-    numIndex: 0,
-    callIndex: 0,
-    loopIndex: 0,
-    logicIndex: 0,
-    boolIndex: 0,
-    stringIndex: 0,
-    arrayIndex: context.arrayIndex,
-    objectIndex: context.objectIndex,
-    tryIndex: 0,
-    optionalTargets: [],
-    exceptionTarget: "fn.exception",
-    exceptionSlot: "%fn.exception.slot",
-    gcFrameName: "%gc.frame",
-    traceMarkers: context.traceMarkers,
-    suppressTrace: fn.traceOperation === undefined
-  };
+  const fnContext = createFunctionEmitContext(fn, context);
   for (let i = 0; i < fn.parameters.length; i++) {
     const parameter = fn.parameters[i];
     if (parameter.valueKind === "string") {
@@ -582,6 +918,14 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     // Record the root-stack baseline first; every ret/throw restores to it.
     `  ${fnContext.gcFrameName} = call i64 @gcRootSave()`,
     `  ${fnContext.exceptionSlot} = alloca i64`,
+    `  ${fnContext.completionSlots.kind} = alloca i8`,
+    `  ${fnContext.completionSlots.value} = alloca i64`,
+    `  ${fnContext.completionSlots.destination} = alloca i32`,
+    `  ${fnContext.completionSlots.until} = alloca i32`,
+    `  store i8 ${COMPLETION_NORMAL}, ptr ${fnContext.completionSlots.kind}`,
+    `  store i64 ${jsValueUndefined}, ptr ${fnContext.completionSlots.value}`,
+    `  store i32 0, ptr ${fnContext.completionSlots.destination}`,
+    `  store i32 0, ptr ${fnContext.completionSlots.until}`,
     // Pin heap-capable parameters for the whole call so an internal safepoint (e.g. a
     // loop back-edge) cannot collect a value the body still uses. Released by the
     // restore on return.
@@ -608,35 +952,19 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
 // eslint-disable-next-line max-statements -- Function-object prologue materializes this, captures, and typed argv bindings together.
 function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): string[] {
   const lines: string[] = [`define ${generatedReturnType} @${fn.name}(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {`];
-  const fnContext: EmitContext = {
-    bindings: new Map(fn.outerBindings),
-    stringConstants: context.stringConstants,
-    arrayGlobals: context.arrayGlobals,
-    objectTypes: context.objectTypes,
-    objectLayouts: new Map(context.objectLayouts),
-    runtime: context.runtime,
-    loopLabels: [],
-    hasNumberPrint: context.hasNumberPrint,
-    printIndex: context.printIndex,
-    ifIndex: 0,
-    cmpIndex: 0,
-    numIndex: 0,
-    callIndex: 0,
-    loopIndex: 0,
-    logicIndex: 0,
-    boolIndex: 0,
-    stringIndex: 0,
-    arrayIndex: context.arrayIndex,
-    objectIndex: context.objectIndex,
-    tryIndex: 0,
-    optionalTargets: [],
-    exceptionTarget: "fn.exception",
-    exceptionSlot: "%fn.exception.slot",
-    gcFrameName: "%gc.frame",
-    traceMarkers: context.traceMarkers,
-    suppressTrace: fn.traceOperation === undefined
-  };
-  const bodyLines = [`  ${fnContext.gcFrameName} = call i64 @gcRootSave()`, `  ${fnContext.exceptionSlot} = alloca i64`];
+  const fnContext = createFunctionEmitContext(fn, context);
+  const bodyLines = [
+    `  ${fnContext.gcFrameName} = call i64 @gcRootSave()`,
+    `  ${fnContext.exceptionSlot} = alloca i64`,
+    `  ${fnContext.completionSlots.kind} = alloca i8`,
+    `  ${fnContext.completionSlots.value} = alloca i64`,
+    `  ${fnContext.completionSlots.destination} = alloca i32`,
+    `  ${fnContext.completionSlots.until} = alloca i32`,
+    `  store i8 ${COMPLETION_NORMAL}, ptr ${fnContext.completionSlots.kind}`,
+    `  store i64 ${jsValueUndefined}, ptr ${fnContext.completionSlots.value}`,
+    `  store i32 0, ptr ${fnContext.completionSlots.destination}`,
+    `  store i32 0, ptr ${fnContext.completionSlots.until}`
+  ];
   if (fn.usesDynamicThis === true) {
     bodyLines.push("  call void @gcRootPush(i64 %this.value)");
     fnContext.bindings.set("this", { kind: "valueVariable", name: "%this.value" });
@@ -859,6 +1187,7 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
 
   if (operation.kind === "throwValue") {
     const value = emitValueExpression(operation.value, context);
+    // exceptionTarget is already the nearest catch or cleanup throw-entry.
     return [
       ...value.lines,
       emitRootStackPush(value.value, context),
@@ -911,6 +1240,16 @@ function emitTryCatchOperation(
   operation: Extract<JsIrOperation, { readonly kind: "tryCatch" }>,
   context: EmitContext
 ): string[] {
+  if (operation.finallyOperations !== undefined) {
+    return emitTryFinallyOperation(operation, context);
+  }
+  return emitTryCatchOnlyOperation(operation, context);
+}
+
+function emitTryCatchOnlyOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "tryCatch" }>,
+  context: EmitContext
+): string[] {
   const index = context.tryIndex;
   context.tryIndex += 1;
   const tryLabel = `try.body.${index}`;
@@ -945,6 +1284,149 @@ function emitTryCatchOperation(
   }
   if (!operationListTerminates(operation.tryOperations) || !operationListTerminates(operation.catchOperations)) {
     lines.push(`${joinLabel}:`);
+  }
+  return lines;
+}
+
+// eslint-disable-next-line max-statements, complexity -- try/finally lowers catch, cleanup stack, and completion dispatch together.
+function emitTryFinallyOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "tryCatch" }>,
+  context: EmitContext
+): string[] {
+  const finallyOperations = operation.finallyOperations ?? [];
+  const includeCatch = operation.hasCatch;
+
+  const frame = createCleanupFrame(context, "finally");
+  const tryLabel = `try.body.${frame.index}.${context.tryIndex}`;
+  const catchLabel = `try.catch.${frame.index}.${context.tryIndex}`;
+  const catchValue = `%try.catch.value.${frame.index}.${context.tryIndex}`;
+  const outerTarget = context.exceptionTarget;
+  const outerBindings = new Map(context.bindings);
+
+  // --- try region ---
+  context.cleanupStack.push(frame);
+  if (includeCatch) {
+    context.exceptionTarget = catchLabel;
+  } else {
+    context.exceptionTarget = frame.throwEntryLabel;
+  }
+  const tryLines = emitOperationsWithScopedBindings(operation.tryOperations, context);
+  const tryTerminates = operationListTerminates(operation.tryOperations);
+
+  // --- catch region (optional) ---
+  let catchLines: string[] = [];
+  let catchTerminates = true;
+  if (includeCatch) {
+    context.exceptionTarget = frame.throwEntryLabel;
+    const catchBindings = new Map(outerBindings);
+    if (operation.catchVariable !== "") {
+      catchBindings.set(operation.catchVariable, { kind: "valueVariable", name: catchValue });
+    }
+    context.bindings.clear();
+    for (const [name, binding] of catchBindings) {
+      context.bindings.set(name, binding);
+    }
+    catchLines = emitOperationsWithScopedBindings(operation.catchOperations, context);
+    catchTerminates = operationListTerminates(operation.catchOperations);
+  }
+
+  context.cleanupStack.pop();
+  context.exceptionTarget = outerTarget;
+  context.bindings.clear();
+  for (const [name, binding] of outerBindings) {
+    context.bindings.set(name, binding);
+  }
+
+  // --- finally body (frame not on cleanup stack; throws replace pending completion) ---
+  const finallyRethrow = `cleanup.finally.rethrow.${frame.index}.${context.tryIndex}`;
+  const savedCompletionIndex = context.cleanupSeq;
+  context.cleanupSeq += 1;
+  const savedKind = `%cleanup.saved.kind.${savedCompletionIndex}`;
+  const savedValue = `%cleanup.saved.value.${savedCompletionIndex}`;
+  const savedDest = `%cleanup.saved.dest.${savedCompletionIndex}`;
+  const savedUntil = `%cleanup.saved.until.${savedCompletionIndex}`;
+  context.exceptionTarget = finallyRethrow;
+  context.activeCleanupBodies.push(frame);
+  const finallyLines = emitOperationsWithScopedBindings(finallyOperations, context);
+  const abruptCleanupRootRestore = emitActiveCleanupRootRestore(context);
+  context.activeCleanupBodies.pop();
+  const finallyTerminates = operationListTerminates(finallyOperations);
+  context.exceptionTarget = outerTarget;
+
+  const lines: string[] = [`  br label %${tryLabel}`, `${tryLabel}:`, ...tryLines];
+  if (!tryTerminates) {
+    lines.push(
+      `  store i8 ${COMPLETION_NORMAL}, ptr ${context.completionSlots.kind}`,
+      `  store i32 ${frame.index}, ptr ${context.completionSlots.until}`,
+      `  br label %${frame.entryLabel}`
+    );
+  }
+
+  if (includeCatch) {
+    lines.push(`${catchLabel}:`, `  ${catchValue} = load i64, ptr ${context.exceptionSlot}`, ...catchLines);
+    if (!catchTerminates) {
+      lines.push(
+        `  store i8 ${COMPLETION_NORMAL}, ptr ${context.completionSlots.kind}`,
+        `  store i32 ${frame.index}, ptr ${context.completionSlots.until}`,
+        `  br label %${frame.entryLabel}`
+      );
+    }
+  }
+
+  lines.push(
+    `${frame.entryLabel}:`,
+    `  ${frame.rootFrameName} = call i64 @gcRootSave()`,
+    `  ${savedKind} = load i8, ptr ${context.completionSlots.kind}`,
+    `  ${savedValue} = load i64, ptr ${context.completionSlots.value}`,
+    `  ${savedDest} = load i32, ptr ${context.completionSlots.destination}`,
+    `  ${savedUntil} = load i32, ptr ${context.completionSlots.until}`,
+    ...finallyLines
+  );
+  if (!finallyTerminates) {
+    lines.push(
+      `  call void @gcRootRestore(i64 ${frame.rootFrameName})`,
+      `  store i8 ${savedKind}, ptr ${context.completionSlots.kind}`,
+      `  store i64 ${savedValue}, ptr ${context.completionSlots.value}`,
+      `  store i32 ${savedDest}, ptr ${context.completionSlots.destination}`,
+      `  store i32 ${savedUntil}, ptr ${context.completionSlots.until}`,
+      ...emitCleanupAfterBody(context, frame)
+    );
+  }
+
+  // Throw from finally replaces any pending completion and continues outer cleanups.
+  const rethrowSeq = context.cleanupSeq;
+  context.cleanupSeq += 1;
+  const rethrowValue = `%finally.rethrow.val.${rethrowSeq}`;
+  lines.push(
+    `${finallyRethrow}:`,
+    `  ${rethrowValue} = load i64, ptr ${context.exceptionSlot}`,
+    ...abruptCleanupRootRestore,
+    `  store i8 ${COMPLETION_THROW}, ptr ${context.completionSlots.kind}`,
+    `  store i64 ${rethrowValue}, ptr ${context.completionSlots.value}`,
+    emitRootStackPush(rethrowValue, context)
+  );
+  if (frame.outerEntryLabel === undefined) {
+    lines.push(
+      `  store i64 ${rethrowValue}, ptr ${context.exceptionSlot}`,
+      `  br label %${outerTarget}`
+    );
+  } else {
+    lines.push(
+      `  store i32 0, ptr ${context.completionSlots.until}`,
+      `  br label %${frame.outerEntryLabel}`
+    );
+  }
+
+  lines.push(...emitThrowEntryBlock(context, frame));
+  lines.push(...emitCleanupFinalDispatch(context, frame));
+  // Join is the NORMAL fallthrough target. When no try/catch path can complete
+  // normally, the block is still referenced by the dispatch switch default and
+  // must be a valid terminated block.
+  const canNormalJoin =
+    (!tryTerminates || (includeCatch && !catchTerminates)) && !finallyTerminates;
+  lines.push(`${frame.joinLabel}:`);
+  if (!canNormalJoin) {
+    lines.push("  unreachable");
   }
   return lines;
 }
@@ -4723,7 +5205,7 @@ function emitSwitchOperation(operation: Extract<JsIrOperation, { readonly kind: 
     );
   }
 
-  context.loopLabels.push({ breakLabel: endLabel });
+  context.loopLabels.push({ breakLabel: endLabel , cleanupDepth: context.cleanupStack.length });
   for (let index = 0; index < operation.clauses.length; index++) {
     const clause = operation.clauses[index];
     const nextLabel = clauseLabels[index + 1] ?? endLabel;
@@ -4750,6 +5232,21 @@ function switchClauseTerminates(clause: JsIrSwitchClause): boolean {
   return operationListTerminates(clause.operations);
 }
 
+function tryCatchOperationTerminates(operation: Extract<JsIrOperation, { readonly kind: "tryCatch" }>): boolean {
+  if (operation.finallyOperations === undefined) {
+    return operationListTerminates(operation.tryOperations) && operationListTerminates(operation.catchOperations);
+  }
+  // Fall through only when try or catch can complete normally and finally falls through.
+  if (operationListTerminates(operation.finallyOperations)) {
+    return true;
+  }
+  const tryFallsThrough = !operationListTerminates(operation.tryOperations);
+  const { hasCatch } = operation;
+  const catchFallsThrough = hasCatch && !operationListTerminates(operation.catchOperations);
+  // No NORMAL join path ⇒ the statement never reaches subsequent ops.
+  return !tryFallsThrough && !catchFallsThrough;
+}
+
 function operationListTerminates(operations: readonly JsIrOperation[]): boolean {
   const last = operations.at(-1);
   if (last === undefined) {
@@ -4759,7 +5256,7 @@ function operationListTerminates(operations: readonly JsIrOperation[]): boolean 
     return operationListTerminates(last.operations);
   }
   if (last.kind === "tryCatch") {
-    return operationListTerminates(last.tryOperations) && operationListTerminates(last.catchOperations);
+    return tryCatchOperationTerminates(last);
   }
   if (last.kind === "if") {
     return last.elseOperations.length > 0 && operationListTerminates(last.thenOperations) && operationListTerminates(last.elseOperations);
@@ -4802,7 +5299,7 @@ function emitWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "
   const bodyLabel = `while.body.${loopIndex}`;
   const endLabel = `while.end.${loopIndex}`;
   const emittedCondition = emitCondition(operation.condition, context);
-  context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel });
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel , cleanupDepth: context.cleanupStack.length });
   const bodyLines = emitOperations(operation.body, context);
   context.loopLabels.pop();
 
@@ -4826,7 +5323,7 @@ function emitDoWhileOperation(operation: Extract<JsIrOperation, { readonly kind:
   const bodyLabel = `do.body.${loopIndex}`;
   const condLabel = `do.cond.${loopIndex}`;
   const endLabel = `do.end.${loopIndex}`;
-  context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel });
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel , cleanupDepth: context.cleanupStack.length });
   const bodyLines = emitOperations(operation.body, context);
   context.loopLabels.pop();
   const emittedCondition = emitCondition(operation.condition, context);
@@ -4854,7 +5351,7 @@ function emitForOperation(operation: Extract<JsIrOperation, { readonly kind: "fo
   const endLabel = `for.end.${loopIndex}`;
   const initializerLines = emitOperations([operation.initializer], context);
   const emittedCondition = emitCondition(operation.condition, context);
-  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
   const bodyLines = emitOperations(operation.body, context);
   context.loopLabels.pop();
   const incrementLines = emitOperations([operation.increment], context);
@@ -4898,7 +5395,7 @@ function emitForOfArrayOperation(operation: Extract<JsIrOperation, { readonly ki
   for (const [name, value] of bodyBindings) {
     context.bindings.set(name, value);
   }
-  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
   const bodyLines = emitOperations(operation.body, context);
   context.loopLabels.pop();
   context.bindings.clear();
@@ -4960,7 +5457,7 @@ function emitForOfStringOperation(operation: Extract<JsIrOperation, { readonly k
   for (const [name, value] of bodyBindings) {
     context.bindings.set(name, value);
   }
-  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
   const bodyLines = emitOperations(operation.body, context);
   context.loopLabels.pop();
   context.bindings.clear();
@@ -5062,7 +5559,7 @@ function emitForOfSetOperation(operation: Extract<JsIrOperation, { readonly kind
   });
 }
 
-// eslint-disable-next-line max-statements -- Protocol for-of acquires an iterator once, then loops on next/done/value with GC roots across allocating calls.
+// eslint-disable-next-line max-statements -- Protocol for-of installs IteratorClose cleanup and drives next()/body/close.
 function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfProtocol" }>, context: EmitContext): string[] {
   const { loopIndex } = context;
   context.loopIndex += 1;
@@ -5075,6 +5572,7 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
 
   useRuntimeHelper(context.runtime, "getIteratorValue");
   useRuntimeHelper(context.runtime, "callIteratorNext");
+  useRuntimeHelper(context.runtime, "iteratorClose");
   useRuntimeHelper(context.runtime, "valueObjectGet");
   useRuntimeHelper(context.runtime, "valueTruthy");
   useRuntimeHelper(context.runtime, "valueBoxString");
@@ -5091,9 +5589,21 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
   for (const [name, value] of bodyBindings) {
     context.bindings.set(name, value);
   }
-  // continue re-enters at cond so the next iteration re-calls next() after the prologue.
-  context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel });
+
+  // Install loop labels before the IteratorClose frame so cleanupDepth points at the frame index.
+  const cleanupDepth = context.cleanupStack.length;
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel, cleanupDepth });
+  const closeFrame = createCleanupFrame(context, "iteratorClose", {
+    skipContinueLabel: condLabel,
+    iteratorSlot
+  });
+  context.cleanupStack.push(closeFrame);
+  const outerException = context.exceptionTarget;
+  // Escaping throws close the iterator before propagating.
+  context.exceptionTarget = closeFrame.throwEntryLabel;
   const bodyLines = emitOperations(operation.body, context);
+  context.exceptionTarget = outerException;
+  context.cleanupStack.pop();
   context.loopLabels.pop();
   context.bindings.clear();
   for (const [name, value] of previousBindings) {
@@ -5130,6 +5640,7 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
     ...nextCall.lines,
     `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
     `  ${isDone} = call i1 @valueTruthy(i64 ${doneValue})`,
+    // Normal exhaustion does not call IteratorClose.
     `  br i1 ${isDone}, label %${endLabel}, label %${stepLabel}`,
     `${stepLabel}:`,
     `  ${itemValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
@@ -5137,6 +5648,17 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
     `  call void @gcRootPush(i64 ${itemValue})`,
     ...bodyLines,
     ...emitLoopBackEdge(condLabel, operation.body),
+    // IteratorClose cleanup region (abrupt exits only).
+    `${closeFrame.entryLabel}:`,
+    `  ${closeFrame.rootFrameName} = call i64 @gcRootSave()`,
+    ...emitIteratorCloseBody(context, closeFrame),
+    ...emitCleanupAfterBody(context, closeFrame),
+    ...emitThrowEntryBlock(context, closeFrame),
+    ...emitCleanupFinalDispatch(context, closeFrame),
+    // IteratorClose is only entered on abrupt exits; NORMAL is unreachable here.
+    // Break resumes via dest switch to endLabel; keep join as a safe fallback.
+    `${closeFrame.joinLabel}:`,
+    `  br label %${endLabel}`,
     `${endLabel}:`
   ];
 }
@@ -5204,7 +5726,7 @@ function emitForInKeyIteration(
   for (const [name, value] of bodyBindings) {
     context.bindings.set(name, value);
   }
-  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
   const bodyLines = emitOperations(body, context);
   context.loopLabels.pop();
   context.bindings.clear();
@@ -5294,7 +5816,7 @@ function emitForOfCollectionValueOperation(
   for (const [name, value] of bodyBindings) {
     context.bindings.set(name, value);
   }
-  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel });
+  context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
   const bodyLines = emitOperations(body, context);
   context.loopLabels.pop();
   context.bindings.clear();
@@ -5342,7 +5864,14 @@ function emitBreakOperation(context: EmitContext): string[] {
   if (labels === undefined) {
     return [];
   }
-
+  // Run cleanups entered inside this loop (iterator close + nested finally).
+  if (context.cleanupStack.length > labels.cleanupDepth) {
+    return emitCompletionTransfer(context, {
+      kind: COMPLETION_BREAK,
+      destLabel: labels.breakLabel,
+      untilDepth: labels.cleanupDepth
+    });
+  }
   return [`  br label %${labels.breakLabel}`];
 }
 
@@ -5363,7 +5892,42 @@ function emitContinueOperation(context: EmitContext): string[] {
     return [];
   }
 
+  // Same-loop continue skips the loop's own IteratorClose frame (at cleanupDepth),
+  // but still runs nested finally frames inside the body.
+  if (context.cleanupStack.length > labels.cleanupDepth) {
+    const untilDepth = continueCleanupUntilDepth(context, labels);
+    if (untilDepth < context.cleanupStack.length) {
+      return emitCompletionTransfer(context, {
+        kind: COMPLETION_CONTINUE,
+        destLabel: continueLabel,
+        untilDepth
+      });
+    }
+  }
   return [`  br label %${continueLabel}`];
+}
+
+/**
+ * Outermost cleanup index that must run for a continue to `labels`.
+ * Skips an IteratorClose frame that owns this loop's continue label.
+ * Returns cleanupStack.length when no cleanup is required.
+ */
+function continueCleanupUntilDepth(context: EmitContext, labels: LoopLabels): number {
+  const { continueLabel, cleanupDepth } = labels;
+  let until = cleanupDepth;
+  // Skip the for-of IteratorClose frame installed at cleanupDepth for this loop.
+  if (
+    until < context.cleanupStack.length &&
+    context.cleanupStack[until]?.kind === "iteratorClose" &&
+    context.cleanupStack[until]?.skipContinueLabel === continueLabel
+  ) {
+    until += 1;
+  }
+  // Nested finally frames above `until` must still run.
+  if (until >= context.cleanupStack.length) {
+    return context.cleanupStack.length;
+  }
+  return until;
 }
 
 function defineObjectType(value: JsIrObjectValue, context: EmitContext): string {

@@ -341,3 +341,21 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
     }
   });
 });
+
+describe("completion cleanup rooting", () => {
+  test("restores every cleanup-specific root frame", async () => {
+    const result = await expectSuccessfulCompile("for-of-iterator-close-order.ts");
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      const cleanupFrames = [...llvmIr.matchAll(/(%gc\.cleanup\.\d+) = call i64 @gcRootSave\(\)/g)]
+        .map((match) => match[1]);
+      expect(cleanupFrames.length).toBeGreaterThan(0);
+      for (const frame of cleanupFrames) {
+        expect(llvmIr).toContain(`call void @gcRootRestore(i64 ${frame})`);
+      }
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
