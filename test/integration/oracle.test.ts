@@ -33,6 +33,7 @@ const oracleFixtures = [
   "number-coercion-primitives.ts",
   "json-parse-primitives.ts",
   "destructure-nested.ts",
+  "destructure-default-function-name.ts",
   "destructure-builtin-iterables.ts",
   "destructure-iterator-protocol.ts",
   "destructure-iterator-override.ts",

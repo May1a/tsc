@@ -336,6 +336,20 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
     }
   });
 
+  test("keeps function object names alive across collection", async () => {
+    const result = await expectSuccessfulCompile("gc-function-object-name.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("%name.slot = getelementptr i8, ptr %payload, i64 32");
+      expect(llvmIr).toContain("call void @gcMarkValue(i64 %fn.name)");
+      await expectLlvmAsVerificationIfAvailable(result);
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "retained\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("evaluates but does not bind thisArg for an arrow callback", async () => {
     const result = await expectSuccessfulCompile("array-runtime-arrow-thisarg-evaluation.ts");
 
@@ -345,7 +359,7 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
       const functionObjectCall = llvmIr.indexOf("call i64 @functionObjectNew(");
       expect(receiverCall).toBeGreaterThanOrEqual(0);
       expect(functionObjectCall).toBeGreaterThan(receiverCall);
-      expect(llvmIr).toMatch(/call i64 @functionObjectNew\(ptr @[^,]+, ptr null, i64 9222246136947933184\)/);
+      expect(llvmIr).toMatch(/call i64 @functionObjectNew\(ptr @[^,]+, ptr null, i64 9222246136947933184, i64 9222246136947933184\)/);
     } finally {
       await result.cleanup();
     }

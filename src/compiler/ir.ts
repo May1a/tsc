@@ -98,6 +98,7 @@ export type JsIrFunctionObjectDefinition = {
   readonly returnKind: JsIrValueKind | "void";
   readonly body?: readonly JsIrOperation[];
   readonly directTarget?: string;
+  readonly inferredName?: string;
   readonly captures?: readonly {
     readonly name: string;
     readonly valueKind: JsIrValueKind;
@@ -6138,12 +6139,15 @@ function lowerDestructuredValueBinding(
   lazyDefault = false
 ): JsIrOperation | undefined {
   let value: JsIrValueExpression = access;
+  let defaultIsFunction = false;
   if (defaultInitializer !== undefined) {
-    const defaultValue = lowerValueExpression(defaultInitializer, working);
+    const defaultValue = lowerFunctionObjectValue(defaultInitializer, working, name) ?? lowerValueExpression(defaultInitializer, working);
     if (defaultValue === undefined) {
       return undefined;
     }
-    if (lazyDefault) {
+    defaultIsFunction = defaultValue.kind === "functionObject";
+    const defaultIsCall = ts.isCallExpression(unwrapTypeOnlyExpression(defaultInitializer));
+    if (lazyDefault || defaultIsFunction || defaultIsCall) {
       value = { kind: "lazyDefault", value: access, defaultValue };
     } else {
       value = {
@@ -6154,7 +6158,11 @@ function lowerDestructuredValueBinding(
       };
     }
   }
-  if (lazyDefault || (defaultInitializer !== undefined && ts.isCallExpression(unwrapTypeOnlyExpression(defaultInitializer)))) {
+  if (
+    lazyDefault ||
+    (defaultInitializer !== undefined && ts.isCallExpression(unwrapTypeOnlyExpression(defaultInitializer))) ||
+    defaultIsFunction
+  ) {
     return { kind: "letValue", name, value };
   }
   return { kind: "constValue", name, value };
@@ -6332,6 +6340,11 @@ function lowerLetVariableBinding(
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
+  const functionValue = lowerFunctionObjectValue(unwrapTypeOnlyExpression(initializer), bindings, name);
+  if (functionValue !== undefined) {
+    return { kind: "letValue", name, value: functionValue };
+  }
+
   const arrayLiteral = classifyArrayLiteral(initializer, bindings);
   if (arrayLiteral?.kind === "fixed") {
     return {
@@ -6392,6 +6405,11 @@ function lowerConstVariableBinding(
   const aggregateValue = lowerConstAggregateBinding(name, unwrappedInitializer, bindings, forceRuntimeArray, forceRuntimeObject);
   if (aggregateValue !== undefined) {
     return aggregateValue;
+  }
+
+  const functionValue = lowerFunctionObjectValue(unwrappedInitializer, bindings, name);
+  if (functionValue !== undefined) {
+    return { kind: "letValue", name, value: functionValue };
   }
 
   if (forceValue) {
@@ -9317,10 +9335,11 @@ function lowerAggregatePropertyValueAccess(
       return { kind: "valueObjectDynamicAccess", value, key: { kind: "literal", value: expression.name.text } };
     }
   }
-  if (!ts.isIdentifier(expression.expression)) {
+  const receiver = unwrapTypeOnlyExpression(expression.expression);
+  if (!ts.isIdentifier(receiver)) {
     return undefined;
   }
-  const binding = bindings.get(expression.expression.text);
+  const binding = bindings.get(receiver.text);
   if (binding?.kind === "runtimeObject" && binding.errorName !== undefined && expression.name.text === "stack") {
     return undefined;
   }
@@ -9328,7 +9347,7 @@ function lowerAggregatePropertyValueAccess(
     return { kind: "objectDynamicAccess", objectName: binding.name, key: { kind: "literal", value: expression.name.text } };
   }
   if (isBoxedAggregateCandidateBinding(binding)) {
-    const value = lowerValueExpression(expression.expression, bindings);
+    const value = lowerValueExpression(receiver, bindings);
     if (value !== undefined) {
       return { kind: "valueObjectDynamicAccess", value, key: { kind: "literal", value: expression.name.text } };
     }
@@ -9650,8 +9669,13 @@ function lowerPlainConstructorArguments(
 // eslint-disable-next-line complexity, max-statements -- Function value lowering validates both declaration references and inline function syntax.
 function lowerFunctionObjectValue(
   expression: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  inferredName?: string
 ): JsIrValueExpression | undefined {
+  const unwrappedExpression = unwrapTypeOnlyExpression(expression);
+  if (unwrappedExpression !== expression) {
+    return lowerFunctionObjectValue(unwrappedExpression, bindings, inferredName);
+  }
   if (ts.isIdentifier(expression)) {
     const binding = bindings.get(expression.text);
     if (binding?.kind !== "function" && binding?.kind !== "functionReference") {
@@ -9699,13 +9723,21 @@ function lowerFunctionObjectValue(
   if (body === undefined) {
     return undefined;
   }
-  let displayName = "anonymous";
-  if (expression.name !== undefined) {
-    displayName = expression.name.text;
-  }
+  const runtimeName = expression.name?.text ?? inferredName;
+  const displayName = runtimeName ?? "anonymous";
   const codeName = `__tscn_fnobj_${displayName}_${nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   nextFunctionObjectId += 1;
-  return { kind: "functionObject", definition: { codeName, parameters, functionKind, returnKind: functionReturnKind(body), body } };
+  return {
+    kind: "functionObject",
+    definition: {
+      codeName,
+      parameters,
+      functionKind,
+      returnKind: functionReturnKind(body),
+      body,
+      inferredName: runtimeName
+    }
+  };
 }
 
 function lowerRuntimeCollectionValueMethodCall(

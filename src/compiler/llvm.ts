@@ -433,7 +433,7 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
     ...[...internedFunctions].flatMap(([target, definition], index) => {
       const value = `%fnobj.intern.${index}`;
       return [
-        `  ${value} = call i64 @functionObjectNew(ptr @${definition.codeName}, ptr null, i64 ${jsValueUndefined})`,
+        `  ${value} = call i64 @functionObjectNew(ptr @${definition.codeName}, ptr null, i64 ${jsValueUndefined}, i64 ${jsValueUndefined})`,
         `  store i64 ${value}, ptr @${internedFunctionGlobal(target)}`,
         `  call void @gcRootPush(i64 ${value})`
       ];
@@ -2408,7 +2408,7 @@ function emitFunctionObjectValue(operation: Extract<JsIrOperation, { readonly ki
     }
   }
   const thisArg = emitFunctionObjectThisArg(operation, context, `%arr.fnobj.this.frame.${index}`);
-  const newCall = `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr ${environment}, i64 ${thisArg.value})`;
+  const newCall = `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr ${environment}, i64 ${thisArg.value}, i64 ${jsValueUndefined})`;
   const push = emitRootStackPush(functionValue, context);
   return { lines: [...captureLines, ...thisArg.setup, newCall, ...thisArg.cleanup, push], value: functionValue };
 }
@@ -4330,6 +4330,17 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     useRuntimeHelper(context.runtime, "functionObjectNew");
     const captures = expression.definition.captures ?? [];
     const lines: string[] = [];
+    let functionName = jsValueUndefined;
+    if (expression.definition.inferredName !== undefined) {
+      const name = emitStringExpression({ kind: "literal", value: expression.definition.inferredName }, context);
+      functionName = `%fnobj.name.${index}`;
+      useRuntimeHelper(context.runtime, "valueBoxString");
+      lines.push(
+        ...name.lines,
+        `  ${functionName} = call i64 @valueBoxString(ptr ${name.value}, i64 ${name.length})`,
+        emitRootStackPush(functionName, context)
+      );
+    }
     let environment = "null";
     if (captures.length > 0) {
       useRuntimeHelper(context.runtime, "environmentNew");
@@ -4344,7 +4355,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
         lines.push(`  call void @environmentSet(ptr ${environment}, i64 ${captureIndex}, i64 ${emittedCaptures[captureIndex].value})`);
       }
     }
-    lines.push(`  ${value} = call i64 @functionObjectNew(ptr @${expression.definition.codeName}, ptr ${environment}, i64 ${jsValueUndefined})`, emitRootStackPush(value, context));
+    lines.push(`  ${value} = call i64 @functionObjectNew(ptr @${expression.definition.codeName}, ptr ${environment}, i64 ${jsValueUndefined}, i64 ${functionName})`, emitRootStackPush(value, context));
     return { lines, value };
   }
 

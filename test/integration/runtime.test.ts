@@ -1276,6 +1276,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["destructure-array-rest.ts", "a\n3\nb\nd\n"],
       ["destructure-object-rest.ts", "1\n2\n2\n3\n"],
       ["destructure-defaults.ts", "1\nhello\n7\nset\nused\n"],
+      ["destructure-default-function-name.ts", "arrow\nfn\nx\ntrue\nobjectArrow\nmutable\npresent\npresent\nundefined\n"],
       ["destructure-rename.ts", "val\no\n"],
       ["destructure-nested.ts", "deep\nt\n"],
       ["destructure-builtin-iterables.ts", "o\n4\nkey\n7\n"],

@@ -78,6 +78,7 @@ export type RuntimeHelper =
   | "valueBoxFunction"
   | "valueFunctionPtr"
   | "functionObjectNew"
+  | "functionObjectGet"
   | "jsCall"
   | "valueIsObject"
   | "valueIsArray"
@@ -341,6 +342,7 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["valueArrayPtr", []],
   ["valueFunctionPtr", []],
   ["functionObjectNew", ["gcAlloc", "valueBoxFunction"]],
+  ["functionObjectGet", ["valueFunctionPtr", "valueBoxString", "memcmp"]],
   ["jsCall", ["valueFunctionPtr"]],
   ["valueIsFunction", []],
   ["valueIsString", []],
@@ -350,8 +352,10 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
       "valueIsObject",
       "valueIsArray",
       "valueIsString",
+      "valueIsFunction",
       "valueObjectPtr",
       "valueArrayPtr",
+      "functionObjectGet",
       "objectGet",
       "arrayGetWithKey",
       "arrayIteratorMethod",
@@ -494,7 +498,7 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
     ]
   ],
   ["iteratorResultObject", ["objectNew", "objectSet", "valueBoxObject"]],
-  ["valueObjectGet", ["valueObjectPtr", "objectGet"]],
+  ["valueObjectGet", ["valueIsFunction", "functionObjectGet", "valueObjectPtr", "objectGet"]],
   ["valueArrayGet", ["valueArrayPtr", "arrayGetWithKey"]],
   ["valueArrayLength", ["valueArrayPtr", "arrayLength"]],
   ["valueObjectSet", ["valueObjectPtr", "objectSet"]],
@@ -2956,7 +2960,7 @@ entry:
 `);
   }
   if (runtime.used.has("functionObjectNew")) {
-    definitions.push(`define i64 @functionObjectNew(ptr %code, ptr %env, i64 %boundThis) {
+    definitions.push(`define i64 @functionObjectNew(ptr %code, ptr %env, i64 %boundThis, i64 %name.value) {
 entry:
   %cell = call ptr @gcAlloc(i64 5, i64 48)
   %payload = getelementptr i8, ptr %cell, i64 8
@@ -2968,7 +2972,7 @@ entry:
   %prototype.slot = getelementptr i8, ptr %payload, i64 24
   store ptr null, ptr %prototype.slot
   %name.slot = getelementptr i8, ptr %payload, i64 32
-  store i64 ${legacyJsValue.immediate("undefined")}, ptr %name.slot
+  store i64 %name.value, ptr %name.slot
   %flags.slot = getelementptr i8, ptr %payload, i64 40
   store i64 0, ptr %flags.slot
   %value = call i64 @valueBoxFunction(ptr %payload)
@@ -3064,6 +3068,34 @@ entry:
   %tag = and i64 %value, ${legacyJsValue.tagMask()}
   %is.string = icmp eq i64 %tag, ${legacyJsValue.referenceTag("string")}
   ret i1 %is.string
+}
+`);
+  }
+  if (runtime.used.has("functionObjectGet")) {
+    definitions.push(`@.function.name.key = private unnamed_addr constant [5 x i8] c"name\\00"
+@.function.empty.name = private unnamed_addr constant [1 x i8] c"\\00"
+
+define i64 @functionObjectGet(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %is.name.length = icmp eq i64 %key.len, 4
+  br i1 %is.name.length, label %name.compare, label %missing
+name.compare:
+  %name.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.function.name.key, i64 4)
+  %is.name = icmp eq i32 %name.cmp, 0
+  br i1 %is.name, label %name.load, label %missing
+name.load:
+  %function.ptr = call ptr @valueFunctionPtr(i64 %value)
+  %name.slot = getelementptr i8, ptr %function.ptr, i64 32
+  %name = load i64, ptr %name.slot
+  %name.missing = icmp eq i64 %name, ${legacyJsValue.immediate("undefined")}
+  br i1 %name.missing, label %name.empty, label %name.found
+name.empty:
+  %empty.name = call i64 @valueBoxString(ptr @.function.empty.name, i64 0)
+  ret i64 %empty.name
+name.found:
+  ret i64 %name
+missing:
+  ret i64 ${legacyJsValue.immediate("undefined")}
 }
 `);
   }
@@ -3179,7 +3211,7 @@ alloc:
   store i64 %source.bits, ptr %source.slot
   %done.slot = getelementptr i8, ptr %state, i64 32
   store i64 0, ptr %done.slot
-  %next.fn = call i64 @functionObjectNew(ptr @builtinIteratorNext, ptr %state, i64 ${legacyJsValue.immediate("undefined")})
+  %next.fn = call i64 @functionObjectNew(ptr @builtinIteratorNext, ptr %state, i64 ${legacyJsValue.immediate("undefined")}, i64 ${legacyJsValue.immediate("undefined")})
   call void @gcRootPush(i64 %next.fn)
   %object = call ptr @objectNew(i64 1)
   call void @objectSet(ptr %object, i64 4, ptr @.iter.key.next, i64 %next.fn)
@@ -3447,6 +3479,12 @@ success:
     if (runtime.used.has("valuePropertyGet")) {
       definitions.push(`define i64 @valuePropertyGet(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
+  %is.function = call i1 @valueIsFunction(i64 %value)
+  br i1 %is.function, label %function, label %check.object
+function:
+  %function.result = call i64 @functionObjectGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  ret i64 %function.result
+check.object:
   %is.object = call i1 @valueIsObject(i64 %value)
   br i1 %is.object, label %object, label %check.array
 object:
@@ -3471,7 +3509,7 @@ array.iter.cmp:
   %array.key.same = icmp eq i32 %array.key.cmp, 0
   br i1 %array.key.same, label %array.iter, label %missing
 array.iter:
-  %array.method = call i64 @functionObjectNew(ptr @arrayIteratorMethod, ptr null, i64 ${legacyJsValue.immediate("undefined")})
+  %array.method = call i64 @functionObjectNew(ptr @arrayIteratorMethod, ptr null, i64 ${legacyJsValue.immediate("undefined")}, i64 ${legacyJsValue.immediate("undefined")})
   ret i64 %array.method
 check.string:
   %is.string = call i1 @valueIsString(i64 %value)
@@ -3484,7 +3522,7 @@ string.iter.cmp:
   %string.key.same = icmp eq i32 %string.key.cmp, 0
   br i1 %string.key.same, label %string.iter, label %missing
 string.iter:
-  %string.method = call i64 @functionObjectNew(ptr @stringIteratorMethod, ptr null, i64 ${legacyJsValue.immediate("undefined")})
+  %string.method = call i64 @functionObjectNew(ptr @stringIteratorMethod, ptr null, i64 ${legacyJsValue.immediate("undefined")}, i64 ${legacyJsValue.immediate("undefined")})
   ret i64 %string.method
 missing:
   ret i64 ${legacyJsValue.immediate("undefined")}
@@ -4048,8 +4086,14 @@ fail.payload:
   if (runtime.used.has("valueObjectGet")) {
     definitions.push(`define i64 @valueObjectGet(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
-  %object = call ptr @valueObjectPtr(i64 %value)
-  %result = call i64 @objectGet(ptr %object, i64 %key.len, ptr %key.ptr)
+  %is.function = call i1 @valueIsFunction(i64 %value)
+  br i1 %is.function, label %function, label %object
+function:
+  %function.result = call i64 @functionObjectGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  ret i64 %function.result
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %result = call i64 @objectGet(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
   ret i64 %result
 }
 `);
