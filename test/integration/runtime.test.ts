@@ -1275,7 +1275,11 @@ describe("tscn expanded runtime roadmap", () => {
       ["destructure-object-rest.ts", "1\n2\n2\n3\n"],
       ["destructure-defaults.ts", "1\nhello\n7\nset\nused\n"],
       ["destructure-rename.ts", "val\no\n"],
-      ["destructure-nested.ts", "deep\nt\n"]
+      ["destructure-nested.ts", "deep\nt\n"],
+      ["destructure-builtin-iterables.ts", "o\n4\nkey\n7\n"],
+      ["destructure-iterator-protocol.ts", "iterator\nnext-0\nnext-1\ndone\n10\nundefined\nundefined\n"],
+      ["destructure-iterator-override.ts", "override\n9\nundefined\n"],
+      ["destructure-non-iterable.ts", "TypeError\nsource is not iterable\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });

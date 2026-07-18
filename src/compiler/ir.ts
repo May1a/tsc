@@ -1403,6 +1403,14 @@ export type JsIrOperationNode =
       readonly body: readonly JsIrOperation[];
     }
   | {
+      readonly kind: "arrayDestructureProtocol";
+      readonly source:
+        | { readonly kind: "value"; readonly value: JsIrValueExpression }
+        | { readonly kind: "collection"; readonly name: string; readonly sourceKind: "map" | "set" };
+      readonly elements: readonly (string | undefined)[];
+      readonly notIterableMessage: string;
+    }
+  | {
       readonly kind: "forInObject";
       readonly itemName: string;
       readonly objectName: string;
@@ -3554,6 +3562,13 @@ function updateBindings(
       updateBindings(nested, bindings);
     }
   }
+  if (operation.kind === "arrayDestructureProtocol") {
+    for (const name of operation.elements) {
+      if (name !== undefined) {
+        bindings.set(name, { kind: "valueVariable", name });
+      }
+    }
+  }
   if (operation.kind === "letNumber") {
     bindings.set(operation.name, { kind: "number", value: { kind: "variable", name: operation.name } });
   }
@@ -3697,6 +3712,11 @@ function collectRuntimeShadowObjectNames(operation: JsIrOperation, names: Set<st
 function collectOperationValueExpressions(operation: JsIrOperation, names: Set<string>): void {
   if (operation.kind === "constValue" || operation.kind === "throwValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore") {
     collectValueExpressionObjectNames(operation.value, names);
+  }
+  if (operation.kind === "arrayDestructureProtocol") {
+    if (operation.source.kind === "value") {
+      collectValueExpressionObjectNames(operation.source.value, names);
+    }
   }
   if (operation.kind === "runtimeErrorLiteral") {
     collectValueExpressionObjectNames(operation.message, names);
@@ -5686,6 +5706,9 @@ function lowerDestructuringBinding(
 ): JsIrOperation | undefined {
   const operations: JsIrOperation[] = [];
   const working = new Map(bindings);
+  if (ts.isArrayBindingPattern(pattern) && lowerArrayProtocolDestructuring(pattern, initializer, working, operations)) {
+    return { kind: "bindingGroup", operations };
+  }
   const source = resolveDestructuringSource(initializer, working, operations, pattern.pos);
   if (source === undefined) {
     return undefined;
@@ -5700,6 +5723,62 @@ function lowerDestructuringBinding(
     return undefined;
   }
   return { kind: "bindingGroup", operations };
+}
+
+function lowerArrayProtocolDestructuring(
+  pattern: ts.ArrayBindingPattern,
+  initializer: ts.Expression,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): boolean {
+  const elements: (string | undefined)[] = [];
+  for (const element of pattern.elements) {
+    if (ts.isOmittedExpression(element)) {
+      elements.push(undefined);
+      continue;
+    }
+    if (element.dotDotDotToken !== undefined || element.initializer !== undefined || !ts.isIdentifier(element.name)) {
+      return false;
+    }
+    elements.push(element.name.text);
+  }
+
+  const unwrapped = unwrapTypeOnlyExpression(initializer);
+  if (ts.isIdentifier(unwrapped) && working.get(unwrapped.text)?.kind === "array") {
+    return false;
+  }
+  let source: Extract<JsIrOperation, { readonly kind: "arrayDestructureProtocol" }>["source"] | undefined;
+  if (ts.isIdentifier(unwrapped)) {
+    const binding = working.get(unwrapped.text);
+    if (binding?.kind === "runtimeMap" || binding?.kind === "runtimeSet") {
+      let sourceKind: "map" | "set" = "set";
+      if (binding.kind === "runtimeMap") {
+        sourceKind = "map";
+      }
+      source = {
+        kind: "collection",
+        name: binding.name,
+        sourceKind
+      };
+    }
+  }
+  if (source === undefined) {
+    const iterable = lowerValueExpression(unwrapped, working);
+    if (iterable === undefined) {
+      return false;
+    }
+    source = { kind: "value", value: iterable };
+  }
+
+  const operation: JsIrOperation = {
+    kind: "arrayDestructureProtocol",
+    source,
+    elements,
+    notIterableMessage: `${iteratorErrorSubject(initializer)} is not iterable`
+  };
+  operations.push(operation);
+  updateBindings(operation, working);
+  return true;
 }
 
 type DestructuringSource = {

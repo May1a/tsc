@@ -1855,6 +1855,10 @@ function emitLoopControlOperation(operation: JsIrOperation, context: EmitContext
     return emitForOfProtocolOperation(operation, context);
   }
 
+  if (operation.kind === "arrayDestructureProtocol") {
+    return emitArrayDestructureProtocolOperation(operation, context);
+  }
+
   if (operation.kind === "forInObject") {
     return emitForInObjectOperation(operation, context);
   }
@@ -5661,6 +5665,105 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
     `  br label %${endLabel}`,
     `${endLabel}:`
   ];
+}
+
+// Positional binding consumes exactly one iterator step per pattern element.
+// eslint-disable-next-line max-statements -- Each unrolled step needs explicit done/value control flow and exception propagation.
+function emitArrayDestructureProtocolOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "arrayDestructureProtocol" }>,
+  context: EmitContext
+): string[] {
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  const endLabel = `destructure.proto.end.${index}`;
+  useRuntimeHelper(context.runtime, "getIteratorValue");
+  useRuntimeHelper(context.runtime, "callIteratorNext");
+  useRuntimeHelper(context.runtime, "valueObjectGet");
+  useRuntimeHelper(context.runtime, "valueTruthy");
+  useRuntimeHelper(context.runtime, "valueBoxString");
+
+  let iteratorCall: JsValue;
+  let setupLines: string[];
+  if (operation.source.kind === "collection") {
+    useRuntimeHelper(context.runtime, "getCollectionIterator");
+    const collection = emitRuntimeCollectionPointer(operation.source.name, context);
+    let sourceKind = 3;
+    let iterationKind = 1;
+    if (operation.source.sourceKind === "map") {
+      sourceKind = 2;
+      iterationKind = 2;
+    }
+    iteratorCall = emitGeneratedJsCall("getCollectionIterator", [`ptr ${collection.value}`, `i64 ${sourceKind}`, `i64 ${iterationKind}`], context);
+    setupLines = [...collection.lines, ...iteratorCall.lines];
+  } else {
+    const iterable = emitValueExpression(operation.source.value, context);
+    const messageConstant = addStringConstant(operation.notIterableMessage, context);
+    const message = `%destructure.proto.not.iterable.${index}`;
+    iteratorCall = emitGeneratedJsCall("getIteratorValue", [`i64 ${iterable.value}`, `i64 ${message}`], context);
+    setupLines = [
+      ...iterable.lines,
+      `  call void @gcRootPush(i64 ${iterable.value})`,
+      `  ${message} = call i64 @valueBoxString(ptr ${messageConstant}, i64 ${utf8ByteLength(operation.notIterableMessage)})`,
+      ...iteratorCall.lines
+    ];
+  }
+  const doneKey = addStringConstant("done", context);
+  const valueKey = addStringConstant("value", context);
+  const lines = [
+    ...setupLines,
+    `  call void @gcRootPush(i64 ${iteratorCall.value})`
+  ];
+
+  for (const name of operation.elements) {
+    if (name !== undefined) {
+      lines.push(`  ${variablePointerName(name)} = alloca i64`);
+      context.bindings.set(name, { kind: "valueVariable", name });
+    }
+  }
+  if (operation.elements.length === 0) {
+    return lines;
+  }
+
+  for (let elementIndex = 0; elementIndex < operation.elements.length; elementIndex += 1) {
+    const name = operation.elements[elementIndex];
+    const valueLabel = `destructure.proto.value.${index}.${elementIndex}`;
+    const doneLabel = `destructure.proto.done.${index}.${elementIndex}`;
+    let nextLabel = endLabel;
+    if (elementIndex !== operation.elements.length - 1) {
+      nextLabel = `destructure.proto.next.${index}.${elementIndex}`;
+    }
+    const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iteratorCall.value}`], context);
+    const doneValue = `%destructure.proto.done.value.${index}.${elementIndex}`;
+    const isDone = `%destructure.proto.is.done.${index}.${elementIndex}`;
+    lines.push(
+      ...nextCall.lines,
+      `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
+      `  ${isDone} = call i1 @valueTruthy(i64 ${doneValue})`,
+      `  br i1 ${isDone}, label %${doneLabel}, label %${valueLabel}`,
+      `${valueLabel}:`
+    );
+    if (name !== undefined) {
+      const value = `%destructure.proto.item.${index}.${elementIndex}`;
+      lines.push(
+        `  ${value} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+        `  store i64 ${value}, ptr ${variablePointerName(name)}`,
+        `  call void @gcRootPush(i64 ${value})`
+      );
+    }
+    lines.push(`  br label %${nextLabel}`, `${doneLabel}:`);
+    for (let remaining = elementIndex; remaining < operation.elements.length; remaining += 1) {
+      const remainingName = operation.elements[remaining];
+      if (remainingName !== undefined) {
+        lines.push(`  store i64 ${jsValueUndefined}, ptr ${variablePointerName(remainingName)}`);
+      }
+    }
+    lines.push(`  br label %${endLabel}`);
+    if (nextLabel !== endLabel) {
+      lines.push(`${nextLabel}:`);
+    }
+  }
+  lines.push(`${endLabel}:`);
+  return lines;
 }
 
 function emitForOfMapOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfMap" }>, context: EmitContext): string[] {
