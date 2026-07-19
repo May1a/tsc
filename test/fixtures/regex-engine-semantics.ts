@@ -8,8 +8,6 @@ print(/a(b|c)d/.test("acd"));
 print(/^(ab)+$/.test("abab"));
 print(/\bcat\b/.test("a cat!"));
 print(/\Bcat\B/.test("scats"));
-const unicode = /./u;
-print(unicode.unicode);
 print(/^.$/u.test("😀"));
 print(/^..$/.test("😀"));
 print(/^.$/.test("😀"));

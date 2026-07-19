@@ -31,6 +31,10 @@ export type Expectation =
   | { readonly kind: "negative-compile" }
   | { readonly kind: "negative-runtime"; readonly errorName: string };
 
+// Per-spec parse goal, kept as forward plumbing for a future
+// module-compilation slice (docs/plan/test262-script-module-oracle.md, design
+// decision 1). Under the shipped test262/filters.json the "module" flag stays
+// unsupported, so selected tests are always "script" today.
 export type ParseGoal = "script" | "module";
 
 export type SelectedTest = {

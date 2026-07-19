@@ -2103,7 +2103,7 @@ function lowerClassDeclaration(
   }
   const info: ClassInfo = {
     name: statement.name.text,
-    ...classBaseInfo(baseName),
+    baseName,
     fields: members.fields,
     classId: nextClassId++,
     constructorParameters,
@@ -2146,13 +2146,6 @@ function lowerClassDeclaration(
     operations.push(lowerClassAccessor(info, accessor, classSetterFunctionName(info.name, accessorName(accessor)), bindings));
   }
   return operations;
-}
-
-function classBaseInfo(baseName: string | undefined): Pick<ClassInfo, "baseName"> | Record<string, never> {
-  if (baseName === undefined) {
-    return {};
-  }
-  return { baseName };
 }
 
 // Emits the module-init slot that backs a class's prototype object: an empty

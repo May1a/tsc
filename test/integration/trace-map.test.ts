@@ -183,4 +183,17 @@ describe("operation trace maps", () => {
       expectNativeMatchesNodeIfAvailable("class-prototype-method-lookup.ts", { keepArtifactsOnFailure: false })
     ).rejects.toThrow(/Compile-time fallback modules/);
   }, roadmapIntegrationTimeoutMs);
+
+  test("keeps this-before-super constructors on the compile-time fallback", async () => {
+    // Issue #24 acceptance: accessing `this` before `super()` must keep the
+    // existing compile-time fallback rather than being silently mis-lowered
+    // to native code with partial TDZ semantics.
+    const result = await expectSuccessfulCompile("class-this-before-super.ts");
+    try {
+      const traceMap = await readTraceMap(result);
+      expect(traceMap.modules[0].loweringMode).toBe("compileTimeFallback");
+    } finally {
+      await result.cleanup();
+    }
+  });
 });

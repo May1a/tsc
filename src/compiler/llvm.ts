@@ -4987,14 +4987,7 @@ function internedFunctionGlobal(target: string): string {
 
 // eslint-disable-next-line max-statements -- Dynamic calls materialize fixed and iterable spread arguments into one argv state machine.
 function emitValueCallExpression(
-  expression: {
-    readonly callee: JsIrValueExpression;
-    readonly arguments: readonly JsIrCallArgument[];
-    readonly thisValue?: JsIrValueExpression;
-    readonly methodReceiver?: JsIrValueExpression;
-    readonly methodKey?: JsIrStringExpression;
-    readonly spreadArguments?: readonly JsIrRuntimeArrayElement[];
-  },
+  expression: Extract<JsIrValueExpression, { readonly kind: "callValue" }>,
   context: EmitContext
 ): JsValue {
   useRuntimeHelper(context.runtime, "jsCall");
@@ -6168,6 +6161,7 @@ function emitArrayDestructureProtocolOperation(
   useRuntimeHelper(context.runtime, "valueBoxString");
   useRuntimeHelper(context.runtime, "arrayNew");
   useRuntimeHelper(context.runtime, "arrayPush");
+  useRuntimeHelper(context.runtime, "valueBoxArray");
 
   let iteratorCall: JsValue;
   let setupLines: string[];
@@ -6229,6 +6223,7 @@ function emitArrayDestructureProtocolOperation(
     const element = operation.elements[elementIndex];
     if (element.kind === "rest") {
       const restArray = `%destructure.proto.rest.${index}.${elementIndex}`;
+      const restBoxed = `%destructure.proto.rest.boxed.${index}.${elementIndex}`;
       const restCond = `destructure.proto.rest.cond.${index}.${elementIndex}`;
       const restCall = `destructure.proto.rest.call.${index}.${elementIndex}`;
       const restValue = `destructure.proto.rest.value.${index}.${elementIndex}`;
@@ -6241,6 +6236,11 @@ function emitArrayDestructureProtocolOperation(
       const alreadyDone = `%destructure.proto.rest.already.done.${index}.${elementIndex}`;
       lines.push(
         `  ${restArray} = call ptr @arrayNew(i64 0)`,
+        // Root the rest array across the consumption loop: the per-iteration
+        // safepoint can collect while the raw pointer only lives in an alloca
+        // (same shape as the iterable-spread destination rooting).
+        `  ${restBoxed} = call i64 @valueBoxArray(ptr ${restArray})`,
+        `  call void @gcRootPush(i64 ${restBoxed})`,
         `  store ptr ${restArray}, ptr ${variablePointerName(element.name)}`,
         `  br label %${restCond}`,
         `${restCond}:`,

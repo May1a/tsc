@@ -734,7 +734,6 @@ export function emitRuntimeDefinitions(runtime: RuntimeHelperEmitter): string[] 
 @.regex.global = private unnamed_addr constant [7 x i8] c"global\\00"
 @.regex.ignore.case = private unnamed_addr constant [11 x i8] c"ignoreCase\\00"
 @.regex.multiline = private unnamed_addr constant [10 x i8] c"multiline\\00"
-@.regex.unicode = private unnamed_addr constant [8 x i8] c"unicode\\00"
 @.regex.sticky = private unnamed_addr constant [7 x i8] c"sticky\\00"
 @.regex.last.index = private unnamed_addr constant [10 x i8] c"lastIndex\\00"
 @.regex.index = private unnamed_addr constant [6 x i8] c"index\\00"
@@ -903,13 +902,11 @@ build:
   %global.addr = alloca i1
   %ignore.addr = alloca i1
   %multiline.addr = alloca i1
-  %unicode.addr = alloca i1
   %sticky.addr = alloca i1
   store i64 0, ptr %i.addr
   store i1 false, ptr %global.addr
   store i1 false, ptr %ignore.addr
   store i1 false, ptr %multiline.addr
-  store i1 false, ptr %unicode.addr
   store i1 false, ptr %sticky.addr
   br label %scan
 scan:
@@ -922,7 +919,6 @@ scan.body:
   %is.g = icmp eq i8 %ch, 103
   %is.i = icmp eq i8 %ch, 105
   %is.m = icmp eq i8 %ch, 109
-  %is.u = icmp eq i8 %ch, 117
   %is.y = icmp eq i8 %ch, 121
   br i1 %is.g, label %set.g, label %check.i
 set.g:
@@ -939,14 +935,9 @@ set.m:
   store i1 true, ptr %multiline.addr
   br label %step
 check.y:
-  br i1 %is.y, label %set.y, label %check.u
+  br i1 %is.y, label %set.y, label %step
 set.y:
   store i1 true, ptr %sticky.addr
-  br label %step
-check.u:
-  br i1 %is.u, label %set.u, label %step
-set.u:
-  store i1 true, ptr %unicode.addr
   br label %step
 step:
   %next = add i64 %i, 1
@@ -956,18 +947,15 @@ finish:
   %global = load i1, ptr %global.addr
   %ignore = load i1, ptr %ignore.addr
   %multiline = load i1, ptr %multiline.addr
-  %unicode = load i1, ptr %unicode.addr
   %sticky = load i1, ptr %sticky.addr
   %global.value = select i1 %global, i64 ${legacyJsValue.immediate("true")}, i64 ${legacyJsValue.immediate("false")}
   %ignore.value = select i1 %ignore, i64 ${legacyJsValue.immediate("true")}, i64 ${legacyJsValue.immediate("false")}
   %multiline.value = select i1 %multiline, i64 ${legacyJsValue.immediate("true")}, i64 ${legacyJsValue.immediate("false")}
-  %unicode.value = select i1 %unicode, i64 ${legacyJsValue.immediate("true")}, i64 ${legacyJsValue.immediate("false")}
   %sticky.value = select i1 %sticky, i64 ${legacyJsValue.immediate("true")}, i64 ${legacyJsValue.immediate("false")}
   %zero = call i64 @valueBoxNumber(double 0.0)
   call void @objectSet(ptr %object, i64 6, ptr @.regex.global, i64 %global.value)
   call void @objectSet(ptr %object, i64 10, ptr @.regex.ignore.case, i64 %ignore.value)
   call void @objectSet(ptr %object, i64 9, ptr @.regex.multiline, i64 %multiline.value)
-  call void @objectSet(ptr %object, i64 7, ptr @.regex.unicode, i64 %unicode.value)
   call void @objectSet(ptr %object, i64 6, ptr @.regex.sticky, i64 %sticky.value)
   call void @objectSet(ptr %object, i64 9, ptr @.regex.last.index, i64 %zero)
   %boxed = call i64 @valueBoxObject(ptr %object)
@@ -2140,6 +2128,12 @@ return:
 `);
   }
   if (runtime.used.has("regexFind")) {
+    // ADR 0008: regexFind keeps a raw i64 return because it cannot produce a
+    // JS-observable exception. It only reads RegExp slots, coerces the
+    // engine-maintained lastIndex number, and runs the byte matcher; every
+    // callee (objectGet/objectSet, valueString*, valueNumber, valueBoxNumber,
+    // regexByteOffset, regexUtf16Index, regexMatchAlternatives) is a
+    // non-throwing scalar helper with no error channel.
     definitions.push(`define i64 @regexFind(i64 %regex, i64 %input) {
 entry:
   %object = call ptr @valueObjectPtr(i64 %regex)
@@ -2150,7 +2144,6 @@ entry:
   %sticky.value = call i64 @objectGet(ptr %object, i64 6, ptr @.regex.sticky)
   %ignore.value = call i64 @objectGet(ptr %object, i64 10, ptr @.regex.ignore.case)
   %multiline.value = call i64 @objectGet(ptr %object, i64 9, ptr @.regex.multiline)
-  %unicode.value = call i64 @objectGet(ptr %object, i64 7, ptr @.regex.unicode)
   %source.ptr = call ptr @valueStringPtr(i64 %source.value)
   %source.len = call i64 @valueStringLength(i64 %source.value)
   %input.ptr = call ptr @valueStringPtr(i64 %input)
@@ -2164,17 +2157,44 @@ entry:
   %start = select i1 %uses.last, i64 %last.byte, i64 0
   %ignore = icmp eq i64 %ignore.value, ${legacyJsValue.immediate("true")}
   %multiline = icmp eq i64 %multiline.value, ${legacyJsValue.immediate("true")}
-  %unicode = icmp eq i64 %unicode.value, ${legacyJsValue.immediate("true")}
   %ignore.bit = zext i1 %ignore to i64
   %multiline.raw = zext i1 %multiline to i64
   %multiline.bit = shl i64 %multiline.raw, 1
+  %flag.bits.0 = or i64 %ignore.bit, %multiline.bit
+  %flags.ptr = call ptr @valueStringPtr(i64 %flags.value)
+  %flags.len = call i64 @valueStringLength(i64 %flags.value)
+  %flag.scan.addr = alloca i64
+  %unicode.addr = alloca i1
+  store i64 0, ptr %flag.scan.addr
+  store i1 false, ptr %unicode.addr
+  br label %flag.scan
+flag.scan:
+  %flag.scan.index = load i64, ptr %flag.scan.addr
+  %flag.scan.done = icmp uge i64 %flag.scan.index, %flags.len
+  br i1 %flag.scan.done, label %flag.scanned, label %flag.scan.body
+flag.scan.body:
+  %flag.scan.ptr = getelementptr i8, ptr %flags.ptr, i64 %flag.scan.index
+  %flag.scan.ch = load i8, ptr %flag.scan.ptr
+  %flag.scan.is.u = icmp eq i8 %flag.scan.ch, 117
+  br i1 %flag.scan.is.u, label %flag.scan.found, label %flag.scan.step
+flag.scan.found:
+  store i1 true, ptr %unicode.addr
+  br label %flag.scanned
+flag.scan.step:
+  %flag.scan.next = add i64 %flag.scan.index, 1
+  store i64 %flag.scan.next, ptr %flag.scan.addr
+  br label %flag.scan
+flag.scanned:
+  ; The u flag is derived from the stored flags string rather than a RegExp
+  ; property so that .unicode is not JS-observable; the matcher still needs
+  ; the bit for astral-plane stepping until Unicode semantics land in #31.
+  %unicode = load i1, ptr %unicode.addr
   %unicode.raw = zext i1 %unicode to i64
   %unicode.bit = shl i64 %unicode.raw, 2
-  %flag.bits.0 = or i64 %ignore.bit, %multiline.bit
   %flag.bits = or i64 %flag.bits.0, %unicode.bit
   br label %search
 search:
-  %position = phi i64 [ %start, %entry ], [ %next.position, %advance ]
+  %position = phi i64 [ %start, %flag.scanned ], [ %next.position, %advance ]
   %in.range = icmp ule i64 %position, %input.len
   br i1 %in.range, label %attempt, label %not.found
 attempt:
@@ -2400,6 +2420,12 @@ box:
 `);
   }
   if (runtime.used.has("regexSplit")) {
+    // ADR 0008: regexSplit keeps a raw ptr return because it cannot produce a
+    // JS-observable exception. The limit is already coerced to i64 at the call
+    // site (see emitRuntimeRegexSplitOperation in llvm.ts), lastIndex/global
+    // are saved and restored around plain integer compares, and allocation
+    // goes through arrayNew/arrayPush whose failure is fatal to the process,
+    // not a JS exception. Every callee is a non-throwing scalar helper.
     definitions.push(`define ptr @regexSplit(i64 %regex, i64 %input, i64 %limit) {
 entry:
   %object = call ptr @valueObjectPtr(i64 %regex)

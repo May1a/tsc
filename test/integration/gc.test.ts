@@ -383,3 +383,91 @@ describe("completion cleanup rooting", () => {
     }
   });
 });
+
+// Constrained-heap stress coverage prescribed by the iterator-destructuring,
+// iterator-spread, and regexp-engine plans. Every fixture allocates several
+// MiB of transient cells, so running with TSCN_GC_HEAP_SIZE=2097152 (2 MiB,
+// above the 1 MiB collection threshold but below the total allocation) forces
+// repeated gcCollect cycles; without working collection the binaries exit 1
+// on arena exhaustion. Rooting regressions surface as crashes or wrong output.
+const constrainedHeapEnv = { TSCN_GC_HEAP_SIZE: "2097152" } as const;
+
+describe("tscn GC constrained heap", () => {
+  test("keeps a pending thrown payload rooted across allocating IteratorClose cleanup", async () => {
+    // gc-destructure-close-stress.ts: the array-binding default throws a
+    // Payload, so the thrown object is the pending completion while
+    // IteratorClose runs a return() that allocates ~3 MiB of transient cells.
+    // Under the constrained heap two collections fire mid-cleanup; the catch
+    // must still read back "pending".
+    const result = await expectSuccessfulCompile("gc-destructure-close-stress.ts", { link: true });
+
+    try {
+      await expectLlvmAsVerificationIfAvailable(result);
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "pending\n", stderr: "" }, { env: constrainedHeapEnv });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("roots the rest array across a long consumption loop under a constrained heap", async () => {
+    // gc-destructure-rest-stress.ts: a 25k-element rest pattern. The rest
+    // array must be boxed and rooted before the loop so the per-iteration
+    // safepoint cannot sweep it.
+    const result = await expectSuccessfulCompile("gc-destructure-rest-stress.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toMatch(
+        /%destructure\.proto\.rest\.\d+\.\d+ = call ptr @arrayNew\(i64 0\)\n\s*%destructure\.proto\.rest\.boxed\.\d+\.\d+ = call i64 @valueBoxArray\(ptr %destructure\.proto\.rest\.\d+\.\d+\)\n\s*call void @gcRootPush\(i64 %destructure\.proto\.rest\.boxed\.\d+\.\d+\)/
+      );
+      // The consumption loop carries a safepoint right after each push.
+      expect(llvmIr).toMatch(/call i64 @arrayPush\(ptr %destructure\.proto\.rest\.\d+\.\d+, i64 %destructure\.proto\.rest\.item\.\d+\.\d+\)\n\s*call void @gcSafepoint\(\)/);
+      await expectLlvmAsVerificationIfAvailable(result);
+      await expectNativeBehaviorIfAvailable(
+        result,
+        { status: 0, stdout: "0\n1\n24998\n2\n24999\n", stderr: "" },
+        { env: constrainedHeapEnv }
+      );
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("keeps spread consumption loops over a generic iterable alive under a constrained heap", async () => {
+    // gc-spread-iterable-stress.ts: 4000 rounds of array spread over a generic
+    // iterable plus one destination array held across the whole loop. Three
+    // collections fire under the constrained heap; the held array must read
+    // back intact.
+    const result = await expectSuccessfulCompile("gc-spread-iterable-stress.ts", { link: true });
+
+    try {
+      await expectLlvmAsVerificationIfAvailable(result);
+      await expectNativeBehaviorIfAvailable(
+        result,
+        { status: 0, stdout: "40000\n10\n1\n10\n", stderr: "" },
+        { env: constrainedHeapEnv }
+      );
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("keeps compiled regexps and match results alive across collection cycles", async () => {
+    // gc-regexp-stress.ts: 20k fresh pattern compilations and match results,
+    // with one pattern and one match held across the whole loop. Seven
+    // collections fire under the constrained heap; the held values must read
+    // back intact.
+    const result = await expectSuccessfulCompile("gc-regexp-stress.ts", { link: true });
+
+    try {
+      await expectLlvmAsVerificationIfAvailable(result);
+      await expectNativeBehaviorIfAvailable(
+        result,
+        { status: 0, stdout: "20000\ntrue\nword-42\nword\n42\n", stderr: "" },
+        { env: constrainedHeapEnv }
+      );
+    } finally {
+      await result.cleanup();
+    }
+  });
+});

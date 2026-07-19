@@ -141,13 +141,17 @@ export const expectUnsupportedMessage = async (fixture: string, message: string)
 export const captureCommand = (
   executable: string,
   args: readonly string[],
-  options: { readonly cwd?: string } = {}
+  options: { readonly cwd?: string; readonly env?: Record<string, string> } = {}
 ): Effect.Effect<CapturedRun, never, CommandExecutor.CommandExecutor> => {
   const buildCommand = (): Command.Command => {
-    if (options.cwd === undefined) {
-      return Command.make(executable, ...args);
+    let command = Command.make(executable, ...args);
+    if (options.cwd !== undefined) {
+      command = Command.workingDirectory(command, options.cwd);
     }
-    return Command.workingDirectory(Command.make(executable, ...args), options.cwd);
+    if (options.env !== undefined) {
+      command = Command.env(command, options.env);
+    }
+    return command;
   };
   return Effect.scoped(
     Effect.gen(function* captureCommandGen() {
@@ -166,10 +170,13 @@ export const captureCommand = (
   );
 };
 
-export const runNativeIfAvailable = async (result: CompileResult): Promise<NativeRunResult> => {
+export const runNativeIfAvailable = async (
+  result: CompileResult,
+  options: { readonly env?: Record<string, string> } = {}
+): Promise<NativeRunResult> => {
   const executable = path.join(result.outDir, "main");
   return Effect.runPromise(
-    captureCommand(executable, []).pipe(
+    captureCommand(executable, [], { env: options.env }).pipe(
       Effect.map(
         (run): NativeRunResult => ({
           skipped: false,
@@ -227,9 +234,10 @@ export const toolExecutable = async (name: ToolName): Promise<string | undefined
 
 export const expectNativeBehaviorIfAvailable = async (
   result: CompileResult,
-  expected: ExpectedNativeBehavior
+  expected: ExpectedNativeBehavior,
+  options: { readonly env?: Record<string, string> } = {}
 ): Promise<void> => {
-  const native = await runNativeIfAvailable(result);
+  const native = await runNativeIfAvailable(result, options);
   if (native.skipped) {
     expect(native.reason).toContain("ENOENT");
     const diagnostics = await result.readArtifact("diagnostics.txt");

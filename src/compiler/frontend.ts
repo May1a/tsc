@@ -24,6 +24,17 @@ const inlineCppTag = "__tscn_inline_cpp";
 const inlineCppMarker = "@cpp";
 const missingInlineCppTagDiagnosticCode = 2304;
 const suggestedInlineCppTagDiagnosticCode = 2552;
+// TS2556 ("a spread argument must either have a tuple type or be passed to a
+// rest parameter") must be suppressed globally: it fires on user source the
+// compiler intentionally accepts. Call spread over generic iterables and
+// arrays into fixed-arity parameters (issue #23, docs/plan/iterator-spread.md)
+// is a supported runtime feature — the argv buffer is materialized through the
+// iterator protocol and dispatched via jsCall with a runtime argc — but the TS
+// checker can only type tuple spreads or rest targets. The suppression cannot
+// be narrowed to harness/prelude code because the diagnostic originates from
+// user call sites. It also hides no genuinely ill-typed code: non-iterable
+// spread sources are still rejected by TS2488, arity mismatches by TS2554, and
+// element type mismatches by TS2345, none of which are filtered.
 const spreadArgumentDiagnosticCode = 2556;
 
 const parsedConfigCache = new Map<string, CachedParsedConfigResult>();

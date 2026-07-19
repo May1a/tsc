@@ -41,13 +41,14 @@ const parseThrownObservation = (json: string): ThrownObservation | undefined => 
   return undefined;
 };
 
-export const nodeWrapperSource = `
-globalThis.print = (value) => {
+// Common tail of both Node wrappers: the print shim, the try/catch around the
+// entry execution, and the thrownSentinel terminal record on stderr. Both
+// wrappers must observe and report throws identically.
+const nodeWrapperPrintShim = `globalThis.print = (value) => {
   process.stdout.write(String(value) + "\\n");
-};
-try {
-  await import(process.argv[1]);
-} catch (thrown) {
+};`;
+
+const nodeWrapperTerminalRecord = `} catch (thrown) {
   const payload = thrown instanceof Error
     ? { kind: "error", name: thrown.name, message: thrown.message }
     : { kind: "value", display: String(thrown) };
@@ -56,13 +57,17 @@ try {
 }
 `;
 
+export const nodeWrapperSource = `
+${nodeWrapperPrintShim}
+try {
+  await import(process.argv[1]);
+${nodeWrapperTerminalRecord}`;
+
 // Node's built-in .ts loader applies Module identifier restrictions before a
 // CommonJS require reaches Script parsing. Strip types with an explicit Script
 // module kind, then let CommonJS _compile perform the goal-sensitive parse.
 export const nodeScriptWrapperSource = `
-globalThis.print = (value) => {
-  process.stdout.write(String(value) + "\\n");
-};
+${nodeWrapperPrintShim}
 const fs = require("node:fs");
 const ts = require("typescript");
 require.extensions[".ts"] = (module, filename) => {
@@ -79,14 +84,7 @@ require.extensions[".ts"] = (module, filename) => {
 };
 try {
   require(process.argv[1]);
-} catch (thrown) {
-  const payload = thrown instanceof Error
-    ? { kind: "error", name: thrown.name, message: thrown.message }
-    : { kind: "value", display: String(thrown) };
-  process.stderr.write(${JSON.stringify(thrownSentinel)} + JSON.stringify(payload) + "\\n");
-  process.exitCode = 1;
-}
-`;
+${nodeWrapperTerminalRecord}`;
 
 export const nodeBehavior = (run: { readonly status: number; readonly stdout: string; readonly stderr: string }): ObservedBehavior => {
   const terminalRecord = new RegExp(`(?:^|\\n)${thrownSentinel}([^\\n]+)\\n$`);

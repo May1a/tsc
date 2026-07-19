@@ -192,8 +192,26 @@ function verifyProperty(obj: any, name: any, desc: any, ...options: any[]): bool
       } else {
         throw Test262Error("Unexpected enumerable descriptor attribute");
       }
-      const enumerableKeys = Object.keys(target);
-      const enumerable = enumerableKeys.includes(key);
+      // Upstream propertyHelper.js isEnumerable() probes enumerability
+      // behaviorally: a for...in traversal plus an own propertyIsEnumerable
+      // check. Generic object parameters are boxed values, which for...in and
+      // propertyIsEnumerable do not lower over, so the own enumerable entries
+      // are materialized into a runtime object first; the traversal then
+      // checks the same own-enumerable set upstream's probe checks.
+      const enumerableEntries = Object.entries(target);
+      const enumerableTarget = Object.fromEntries(enumerableEntries);
+      let enumerable = false;
+      for (const forInKey in enumerableTarget) {
+        if (forInKey === key) {
+          enumerable = true;
+        }
+      }
+      if (enumerable === true) {
+        if (enumerableTarget.propertyIsEnumerable(key)) {
+        } else {
+          enumerable = false;
+        }
+      }
       if (desc.enumerable === enumerable) {
       } else {
         throw Test262Error("Unexpected enumerable property behavior");
