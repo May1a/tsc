@@ -140,7 +140,7 @@ describe("operation trace maps", () => {
 
   test("records multiple modules and compile-time fallback provenance", async () => {
     const imported = await expectSuccessfulCompile("entry-with-import.ts");
-    const fallback = await expectSuccessfulCompile("class-extends-super-constructor.ts");
+    const fallback = await expectSuccessfulCompile("class-prototype-method-lookup.ts");
     try {
       const importedMap = await readTraceMap(imported);
       const fallbackMap = await readTraceMap(fallback);
@@ -180,7 +180,7 @@ describe("operation trace maps", () => {
 
   test("rejects compile-time fallback modules from the Node oracle", async () => {
     await expect(
-      expectNativeMatchesNodeIfAvailable("class-extends-super-constructor.ts", { keepArtifactsOnFailure: false })
+      expectNativeMatchesNodeIfAvailable("class-prototype-method-lookup.ts", { keepArtifactsOnFailure: false })
     ).rejects.toThrow(/Compile-time fallback modules/);
   }, roadmapIntegrationTimeoutMs);
 });

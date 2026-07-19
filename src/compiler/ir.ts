@@ -23,6 +23,7 @@ type ClassMethodInfo = {
 
 type ClassInfo = {
   readonly name: string;
+  readonly baseName?: string;
   readonly fields: readonly ClassFieldInfo[];
   readonly classId: number;
   readonly constructorParameters: readonly JsIrFunctionParameter[];
@@ -41,6 +42,8 @@ let activeClassRegistry: Map<string, ClassInfo> | undefined;
 // True while lowering a constructor or method body, so `this` resolves to the
 // synthetic instance parameter.
 let classThisInScope = false;
+let activeEnclosingClass: ClassInfo | undefined;
+let activeClassMethodStatic = false;
 
 let nextClassId = 1;
 
@@ -153,10 +156,28 @@ export type JsIrValueExpression =
       readonly callee: JsIrValueExpression;
       readonly arguments: readonly JsIrCallArgument[];
       readonly thisValue?: JsIrValueExpression;
+      readonly methodReceiver?: JsIrValueExpression;
+      readonly methodKey?: JsIrStringExpression;
+      readonly spreadArguments?: readonly JsIrRuntimeArrayElement[];
     }
   | {
       readonly kind: "functionObject";
       readonly definition: JsIrFunctionObjectDefinition;
+    }
+  | {
+      readonly kind: "regexCompile";
+      readonly pattern: JsIrStringExpression;
+      readonly flags: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "regexExec";
+      readonly regex: JsIrValueExpression;
+      readonly input: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "regexMatch";
+      readonly regex: JsIrValueExpression;
+      readonly input: JsIrStringExpression;
     }
   | {
       readonly kind: "inlineCppValue";
@@ -303,6 +324,7 @@ export type JsIrValueExpression =
       readonly kind: "newInstance";
       readonly className: string;
       readonly fieldCount: number;
+      readonly prototypeName: string;
       readonly constructorName: string;
       readonly arguments: readonly JsIrCallArgument[];
     };
@@ -319,9 +341,25 @@ export type JsIrRuntimeArrayElement =
       readonly kind: "spread";
       readonly arrayName: string;
       readonly sourceKind?: "runtime" | "fixed";
+    }
+  | {
+      readonly kind: "iterableSpread";
+      readonly source: JsIrValueExpression;
+      readonly notIterableMessage: string;
     };
 
+export type JsIrArrayDestructureElement =
+  | { readonly kind: "elision" }
+  | { readonly kind: "binding"; readonly name: string; readonly defaultValue?: JsIrValueExpression }
+  | { readonly kind: "nested"; readonly temporaryName: string; readonly operations: readonly JsIrOperation[] }
+  | { readonly kind: "rest"; readonly name: string };
+
 export type JsIrNumberExpression =
+  | {
+      readonly kind: "regexSearch";
+      readonly regex: JsIrValueExpression;
+      readonly input: JsIrStringExpression;
+    }
   | {
       readonly kind: "literal";
       readonly value: number;
@@ -512,6 +550,12 @@ export type JsIrStringExpression =
   | {
       readonly kind: "errorToString";
       readonly objectName: string;
+    }
+  | {
+      readonly kind: "regexReplace";
+      readonly receiver: JsIrStringExpression;
+      readonly regex: JsIrValueExpression;
+      readonly replacement: JsIrStringExpression;
     };
 
 export type JsIrObjectFieldValue =
@@ -578,7 +622,7 @@ export type JsIrBindingValue =
   | {
       readonly kind: "valueVariable";
       readonly name: string;
-      readonly valueType?: "function";
+      readonly valueType?: "function" | "regex";
     }
   | {
       readonly kind: "number";
@@ -653,6 +697,16 @@ export type JsIrCondition =
   | {
       readonly kind: "boolean";
       readonly value: boolean;
+    }
+  | {
+      readonly kind: "classInstanceOf";
+      readonly value: JsIrValueExpression;
+      readonly prototypeName: string;
+    }
+  | {
+      readonly kind: "regexTest";
+      readonly regex: JsIrValueExpression;
+      readonly input: JsIrStringExpression;
     }
   | {
       readonly kind: "numberComparison";
@@ -874,6 +928,7 @@ export type JsIrOperationNode =
       readonly kind: "letValue";
       readonly name: string;
       readonly value: JsIrValueExpression;
+      readonly moduleGlobal?: boolean;
     }
   | {
       readonly kind: "constClosure";
@@ -1004,6 +1059,13 @@ export type JsIrOperationNode =
       readonly name: string;
       readonly receiver: JsIrStringExpression;
       readonly separator: JsIrStringExpression;
+      readonly limit?: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "runtimeRegexSplit";
+      readonly name: string;
+      readonly receiver: JsIrStringExpression;
+      readonly regex: JsIrValueExpression;
       readonly limit?: JsIrNumberExpression;
     }
   | {
@@ -1313,6 +1375,11 @@ export type JsIrOperationNode =
       readonly prototypeName?: string;
     }
   | {
+      readonly kind: "valueObjectSetPrototype";
+      readonly targetName: string;
+      readonly prototypeName: string;
+    }
+  | {
       readonly kind: "runtimeObjectPreventExtensions" | "runtimeObjectSeal" | "runtimeObjectFreeze";
       readonly objectName: string;
     }
@@ -1419,7 +1486,7 @@ export type JsIrOperationNode =
       readonly source:
         | { readonly kind: "value"; readonly value: JsIrValueExpression }
         | { readonly kind: "collection"; readonly name: string; readonly sourceKind: "map" | "set" };
-      readonly elements: readonly (string | undefined)[];
+      readonly elements: readonly JsIrArrayDestructureElement[];
       readonly notIterableMessage: string;
     }
   | {
@@ -1490,6 +1557,14 @@ export type JsIrOperation = JsIrOperationNode & {
 // eslint-disable-next-line complexity -- Exhaustive IR child walk covers every nested operation form.
 export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOperation[] {
   switch (operation.kind) {
+    case "arrayDestructureProtocol": {
+      return operation.elements.flatMap((element) => {
+        if (element.kind === "nested") {
+          return element.operations;
+        }
+        return [];
+      });
+    }
     case "runtimeArrayMapFunctionObject": {
       return operation.callbackBody;
     }
@@ -1590,7 +1665,6 @@ const maximumNumberRadix = 36;
 const maximumToFixedDigits = 100;
 const regexpConstructorArgumentCount = 2;
 const arrayFromArgumentCount = 3;
-const maxAsciiCodePoint = 127;
 const traceOperationIdWidth = 6;
 
 // eslint-disable-next-line complexity, max-statements -- Aggregate binding classification is centralized during the runtime-shape transition.
@@ -1643,7 +1717,7 @@ export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBind
   if (operation.kind === "runtimeArrayFlat") {
     return { kind: "runtimeArray", name: operation.name };
   }
-  if (operation.kind === "runtimeStringSplit") {
+  if (operation.kind === "runtimeStringSplit" || operation.kind === "runtimeRegexSplit") {
     return { kind: "runtimeArray", name: operation.name };
   }
   if (operation.kind === "runtimeArrayMapCallback" || operation.kind === "runtimeArrayMapFunctionObject") {
@@ -1998,6 +2072,7 @@ function classMemberHasStaticModifier(member: ts.ClassElement): boolean {
   return ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ?? false;
 }
 
+// eslint-disable-next-line max-statements -- Class declaration lowering assembles all generated class artifacts in source order.
 function lowerClassDeclaration(
   statement: ts.ClassDeclaration,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
@@ -2006,16 +2081,32 @@ function lowerClassDeclaration(
   if (statement.name === undefined) {
     throw new ClassLoweringUnsupportedError();
   }
+  let baseName: string | undefined;
   if (statement.heritageClauses !== undefined && statement.heritageClauses.length > 0) {
-    throw new ClassLoweringUnsupportedError(); // inheritance handled in a later phase
+    if (statement.heritageClauses.length !== 1) {
+      throw new ClassLoweringUnsupportedError();
+    }
+    const [heritage] = statement.heritageClauses;
+    if (heritage.token !== ts.SyntaxKind.ExtendsKeyword || heritage.types.length !== 1 || !ts.isIdentifier(heritage.types[0].expression)) {
+      throw new ClassLoweringUnsupportedError();
+    }
+    baseName = heritage.types[0].expression.text;
+    if (!classes.has(baseName)) {
+      throw new ClassLoweringUnsupportedError();
+    }
   }
 
   const members = collectClassMembers(statement, bindings);
+  let constructorParameters = constructorParametersOf(members.constructorDeclaration);
+  if (baseName !== undefined && members.constructorDeclaration === undefined) {
+    constructorParameters = classes.get(baseName)?.constructorParameters ?? [];
+  }
   const info: ClassInfo = {
     name: statement.name.text,
+    ...classBaseInfo(baseName),
     fields: members.fields,
     classId: nextClassId++,
-    constructorParameters: constructorParametersOf(members.constructorDeclaration),
+    constructorParameters,
     methods: classMethodInfoMap(members.methodDeclarations),
     staticMethods: classMethodInfoMap(members.staticMethodDeclarations),
     staticFields: new Set(members.staticFields.map((field) => field.name)),
@@ -2028,9 +2119,18 @@ function lowerClassDeclaration(
 
   const operations: JsIrOperation[] = [];
   operations.push(lowerClassPrototypeStorage(info));
-  const staticStorage = lowerClassStaticStorage(info, members.staticFields, bindings);
-  if (staticStorage !== undefined) {
-    operations.push(staticStorage);
+  operations.push(lowerClassStaticStorage(info, members.staticFields, bindings));
+  if (baseName !== undefined) {
+    operations.push({
+      kind: "valueObjectSetPrototype",
+      targetName: classPrototypeName(info.name),
+      prototypeName: classPrototypeName(baseName)
+    });
+    operations.push({
+      kind: "valueObjectSetPrototype",
+      targetName: classStaticStorageName(info.name),
+      prototypeName: classStaticStorageName(baseName)
+    });
   }
   operations.push(lowerClassConstructor(info, members.constructorDeclaration, bindings));
   for (const declaration of members.methodDeclarations) {
@@ -2048,6 +2148,13 @@ function lowerClassDeclaration(
   return operations;
 }
 
+function classBaseInfo(baseName: string | undefined): Pick<ClassInfo, "baseName"> | Record<string, never> {
+  if (baseName === undefined) {
+    return {};
+  }
+  return { baseName };
+}
+
 // Emits the module-init slot that backs a class's prototype object: an empty
 // object that serves as the prototype for all instances. Accessible as `C.prototype`
 // and automatically set on instances via the class-id slot (future work).
@@ -2055,6 +2162,7 @@ function lowerClassPrototypeStorage(info: ClassInfo): JsIrOperation {
   return {
     kind: "letValue",
     name: classPrototypeName(info.name),
+    moduleGlobal: true,
     value: { kind: "objectLiteralValue", value: { fields: [] } }
   };
 }
@@ -2067,10 +2175,7 @@ function lowerClassStaticStorage(
   info: ClassInfo,
   staticFields: readonly ClassFieldInfo[],
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
-  if (staticFields.length === 0) {
-    return undefined;
-  }
+): JsIrOperation {
   const fields: JsIrRuntimeObjectField[] = staticFields.map((field) => ({
     kind: "field",
     key: { kind: "literal", value: field.name },
@@ -2079,6 +2184,7 @@ function lowerClassStaticStorage(
   return {
     kind: "letValue",
     name: classStaticStorageName(info.name),
+    moduleGlobal: true,
     value: { kind: "objectLiteralValue", value: { fields } }
   };
 }
@@ -2167,11 +2273,17 @@ function lowerClassAccessor(
   }
 
   const previousThis = classThisInScope;
+  const previousClass = activeEnclosingClass;
+  const previousStatic = activeClassMethodStatic;
   classThisInScope = true;
+  activeEnclosingClass = info;
+  activeClassMethodStatic = false;
   try {
     return { kind: "function", name: functionName, parameters: fnParameters, body: lowerClassMethodBody(accessor.body, fnBindings) };
   } finally {
     classThisInScope = previousThis;
+    activeEnclosingClass = previousClass;
+    activeClassMethodStatic = previousStatic;
   }
 }
 
@@ -2235,7 +2347,11 @@ function lowerClassMethod(
   }
 
   const previousThis = classThisInScope;
+  const previousClass = activeEnclosingClass;
+  const previousStatic = activeClassMethodStatic;
   classThisInScope = !isStatic;
+  activeEnclosingClass = info;
+  activeClassMethodStatic = isStatic;
   try {
     const body = lowerClassMethodBody(declaration.body, fnBindings);
     let name = classMethodFunctionName(info.name, methodName);
@@ -2245,6 +2361,8 @@ function lowerClassMethod(
     return { kind: "function", name, parameters: fnParameters, body };
   } finally {
     classThisInScope = previousThis;
+    activeEnclosingClass = previousClass;
+    activeClassMethodStatic = previousStatic;
   }
 }
 
@@ -2281,6 +2399,7 @@ function lowerClassMethodBody(
   return operations;
 }
 
+// eslint-disable-next-line complexity, max-statements -- Constructor lowering owns super ordering, instance initialization, and body scope restoration.
 function lowerClassConstructor(
   info: ClassInfo,
   constructorDeclaration: ts.ConstructorDeclaration | undefined,
@@ -2294,9 +2413,44 @@ function lowerClassConstructor(
   }
 
   const previousThis = classThisInScope;
+  const previousClass = activeEnclosingClass;
+  const previousStatic = activeClassMethodStatic;
   classThisInScope = true;
+  activeEnclosingClass = info;
+  activeClassMethodStatic = false;
   try {
     const body: JsIrOperation[] = [];
+    let remainingStatements: readonly ts.Statement[] = constructorDeclaration?.body?.statements ?? [];
+    if (info.baseName !== undefined) {
+      const base = activeClassRegistry?.get(info.baseName);
+      if (base === undefined) {
+        throw new ClassLoweringUnsupportedError();
+      }
+      let superArguments: readonly JsIrCallArgument[] | undefined;
+      if (constructorDeclaration === undefined) {
+        superArguments = info.constructorParameters.map(forwardedClassArgument);
+      } else {
+        const statements = constructorDeclaration.body?.statements ?? ts.factory.createNodeArray<ts.Statement>();
+        const [first, ...rest] = statements;
+        if (
+          !ts.isExpressionStatement(first) ||
+          !ts.isCallExpression(first.expression) ||
+          first.expression.expression.kind !== ts.SyntaxKind.SuperKeyword
+        ) {
+          throw new ClassLoweringUnsupportedError();
+        }
+        superArguments = lowerTypedCallArguments(base.constructorParameters, first.expression.arguments, fnBindings);
+        remainingStatements = rest;
+      }
+      if (superArguments === undefined) {
+        throw new ClassLoweringUnsupportedError();
+      }
+      body.push({
+        kind: "call",
+        name: classConstructorName(base.name),
+        arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...superArguments]
+      });
+    }
     const iteratorStore = lowerClassIteratorStore(info, fnBindings);
     if (iteratorStore !== undefined) {
       body.push(iteratorStore);
@@ -2310,7 +2464,7 @@ function lowerClassConstructor(
       });
     }
     if (constructorDeclaration?.body !== undefined) {
-      for (const statement of constructorDeclaration.body.statements) {
+      for (const statement of remainingStatements) {
         if (isNonExecutableDeclaration(statement)) {
           continue;
         }
@@ -2325,7 +2479,19 @@ function lowerClassConstructor(
     return { kind: "function", name: classConstructorName(info.name), parameters, body };
   } finally {
     classThisInScope = previousThis;
+    activeEnclosingClass = previousClass;
+    activeClassMethodStatic = previousStatic;
   }
+}
+
+function forwardedClassArgument(parameter: JsIrFunctionParameter): JsIrCallArgument {
+  if (parameter.valueKind === "number") {
+    return { valueKind: "number", value: { kind: "parameter", name: parameter.name } };
+  }
+  if (parameter.valueKind === "string") {
+    return { valueKind: "string", value: { kind: "variable", name: parameter.name } };
+  }
+  return { valueKind: "value", value: { kind: "variable", name: parameter.name } };
 }
 
 function lowerClassIteratorStore(
@@ -2402,17 +2568,21 @@ function lowerClassValueExpression(
     if (ts.isIdentifier(expression.expression) && !bindings.has(expression.expression.text) && expression.name.text === "prototype") {
       const classInfo = activeClassRegistry.get(expression.expression.text);
       if (classInfo !== undefined) {
-        return { kind: "objectRef", name: classPrototypeName(classInfo.name) };
+        return { kind: "variable", name: classPrototypeName(classInfo.name) };
       }
     }
 
     const receiver = lowerClassInstanceExpression(expression.expression, bindings);
     if (receiver !== undefined) {
       const receiverClass = resolveReceiverClass(expression.expression, bindings);
-      if (receiverClass?.getters.has(expression.name.text)) {
+      let getterClass: ClassInfo | undefined;
+      if (receiverClass !== undefined) {
+        getterClass = findClassInChain(receiverClass, (candidate) => candidate.getters.has(expression.name.text));
+      }
+      if (getterClass !== undefined) {
         return {
           kind: "call",
-          name: classGetterFunctionName(receiverClass.name, expression.name.text),
+          name: classGetterFunctionName(getterClass.name, expression.name.text),
           arguments: [{ valueKind: "value", value: receiver }]
         };
       }
@@ -2438,7 +2608,7 @@ function lowerClassStaticFieldAccess(
     return undefined;
   }
   const info = activeClassRegistry.get(receiver.text);
-  if (info === undefined || !info.staticFields.has(expression.name.text)) {
+  if (info === undefined || findClassInChain(info, (candidate) => candidate.staticFields.has(expression.name.text)) === undefined) {
     return undefined;
   }
   return {
@@ -2450,6 +2620,7 @@ function lowerClassStaticFieldAccess(
 
 // Resolves a static method call `C.m(...)` or an instance method call
 // `(<instance>).m(...)` to a direct call of the generated method function.
+// eslint-disable-next-line complexity, max-statements -- Method resolution handles super, static inheritance, and instance inheritance at one dispatch seam.
 function lowerClassMethodCall(
   call: ts.CallExpression,
   callee: ts.PropertyAccessExpression,
@@ -2460,21 +2631,66 @@ function lowerClassMethodCall(
   }
   const methodName = callee.name.text;
 
+  if (callee.expression.kind === ts.SyntaxKind.SuperKeyword) {
+    const enclosing = activeEnclosingClass;
+    let base: ClassInfo | undefined;
+    if (enclosing?.baseName !== undefined) {
+      base = activeClassRegistry.get(enclosing.baseName);
+    }
+    if (base === undefined) {
+      throw new ClassLoweringUnsupportedError();
+    }
+    if (activeClassMethodStatic) {
+      const definingClass = findClassInChain(base, (candidate) => candidate.staticMethods.has(methodName));
+      const method = definingClass?.staticMethods.get(methodName);
+      if (definingClass === undefined || method === undefined) {
+        throw new ClassLoweringUnsupportedError();
+      }
+      const args = lowerTypedCallArguments(method.parameters, call.arguments, bindings);
+      if (args === undefined) {
+        throw new ClassLoweringUnsupportedError();
+      }
+      return { kind: "call", name: classStaticMethodFunctionName(definingClass.name, methodName), arguments: args };
+    }
+    const definingClass = findClassInChain(base, (candidate) => candidate.methods.has(methodName));
+    const method = definingClass?.methods.get(methodName);
+    if (definingClass === undefined || method === undefined) {
+      throw new ClassLoweringUnsupportedError();
+    }
+    const args = lowerTypedCallArguments(method.parameters, call.arguments, bindings);
+    if (args === undefined) {
+      throw new ClassLoweringUnsupportedError();
+    }
+    return {
+      kind: "call",
+      name: classMethodFunctionName(definingClass.name, methodName),
+      arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...args]
+    };
+  }
+
   if (ts.isIdentifier(callee.expression) && !bindings.has(callee.expression.text)) {
     const staticClass = activeClassRegistry.get(callee.expression.text);
-    const staticMethod = staticClass?.staticMethods.get(methodName);
-    if (staticClass !== undefined && staticMethod !== undefined) {
+    let definingClass: ClassInfo | undefined;
+    if (staticClass !== undefined) {
+      definingClass = findClassInChain(staticClass, (candidate) => candidate.staticMethods.has(methodName));
+    }
+    const staticMethod = definingClass?.staticMethods.get(methodName);
+    if (definingClass !== undefined && staticMethod !== undefined) {
       const args = lowerTypedCallArguments(staticMethod.parameters, call.arguments, bindings);
       if (args === undefined) {
         throw new ClassLoweringUnsupportedError();
       }
-      return { kind: "call", name: classStaticMethodFunctionName(staticClass.name, methodName), arguments: args };
+      return { kind: "call", name: classStaticMethodFunctionName(definingClass.name, methodName), arguments: args };
     }
   }
 
   const receiverClass = resolveReceiverClass(callee.expression, bindings);
-  const method = receiverClass?.methods.get(methodName);
-  if (receiverClass !== undefined && method !== undefined) {
+  let definingClass: ClassInfo | undefined;
+  if (receiverClass !== undefined) {
+    definingClass = findClassInChain(receiverClass, (candidate) => candidate.methods.has(methodName));
+  }
+  const method = definingClass?.methods.get(methodName);
+  if (definingClass !== undefined && method !== undefined) {
     const receiverValue = lowerInstanceReceiverValue(callee.expression, bindings);
     if (receiverValue === undefined) {
       return undefined;
@@ -2485,11 +2701,25 @@ function lowerClassMethodCall(
     }
     return {
       kind: "call",
-      name: classMethodFunctionName(receiverClass.name, methodName),
+      name: classMethodFunctionName(definingClass.name, methodName),
       arguments: [{ valueKind: "value", value: receiverValue }, ...args]
     };
   }
 
+  return undefined;
+}
+
+function findClassInChain(info: ClassInfo, predicate: (candidate: ClassInfo) => boolean): ClassInfo | undefined {
+  let current: ClassInfo | undefined = info;
+  while (current !== undefined) {
+    if (predicate(current)) {
+      return current;
+    }
+    if (current.baseName === undefined) {
+      return undefined;
+    }
+    current = activeClassRegistry?.get(current.baseName);
+  }
   return undefined;
 }
 
@@ -2544,7 +2774,14 @@ function lowerClassInstanceExpression(
       if (args === undefined) {
         throw new ClassLoweringUnsupportedError();
       }
-      return { kind: "newInstance", className: info.name, fieldCount: info.fields.length, constructorName: classConstructorName(info.name), arguments: args };
+      return {
+        kind: "newInstance",
+        className: info.name,
+        fieldCount: info.fields.length,
+        prototypeName: classPrototypeName(info.name),
+        constructorName: classConstructorName(info.name),
+        arguments: args
+      };
     }
   }
   // A named local holding a class instance (`const c = new C()`, or a parameter
@@ -2574,7 +2811,7 @@ function lowerClassPropertyAssignment(
     return undefined;
   }
   const propertyName = left.name.text;
-  if (receiverClass.staticFields.has(propertyName)) {
+  if (findClassInChain(receiverClass, (candidate) => candidate.staticFields.has(propertyName)) !== undefined) {
     const value = lowerValueExpression(right, bindings);
     if (value === undefined) {
       throw new ClassLoweringUnsupportedError();
@@ -2590,14 +2827,15 @@ function lowerClassPropertyAssignment(
   if (value === undefined) {
     throw new ClassLoweringUnsupportedError();
   }
-  if (receiverClass.setters.has(propertyName)) {
+  const setterClass = findClassInChain(receiverClass, (candidate) => candidate.setters.has(propertyName));
+  if (setterClass !== undefined) {
     const receiver = lowerInstanceReceiverValue(left.expression, bindings);
     if (receiver === undefined) {
       throw new ClassLoweringUnsupportedError();
     }
     return {
       kind: "call",
-      name: classSetterFunctionName(receiverClass.name, propertyName),
+      name: classSetterFunctionName(setterClass.name, propertyName),
       arguments: [{ valueKind: "value", value: receiver }, { valueKind: "value", value }]
     };
   }
@@ -2657,8 +2895,6 @@ function usesB683NativeFeatureSurface(sourceFile: ts.SourceFile): boolean {
     if (
       ts.isClassDeclaration(node) ||
       ts.isClassExpression(node) ||
-      node.kind === ts.SyntaxKind.RegularExpressionLiteral ||
-      isRegExpConstructorCall(node) ||
       isRuntimeJsonFollowupCall(node)
     ) {
       used = true;
@@ -3483,25 +3719,13 @@ function unsupportedRegExpConstructor(
 }
 
 function unsupportedRegExpPatternMessage(pattern: string, flags: string): string | undefined {
-  if (!isAsciiText(pattern) || !isAsciiText(flags)) {
-    return "RegExp support is limited to ASCII patterns and flags";
+  if (/[^gimyu]/.test(flags) || new Set(flags).size !== flags.length) {
+    return "Unsupported or duplicate RegExp flags";
   }
-  if (flags.includes("u")) {
-    return "RegExp unicode mode is not supported yet";
-  }
-  if (/\\[1-9]/.test(pattern) || pattern.includes("(?<") || pattern.includes("(?<=") || pattern.includes("(?<!")) {
-    return "RegExp backreferences, named groups, and lookbehind are not supported yet";
+  if (pattern.includes("(?<") || pattern.includes("(?<=") || pattern.includes("(?<!") || pattern.includes(String.raw`\p{`) || pattern.includes(String.raw`\P{`)) {
+    return "RegExp named groups, lookbehind, and Unicode properties are not supported yet";
   }
   return undefined;
-}
-
-function isAsciiText(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    if (value.charCodeAt(index) > maxAsciiCodePoint) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function isJsonParseWithReviver(node: ts.CallExpression): boolean {
@@ -3571,9 +3795,11 @@ function updateConstBindings(
     bindings.set(operation.name, { kind: "value", value: operation.value });
   }
   if (operation.kind === "letValue") {
-    let valueType: "function" | undefined;
+    let valueType: "function" | "regex" | undefined;
     if (operation.value.kind === "functionObject") {
       valueType = "function";
+    } else if (operation.value.kind === "regexCompile") {
+      valueType = "regex";
     }
     bindings.set(operation.name, { kind: "valueVariable", name: operation.name, valueType });
   }
@@ -3593,9 +3819,15 @@ function updateBindings(
     }
   }
   if (operation.kind === "arrayDestructureProtocol") {
-    for (const name of operation.elements) {
-      if (name !== undefined) {
-        bindings.set(name, { kind: "valueVariable", name });
+    for (const element of operation.elements) {
+      if (element.kind === "binding") {
+        bindings.set(element.name, { kind: "valueVariable", name: element.name });
+      } else if (element.kind === "rest") {
+        bindings.set(element.name, { kind: "runtimeArray", name: element.name });
+      } else if (element.kind === "nested") {
+        for (const nested of element.operations) {
+          updateBindings(nested, bindings);
+        }
       }
     }
   }
@@ -3748,6 +3980,16 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
     if (operation.source.kind === "value") {
       collectValueExpressionObjectNames(operation.source.value, names);
     }
+    for (const element of operation.elements) {
+      if (element.kind === "binding" && element.defaultValue !== undefined) {
+        collectValueExpressionObjectNames(element.defaultValue, names);
+      }
+      if (element.kind === "nested") {
+        for (const nested of element.operations) {
+          collectRuntimeShadowObjectNames(nested, names);
+        }
+      }
+    }
   }
   if (operation.kind === "runtimeErrorLiteral") {
     collectValueExpressionObjectNames(operation.message, names);
@@ -3771,6 +4013,8 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
     for (const element of operation.elements) {
       if (element.kind === "value") {
         collectValueExpressionObjectNames(element.value, names);
+      } else if (element.kind === "iterableSpread") {
+        collectValueExpressionObjectNames(element.source, names);
       }
     }
   }
@@ -3842,6 +4086,27 @@ function collectValueExpressionObjectNames(expression: JsIrValueExpression, name
     for (const argument of expression.arguments) {
       if (argument.valueKind === "value") {
         collectValueExpressionObjectNames(argument.value, names);
+      }
+    }
+  }
+  if (expression.kind === "callValue") {
+    collectValueExpressionObjectNames(expression.callee, names);
+    if (expression.thisValue !== undefined) {
+      collectValueExpressionObjectNames(expression.thisValue, names);
+    }
+    if (expression.methodReceiver !== undefined) {
+      collectValueExpressionObjectNames(expression.methodReceiver, names);
+    }
+    for (const argument of expression.arguments) {
+      if (argument.valueKind === "value") {
+        collectValueExpressionObjectNames(argument.value, names);
+      }
+    }
+    for (const argument of expression.spreadArguments ?? []) {
+      if (argument.kind === "value") {
+        collectValueExpressionObjectNames(argument.value, names);
+      } else if (argument.kind === "iterableSpread") {
+        collectValueExpressionObjectNames(argument.source, names);
       }
     }
   }
@@ -4262,13 +4527,17 @@ function lowerExpressionStatement(
     return { kind: "inlineCpp", symbol: inlineCppValue.symbol };
   }
 
-  if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)) {
+  if (!ts.isCallExpression(expression)) {
     return undefined;
   }
 
   const callOp = lowerCallStatement(expression, bindings);
   if (callOp !== undefined) {
     return callOp;
+  }
+
+  if (!ts.isIdentifier(expression.expression)) {
+    return undefined;
   }
 
   if (expression.expression.text !== "print" || expression.arguments.length !== 1) {
@@ -4905,7 +5174,13 @@ function lowerFunctionDeclaration(
       const destructuringBindings = new Map(fnBindings);
       let loweredDestructuring: boolean;
       if (ts.isArrayBindingPattern(pattern)) {
-        loweredDestructuring = lowerArrayDestructuringElements(pattern, destructuringSource, destructuringBindings, destructuringOperations);
+        loweredDestructuring = lowerArrayProtocolDestructuringFromSource(
+          pattern,
+          { kind: "value", value: { kind: "variable", name: paramName } },
+          `${paramName} is not iterable`,
+          destructuringBindings,
+          destructuringOperations
+        );
       } else {
         loweredDestructuring = lowerObjectDestructuringElements(pattern, destructuringSource, destructuringBindings, destructuringOperations);
       }
@@ -5159,6 +5434,11 @@ function lowerCallStatement(
 ): JsIrOperation | undefined {
   if (ts.isIdentifier(expression.expression) && expression.expression.text === "print") {
     return undefined;
+  }
+
+  const spreadCall = lowerSpreadCallValue(expression, bindings);
+  if (spreadCall !== undefined) {
+    return spreadCall;
   }
 
   let identifierBinding: JsIrBindingValue | undefined;
@@ -5955,18 +6235,6 @@ function lowerArrayProtocolDestructuring(
   working: Map<string, JsIrBindingValue>,
   operations: JsIrOperation[]
 ): boolean {
-  const elements: (string | undefined)[] = [];
-  for (const element of pattern.elements) {
-    if (ts.isOmittedExpression(element)) {
-      elements.push(undefined);
-      continue;
-    }
-    if (element.dotDotDotToken !== undefined || element.initializer !== undefined || !ts.isIdentifier(element.name)) {
-      return false;
-    }
-    elements.push(element.name.text);
-  }
-
   const unwrapped = unwrapTypeOnlyExpression(initializer);
   if (ts.isIdentifier(unwrapped) && working.get(unwrapped.text)?.kind === "array") {
     return false;
@@ -5994,12 +6262,89 @@ function lowerArrayProtocolDestructuring(
     source = { kind: "value", value: iterable };
   }
 
-  const operation: JsIrOperation = {
-    kind: "arrayDestructureProtocol",
+  return lowerArrayProtocolDestructuringFromSource(
+    pattern,
     source,
-    elements,
-    notIterableMessage: `${iteratorErrorSubject(initializer)} is not iterable`
-  };
+    `${iteratorErrorSubject(initializer)} is not iterable`,
+    working,
+    operations
+  );
+}
+
+// eslint-disable-next-line max-statements -- Recursive pattern lowering validates and records elisions, defaults, rest, and nested patterns together.
+function lowerArrayProtocolDestructuringFromSource(
+  pattern: ts.ArrayBindingPattern,
+  source: Extract<JsIrOperation, { readonly kind: "arrayDestructureProtocol" }>["source"],
+  notIterableMessage: string,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): boolean {
+  const elements: JsIrArrayDestructureElement[] = [];
+  for (let index = 0; index < pattern.elements.length; index += 1) {
+    const element = pattern.elements[index];
+    if (ts.isOmittedExpression(element)) {
+      elements.push({ kind: "elision" });
+      continue;
+    }
+    if (element.dotDotDotToken !== undefined) {
+      if (index !== pattern.elements.length - 1 || element.initializer !== undefined || !ts.isIdentifier(element.name)) {
+        return false;
+      }
+      elements.push({ kind: "rest", name: element.name.text });
+      working.set(element.name.text, { kind: "runtimeArray", name: element.name.text });
+      continue;
+    }
+    if (ts.isIdentifier(element.name)) {
+      let defaultValue: JsIrValueExpression | undefined;
+      if (element.initializer !== undefined) {
+        defaultValue = lowerFunctionObjectValue(element.initializer, working, element.name.text) ?? lowerValueExpression(element.initializer, working);
+        if (defaultValue === undefined) {
+          return false;
+        }
+      }
+      let destructureElement: JsIrArrayDestructureElement = { kind: "binding", name: element.name.text };
+      if (defaultValue !== undefined) {
+        destructureElement = { kind: "binding", name: element.name.text, defaultValue };
+      }
+      elements.push(destructureElement);
+      working.set(element.name.text, { kind: "valueVariable", name: element.name.text });
+      continue;
+    }
+    if (element.initializer !== undefined) {
+      return false;
+    }
+    const temporaryName = `destructure.nested.${element.pos}`;
+    const nestedWorking = new Map(working);
+    nestedWorking.set(temporaryName, { kind: "valueVariable", name: temporaryName });
+    const nestedOperations: JsIrOperation[] = [];
+    let lowered = false;
+    if (ts.isArrayBindingPattern(element.name)) {
+      lowered = lowerArrayProtocolDestructuringFromSource(
+        element.name,
+        { kind: "value", value: { kind: "variable", name: temporaryName } },
+        `${temporaryName} is not iterable`,
+        nestedWorking,
+        nestedOperations
+      );
+    } else if (ts.isObjectBindingPattern(element.name)) {
+      lowered = lowerObjectDestructuringElements(
+        element.name,
+        { name: temporaryName, binding: { kind: "valueVariable", name: temporaryName } },
+        nestedWorking,
+        nestedOperations,
+        true
+      );
+    }
+    if (!lowered) {
+      return false;
+    }
+    elements.push({ kind: "nested", temporaryName, operations: nestedOperations });
+    for (const [name, value] of nestedWorking) {
+      working.set(name, value);
+    }
+  }
+
+  const operation: JsIrOperation = { kind: "arrayDestructureProtocol", source, elements, notIterableMessage };
   operations.push(operation);
   updateBindings(operation, working);
   return true;
@@ -6392,7 +6737,7 @@ function lowerLetVariableBinding(
   };
 }
 
-// eslint-disable-next-line max-statements -- Pre-existing const initializer dispatch walks aggregate/closure/string/number/boolean/condition/value branches in one place.
+// eslint-disable-next-line complexity, max-statements -- Const initializer dispatch walks aggregate/closure/string/number/boolean/condition/value branches in one place.
 function lowerConstVariableBinding(
   name: string,
   initializer: ts.Expression,
@@ -6478,7 +6823,7 @@ function lowerConstVariableBinding(
   if (value !== undefined) {
     // A class instance must be materialized once into a stable slot so later
     // references share object identity instead of re-running the constructor.
-    if (value.kind === "newInstance" || value.kind === "functionObject" || value.kind === "call" || value.kind === "callValue") {
+    if (value.kind === "newInstance" || value.kind === "functionObject" || value.kind === "call" || value.kind === "callValue" || value.kind === "regexCompile" || value.kind === "regexExec" || value.kind === "regexMatch") {
       return { kind: "letValue", name, value };
     }
     return {
@@ -6984,6 +7329,23 @@ function lowerRuntimeStringSplitBinding(
     return undefined;
   }
   const receiver = lowerStringRuntimeExpression(initializer.expression.expression, bindings);
+  if (receiver !== undefined && isRegexExpression(initializer.arguments[0], bindings)) {
+    const regex = lowerValueExpression(initializer.arguments[0], bindings);
+    if (regex === undefined) {
+      return undefined;
+    }
+    let limit: JsIrNumberExpression | undefined;
+    if (initializer.arguments.length === 2) {
+      limit = lowerNumberExpression(initializer.arguments[1], bindings);
+      if (limit === undefined) {
+        return undefined;
+      }
+    }
+    if (limit === undefined) {
+      return { kind: "runtimeRegexSplit", name, receiver, regex };
+    }
+    return { kind: "runtimeRegexSplit", name, receiver, regex, limit };
+  }
   const separator = lowerStringRuntimeExpression(initializer.arguments[0], bindings);
   if (receiver === undefined || separator === undefined) {
     return undefined;
@@ -8110,6 +8472,20 @@ function lowerStringRuntimeExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrStringExpression | undefined {
+  if (
+    ts.isCallExpression(expression) &&
+    ts.isPropertyAccessExpression(expression.expression) &&
+    expression.expression.name.text === "replace" &&
+    expression.arguments.length === 2 &&
+    isRegexExpression(expression.arguments[0], bindings)
+  ) {
+    const receiver = lowerStringRuntimeExpression(expression.expression.expression, bindings);
+    const regex = lowerValueExpression(expression.arguments[0], bindings);
+    const replacement = lowerStringRuntimeExpression(expression.arguments[1], bindings);
+    if (receiver !== undefined && regex !== undefined && replacement !== undefined) {
+      return { kind: "regexReplace", receiver, regex, replacement };
+    }
+  }
   if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
     return { kind: "literal", value: expression.text };
   }
@@ -8200,6 +8576,17 @@ function lowerStringRuntimeExpression(
     consequent,
     alternate
   };
+}
+
+function isRegexExpression(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean {
+  if (expression.kind === ts.SyntaxKind.RegularExpressionLiteral || isRegExpConstructorCall(expression)) {
+    return true;
+  }
+  if (!ts.isIdentifier(expression)) {
+    return false;
+  }
+  const binding = bindings.get(expression.text);
+  return binding?.kind === "valueVariable" && binding.valueType === "regex";
 }
 
 // eslint-disable-next-line complexity -- String method argument validation mirrors the supported runtime surface explicitly.
@@ -8525,6 +8912,16 @@ function lowerInstanceOfCondition(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrCondition | undefined {
   const right = unwrapTypeOnlyExpression(expression.right);
+  if (ts.isIdentifier(right) && !bindings.has(right.text)) {
+    const classInfo = activeClassRegistry?.get(right.text);
+    if (classInfo !== undefined) {
+      const value = lowerClassInstanceExpression(unwrapTypeOnlyExpression(expression.left), bindings)
+        ?? lowerValueExpression(unwrapTypeOnlyExpression(expression.left), bindings);
+      if (value !== undefined) {
+        return { kind: "classInstanceOf", value, prototypeName: classPrototypeName(classInfo.name) };
+      }
+    }
+  }
   if (!ts.isIdentifier(right) || !errorConstructorNames.has(right.text) || bindings.has(right.text)) {
     return undefined;
   }
@@ -8560,6 +8957,11 @@ function lowerConditionExpression(
   const unwrappedExpression = unwrapTypeOnlyExpression(expression);
   if (unwrappedExpression !== expression) {
     return lowerConditionExpression(unwrappedExpression, bindings);
+  }
+
+  const regexTest = lowerRegexTestCondition(expression, bindings);
+  if (regexTest !== undefined) {
+    return regexTest;
   }
 
   if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken) {
@@ -9455,6 +9857,10 @@ function lowerDirectValueExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
+  const regex = lowerRegexValueExpression(expression, bindings);
+  if (regex !== undefined) {
+    return regex;
+  }
   const functionValue = lowerFunctionObjectValue(expression, bindings);
   if (functionValue !== undefined) {
     return functionValue;
@@ -9537,7 +9943,7 @@ function lowerDirectValueExpression(
       const [target] = expression.arguments;
       const receiverClass = resolveReceiverClass(target, bindings);
       if (receiverClass !== undefined) {
-        return { kind: "objectRef", name: classPrototypeName(receiverClass.name) };
+        return { kind: "variable", name: classPrototypeName(receiverClass.name) };
       }
     }
     if (expression.arguments.length === 0) {
@@ -9636,6 +10042,87 @@ function lowerDirectValueExpression(
   }
 
   return undefined;
+}
+
+// eslint-disable-next-line complexity, max-statements -- RegExp values share one lowering seam across literals, constructors, exec, and match.
+function lowerRegexValueExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (expression.kind === ts.SyntaxKind.RegularExpressionLiteral) {
+    const text = expression.getText();
+    const lastSlash = text.lastIndexOf("/");
+    if (lastSlash <= 0) {
+      return undefined;
+    }
+    const pattern = text.slice(1, lastSlash);
+    const flags = text.slice(lastSlash + 1);
+    if (unsupportedRegExpPatternMessage(pattern, flags) !== undefined) {
+      return undefined;
+    }
+    return {
+      kind: "regexCompile",
+      pattern: { kind: "literal", value: pattern },
+      flags: { kind: "literal", value: flags }
+    };
+  }
+  if (isRegExpConstructorCall(expression)) {
+    const args = expression.arguments ?? ts.factory.createNodeArray<ts.Expression>();
+    if (args.length > regexpConstructorArgumentCount) {
+      return undefined;
+    }
+    let pattern: JsIrStringExpression | undefined = { kind: "literal", value: "" };
+    if (args.length > 0) {
+      pattern = lowerStringRuntimeExpression(args[0], bindings);
+    }
+    let flags: JsIrStringExpression | undefined = { kind: "literal", value: "" };
+    if (args.length >= regexpConstructorArgumentCount) {
+      flags = lowerStringRuntimeExpression(args[1], bindings);
+    }
+    if (pattern === undefined || flags === undefined) {
+      return undefined;
+    }
+    return { kind: "regexCompile", pattern, flags };
+  }
+  if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
+    const method = expression.expression.name.text;
+    if ((method === "exec" || method === "match") && expression.arguments.length === 1) {
+      if (method === "exec") {
+        const regex = lowerValueExpression(expression.expression.expression, bindings);
+        const input = lowerStringRuntimeExpression(expression.arguments[0], bindings);
+        if (regex !== undefined && input !== undefined) {
+          return { kind: "regexExec", regex, input };
+        }
+      } else {
+        const input = lowerStringRuntimeExpression(expression.expression.expression, bindings);
+        const regex = lowerValueExpression(expression.arguments[0], bindings);
+        if (regex !== undefined && input !== undefined) {
+          return { kind: "regexMatch", regex, input };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function lowerRegexTestCondition(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Extract<JsIrCondition, { readonly kind: "regexTest" }> | undefined {
+  if (
+    !ts.isCallExpression(expression) ||
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    expression.expression.name.text !== "test" ||
+    expression.arguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const regex = lowerValueExpression(expression.expression.expression, bindings);
+  const input = lowerStringRuntimeExpression(expression.arguments[0], bindings);
+  if (regex === undefined || input === undefined) {
+    return undefined;
+  }
+  return { kind: "regexTest", regex, input };
 }
 
 function lowerPlainConstructorArguments(
@@ -9940,6 +10427,10 @@ function lowerValueCallExpression(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
+  const spreadCall = lowerSpreadCallValue(expression, bindings);
+  if (spreadCall !== undefined) {
+    return spreadCall;
+  }
   if (ts.isIdentifier(expression.expression)) {
     const callee = bindings.get(expression.expression.text);
     if (callee?.kind === "function" && callee.returnKind === "value") {
@@ -9967,6 +10458,96 @@ function lowerCallThisValue(
     return lowerValueExpression(callee.expression, bindings);
   }
   return undefined;
+}
+
+function lowerMethodCallTarget(
+  callee: ts.LeftHandSideExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): { readonly receiver: JsIrValueExpression; readonly key: JsIrStringExpression } | undefined {
+  if (ts.isPropertyAccessExpression(callee)) {
+    const receiver = lowerValueExpression(callee.expression, bindings);
+    if (receiver === undefined) {
+      return undefined;
+    }
+    return { receiver, key: { kind: "literal", value: callee.name.text } };
+  }
+  if (ts.isElementAccessExpression(callee)) {
+    const receiver = lowerValueExpression(callee.expression, bindings);
+    const key = lowerPropertyKeyExpression(callee.argumentExpression, bindings);
+    if (receiver === undefined || key === undefined) {
+      return undefined;
+    }
+    return { receiver, key };
+  }
+  return undefined;
+}
+
+// eslint-disable-next-line max-statements -- Spread lowering validates fixed and iterable arguments before preserving a single method receiver evaluation.
+function lowerSpreadCallValue(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Extract<JsIrValueExpression, { readonly kind: "callValue" }> | undefined {
+  if (!expression.arguments.some(ts.isSpreadElement)) {
+    return undefined;
+  }
+  if (ts.isIdentifier(expression.expression)) {
+    const directFunction = bindings.get(expression.expression.text);
+    const hasRestParameter = directFunction?.kind === "function" && directFunction.parameters.some((parameter) => parameter.isRest === true);
+    const spreadsAreFixed = expression.arguments.every((argument) => {
+      if (!ts.isSpreadElement(argument)) {
+        return true;
+      }
+      return ts.isIdentifier(argument.expression) && bindings.get(argument.expression.text)?.kind === "array";
+    });
+    if (hasRestParameter && spreadsAreFixed) {
+      return undefined;
+    }
+  }
+  const callee = lowerValueExpression(expression.expression, bindings);
+  if (callee === undefined) {
+    return undefined;
+  }
+  const methodTarget = lowerMethodCallTarget(expression.expression, bindings);
+  const spreadArguments: JsIrRuntimeArrayElement[] = [];
+  for (const argument of expression.arguments) {
+    if (ts.isSpreadElement(argument)) {
+      if (ts.isIdentifier(argument.expression)) {
+        const binding = bindings.get(argument.expression.text);
+        if (binding?.kind === "array") {
+          spreadArguments.push({ kind: "spread", arrayName: binding.name, sourceKind: "fixed" });
+          continue;
+        }
+      }
+      const source = lowerValueExpression(argument.expression, bindings);
+      if (source === undefined) {
+        return undefined;
+      }
+      spreadArguments.push({
+        kind: "iterableSpread",
+        source,
+        notIterableMessage: `${iteratorErrorSubject(argument.expression)} is not iterable`
+      });
+      continue;
+    }
+    const value = lowerValueExpression(argument, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    spreadArguments.push({ kind: "value", value });
+  }
+  let thisValue: JsIrValueExpression | undefined;
+  if (methodTarget === undefined) {
+    thisValue = lowerCallThisValue(expression.expression, bindings);
+  }
+  return {
+    kind: "callValue",
+    callee,
+    arguments: [],
+    thisValue,
+    methodReceiver: methodTarget?.receiver,
+    methodKey: methodTarget?.key,
+    spreadArguments
+  };
 }
 
 function lowerStringValueMethodCall(
@@ -10304,6 +10885,11 @@ function lowerNumberExpression(
     return lowerNumberExpression(unwrappedExpression, bindings);
   }
 
+  const regexSearch = lowerRegexSearchNumberExpression(expression, bindings);
+  if (regexSearch !== undefined) {
+    return regexSearch;
+  }
+
   const numericBuiltin = lowerNumericBuiltinCall(expression, bindings);
   if (numericBuiltin !== undefined) {
     return numericBuiltin;
@@ -10438,6 +11024,26 @@ function lowerNumberExpression(
   }
 
   return lowerNumberBinaryExpression(expression, bindings);
+}
+
+function lowerRegexSearchNumberExpression(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Extract<JsIrNumberExpression, { readonly kind: "regexSearch" }> | undefined {
+  if (
+    !ts.isCallExpression(expression) ||
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    expression.expression.name.text !== "search" ||
+    expression.arguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const input = lowerStringRuntimeExpression(expression.expression.expression, bindings);
+  const regex = lowerValueExpression(expression.arguments[0], bindings);
+  if (input === undefined || regex === undefined || !isRegexExpression(expression.arguments[0], bindings)) {
+    return undefined;
+  }
+  return { kind: "regexSearch", regex, input };
 }
 
 function lowerUpdateNumberExpression(
@@ -10852,6 +11458,10 @@ function lowerNumberCallExpression(
     if ((callType.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) !== 0) {
       return undefined;
     }
+  }
+  const spreadCall = lowerSpreadCallValue(expression, bindings);
+  if (spreadCall !== undefined) {
+    return { kind: "valueToNumber", value: spreadCall };
   }
   if (!ts.isIdentifier(expression.expression)) {
     const calleeValue = lowerValueExpression(expression.expression, bindings);
@@ -11303,18 +11913,23 @@ function lowerRuntimeArrayLiteralExpression(
   let needsRuntimeArray = false;
   for (const element of expression.elements) {
     if (ts.isSpreadElement(element)) {
-      if (!ts.isIdentifier(element.expression)) {
+      if (ts.isIdentifier(element.expression)) {
+        const binding = bindings.get(element.expression.text);
+        if (binding?.kind === "array") {
+          elements.push({ kind: "spread", arrayName: element.expression.text, sourceKind: "fixed" });
+          needsRuntimeArray = true;
+          continue;
+        }
+      }
+      const source = lowerValueExpression(element.expression, bindings);
+      if (source === undefined) {
         return undefined;
       }
-      const binding = bindings.get(element.expression.text);
-      if (binding?.kind !== "runtimeArray" && binding?.kind !== "array") {
-        return undefined;
-      }
-      let sourceKind: "runtime" | "fixed" = "runtime";
-      if (binding.kind === "array") {
-        sourceKind = "fixed";
-      }
-      elements.push({ kind: "spread", arrayName: element.expression.text, sourceKind });
+      elements.push({
+        kind: "iterableSpread",
+        source,
+        notIterableMessage: `${iteratorErrorSubject(element.expression)} is not iterable`
+      });
       needsRuntimeArray = true;
       continue;
     }

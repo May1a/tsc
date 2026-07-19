@@ -663,7 +663,7 @@ describe("tscn expanded runtime roadmap", () => {
 
     const holes = await expectSuccessfulCompile("array-runtime-spread-holes.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(holes, { status: 0, stdout: "4\nundefined\n3\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(holes, { status: 0, stdout: "4\nundefined\n4\n", stderr: "" });
     } finally {
       await holes.cleanup();
     }
@@ -855,7 +855,6 @@ describe("tscn expanded runtime roadmap", () => {
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
     await expectUnsupportedDiagnostic("string-repeat-negative-unsupported.ts");
-    await expectUnsupportedDiagnostic("string-replace-regex-unsupported.ts");
   }, roadmapIntegrationTimeoutMs);
 
   test("supports package BT math function expansion", async () => {
@@ -1369,10 +1368,11 @@ describe("tscn expanded runtime roadmap", () => {
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
 
-    await Promise.all([
-      expectUnsupportedMessage("regex-constructor-dynamic-unsupported.ts", "Dynamic RegExp constructor arguments are not supported"),
-      expectUnsupportedMessage("regex-nonascii-unsupported.ts", "RegExp support is limited to ASCII")
-    ]);
+    await expectNativeFixtures([
+      ["regex-constructor-dynamic-unsupported.ts", "true\n"],
+      ["regex-nonascii-unsupported.ts", "true\n"],
+      ["string-replace-regex-unsupported.ts", "xbc\n"]
+    ], { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
   test("supports minimal class declarations, prototype identity, fields, and accessors", async () => {
@@ -1383,7 +1383,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["class-static-method.ts", "hi\n"],
       ["class-extends-super-constructor.ts", "9\n"],
       ["class-instanceof-basic.ts", "true\n"],
-      ["class-instanceof-inheritance.ts", "true\ntrue\nfalse\n"],
+      ["class-instanceof-inheritance.ts", "true\ntrue\nfalse\ntrue\ntrue\n"],
       ["class-prototype-method-lookup.ts", "5\nfalse\n"],
       ["class-prototype-identity.ts", "true\ntrue\n"],
       ["class-instanceof-plain-object.ts", "false\nfalse\nfalse\n"],

@@ -71,6 +71,7 @@ type EmitContext = {
   readonly arrayGlobals: string[];
   readonly objectTypes: string[];
   readonly objectLayouts: Map<string, ObjectLayout>;
+  readonly valueGlobals: Set<string>;
   readonly runtime: RuntimeHelperEmitter;
   readonly loopLabels: LoopLabels[];
   /** Innermost-to-outermost cleanup regions (finally / IteratorClose). */
@@ -196,6 +197,7 @@ function createMainEmitContext(): EmitContext {
     arrayGlobals: [],
     objectTypes: [],
     objectLayouts: new Map(),
+    valueGlobals: new Set(),
     runtime: createRuntimeHelperEmitter(),
     loopLabels: [],
     cleanupStack: [],
@@ -238,6 +240,7 @@ function createFunctionEmitContext(fn: FunctionDef, parent: EmitContext): EmitCo
     arrayGlobals: parent.arrayGlobals,
     objectTypes: parent.objectTypes,
     objectLayouts: new Map(parent.objectLayouts),
+    valueGlobals: parent.valueGlobals,
     runtime: parent.runtime,
     loopLabels: [],
     cleanupStack: [],
@@ -411,7 +414,8 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
   const mainLines = emitOperations(mainOps, context);
   const stringConstants = context.stringConstants.join("\n");
   const functionObjectGlobals = [...internedFunctions].map(([target]) => `@${internedFunctionGlobal(target)} = internal global i64 ${jsValueUndefined}`);
-  const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals, ...functionObjectGlobals].join("\n");
+  const valueGlobals = [...context.valueGlobals].map((name) => `@${name}.value = internal global i64 ${jsValueUndefined}`);
+  const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals, ...functionObjectGlobals, ...valueGlobals].join("\n");
   let numberFormat = "";
   if (context.hasNumberPrint) {
     numberFormat = String.raw`@.fmt.number = private unnamed_addr constant [4 x i8] c"%g\0A\00"
@@ -591,6 +595,9 @@ function classifyAndProcessOperation(
       valueType = "function";
     }
     context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name, valueType });
+    if (operation.moduleGlobal === true) {
+      context.valueGlobals.add(operation.name);
+    }
   } else if (operation.kind === "constClosure") {
     context.bindings.set(operation.name, { kind: "closure", value: operation.value });
   } else if (operation.kind === "constString") {
@@ -1694,6 +1701,9 @@ function emitObjectMutationOperation(operation: JsIrOperation, context: EmitCont
   if (operation.kind === "runtimeObjectSetPrototype") {
     return emitRuntimeObjectSetPrototypeOperation(operation, context);
   }
+  if (operation.kind === "valueObjectSetPrototype") {
+    return emitValueObjectSetPrototypeOperation(operation, context);
+  }
 
   if (operation.kind === "runtimeObjectPreventExtensions" || operation.kind === "runtimeObjectSeal" || operation.kind === "runtimeObjectFreeze") {
     return emitRuntimeObjectStateMutationOperation(operation, context);
@@ -1796,6 +1806,7 @@ function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitCo
   return emitRuntimeArrayExpansionBindingOperation(operation, context);
 }
 
+// eslint-disable-next-line max-statements -- Aggregate binding dispatch keeps each runtime array-producing operation explicit.
 function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
   if (operation.kind === "runtimeArraySlice") {
     return emitRuntimeArraySliceOperation(operation, context);
@@ -1815,6 +1826,10 @@ function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, con
 
   if (operation.kind === "runtimeStringSplit") {
     return emitRuntimeStringSplitOperation(operation, context);
+  }
+
+  if (operation.kind === "runtimeRegexSplit") {
+    return emitRuntimeRegexSplitOperation(operation, context);
   }
 
   if (operation.kind === "runtimeArrayMapCallback") {
@@ -2058,7 +2073,20 @@ function emitRuntimeArrayLiteralOperation(
   for (let i = 0; i < operation.elements.length; i++) {
     const element = operation.elements[i];
     if (element.kind === "hole") {
-      fixedIndex += 1;
+      if (operation.elements.some((candidate) => candidate.kind === "spread" || candidate.kind === "iterableSpread")) {
+        const current = `%${operation.name}.hole.current.${i}`;
+        lines.push(`  ${current} = load ptr, ptr ${arrayValue.pointerName}`, `  call i64 @arrayPush(ptr ${current}, i64 ${jsValueUndefined})`);
+      } else {
+        fixedIndex += 1;
+      }
+      continue;
+    }
+    if (element.kind === "iterableSpread") {
+      const current = `%${operation.name}.iterable.current.${i}`;
+      lines.push(
+        `  ${current} = load ptr, ptr ${arrayValue.pointerName}`,
+        ...emitIterableAppend(element.source, element.notIterableMessage, current, `${operation.name}.${i}`, context)
+      );
       continue;
     }
     if (element.kind === "spread") {
@@ -2093,7 +2121,7 @@ function emitRuntimeArrayLiteralOperation(
       continue;
     }
     const value = emitValueExpression(element.value, context);
-    if (operation.elements.some((candidate) => candidate.kind === "spread")) {
+    if (operation.elements.some((candidate) => candidate.kind === "spread" || candidate.kind === "iterableSpread")) {
       const current = `%${operation.name}.value.current.${i}`;
       lines.push(...value.lines, `  ${current} = load ptr, ptr ${arrayValue.pointerName}`, `  call i64 @arrayPush(ptr ${current}, i64 ${value.value})`);
     } else {
@@ -2102,6 +2130,76 @@ function emitRuntimeArrayLiteralOperation(
     }
   }
   return lines;
+}
+
+// Consume a synchronous iterable into an existing runtime array. Iterator
+// acquisition and next() use the explicit exception ABI; normal exhaustion is
+// the only successful exit and therefore never invokes return().
+// eslint-disable-next-line max-statements -- Protocol consumption is a compact emitted state machine.
+function emitIterableAppend(
+  sourceExpression: JsIrValueExpression,
+  notIterableMessageText: string,
+  destination: string,
+  prefix: string,
+  context: EmitContext
+): string[] {
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  useRuntimeHelper(context.runtime, "getIteratorValue");
+  useRuntimeHelper(context.runtime, "callIteratorNext");
+  useRuntimeHelper(context.runtime, "valueObjectGet");
+  useRuntimeHelper(context.runtime, "valueTruthy");
+  useRuntimeHelper(context.runtime, "valueBoxString");
+  useRuntimeHelper(context.runtime, "arrayPush");
+  const source = emitValueExpression(sourceExpression, context);
+  const messageConstant = addStringConstant(notIterableMessageText, context);
+  const message = `%spread.message.${index}`;
+  const iteratorCall = emitGeneratedJsCall("getIteratorValue", [`i64 ${source.value}`, `i64 ${message}`], context);
+  const iteratorSlot = `%spread.iter.${index}.addr`;
+  const condLabel = `spread.cond.${index}`;
+  const bodyLabel = `spread.body.${index}`;
+  const valueLabel = `spread.value.${index}`;
+  const endLabel = `spread.end.${index}`;
+  const normalLabel = `spread.normal.${index}`;
+  const iterator = `%spread.iter.${index}`;
+  const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iterator}`], context);
+  const doneKey = addStringConstant("done", context);
+  const valueKey = addStringConstant("value", context);
+  const doneValue = `%spread.done.value.${index}`;
+  const done = `%spread.done.${index}`;
+  const value = `%spread.item.${index}`;
+  useRuntimeHelper(context.runtime, "valueBoxArray");
+  const destinationValue = `%spread.destination.${index}`;
+  return [
+    ...source.lines,
+    `  call void @gcRootPush(i64 ${source.value})`,
+    `  ${message} = call i64 @valueBoxString(ptr ${messageConstant}, i64 ${utf8ByteLength(notIterableMessageText)})`,
+    ...iteratorCall.lines,
+    `  ${iteratorSlot} = alloca i64`,
+    `  store i64 ${iteratorCall.value}, ptr ${iteratorSlot}`,
+    `  call void @gcRootPush(i64 ${iteratorCall.value})`,
+    `  ${destinationValue} = call i64 @valueBoxArray(ptr ${destination})`,
+    `  call void @gcRootPush(i64 ${destinationValue})`,
+    `  br label %${condLabel}`,
+    `${condLabel}:`,
+    `  br label %${bodyLabel}`,
+    `${bodyLabel}:`,
+    `  ${iterator} = load i64, ptr ${iteratorSlot}`,
+    ...nextCall.lines,
+    `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
+    `  ${done} = call i1 @valueTruthy(i64 ${doneValue})`,
+    `  br i1 ${done}, label %${normalLabel}, label %${valueLabel}`,
+    `${valueLabel}:`,
+    `  ${value} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+    `  call void @gcRootPush(i64 ${value})`,
+    `  call i64 @arrayPush(ptr ${destination}, i64 ${value})`,
+    `  call void @gcSafepoint()`,
+    `  br label %${condLabel}`,
+    `${normalLabel}:`,
+    `  br label %${endLabel}`,
+    `${endLabel}:`,
+    `  ; completed iterable spread ${prefix}`
+  ];
 }
 
 function emitRuntimeCollectionNewOperation(
@@ -2263,7 +2361,7 @@ function runtimeIteratorKindCode(kind: "keys" | "values" | "entries"): number {
 }
 
 function runtimeArrayLiteralInitialLength(elements: readonly JsIrRuntimeArrayElement[]): number {
-  if (elements.some((element) => element.kind === "spread")) {
+  if (elements.some((element) => element.kind === "spread" || element.kind === "iterableSpread")) {
     return 0;
   }
   return elements.length;
@@ -3212,6 +3310,38 @@ function emitRuntimeStringSplitOperation(
   ];
 }
 
+function emitRuntimeRegexSplitOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "runtimeRegexSplit" }>,
+  context: EmitContext
+): string[] {
+  const pointerName = variablePointerName(operation.name);
+  context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
+  const receiver = emitStringExpression(operation.receiver, context);
+  const regex = emitValueExpression(operation.regex, context);
+  const inputValue = `%regex.split.input.${context.callIndex}`;
+  const result = `%regex.split.result.${context.arrayIndex}`;
+  context.arrayIndex += 1;
+  let limitLines: readonly string[] = [];
+  let limitValue = "-1";
+  if (operation.limit !== undefined) {
+    const limit = emitArrayIndex(operation.limit, context);
+    limitLines = limit.lines;
+    limitValue = limit.value;
+  }
+  useRuntimeHelper(context.runtime, "valueBoxString");
+  useRuntimeHelper(context.runtime, "regexSplit");
+  return [
+    `  ${pointerName} = alloca ptr`,
+    ...regex.lines,
+    `  call void @gcRootPush(i64 ${regex.value})`,
+    ...receiver.lines,
+    `  ${inputValue} = call i64 @valueBoxString(ptr ${receiver.value}, i64 ${receiver.length})`,
+    ...limitLines,
+    `  ${result} = call ptr @regexSplit(i64 ${regex.value}, i64 ${inputValue}, i64 ${limitValue})`,
+    `  store ptr ${result}, ptr ${pointerName}`
+  ];
+}
+
 function emitRuntimeArrayConcatOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayConcat" }>,
   context: EmitContext
@@ -3687,6 +3817,14 @@ function emitLetValueOperation(
   const value = emitValueExpression(operation.value, context);
   const pointer = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
+  if (operation.moduleGlobal === true) {
+    context.valueGlobals.add(operation.name);
+    return [
+      ...value.lines,
+      `  store i64 ${value.value}, ptr @${operation.name}.value`,
+      `  call void @gcRootPush(i64 ${value.value})`
+    ];
+  }
   return [...value.lines, `  ${pointer} = alloca i64`, `  store i64 ${value.value}, ptr ${pointer}`];
 }
 
@@ -4042,6 +4180,26 @@ function emitRuntimeObjectSetPrototypeOperation(
   return lines;
 }
 
+function emitValueObjectSetPrototypeOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "valueObjectSetPrototype" }>,
+  context: EmitContext
+): string[] {
+  const target = emitNamedValueBinding(operation.targetName, context);
+  const prototype = emitNamedValueBinding(operation.prototypeName, context);
+  const targetPointer = `%class.prototype.target.${context.objectIndex}`;
+  const prototypePointer = `%class.prototype.base.${context.objectIndex}`;
+  context.objectIndex += 1;
+  useRuntimeHelper(context.runtime, "valueObjectPtr");
+  useRuntimeHelper(context.runtime, "objectSetPrototype");
+  return [
+    ...target.lines,
+    ...prototype.lines,
+    `  ${targetPointer} = call ptr @valueObjectPtr(i64 ${target.value})`,
+    `  ${prototypePointer} = call ptr @valueObjectPtr(i64 ${prototype.value})`,
+    `  call void @objectSetPrototype(ptr ${targetPointer}, ptr ${prototypePointer})`
+  ];
+}
+
 function emitRuntimeObjectDefineDataPropertyOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeObjectDefineDataProperty" }>,
   context: EmitContext
@@ -4200,12 +4358,25 @@ function emitNewInstanceValueExpression(
   const instance = `%instance.${index}`;
   useRuntimeHelper(context.runtime, "objectNew");
   useRuntimeHelper(context.runtime, "valueBoxObject");
+  const prototypePointer = `%instance.prototype.${index}`;
+  const prototypeLines: string[] = [];
+  if (context.bindings.has(expression.prototypeName)) {
+    useRuntimeHelper(context.runtime, "valueObjectPtr");
+    useRuntimeHelper(context.runtime, "objectSetPrototype");
+    const prototype = emitNamedValueBinding(expression.prototypeName, context);
+    prototypeLines.push(
+      ...prototype.lines,
+      `  ${prototypePointer} = call ptr @valueObjectPtr(i64 ${prototype.value})`,
+      `  call void @objectSetPrototype(ptr ${object}, ptr ${prototypePointer})`
+    );
+  }
   const constructorArgs = [`i64 ${instance}`, ...args.values];
   const constructorCall = emitGeneratedJsCall(expression.constructorName, constructorArgs, context);
   return {
     lines: [
       ...args.lines,
       `  ${object} = call ptr @objectNew(i64 ${expression.fieldCount})`,
+      ...prototypeLines,
       `  ${instance} = call i64 @valueBoxObject(ptr ${object})`,
       // Pin the new instance for the constructor call AND keep it pinned afterwards
       // (released by the enclosing frame/iteration restore) so a later allocation in
@@ -4299,7 +4470,11 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     if (!name.startsWith("%")) {
       const value = `%value.${context.numIndex}`;
       context.numIndex += 1;
-      return { lines: [`  ${value} = load i64, ptr ${variablePointerName(name)}`], value };
+      let pointer = variablePointerName(name);
+      if (context.valueGlobals.has(name)) {
+        pointer = `@${name}.value`;
+      }
+      return { lines: [`  ${value} = load i64, ptr ${pointer}`], value };
     }
     return { lines: [], value: name };
   }
@@ -4315,6 +4490,52 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   if (expression.kind === "callValue") {
     return emitValueCallExpression(expression, context);
+  }
+
+  if (expression.kind === "regexCompile") {
+    const pattern = emitStringExpression(expression.pattern, context);
+    const flags = emitStringExpression(expression.flags, context);
+    const patternValue = `%regex.pattern.${context.callIndex}`;
+    const flagsValue = `%regex.flags.${context.callIndex}`;
+    useRuntimeHelper(context.runtime, "valueBoxString");
+    useRuntimeHelper(context.runtime, "regexCompile");
+    const call = emitGeneratedJsCall("regexCompile", [`i64 ${patternValue}`, `i64 ${flagsValue}`], context);
+    return {
+      lines: [
+        ...pattern.lines,
+        ...flags.lines,
+        `  ${patternValue} = call i64 @valueBoxString(ptr ${pattern.value}, i64 ${pattern.length})`,
+        `  call void @gcRootPush(i64 ${patternValue})`,
+        `  ${flagsValue} = call i64 @valueBoxString(ptr ${flags.value}, i64 ${flags.length})`,
+        `  call void @gcRootPush(i64 ${flagsValue})`,
+        ...call.lines
+      ],
+      value: call.value
+    };
+  }
+
+  if (expression.kind === "regexExec" || expression.kind === "regexMatch") {
+    const regex = emitValueExpression(expression.regex, context);
+    const input = emitStringExpression(expression.input, context);
+    const inputValue = `%regex.input.${context.callIndex}`;
+    useRuntimeHelper(context.runtime, "valueBoxString");
+    let helper: "regexExec" | "regexMatch" = "regexExec";
+    if (expression.kind === "regexMatch") {
+      helper = "regexMatch";
+    }
+    useRuntimeHelper(context.runtime, helper);
+    const call = emitGeneratedJsCall(helper, [`i64 ${regex.value}`, `i64 ${inputValue}`], context);
+    return {
+      lines: [
+        ...regex.lines,
+        `  call void @gcRootPush(i64 ${regex.value})`,
+        ...input.lines,
+        `  ${inputValue} = call i64 @valueBoxString(ptr ${input.value}, i64 ${input.length})`,
+        `  call void @gcRootPush(i64 ${inputValue})`,
+        ...call.lines
+      ],
+      value: call.value
+    };
   }
 
   if (expression.kind === "functionObject") {
@@ -4764,16 +4985,129 @@ function internedFunctionGlobal(target: string): string {
   return `fnobj.singleton.${target}`.replace(/[^A-Za-z0-9_.]/g, "_");
 }
 
+// eslint-disable-next-line max-statements -- Dynamic calls materialize fixed and iterable spread arguments into one argv state machine.
 function emitValueCallExpression(
-  expression: { readonly callee: JsIrValueExpression; readonly arguments: readonly JsIrCallArgument[]; readonly thisValue?: JsIrValueExpression },
+  expression: {
+    readonly callee: JsIrValueExpression;
+    readonly arguments: readonly JsIrCallArgument[];
+    readonly thisValue?: JsIrValueExpression;
+    readonly methodReceiver?: JsIrValueExpression;
+    readonly methodKey?: JsIrStringExpression;
+    readonly spreadArguments?: readonly JsIrRuntimeArrayElement[];
+  },
   context: EmitContext
 ): JsValue {
   useRuntimeHelper(context.runtime, "jsCall");
-  const callee = emitValueExpression(expression.callee, context);
+  let callee = emitValueExpression(expression.callee, context);
   const args = emitCallArguments(expression.arguments, context);
   let thisValue: JsValue = { lines: [], value: jsValueUndefined };
-  if (expression.thisValue !== undefined) {
+  if (expression.methodReceiver !== undefined && expression.methodKey !== undefined) {
+    const receiver = emitValueExpression(expression.methodReceiver, context);
+    const key = emitStringExpression(expression.methodKey, context);
+    const value = `%call.method.${context.callIndex}`;
+    useRuntimeHelper(context.runtime, "valuePropertyGet");
+    callee = {
+      lines: [
+        ...receiver.lines,
+        `  call void @gcRootPush(i64 ${receiver.value})`,
+        ...key.lines,
+        `  ${value} = call i64 @valuePropertyGet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value})`
+      ],
+      value
+    };
+    thisValue = { lines: [], value: receiver.value };
+  } else if (expression.thisValue !== undefined) {
     thisValue = emitValueExpression(expression.thisValue, context);
+  }
+  if (expression.spreadArguments !== undefined) {
+    useRuntimeHelper(context.runtime, "arrayNew");
+    useRuntimeHelper(context.runtime, "arrayPush");
+    useRuntimeHelper(context.runtime, "arrayLength");
+    useRuntimeHelper(context.runtime, "arrayGet");
+    useRuntimeHelper(context.runtime, "valueBoxArray");
+    const index = context.callIndex;
+    context.callIndex += 1;
+    const argumentArray = `%call.spread.array.${index}`;
+    const boxedArguments = `%call.spread.boxed.${index}`;
+    const lines = [
+      ...callee.lines,
+      `  call void @gcRootPush(i64 ${callee.value})`,
+      ...thisValue.lines,
+      `  call void @gcRootPush(i64 ${thisValue.value})`,
+      `  ${argumentArray} = call ptr @arrayNew(i64 0)`,
+      `  ${boxedArguments} = call i64 @valueBoxArray(ptr ${argumentArray})`,
+      `  call void @gcRootPush(i64 ${boxedArguments})`
+    ];
+    for (let argumentIndex = 0; argumentIndex < expression.spreadArguments.length; argumentIndex += 1) {
+      const argument = expression.spreadArguments[argumentIndex];
+      if (argument.kind === "value") {
+        const value = emitValueExpression(argument.value, context);
+        lines.push(...value.lines, `  call void @gcRootPush(i64 ${value.value})`, `  call i64 @arrayPush(ptr ${argumentArray}, i64 ${value.value})`);
+      } else if (argument.kind === "iterableSpread") {
+        lines.push(...emitIterableAppend(argument.source, argument.notIterableMessage, argumentArray, `call.${index}.${argumentIndex}`, context));
+      } else if (argument.kind === "spread") {
+        if (argument.sourceKind === "fixed") {
+          const binding = context.bindings.get(argument.arrayName);
+          if (binding?.kind !== "array") {
+            throw new Error("Expected fixed call-spread array binding");
+          }
+          for (let spreadIndex = 0; spreadIndex < binding.length; spreadIndex += 1) {
+            const value = emitValueExpression({
+              kind: "number",
+              value: { kind: "arrayAccess", arrayName: argument.arrayName, index: { kind: "literal", value: spreadIndex } }
+            }, context);
+            lines.push(...value.lines, `  call i64 @arrayPush(ptr ${argumentArray}, i64 ${value.value})`);
+          }
+          continue;
+        }
+        const source = emitRuntimeArrayPointer(argument.arrayName, context);
+        const boxed = `%call.spread.source.${index}.${argumentIndex}`;
+        lines.push(
+          ...source.lines,
+          `  ${boxed} = call i64 @valueBoxArray(ptr ${source.value})`,
+          ...emitIterableAppend({ kind: "arrayRef", name: argument.arrayName }, `${argument.arrayName} is not iterable`, argumentArray, `call.${index}.${argumentIndex}`, context)
+        );
+      } else {
+        lines.push(`  call i64 @arrayPush(ptr ${argumentArray}, i64 ${jsValueUndefined})`);
+      }
+    }
+    const argc = `%call.spread.argc.${index}`;
+    const argv = `%call.spread.argv.${index}`;
+    const positionSlot = `%call.spread.position.${index}.addr`;
+    const condLabel = `call.spread.copy.cond.${index}`;
+    const bodyLabel = `call.spread.copy.body.${index}`;
+    const endLabel = `call.spread.copy.end.${index}`;
+    const position = `%call.spread.position.${index}`;
+    const inRange = `%call.spread.in.range.${index}`;
+    const value = `%call.spread.value.${index}`;
+    const slot = `%call.spread.slot.${index}`;
+    const next = `%call.spread.next.${index}`;
+    lines.push(
+      `  ${argc} = call i64 @arrayLength(ptr ${argumentArray})`,
+      `  ${argv} = alloca i64, i64 ${argc}`,
+      `  ${positionSlot} = alloca i64`,
+      `  store i64 0, ptr ${positionSlot}`,
+      `  br label %${condLabel}`,
+      `${condLabel}:`,
+      `  ${position} = load i64, ptr ${positionSlot}`,
+      `  ${inRange} = icmp ult i64 ${position}, ${argc}`,
+      `  br i1 ${inRange}, label %${bodyLabel}, label %${endLabel}`,
+      `${bodyLabel}:`,
+      `  ${value} = call i64 @arrayGet(ptr ${argumentArray}, i64 ${position})`,
+      `  ${slot} = getelementptr i64, ptr ${argv}, i64 ${position}`,
+      `  store i64 ${value}, ptr ${slot}`,
+      `  ${next} = add i64 ${position}, 1`,
+      `  store i64 ${next}, ptr ${positionSlot}`,
+      `  br label %${condLabel}`,
+      `${endLabel}:`
+    );
+    const generated = emitGeneratedJsCall(
+      "jsCall",
+      [`i64 ${callee.value}`, `i64 ${argc}`, `ptr ${argv}`, `i64 ${thisValue.value}`],
+      context
+    );
+    lines.push(...generated.lines);
+    return { lines, value: generated.value };
   }
   const index = context.callIndex;
   context.callIndex += 1;
@@ -5813,20 +6147,27 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
   ];
 }
 
-// Positional binding consumes exactly one iterator step per pattern element.
-// eslint-disable-next-line max-statements -- Each unrolled step needs explicit done/value control flow and exception propagation.
+// Array binding consumes the iterator protocol, including lazy defaults, nested
+// patterns, rest collection, and IteratorClose for binding-time failures.
+// eslint-disable-next-line complexity, max-statements -- The protocol state machine is intentionally emitted in one place.
 function emitArrayDestructureProtocolOperation(
   operation: Extract<JsIrOperation, { readonly kind: "arrayDestructureProtocol" }>,
   context: EmitContext
 ): string[] {
   const index = context.arrayIndex;
   context.arrayIndex += 1;
+  const normalLabel = `destructure.proto.normal.${index}`;
   const endLabel = `destructure.proto.end.${index}`;
+  const iteratorSlot = `%destructure.proto.iter.${index}.addr`;
+  const doneSlot = `%destructure.proto.done.${index}.addr`;
   useRuntimeHelper(context.runtime, "getIteratorValue");
   useRuntimeHelper(context.runtime, "callIteratorNext");
+  useRuntimeHelper(context.runtime, "iteratorClose");
   useRuntimeHelper(context.runtime, "valueObjectGet");
   useRuntimeHelper(context.runtime, "valueTruthy");
   useRuntimeHelper(context.runtime, "valueBoxString");
+  useRuntimeHelper(context.runtime, "arrayNew");
+  useRuntimeHelper(context.runtime, "arrayPush");
 
   let iteratorCall: JsValue;
   let setupLines: string[];
@@ -5857,58 +6198,159 @@ function emitArrayDestructureProtocolOperation(
   const valueKey = addStringConstant("value", context);
   const lines = [
     ...setupLines,
-    `  call void @gcRootPush(i64 ${iteratorCall.value})`
+    `  ${iteratorSlot} = alloca i64`,
+    `  store i64 ${iteratorCall.value}, ptr ${iteratorSlot}`,
+    `  call void @gcRootPush(i64 ${iteratorCall.value})`,
+    `  ${doneSlot} = alloca i1`,
+    `  store i1 false, ptr ${doneSlot}`
   ];
 
-  for (const name of operation.elements) {
-    if (name !== undefined) {
-      lines.push(`  ${variablePointerName(name)} = alloca i64`);
-      context.bindings.set(name, { kind: "valueVariable", name });
+  for (const element of operation.elements) {
+    if (element.kind === "binding") {
+      lines.push(`  ${variablePointerName(element.name)} = alloca i64`);
+      context.bindings.set(element.name, { kind: "valueVariable", name: element.name });
+    } else if (element.kind === "rest") {
+      lines.push(`  ${variablePointerName(element.name)} = alloca ptr`);
+      context.bindings.set(element.name, { kind: "runtimeArray", name: element.name });
+    } else if (element.kind === "nested") {
+      lines.push(`  ${variablePointerName(element.temporaryName)} = alloca i64`);
+      context.bindings.set(element.temporaryName, { kind: "valueVariable", name: element.temporaryName });
     }
   }
   if (operation.elements.length === 0) {
     return lines;
   }
 
+  const closeFrame = createCleanupFrame(context, "iteratorClose", { iteratorSlot });
+  context.cleanupStack.push(closeFrame);
+  const outerException = context.exceptionTarget;
+
   for (let elementIndex = 0; elementIndex < operation.elements.length; elementIndex += 1) {
-    const name = operation.elements[elementIndex];
-    const valueLabel = `destructure.proto.value.${index}.${elementIndex}`;
-    const doneLabel = `destructure.proto.done.${index}.${elementIndex}`;
-    let nextLabel = endLabel;
-    if (elementIndex !== operation.elements.length - 1) {
-      nextLabel = `destructure.proto.next.${index}.${elementIndex}`;
+    const element = operation.elements[elementIndex];
+    if (element.kind === "rest") {
+      const restArray = `%destructure.proto.rest.${index}.${elementIndex}`;
+      const restCond = `destructure.proto.rest.cond.${index}.${elementIndex}`;
+      const restCall = `destructure.proto.rest.call.${index}.${elementIndex}`;
+      const restValue = `destructure.proto.rest.value.${index}.${elementIndex}`;
+      const restDone = `destructure.proto.rest.done.${index}.${elementIndex}`;
+      const iterator = `%destructure.proto.rest.iter.${index}.${elementIndex}`;
+      const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iterator}`], context);
+      const doneValue = `%destructure.proto.rest.done.value.${index}.${elementIndex}`;
+      const isDone = `%destructure.proto.rest.is.done.${index}.${elementIndex}`;
+      const value = `%destructure.proto.rest.item.${index}.${elementIndex}`;
+      const alreadyDone = `%destructure.proto.rest.already.done.${index}.${elementIndex}`;
+      lines.push(
+        `  ${restArray} = call ptr @arrayNew(i64 0)`,
+        `  store ptr ${restArray}, ptr ${variablePointerName(element.name)}`,
+        `  br label %${restCond}`,
+        `${restCond}:`,
+        `  ${alreadyDone} = load i1, ptr ${doneSlot}`,
+        `  br i1 ${alreadyDone}, label %${restDone}, label %${restCall}`,
+        `${restCall}:`,
+        `  ${iterator} = load i64, ptr ${iteratorSlot}`,
+        ...nextCall.lines,
+        `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
+        `  ${isDone} = call i1 @valueTruthy(i64 ${doneValue})`,
+        `  br i1 ${isDone}, label %${restDone}, label %${restValue}`,
+        `${restValue}:`,
+        `  ${value} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+        `  call void @gcRootPush(i64 ${value})`,
+        `  call i64 @arrayPush(ptr ${restArray}, i64 ${value})`,
+        `  call void @gcSafepoint()`,
+        `  br label %${restCond}`,
+        `${restDone}:`,
+        `  store i1 true, ptr ${doneSlot}`
+      );
+      continue;
     }
-    const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iteratorCall.value}`], context);
+
+    const checkLabel = `destructure.proto.check.${index}.${elementIndex}`;
+    const callLabel = `destructure.proto.call.${index}.${elementIndex}`;
+    const yieldedLabel = `destructure.proto.yielded.${index}.${elementIndex}`;
+    const exhaustedLabel = `destructure.proto.exhausted.${index}.${elementIndex}`;
+    const bindLabel = `destructure.proto.bind.${index}.${elementIndex}`;
+    const incomingSlot = `%destructure.proto.incoming.${index}.${elementIndex}.addr`;
+    const iterator = `%destructure.proto.iter.${index}.${elementIndex}`;
+    const alreadyDone = `%destructure.proto.already.done.${index}.${elementIndex}`;
+    const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iterator}`], context);
     const doneValue = `%destructure.proto.done.value.${index}.${elementIndex}`;
     const isDone = `%destructure.proto.is.done.${index}.${elementIndex}`;
     lines.push(
+      `  ${incomingSlot} = alloca i64`,
+      `  br label %${checkLabel}`,
+      `${checkLabel}:`,
+      `  ${alreadyDone} = load i1, ptr ${doneSlot}`,
+      `  br i1 ${alreadyDone}, label %${exhaustedLabel}, label %${callLabel}`,
+      `${callLabel}:`,
+      `  ${iterator} = load i64, ptr ${iteratorSlot}`,
       ...nextCall.lines,
       `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
       `  ${isDone} = call i1 @valueTruthy(i64 ${doneValue})`,
-      `  br i1 ${isDone}, label %${doneLabel}, label %${valueLabel}`,
-      `${valueLabel}:`
+      `  br i1 ${isDone}, label %${exhaustedLabel}, label %${yieldedLabel}`,
+      `${yieldedLabel}:`
     );
-    if (name !== undefined) {
-      const value = `%destructure.proto.item.${index}.${elementIndex}`;
-      lines.push(
-        `  ${value} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
-        `  store i64 ${value}, ptr ${variablePointerName(name)}`,
-        `  call void @gcRootPush(i64 ${value})`
-      );
+    const yieldedValue = `%destructure.proto.item.${index}.${elementIndex}`;
+    lines.push(
+      `  ${yieldedValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+      `  store i64 ${yieldedValue}, ptr ${incomingSlot}`,
+      `  br label %${bindLabel}`,
+      `${exhaustedLabel}:`,
+      `  store i1 true, ptr ${doneSlot}`,
+      `  store i64 ${jsValueUndefined}, ptr ${incomingSlot}`,
+      `  br label %${bindLabel}`,
+      `${bindLabel}:`
+    );
+    if (element.kind === "elision") {
+      continue;
     }
-    lines.push(`  br label %${nextLabel}`, `${doneLabel}:`);
-    for (let remaining = elementIndex; remaining < operation.elements.length; remaining += 1) {
-      const remainingName = operation.elements[remaining];
-      if (remainingName !== undefined) {
-        lines.push(`  store i64 ${jsValueUndefined}, ptr ${variablePointerName(remainingName)}`);
+    const incoming = `%destructure.proto.incoming.${index}.${elementIndex}`;
+    lines.push(`  ${incoming} = load i64, ptr ${incomingSlot}`, `  call void @gcRootPush(i64 ${incoming})`);
+    if (element.kind === "binding") {
+      if (element.defaultValue === undefined) {
+        lines.push(`  store i64 ${incoming}, ptr ${variablePointerName(element.name)}`);
+      } else {
+        const defaultLabel = `destructure.proto.default.${index}.${elementIndex}`;
+        const storeLabel = `destructure.proto.store.${index}.${elementIndex}`;
+        const useDefault = `%destructure.proto.use.default.${index}.${elementIndex}`;
+        context.exceptionTarget = closeFrame.throwEntryLabel;
+        const defaultValue = emitValueExpression(element.defaultValue, context);
+        context.exceptionTarget = outerException;
+        lines.push(
+          `  ${useDefault} = icmp eq i64 ${incoming}, ${jsValueUndefined}`,
+          `  br i1 ${useDefault}, label %${defaultLabel}, label %${storeLabel}`,
+          `${defaultLabel}:`,
+          ...defaultValue.lines,
+          `  store i64 ${defaultValue.value}, ptr ${variablePointerName(element.name)}`,
+          `  br label %${storeLabel}.done`,
+          `${storeLabel}:`,
+          `  store i64 ${incoming}, ptr ${variablePointerName(element.name)}`,
+          `  br label %${storeLabel}.done`,
+          `${storeLabel}.done:`
+        );
       }
-    }
-    lines.push(`  br label %${endLabel}`);
-    if (nextLabel !== endLabel) {
-      lines.push(`${nextLabel}:`);
+    } else {
+      lines.push(`  store i64 ${incoming}, ptr ${variablePointerName(element.temporaryName)}`);
+      context.exceptionTarget = closeFrame.throwEntryLabel;
+      lines.push(...emitOperations(element.operations, context));
+      context.exceptionTarget = outerException;
     }
   }
-  lines.push(`${endLabel}:`);
+  context.cleanupStack.pop();
+  context.exceptionTarget = outerException;
+  lines.push(
+    `  br label %${normalLabel}`,
+    `${closeFrame.entryLabel}:`,
+    `  ${closeFrame.rootFrameName} = call i64 @gcRootSave()`,
+    ...emitIteratorCloseBody(context, closeFrame),
+    ...emitCleanupAfterBody(context, closeFrame),
+    ...emitThrowEntryBlock(context, closeFrame),
+    ...emitCleanupFinalDispatch(context, closeFrame),
+    `${closeFrame.joinLabel}:`,
+    "  unreachable",
+    `${normalLabel}:`,
+    `  br label %${endLabel}`,
+    `${endLabel}:`
+  );
   return lines;
 }
 
@@ -6262,7 +6704,48 @@ function objectPathToIndexes(value: JsIrObjectValue, path: readonly string[]): r
   return indexes;
 }
 
+// eslint-disable-next-line max-statements -- Typed condition emission keeps specialized RegExp and class predicates beside numeric comparisons.
 function emitCondition(condition: JsIrCondition, context: EmitContext): NumberValue {
+  if (condition.kind === "regexTest") {
+    const regex = emitValueExpression(condition.regex, context);
+    const input = emitStringExpression(condition.input, context);
+    const inputValue = `%regex.test.input.${context.callIndex}`;
+    useRuntimeHelper(context.runtime, "valueBoxString");
+    useRuntimeHelper(context.runtime, "regexTest");
+    const call = emitGeneratedJsCall("regexTest", [`i64 ${regex.value}`, `i64 ${inputValue}`], context);
+    const result = `%regex.test.${context.cmpIndex}`;
+    context.cmpIndex += 1;
+    return {
+      lines: [
+        ...regex.lines,
+        `  call void @gcRootPush(i64 ${regex.value})`,
+        ...input.lines,
+        `  ${inputValue} = call i64 @valueBoxString(ptr ${input.value}, i64 ${input.length})`,
+        ...call.lines,
+        `  ${result} = icmp eq i64 ${call.value}, ${jsValueTrue}`
+      ],
+      value: result
+    };
+  }
+  if (condition.kind === "classInstanceOf") {
+    const value = emitValueExpression(condition.value, context);
+    const prototype = emitNamedValueBinding(condition.prototypeName, context);
+    const prototypePointer = `%instanceof.prototype.${context.objectIndex}`;
+    const result = `%cmp.${context.cmpIndex}`;
+    context.objectIndex += 1;
+    context.cmpIndex += 1;
+    useRuntimeHelper(context.runtime, "valueObjectPtr");
+    useRuntimeHelper(context.runtime, "jsInstanceOf");
+    return {
+      lines: [
+        ...value.lines,
+        ...prototype.lines,
+        `  ${prototypePointer} = call ptr @valueObjectPtr(i64 ${prototype.value})`,
+        `  ${result} = call i1 @jsInstanceOf(i64 ${value.value}, ptr ${prototypePointer})`
+      ],
+      value: result
+    };
+  }
   if (condition.kind === "boolean") {
     return {
       lines: [],
@@ -6736,6 +7219,27 @@ function llvmComparisonInstruction(operator: "===" | "!==" | "<" | "<=" | ">" | 
 
 // eslint-disable-next-line complexity, max-statements -- Number expression lowering includes temporary runtime array method branches.
 function emitNumberExpression(expression: JsIrNumberExpression, context: EmitContext): NumberValue {
+  if (expression.kind === "regexSearch") {
+    const regex = emitValueExpression(expression.regex, context);
+    const input = emitStringExpression(expression.input, context);
+    const inputValue = `%regex.search.input.${context.callIndex}`;
+    useRuntimeHelper(context.runtime, "valueBoxString");
+    useRuntimeHelper(context.runtime, "regexSearch");
+    const call = emitGeneratedJsCall("regexSearch", [`i64 ${regex.value}`, `i64 ${inputValue}`], context);
+    const number = `%regex.search.number.${context.numIndex}`;
+    context.numIndex += 1;
+    return {
+      lines: [
+        ...regex.lines,
+        `  call void @gcRootPush(i64 ${regex.value})`,
+        ...input.lines,
+        `  ${inputValue} = call i64 @valueBoxString(ptr ${input.value}, i64 ${input.length})`,
+        ...call.lines,
+        `  ${number} = call double @valueNumber(i64 ${call.value})`
+      ],
+      value: number
+    };
+  }
   const simple = emitSimpleNumberExpression(expression, context);
   if (simple !== undefined) {
     return simple;
@@ -7316,6 +7820,36 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
         `  ${raw} = call { ptr, i64 } @errorToString(ptr ${object.value})`,
         `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
         `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+      ],
+      value,
+      length
+    };
+  }
+
+  if (expression.kind === "regexReplace") {
+    const receiver = emitStringExpression(expression.receiver, context);
+    const regex = emitValueExpression(expression.regex, context);
+    const replacement = emitStringExpression(expression.replacement, context);
+    const receiverValue = `%regex.replace.receiver.${context.callIndex}`;
+    const replacementValue = `%regex.replace.replacement.${context.callIndex}`;
+    useRuntimeHelper(context.runtime, "valueBoxString");
+    useRuntimeHelper(context.runtime, "valueStringPtr");
+    useRuntimeHelper(context.runtime, "valueStringLength");
+    useRuntimeHelper(context.runtime, "regexReplace");
+    const call = emitGeneratedJsCall("regexReplace", [`i64 ${regex.value}`, `i64 ${receiverValue}`, `i64 ${replacementValue}`], context);
+    const value = `%regex.replace.ptr.${context.stringIndex}`;
+    const length = `%regex.replace.len.${context.stringIndex}`;
+    context.stringIndex += 1;
+    return {
+      lines: [
+        ...receiver.lines,
+        ...regex.lines,
+        ...replacement.lines,
+        `  ${receiverValue} = call i64 @valueBoxString(ptr ${receiver.value}, i64 ${receiver.length})`,
+        `  ${replacementValue} = call i64 @valueBoxString(ptr ${replacement.value}, i64 ${replacement.length})`,
+        ...call.lines,
+        `  ${value} = call ptr @valueStringPtr(i64 ${call.value})`,
+        `  ${length} = call i64 @valueStringLength(i64 ${call.value})`
       ],
       value,
       length

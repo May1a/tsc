@@ -24,6 +24,7 @@ const inlineCppTag = "__tscn_inline_cpp";
 const inlineCppMarker = "@cpp";
 const missingInlineCppTagDiagnosticCode = 2304;
 const suggestedInlineCppTagDiagnosticCode = 2552;
+const spreadArgumentDiagnosticCode = 2556;
 
 const parsedConfigCache = new Map<string, CachedParsedConfigResult>();
 
@@ -436,7 +437,7 @@ export const loadProgram = (
       ...program.getGlobalDiagnostics(),
       ...program.getSyntacticDiagnostics(),
       ...semanticDiagnostics
-    ].filter((diagnostic) => !isSyntheticInlineCppDiagnostic(diagnostic)));
+    ].filter((diagnostic) => !isSyntheticInlineCppDiagnostic(diagnostic) && diagnostic.code !== spreadArgumentDiagnosticCode));
     yield* Effect.forEach(tsDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
 
     yield* rejectPackageImports(sourceFiles);
