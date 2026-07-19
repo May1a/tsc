@@ -4,7 +4,7 @@ import { parseFrontmatter } from "./frontmatter.js";
 import type { Expectation, HarnessFilters, ParseGoal, SelectedTest, TestCaseResult, Test262Frontmatter } from "./types.js";
 
 // Flags Test262 uses that do not change how the harness assembles a test.
-const benignFlags = new Set(["noStrict", "generated", "CanBlockIsFalse", "CanBlockIsTrue"]);
+const benignFlags = new Set(["noStrict", "onlyStrict", "generated", "CanBlockIsFalse", "CanBlockIsTrue"]);
 const recognizedFlags = new Set([...benignFlags, "module"]);
 
 // Negative phases that must be rejected while compiling, before any execution.

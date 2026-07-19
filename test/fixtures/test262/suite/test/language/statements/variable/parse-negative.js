@@ -5,4 +5,5 @@ negative:
   phase: parse
   type: SyntaxError
 ---*/
+$DONOTEVALUATE();
 let x = ;

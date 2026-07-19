@@ -18,10 +18,10 @@ import { repoRoot, roadmapIntegrationTimeoutMs, toolExecutable } from "./helpers
 const suiteRoot = path.join(repoRoot, "test/fixtures/test262/suite");
 const hangTimeoutMs = 3000;
 const gitTimeoutMs = 30_000;
-const expectedTotalTests = 20;
-const expectedPassCount = 5;
+const expectedTotalTests = 21;
+const expectedPassCount = 8;
 const expectedFailCount = 4;
-const expectedSkipCount = 9;
+const expectedSkipCount = 7;
 const shaHashLength = 40;
 
 let filters: HarnessFilters;
@@ -154,8 +154,8 @@ describe("filtered Test262 harness", () => {
     const byId = new Map(results.map((result) => [result.id, result]));
     expectClassification(byId.get("language/statements/try/async-flagged.js") ?? results[0], "skip", "unsupported-flag:async");
     expectClassification(byId.get("language/statements/while/bigint-feature.js") ?? results[0], "skip", "unsupported-feature:BigInt");
-    expectClassification(byId.get("language/statements/while/extra-include.js") ?? results[0], "skip", "unsupported-include:propertyHelper.js");
-    expectClassification(byId.get("language/statements/while/only-strict.js") ?? results[0], "skip", "unsupported-flag:onlyStrict");
+    expectClassification(byId.get("language/statements/while/extra-include.js") ?? results[0], "pass");
+    expectClassification(byId.get("language/statements/while/only-strict.js") ?? results[0], "pass");
   }, roadmapIntegrationTimeoutMs);
 
   test("skips decorators when Node cannot serve as the oracle", async () => {
@@ -169,6 +169,14 @@ describe("filtered Test262 harness", () => {
   test("executes the minimal Test262 assertion methods", async () => {
     const results = completedResults(
       await runSuite({ only: ["language/statements/while/assert-methods.js"] })
+    );
+    expect(results).toHaveLength(1);
+    expectClassification(results[0], "pass");
+  }, roadmapIntegrationTimeoutMs);
+
+  test("compares arrays through the compiler-owned Test262 include", async () => {
+    const results = completedResults(
+      await runSuite({ only: ["language/statements/while/compare-array.js"] })
     );
     expect(results).toHaveLength(1);
     expectClassification(results[0], "pass");
@@ -243,7 +251,7 @@ describe("filtered Test262 harness", () => {
     const report = formatReport(run);
     expect(report).toContain("PASS language/statements/while/pass-count-down.js");
     expect(report).toContain("COVERAGE-GAP language/statements/for-in/for-in-coverage-gap.js [compiler-unsupported]");
-    expect(report).toContain("Summary: 5 pass, 4 fail, 2 coverage-gap, 9 skip (20 total)");
+    expect(report).toContain("Summary: 8 pass, 4 fail, 2 coverage-gap, 7 skip (21 total)");
     expect(report).not.toContain("plain-addition");
     await Promise.all(results.map(cleanupArtifacts));
   }, roadmapIntegrationTimeoutMs);
@@ -295,6 +303,19 @@ describe("Test262 assembly and reporting", () => {
     expect(entry).not.toMatch(/\b(?:import|export|await)\b/);
   });
 
+  test("assembles the reduced property descriptor helpers", () => {
+    const entry = assembleEntry("", { kind: "positive" });
+    expect(entry).toContain("function verifyProperty(");
+    expect(entry).toContain("function verifyEqualTo(");
+    expect(entry).toContain("function verifyWritable(");
+    expect(entry).toContain("function verifyNotWritable(");
+    expect(entry).toContain("function verifyEnumerable(");
+    expect(entry).toContain("function verifyNotEnumerable(");
+    expect(entry).toContain("function verifyConfigurable(");
+    expect(entry).toContain("function verifyNotConfigurable(");
+    expect(entry).toContain("function $DONOTEVALUATE(");
+  });
+
   test("preserves Test262Error constructor identity under Node", async () => {
     const workDir = await mkdtemp(path.join(tmpdir(), "t262-error-identity-"));
     const entry = path.join(workDir, "entry.ts");
@@ -311,14 +332,36 @@ describe("Test262 assembly and reporting", () => {
     }
   });
 
+  test("rejects unsupported property helper options loudly", async () => {
+    const workDir = await mkdtemp(path.join(tmpdir(), "t262-property-options-"));
+    const entry = path.join(workDir, "entry.ts");
+    await writeFile(entry, assembleEntry('verifyProperty({}, "x", undefined, { restore: true });', { kind: "positive" }));
+    try {
+      const run = await captureProcessWithTimeout(
+        process.execPath,
+        ["--input-type=commonjs", "--eval", nodeScriptWrapperSource, entry],
+        { cwd: repoRoot, timeoutMs: hangTimeoutMs }
+      );
+      expect(nodeBehavior(run)).toEqual(
+        expect.objectContaining({
+          exitCode: 1,
+          thrown: expect.objectContaining({ kind: "error", name: "Test262Error" })
+        })
+      );
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
   test("rewrites supported assertion calls without changing strings or comments", () => {
-    const source = `// assert.sameValue(0, 1)\nconst text = "assert.throws";\nassert.sameValue(1, 1);\nassert.notSameValue(0, -0);\nassert.throws(TypeError, callback);`;
+    const source = `// assert.sameValue(0, 1)\nconst text = "assert.throws";\nassert.sameValue(1, 1);\nassert.notSameValue(0, -0);\nassert.throws(TypeError, callback);\nassert.compareArray([1], [1]);`;
     const entry = assembleEntry(source, { kind: "positive" });
     expect(entry).toContain("// assert.sameValue(0, 1)");
     expect(entry).toContain('"assert.throws"');
     expect(entry).toContain("__t262SameValue(1, 1)");
     expect(entry).toContain("__t262NotSameValue(0, -0)");
     expect(entry).toContain("__t262Throws(TypeError, callback)");
+    expect(entry).toContain("__t262CompareArray([1], [1])");
   });
 
   test("parses focused runner arguments", () => {

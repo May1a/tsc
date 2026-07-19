@@ -26,6 +26,10 @@ function $ERROR(...args: any[]): any {
   throw Test262Error(args[0]);
 }
 
+function $DONOTEVALUATE(): void {
+  throw Test262Error("Test262 code marked $DONOTEVALUATE was evaluated");
+}
+
 function assert(...args: any[]): void {
   if (args[0] !== true) {
     throw Test262Error(args[1]);
@@ -66,12 +70,233 @@ function __t262Throws(...args: any[]): void {
     throw Test262Error(args[2]);
   }
 }
+
+function compareArray(...args: any[]): boolean {
+  if (args.length !== 2) {
+    throw Test262Error("compareArray requires exactly two arguments");
+  }
+  const actual = args[0];
+  const expected = args[1];
+  if (actual.length !== expected.length) {
+    return false;
+  }
+  for (let index = 0; index < actual.length; index = index + 1) {
+    if (Object.is(actual[index], expected[index])) {
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+function __t262CompareArray(...args: any[]): void {
+  if (args.length !== 2) {
+    if (args.length !== 3) {
+      throw Test262Error("assert.compareArray requires two or three arguments");
+    }
+  }
+  // Keep this loop inline: calling a boolean-returning prelude helper from an
+  // if condition is outside the compiler's current lowering subset.
+  const actual = args[0];
+  const expected = args[1];
+  if (actual.length !== expected.length) {
+    throw Test262Error(args[2]);
+  }
+  for (let index = 0; index < actual.length; index = index + 1) {
+    if (Object.is(actual[index], expected[index])) {
+    } else {
+      throw Test262Error(args[2]);
+    }
+  }
+}
+
+function verifyProperty(obj: any, name: any, desc: any, ...options: any[]): boolean {
+  if (options.length !== 0) {
+    throw Test262Error("verifyProperty options are unsupported");
+  }
+  const key = String(name);
+  // A one-element box materializes generic object parameters as aggregate
+  // references for the descriptor operations supported by the compiler.
+  const objectBox = [obj];
+  const target = objectBox[0];
+  if (desc === undefined) {
+    if (Object.hasOwn(target, key)) {
+      throw Test262Error("Expected property descriptor to be undefined");
+    }
+    return true;
+  }
+  if (desc === null) {
+    throw Test262Error("Descriptor must be an object or undefined");
+  }
+  if (Object.hasOwn(target, key)) {
+  } else {
+    throw Test262Error("Expected an own property");
+  }
+  const originalDesc = Object.getOwnPropertyDescriptor(target, key);
+  if (Object.hasOwn(desc, "get")) {
+    throw Test262Error("Unsupported descriptor field");
+  }
+  if (Object.hasOwn(desc, "set")) {
+    throw Test262Error("Unsupported descriptor field");
+  }
+  const fields = Object.keys(desc);
+  let expectedFields = 0;
+  if (Object.hasOwn(desc, "value")) {
+    expectedFields = expectedFields + 1;
+  }
+  if (Object.hasOwn(desc, "writable")) {
+    expectedFields = expectedFields + 1;
+  }
+  if (Object.hasOwn(desc, "enumerable")) {
+    expectedFields = expectedFields + 1;
+  }
+  if (Object.hasOwn(desc, "configurable")) {
+    expectedFields = expectedFields + 1;
+  }
+  if (fields.length !== expectedFields) {
+    throw Test262Error("Unsupported descriptor field");
+  }
+  if (Object.hasOwn(desc, "value")) {
+    if (Object.is(desc.value, originalDesc.value)) {
+    } else {
+      throw Test262Error("Unexpected descriptor value");
+    }
+    if (Object.is(desc.value, target[key])) {
+    } else {
+      throw Test262Error("Unexpected property value");
+    }
+  }
+  if (Object.hasOwn(desc, "writable")) {
+    if (desc.writable !== undefined) {
+      if (desc.writable === originalDesc.writable) {
+      } else {
+        throw Test262Error("Unexpected writable descriptor attribute");
+      }
+      if (desc.writable === true) {
+        // Snapshot before mutation; a direct binding may be re-read after the
+        // write by the current lowering slice instead of retaining the value.
+        const originalValueBox = [target[key]];
+        const newValue: any = 42;
+        target[key] = newValue;
+        if (Object.is(target[key], newValue)) {
+        } else {
+          throw Test262Error("Unexpected writable property behavior");
+        }
+        target[key] = originalValueBox[0];
+      }
+    }
+  }
+  if (Object.hasOwn(desc, "enumerable")) {
+    if (desc.enumerable !== undefined) {
+      if (desc.enumerable === originalDesc.enumerable) {
+      } else {
+        throw Test262Error("Unexpected enumerable descriptor attribute");
+      }
+      const enumerableKeys = Object.keys(target);
+      const enumerable = enumerableKeys.includes(key);
+      if (desc.enumerable === enumerable) {
+      } else {
+        throw Test262Error("Unexpected enumerable property behavior");
+      }
+    }
+  }
+  if (Object.hasOwn(desc, "configurable")) {
+    if (desc.configurable !== undefined) {
+      if (desc.configurable === originalDesc.configurable) {
+      } else {
+        throw Test262Error("Unexpected configurable descriptor attribute");
+      }
+      if (desc.configurable === true) {
+        delete target[key];
+        if (Object.hasOwn(target, key)) {
+          throw Test262Error("Unexpected configurable property behavior");
+        }
+      }
+    }
+  }
+  return true;
+}
+
+function verifyEqualTo(obj: any, name: any, value: any): void {
+  const key = String(name);
+  if (Object.is(obj[key], value)) {
+  } else {
+    throw Test262Error("Unexpected property value");
+  }
+}
+
+function verifyWritable(obj: any, name: any): void {
+  const key = String(name);
+  const objectBox = [obj];
+  const target = objectBox[0];
+  const originalValueBox = [target[key]];
+  const newValue: any = 42;
+  target[key] = newValue;
+  if (Object.is(target[key], newValue)) {
+  } else {
+    throw Test262Error("Expected a writable property");
+  }
+  target[key] = originalValueBox[0];
+}
+
+function verifyNotWritable(obj: any, name: any): void {
+  const key = String(name);
+  const descriptor = Object.getOwnPropertyDescriptor(obj, key);
+  if (descriptor.writable === true) {
+    throw Test262Error("Expected a non-writable property descriptor");
+  }
+}
+
+function verifyEnumerable(obj: any, name: any): void {
+  const key = String(name);
+  const descriptor = Object.getOwnPropertyDescriptor(obj, key);
+  if (descriptor.enumerable === true) {
+  } else {
+    throw Test262Error("Expected an enumerable property descriptor");
+  }
+  const enumerableKeys = Object.keys(obj);
+  if (enumerableKeys.includes(key) === true) {
+  } else {
+    throw Test262Error("Expected an enumerable property");
+  }
+}
+
+function verifyNotEnumerable(obj: any, name: any): void {
+  const key = String(name);
+  const descriptor = Object.getOwnPropertyDescriptor(obj, key);
+  if (descriptor.enumerable === true) {
+    throw Test262Error("Expected a non-enumerable property descriptor");
+  }
+  const enumerableKeys = Object.keys(obj);
+  if (enumerableKeys.includes(key) === true) {
+    throw Test262Error("Expected a non-enumerable property");
+  }
+}
+
+function verifyConfigurable(obj: any, name: any): void {
+  const key = String(name);
+  const objectBox = [obj];
+  const target = objectBox[0];
+  delete target[key];
+  if (Object.hasOwn(target, key)) {
+    throw Test262Error("Expected a configurable property");
+  }
+}
+
+function verifyNotConfigurable(obj: any, name: any): void {
+  const key = String(name);
+  const descriptor = Object.getOwnPropertyDescriptor(obj, key);
+  if (descriptor.configurable === true) {
+    throw Test262Error("Expected a non-configurable property descriptor");
+  }
+}
 `;
 
 const assertionMethodNames = new Map([
   ["sameValue", "__t262SameValue"],
   ["notSameValue", "__t262NotSameValue"],
-  ["throws", "__t262Throws"]
+  ["throws", "__t262Throws"],
+  ["compareArray", "__t262CompareArray"]
 ]);
 
 type SourceReplacement = {

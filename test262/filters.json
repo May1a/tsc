@@ -30,7 +30,7 @@
       "exclude": []
     }
   ],
-  "unsupportedFlags": ["async", "module", "raw", "onlyStrict"],
+  "unsupportedFlags": ["async", "module", "raw"],
   "unsupportedFeatures": [
     "decorators",
     "async-functions",
@@ -76,5 +76,5 @@
     "explicit-resource-management",
     "with"
   ],
-  "supportedIncludes": ["assert.js", "sta.js"]
+  "supportedIncludes": ["assert.js", "sta.js", "compareArray.js", "propertyHelper.js"]
 }
