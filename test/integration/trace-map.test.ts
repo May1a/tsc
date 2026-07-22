@@ -1,7 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { TraceMapOperation, TraceMapV1 } from "../../src/compiler/trace.js";
-import { expectLlvmAsVerificationIfAvailable, expectSuccessfulCompile, roadmapIntegrationTimeoutMs } from "./helpers.js";
-import { expectNativeMatchesNodeIfAvailable } from "./oracle.js";
+import { compileFixture, expectLlvmAsVerificationIfAvailable, expectSuccessfulCompile, roadmapIntegrationTimeoutMs } from "./helpers.js";
 
 const functionDeclarationLine = 4;
 const functionBodyPrintLine = 5;
@@ -138,19 +137,19 @@ describe("operation trace maps", () => {
     }
   });
 
-  test("records multiple modules and compile-time fallback provenance", async () => {
+  test("records multiple modules, all lowered natively", async () => {
     const imported = await expectSuccessfulCompile("entry-with-import.ts");
-    const fallback = await expectSuccessfulCompile("class-prototype-method-lookup.ts");
+    const classModule = await expectSuccessfulCompile("class-basic-method.ts");
     try {
       const importedMap = await readTraceMap(imported);
-      const fallbackMap = await readTraceMap(fallback);
+      const classMap = await readTraceMap(classModule);
       expect(importedMap.modules).toHaveLength(2);
       expect(importedMap.modules.map((module) => module.id)).toEqual(["m0", "m1"]);
-      expect(importedMap.modules.every((module) => module.loweringMode === "native")).toBe(true);
+      expect(importedMap.modules.map((module) => module.loweringMode)).toEqual(["native", "native"]);
       expect(importedMap.operations.map((operation) => operation.id)).toEqual(["m0:o000000", "m1:o000000"]);
-      expect(fallbackMap.modules[0].loweringMode).toBe("compileTimeFallback");
+      expect(classMap.modules[0].loweringMode).toBe("native");
     } finally {
-      await Promise.all([imported.cleanup(), fallback.cleanup()]);
+      await Promise.all([imported.cleanup(), classModule.cleanup()]);
     }
   });
 
@@ -178,20 +177,16 @@ describe("operation trace maps", () => {
     }
   }, roadmapIntegrationTimeoutMs);
 
-  test("rejects compile-time fallback modules from the Node oracle", async () => {
-    await expect(
-      expectNativeMatchesNodeIfAvailable("class-prototype-method-lookup.ts", { keepArtifactsOnFailure: false })
-    ).rejects.toThrow(/Compile-time fallback modules/);
-  }, roadmapIntegrationTimeoutMs);
-
-  test("keeps this-before-super constructors on the compile-time fallback", async () => {
-    // Issue #24 acceptance: accessing `this` before `super()` must keep the
-    // existing compile-time fallback rather than being silently mis-lowered
-    // to native code with partial TDZ semantics.
-    const result = await expectSuccessfulCompile("class-this-before-super.ts");
+  test("reports this-before-super constructors as a hard compile error", async () => {
+    // Accessing `this` before `super()` is unsupported by native class
+    // lowering; with the compile-time interpreter deleted it must surface as a
+    // hard TSCN1002 diagnostic rather than being silently mis-lowered to
+    // native code with partial TDZ semantics.
+    const result = await compileFixture("class-this-before-super.ts");
     try {
-      const traceMap = await readTraceMap(result);
-      expect(traceMap.modules[0].loweringMode).toBe("compileTimeFallback");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("error TSCN1002");
+      expect(result.stderr).toContain("class lowering unsupported");
     } finally {
       await result.cleanup();
     }

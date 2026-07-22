@@ -412,7 +412,6 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
     }
   }
   const mainLines = emitOperations(mainOps, context);
-  const stringConstants = context.stringConstants.join("\n");
   const functionObjectGlobals = [...internedFunctions].map(([target]) => `@${internedFunctionGlobal(target)} = internal global i64 ${jsValueUndefined}`);
   const valueGlobals = [...context.valueGlobals].map((name) => `@${name}.value = internal global i64 ${jsValueUndefined}`);
   const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals, ...functionObjectGlobals, ...valueGlobals].join("\n");
@@ -430,14 +429,22 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
   // (otherwise straight-line top-level temporaries stay pinned until process exit).
   if (internedFunctions.size > 0) {
     useRuntimeHelper(context.runtime, "functionObjectNew");
+    useRuntimeHelper(context.runtime, "valueBoxString");
   }
   const mainInit = [
     "  call void @gcInit()",
     "  %gc.main.frame = call i64 @gcRootSave()",
     ...[...internedFunctions].flatMap(([target, definition], index) => {
       const value = `%fnobj.intern.${index}`;
+      // The interned object stands in for a function declaration reference, so
+      // it carries the declaration's own name and expected argument count.
+      const name = addStringConstant(target, context);
+      const nameLength = utf8ByteLength(target);
+      const nameValue = `%fnobj.intern.name.${index}`;
+      const length = functionObjectExpectedArgumentCount(definition.parameters);
       return [
-        `  ${value} = call i64 @functionObjectNew(ptr @${definition.codeName}, ptr null, i64 ${jsValueUndefined}, i64 ${jsValueUndefined})`,
+        `  ${nameValue} = call i64 @valueBoxString(ptr ${name}, i64 ${nameLength})`,
+        `  ${value} = call i64 @functionObjectNew(ptr @${definition.codeName}, ptr null, i64 ${jsValueUndefined}, i64 ${nameValue}, i64 ${length})`,
         `  store i64 ${value}, ptr @${internedFunctionGlobal(target)}`,
         `  call void @gcRootPush(i64 ${value})`
       ];
@@ -466,6 +473,9 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
       appendLines(text.split("\n"));
     }
   };
+  // Joined lazily after mainInit so name constants for interned function
+  // objects (added while mainInit is constructed) are included.
+  const stringConstants = context.stringConstants.join("\n");
   appendLines([`; tscn textual LLVM IR placeholder`, `; entry ${module.entry}`]);
   appendText(moduleComments);
   appendLines(["", "declare i32 @puts(ptr)", "declare i32 @printf(ptr, ...)", "declare void @exit(i32)"]);
@@ -1694,6 +1704,10 @@ function emitObjectMutationOperation(operation: JsIrOperation, context: EmitCont
     return emitValueAggregateStoreOperation(operation, context);
   }
 
+  if (operation.kind === "privateFieldStore") {
+    return emitPrivateFieldStoreOperation(operation, context);
+  }
+
   if (operation.kind === "valueObjectDelete" || operation.kind === "valueArrayDelete") {
     return emitValueAggregateDeleteOperation(operation, context);
   }
@@ -2506,7 +2520,7 @@ function emitFunctionObjectValue(operation: Extract<JsIrOperation, { readonly ki
     }
   }
   const thisArg = emitFunctionObjectThisArg(operation, context, `%arr.fnobj.this.frame.${index}`);
-  const newCall = `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr ${environment}, i64 ${thisArg.value}, i64 ${jsValueUndefined})`;
+  const newCall = `  ${functionValue} = call i64 @functionObjectNew(ptr @${operation.callbackName}, ptr ${environment}, i64 ${thisArg.value}, i64 ${jsValueUndefined}, i64 ${operation.callbackParameters.length})`;
   const push = emitRootStackPush(functionValue, context);
   return { lines: [...captureLines, ...thisArg.setup, newCall, ...thisArg.cleanup, push], value: functionValue };
 }
@@ -4141,6 +4155,57 @@ function emitValueAggregateStoreOperation(
   return [...receiver.lines, ...key.lines, ...value.lines, `  call void @valueObjectSet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
+// Emits the TypeError throw shared by private field reads and writes: builds a
+// native TypeError object with the given literal message and routes it to the
+// nearest exception handler, exactly like a `throwValue` operation.
+function emitPrivateFieldBrandThrow(message: string, labelPrefix: string, context: EmitContext): string[] {
+  const messageConstant = addStringConstant(message, context);
+  const nameConstant = addStringConstant("TypeError", context);
+  const messageValue = `%${labelPrefix}.msg`;
+  const errorObject = `%${labelPrefix}.err`;
+  const errorBoxed = `%${labelPrefix}.boxed`;
+  useRuntimeHelper(context.runtime, "valueBoxString");
+  useRuntimeHelper(context.runtime, "errorNew");
+  useRuntimeHelper(context.runtime, "valueBoxObject");
+  return [
+    `  ${messageValue} = call i64 @valueBoxString(ptr ${messageConstant}, i64 ${utf8ByteLength(message)})`,
+    `  ${errorObject} = call ptr @errorNew(i64 ${errorClassIds.get("TypeError") ?? 0}, i64 9, ptr ${nameConstant}, i64 ${messageValue})`,
+    `  ${errorBoxed} = call i64 @valueBoxObject(ptr ${errorObject})`,
+    emitRootStackPush(errorBoxed, context),
+    `  store i64 ${errorBoxed}, ptr ${context.exceptionSlot}`,
+    `  br label %${context.exceptionTarget}`
+  ];
+}
+
+// Emits a private field write: the class-mangled key must be an own property of
+// the receiver (the brand), otherwise a TypeError is thrown.
+function emitPrivateFieldStoreOperation(
+  operation: Extract<JsIrOperation, { readonly kind: "privateFieldStore" }>,
+  context: EmitContext
+): string[] {
+  const receiver = emitNamedValueBinding(operation.targetName, context);
+  const value = emitValueExpression(operation.value, context);
+  const keyConstant = addStringConstant(operation.key, context);
+  const keyLength = utf8ByteLength(operation.key);
+  const index = context.objectIndex;
+  context.objectIndex += 1;
+  const has = `%priv.has.${index}`;
+  const okLabel = `priv.ok.${index}`;
+  const throwLabel = `priv.throw.${index}`;
+  useRuntimeHelper(context.runtime, "valueObjectHasOwn");
+  useRuntimeHelper(context.runtime, "valueObjectSet");
+  return [
+    ...receiver.lines,
+    ...value.lines,
+    `  ${has} = call i1 @valueObjectHasOwn(i64 ${receiver.value}, i64 ${keyLength}, ptr ${keyConstant})`,
+    `  br i1 ${has}, label %${okLabel}, label %${throwLabel}`,
+    `${throwLabel}:`,
+    ...emitPrivateFieldBrandThrow(operation.message, `priv.store.${index}`, context),
+    `${okLabel}:`,
+    `  call void @valueObjectSet(i64 ${receiver.value}, i64 ${keyLength}, ptr ${keyConstant}, i64 ${value.value})`
+  ];
+}
+
 function emitValueAggregateDeleteOperation(
   operation: Extract<JsIrOperation, { readonly kind: "valueObjectDelete" | "valueArrayDelete" }>,
   context: EmitContext
@@ -4576,7 +4641,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
         lines.push(`  call void @environmentSet(ptr ${environment}, i64 ${captureIndex}, i64 ${emittedCaptures[captureIndex].value})`);
       }
     }
-    lines.push(`  ${value} = call i64 @functionObjectNew(ptr @${expression.definition.codeName}, ptr ${environment}, i64 ${jsValueUndefined}, i64 ${functionName})`, emitRootStackPush(value, context));
+    lines.push(`  ${value} = call i64 @functionObjectNew(ptr @${expression.definition.codeName}, ptr ${environment}, i64 ${jsValueUndefined}, i64 ${functionName}, i64 ${functionObjectExpectedArgumentCount(expression.definition.parameters)})`, emitRootStackPush(value, context));
     return { lines, value };
   }
 
@@ -4612,6 +4677,10 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   if (expression.kind === "valueObjectDynamicAccess") {
     return emitValueObjectValueExpression(expression, context);
+  }
+
+  if (expression.kind === "privateFieldAccess") {
+    return emitPrivateFieldAccessExpression(expression, context);
   }
 
   if (expression.kind === "valueArrayAccess") {
@@ -4664,20 +4733,39 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return emitNullishCoalesceValueExpression(expression, context);
   }
 
+  if (expression.kind === "jsonParse") {
+    const text = emitValueExpression(expression.text, context);
+    let reviver: JsValue = { lines: [], value: jsValueUndefined };
+    if (expression.reviver !== undefined) {
+      reviver = emitValueExpression(expression.reviver, context);
+    }
+    useRuntimeHelper(context.runtime, "jsonParse");
+    const call = emitGeneratedJsCall("jsonParse", [`i64 ${text.value}`, `i64 ${reviver.value}`], context);
+    return {
+      lines: [
+        ...text.lines,
+        emitRootStackPush(text.value, context),
+        ...reviver.lines,
+        emitRootStackPush(reviver.value, context),
+        ...call.lines
+      ],
+      value: call.value
+    };
+  }
+
   if (expression.kind === "jsonStringify") {
     const source = emitValueExpression(expression.value, context);
-    const lines = [...source.lines];
+    const lines = [...source.lines, emitRootStackPush(source.value, context)];
     let filter = "null";
     if (expression.replacerName !== undefined) {
       const filterArray = emitRuntimeArrayPointer(expression.replacerName, context);
       lines.push(...filterArray.lines);
       filter = filterArray.value;
     }
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
     useRuntimeHelper(context.runtime, "jsonStringify");
-    lines.push(`  ${value} = call i64 @jsonStringify(i64 ${source.value}, ptr ${filter}, i64 ${expression.indent})`);
-    return { lines, value };
+    const call = emitGeneratedJsCall("jsonStringify", [`i64 ${source.value}`, `ptr ${filter}`, `i64 ${expression.indent}`], context);
+    lines.push(...call.lines);
+    return { lines, value: call.value };
   }
 
   if (expression.kind === "runtimeMapGet") {
@@ -4985,6 +5073,19 @@ function internedFunctionGlobal(target: string): string {
   return `fnobj.singleton.${target}`.replace(/[^A-Za-z0-9_.]/g, "_");
 }
 
+// ExpectedArgumentCount: the number of leading parameters before the first
+// one with a default initializer or a rest parameter.
+function functionObjectExpectedArgumentCount(parameters: readonly JsIrFunctionParameter[]): number {
+  let count = 0;
+  for (const parameter of parameters) {
+    if (parameter.isRest === true || parameter.defaultValue !== undefined) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
 // eslint-disable-next-line max-statements -- Dynamic calls materialize fixed and iterable spread arguments into one argv state machine.
 function emitValueCallExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "callValue" }>,
@@ -5207,6 +5308,37 @@ function emitValueObjectValueExpression(
   useRuntimeHelper(context.runtime, "valueObjectGet");
   return {
     lines: [...receiver.lines, ...key.lines, `  ${value} = call i64 @valueObjectGet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value})`],
+    value
+  };
+}
+
+// Emits a private field read: the class-mangled key must be an own property of
+// the receiver (the brand), otherwise a TypeError is thrown.
+function emitPrivateFieldAccessExpression(
+  expression: Extract<JsIrValueExpression, { readonly kind: "privateFieldAccess" }>,
+  context: EmitContext
+): JsValue {
+  const receiver = emitValueExpression(expression.receiver, context);
+  const keyConstant = addStringConstant(expression.key, context);
+  const keyLength = utf8ByteLength(expression.key);
+  const index = context.numIndex;
+  context.numIndex += 1;
+  const has = `%priv.has.${index}`;
+  const value = `%value.${index}`;
+  const okLabel = `priv.ok.${index}`;
+  const throwLabel = `priv.throw.${index}`;
+  useRuntimeHelper(context.runtime, "valueObjectHasOwn");
+  useRuntimeHelper(context.runtime, "valueObjectGet");
+  return {
+    lines: [
+      ...receiver.lines,
+      `  ${has} = call i1 @valueObjectHasOwn(i64 ${receiver.value}, i64 ${keyLength}, ptr ${keyConstant})`,
+      `  br i1 ${has}, label %${okLabel}, label %${throwLabel}`,
+      `${throwLabel}:`,
+      ...emitPrivateFieldBrandThrow(expression.message, `priv.read.${index}`, context),
+      `${okLabel}:`,
+      `  ${value} = call i64 @valueObjectGet(i64 ${receiver.value}, i64 ${keyLength}, ptr ${keyConstant})`
+    ],
     value
   };
 }
@@ -6746,6 +6878,43 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
       value: result
     };
   }
+  if (condition.kind === "errorInstanceOf") {
+    const value = emitValueExpression(condition.value, context);
+    const index = context.cmpIndex;
+    context.cmpIndex += 1;
+    const classId = errorClassIds.get(condition.errorName) ?? 0;
+    const tagged = `%instanceof.error.tagged.${index}`;
+    const isObject = `%instanceof.error.is.object.${index}`;
+    const objectPointer = `%instanceof.error.ptr.${index}`;
+    const fallbackSlot = `%instanceof.error.fallback.${index}`;
+    const classSlot = `%instanceof.error.slot.${index}`;
+    const selectedSlot = `%instanceof.error.selected.${index}`;
+    const classValue = `%instanceof.error.class.${index}`;
+    const result = `%cmp.${index}`;
+    // `instanceof Error` matches every built-in error class; subclasses match their own id.
+    // The class slot is only readable on objects, so non-objects select a zeroed
+    // fallback slot (class id 0 matches nothing) instead of branching.
+    let comparison = `  ${result} = icmp eq i64 ${classValue}, ${classId}`;
+    if (classId === 1) {
+      comparison = `  ${result} = icmp ne i64 ${classValue}, 0`;
+    }
+    useRuntimeHelper(context.runtime, "valueObjectPtr");
+    return {
+      lines: [
+        ...value.lines,
+        `  ${tagged} = and i64 ${value.value}, ${legacyJsValue.tagMask()}`,
+        `  ${isObject} = icmp eq i64 ${tagged}, ${legacyJsValue.referenceTag("object")}`,
+        `  ${objectPointer} = call ptr @valueObjectPtr(i64 ${value.value})`,
+        `  ${fallbackSlot} = alloca i64`,
+        `  store i64 0, ptr ${fallbackSlot}`,
+        `  ${classSlot} = getelementptr i8, ptr ${objectPointer}, i64 48`,
+        `  ${selectedSlot} = select i1 ${isObject}, ptr ${classSlot}, ptr ${fallbackSlot}`,
+        `  ${classValue} = load i64, ptr ${selectedSlot}`,
+        comparison
+      ],
+      value: result
+    };
+  }
   if (condition.kind === "boolean") {
     return {
       lines: [],
@@ -7586,6 +7755,16 @@ function emitAggregateNumberExpression(
     const value = `%num.${index}`;
     useRuntimeHelper(context.runtime, "valueArrayLength");
     return { lines: [...receiver.lines, `  ${length} = call i64 @valueArrayLength(i64 ${receiver.value})`, `  ${value} = uitofp i64 ${length} to double`], value };
+  }
+
+  if (expression.kind === "valueLength") {
+    const receiver = emitValueExpression(expression.value, context);
+    const index = context.numIndex;
+    context.numIndex += 1;
+    const length = `%value.len.${index}`;
+    const value = `%num.${index}`;
+    useRuntimeHelper(context.runtime, "valueLength");
+    return { lines: [...receiver.lines, `  ${length} = call i64 @valueLength(i64 ${receiver.value})`, `  ${value} = uitofp i64 ${length} to double`], value };
   }
 
   if (expression.kind === "valueObjectLength") {

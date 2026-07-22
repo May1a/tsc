@@ -359,7 +359,7 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
       const functionObjectCall = llvmIr.indexOf("call i64 @functionObjectNew(");
       expect(receiverCall).toBeGreaterThanOrEqual(0);
       expect(functionObjectCall).toBeGreaterThan(receiverCall);
-      expect(llvmIr).toMatch(/call i64 @functionObjectNew\(ptr @[^,]+, ptr null, i64 9222246136947933184, i64 9222246136947933184\)/);
+      expect(llvmIr).toMatch(/call i64 @functionObjectNew\(ptr @[^,]+, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 \d+\)/);
     } finally {
       await result.cleanup();
     }

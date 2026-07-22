@@ -46,12 +46,14 @@ the final newline-terminated stdout line and interprets it as the thrown-value p
 a value observation. Other statuses preserve the raw streams and do not infer a thrown value. No
 whitespace, line-ending, numeric, or error-message normalization is performed.
 
-Oracle fixtures must use native lowering by default. A module marked `compileTimeFallback` makes the
-assertion fail before either executable is compared. Inline C++ remains native lowering but is excluded
-because it is a compiler extension with no Node equivalent. Direct Node execution also excludes the
-import fixture whose `.js` specifier intentionally resolves to a `.ts` project file in the compiler.
-Clang absence retains the existing missing-tool diagnostic and skip behavior. Successful comparisons
-remove temporary artifacts; failed comparisons retain `main.ll` and `trace-map.json` by default.
+Oracle fixtures must use native lowering. The compile-time fallback mode has been deleted (the B683
+compile-time interpreter is gone), so the trace-map envelope only permits `loweringMode: "native"` and
+any other value fails validation before either executable is compared. Inline C++ remains native
+lowering but is excluded because it is a compiler extension with no Node equivalent. Direct Node
+execution also excludes the import fixture whose `.js` specifier intentionally resolves to a `.ts`
+project file in the compiler. Clang absence retains the existing missing-tool diagnostic and skip
+behavior. Successful comparisons remove temporary artifacts; failed comparisons retain `main.ll` and
+`trace-map.json` by default.
 
 ## IR Trace Metadata And Provenance
 
@@ -73,7 +75,7 @@ type JsIrOperation = JsIrOperationNode & {
   readonly trace?: JsIrOperationTrace;
 };
 
-type JsIrLoweringMode = "native" | "compileTimeFallback";
+type JsIrLoweringMode = "native";
 
 type JsIrSourceModule = {
   readonly fileName: string;
@@ -99,8 +101,9 @@ m0:o000001
 m1:o000000
 ```
 
-Successful ordinary and real-class lowering uses `native`. Every B683 interpreter result, including its
-diagnostic path, uses `compileTimeFallback`. Inline C++ uses `native`.
+All lowering uses `native`. The B683 compile-time interpreter and its `compileTimeFallback` mode were
+deleted once every fixture lowered natively; class features the real backend cannot compile yet are
+hard compile-time diagnostics. Inline C++ uses `native`.
 
 ## LLVM Markers And V1 Trace Map
 

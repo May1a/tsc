@@ -24,6 +24,11 @@ const inlineCppTag = "__tscn_inline_cpp";
 const inlineCppMarker = "@cpp";
 const missingInlineCppTagDiagnosticCode = 2304;
 const suggestedInlineCppTagDiagnosticCode = 2552;
+// Early-error syntax rejections the TypeScript parser deliberately accepts.
+// tscn treats every entry as strict module code, and the ECMAScript grammar
+// forbids these forms in sloppy mode as well, so the rejection applies
+// unconditionally (issues #43).
+const invalidFunctionDeclarationDiagnosticCode = "TSCN1004";
 // TS2556 ("a spread argument must either have a tuple type or be passed to a
 // rest parameter") must be suppressed globally: it fires on user source the
 // compiler intentionally accepts. Call spread over generic iterables and
@@ -405,6 +410,88 @@ const rejectPackageImports = (
     yield* Effect.forEach(packageImportDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
   });
 
+const iterationStatementKeyword = (statement: ts.IterationStatement): string => {
+  if (ts.isWhileStatement(statement)) {
+    return "while";
+  }
+  if (ts.isDoStatement(statement)) {
+    return "do-while";
+  }
+  if (ts.isForInStatement(statement)) {
+    return "for-in";
+  }
+  if (ts.isForOfStatement(statement)) {
+    return "for-of";
+  }
+  return "for";
+};
+
+// Mirrors the spec's IsLabelledFunction: labels wrapped around the body do not
+// make a function declaration a valid iteration body.
+const isLabelledFunctionDeclaration = (statement: ts.Statement): boolean => {
+  let current = statement;
+  while (ts.isLabeledStatement(current)) {
+    current = current.statement;
+  }
+  return ts.isFunctionDeclaration(current);
+};
+
+const collectBoundNames = (name: ts.BindingName, names: Set<string>): void => {
+  if (ts.isIdentifier(name)) {
+    names.add(name.text);
+    return;
+  }
+  for (const element of name.elements) {
+    if (ts.isBindingElement(element)) {
+      collectBoundNames(element.name, names);
+    }
+  }
+};
+
+const collectInvalidFunctionDeclarations = (sourceFile: ts.SourceFile): CompilerDiagnostic[] => {
+  const found: CompilerDiagnostic[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isIterationStatement(node, false) && isLabelledFunctionDeclaration(node.statement)) {
+      found.push({
+        code: invalidFunctionDeclarationDiagnosticCode,
+        category: "error",
+        message: `A function declaration cannot be used directly as the body of a ${iterationStatementKeyword(node)} statement`,
+        span: sourceSpan(sourceFile, node.statement.getStart(sourceFile))
+      });
+    }
+    if (ts.isCatchClause(node) && node.variableDeclaration !== undefined) {
+      const boundNames = new Set<string>();
+      collectBoundNames(node.variableDeclaration.name, boundNames);
+      for (const statement of node.block.statements) {
+        if (ts.isFunctionDeclaration(statement) && statement.name !== undefined && boundNames.has(statement.name.text)) {
+          found.push({
+            code: invalidFunctionDeclarationDiagnosticCode,
+            category: "error",
+            message: `Catch parameter '${statement.name.text}' cannot be redeclared by a directly nested function declaration`,
+            span: sourceSpan(sourceFile, statement.name.getStart(sourceFile))
+          });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+};
+
+// The TypeScript parser accepts function declarations as iteration-statement
+// bodies and lets a catch block redeclare its parameter with a function
+// declaration. Both are ECMAScript early errors, so reject them during the
+// frontend phase (issue #43).
+const rejectInvalidFunctionDeclarations = (
+  sourceFiles: readonly ts.SourceFile[]
+): Effect.Effect<void, never, Diagnostics> =>
+  Effect.gen(function* rejectInvalidFunctions() {
+    const diagnostics = yield* Diagnostics;
+    const found = sourceFiles.flatMap(collectInvalidFunctionDeclarations);
+    yield* Effect.forEach(found, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
+  });
+
 export const loadProgram = (
   entry: string,
   options: { readonly suppressSemanticDiagnostics?: boolean } = {}
@@ -452,6 +539,7 @@ export const loadProgram = (
     yield* Effect.forEach(tsDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
 
     yield* rejectPackageImports(sourceFiles);
+    yield* rejectInvalidFunctionDeclarations(sourceFiles);
 
     return { program, sourceFiles };
   });

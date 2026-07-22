@@ -12,8 +12,15 @@ let activeTypeChecker: ts.TypeChecker | undefined;
 // Name of the synthetic `this` parameter threaded through constructors/methods.
 const CLASS_THIS_NAME = "this";
 
+// Key of a class member. Literal keys are known at compile time; computed keys
+// are evaluated once at class-definition time into a module-level slot and read
+// back from there wherever the member is stored.
+type ClassMemberKey =
+  | { readonly kind: "literal"; readonly name: string }
+  | { readonly kind: "computed"; readonly slotName: string };
+
 type ClassFieldInfo = {
-  readonly name: string;
+  readonly key: ClassMemberKey;
   readonly initializer: ts.Expression | undefined;
 };
 
@@ -33,6 +40,9 @@ type ClassInfo = {
   readonly getters: ReadonlySet<string>;
   readonly setters: ReadonlySet<string>;
   readonly iteratorMethod: ts.MethodDeclaration | undefined;
+  // Source-level private field name (`#x`) → class-mangled storage key on the
+  // instance object. Presence of the storage key doubles as the brand check.
+  readonly privateFields: ReadonlyMap<string, string>;
 };
 
 // Registry of classes in the file being lowered, consulted by the deep value
@@ -52,6 +62,7 @@ const inlineCppTag = "__tscn_inline_cpp";
 let activeInlineCppEnabled = false;
 let activeInlineCppBlocks: JsIrInlineCppBlock[] | undefined;
 let nextFunctionObjectId = 0;
+let nextJsonStatementValueId = 0;
 
 export type JsIrInlineCppBlock = {
   readonly symbol: string;
@@ -64,7 +75,7 @@ export type JsIrModule = {
   readonly inlineCppBlocks: readonly JsIrInlineCppBlock[];
 };
 
-export type JsIrLoweringMode = "native" | "compileTimeFallback";
+export type JsIrLoweringMode = "native";
 
 export type JsIrTraceOrigin = "source" | "synthesized";
 
@@ -248,6 +259,15 @@ export type JsIrValueExpression =
       readonly key: JsIrStringExpression;
     }
   | {
+      // Read of a private class field (`recv.#x`): brand-checks the receiver's
+      // own properties for the class-mangled storage key and throws the given
+      // TypeError message when the brand is absent.
+      readonly kind: "privateFieldAccess";
+      readonly receiver: JsIrValueExpression;
+      readonly key: string;
+      readonly message: string;
+    }
+  | {
       readonly kind: "valueArrayAccess";
       readonly value: JsIrValueExpression;
       readonly index: JsIrNumberExpression;
@@ -263,6 +283,11 @@ export type JsIrValueExpression =
       readonly value: JsIrValueExpression;
       readonly replacerName?: string;
       readonly indent: number;
+    }
+  | {
+      readonly kind: "jsonParse";
+      readonly text: JsIrValueExpression;
+      readonly reviver?: JsIrValueExpression;
     }
   | {
       readonly kind: "runtimeMapGet";
@@ -417,6 +442,10 @@ export type JsIrNumberExpression =
     }
   | {
       readonly kind: "valueArrayLength";
+      readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "valueLength";
       readonly value: JsIrValueExpression;
     }
   | {
@@ -623,6 +652,10 @@ export type JsIrBindingValue =
       readonly kind: "valueVariable";
       readonly name: string;
       readonly valueType?: "function" | "regex";
+      // Set when the variable was initialized with `new C(...)`, so method-call
+      // receivers resolve their class even when the checker cannot name the
+      // class type (anonymous class expressions).
+      readonly className?: string;
     }
   | {
       readonly kind: "number";
@@ -702,6 +735,11 @@ export type JsIrCondition =
       readonly kind: "classInstanceOf";
       readonly value: JsIrValueExpression;
       readonly prototypeName: string;
+    }
+  | {
+      readonly kind: "errorInstanceOf";
+      readonly value: JsIrValueExpression;
+      readonly errorName: string;
     }
   | {
       readonly kind: "regexTest";
@@ -1343,6 +1381,16 @@ export type JsIrOperationNode =
       readonly value: JsIrValueExpression;
     }
   | {
+      // Write to a private class field (`recv.#x = v`): brand-checks the
+      // receiver's own properties for the class-mangled storage key and throws
+      // the given TypeError message when the brand is absent.
+      readonly kind: "privateFieldStore";
+      readonly targetName: string;
+      readonly key: string;
+      readonly value: JsIrValueExpression;
+      readonly message: string;
+    }
+  | {
       readonly kind: "valueArrayStore";
       readonly targetName: string;
       readonly index: JsIrNumberExpression;
@@ -1833,9 +1881,9 @@ function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): 
 }
 
 // Raised by the class-lowering path when it encounters a class feature that the
-// real backend cannot compile yet. `lowerStatements` catches it and falls back to
-// the B683 compile-time interpreter so the file still compiles while we migrate
-// class features to real codegen incrementally.
+// real backend cannot compile yet. `lowerStatements` catches it and turns it into
+// a hard TSCN1002 diagnostic: the compiler never evaluates user programs at
+// compile time, so unsupported class features are compile errors.
 class ClassLoweringUnsupportedError extends Error {
   public constructor() {
     super("class lowering unsupported");
@@ -1876,14 +1924,15 @@ function lowerStatements(
   sourceFile: ts.SourceFile
 ): LoweredStatements {
   nextFunctionObjectId = 0;
+  nextJsonStatementValueId = 0;
   const inlineCppDiagnostic = inlineCppDisabledDiagnostic(sourceFile);
   if (inlineCppDiagnostic !== undefined) {
     return { operations: [], diagnostics: Chunk.of(inlineCppDiagnostic), loweringMode: "native" };
   }
 
   // Class-using files are attempted through real codegen first. Any unsupported
-  // class feature (or a file mixing classes with still-B683 features) falls back
-  // to the compile-time interpreter below.
+  // class feature aborts the strict pass and is reported as a diagnostic by the
+  // diagnostic-emitting pass below.
   if (sourceFileContainsClass(sourceFile)) {
     const real = tryLowerStatementsWithClasses(sourceFile);
     if (real !== undefined) {
@@ -1892,11 +1941,6 @@ function lowerStatements(
   }
 
   try {
-    const nativeB683 = lowerB683NativeFeatureStatements(sourceFile);
-    if (nativeB683 !== undefined) {
-      return nativeB683;
-    }
-
     return lowerTopLevelStatements(sourceFile, false).result;
   } catch (error) {
     if (!(error instanceof ClassLoweringUnsupportedError)) {
@@ -1952,8 +1996,8 @@ function inlineCppDisabledDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnos
 }
 
 // Runs the real lowering loop. In strict mode any unsupported statement or class
-// feature aborts (returns supported: false) so the caller can fall back. In
-// non-strict mode unsupported statements become TSCN1002 diagnostics as before.
+// feature aborts (returns supported: false) so the caller can re-run in
+// non-strict mode, where unsupported statements become TSCN1002 diagnostics.
 function lowerTopLevelStatements(
   sourceFile: ts.SourceFile,
   strict: boolean
@@ -1973,12 +2017,13 @@ function lowerTopLevelStatements(
       }
 
       if (ts.isClassDeclaration(statement)) {
-        const classOperations = lowerClassDeclaration(statement, bindings, classes);
-        for (let index = 0; index < classOperations.length; index += 1) {
-          const traced = traceOperationFromNode(classOperations[index], statement, classOperationTraceOrigin(index));
-          operations.push(traced);
-          updateBindings(traced, bindings);
-        }
+        appendClassOperations(operations, lowerClassDeclaration(statement, bindings, classes), statement, bindings);
+        continue;
+      }
+
+      const classExpressionOperations = lowerClassExpressionStatement(statement, bindings, classes);
+      if (classExpressionOperations !== undefined) {
+        appendClassOperations(operations, classExpressionOperations, statement, bindings);
         continue;
       }
 
@@ -2010,10 +2055,24 @@ function lowerTopLevelStatements(
   };
 }
 
+// Pushes a class's lowered operations into the statement stream, attaching
+// trace origins and updating bindings the same way ordinary statements do.
+function appendClassOperations(
+  operations: JsIrOperation[],
+  classOperations: readonly JsIrOperation[],
+  statement: ts.Statement,
+  bindings: Map<string, JsIrBindingValue>
+): void {
+  for (let index = 0; index < classOperations.length; index += 1) {
+    const traced = traceOperationFromNode(classOperations[index], statement, classOperationTraceOrigin(index));
+    operations.push(traced);
+    updateBindings(traced, bindings);
+  }
+}
+
 function tryLowerStatementsWithClasses(
   sourceFile: ts.SourceFile
-): LoweredStatements | undefined {
-  try {
+): LoweredStatements | undefined {  try {
     const { supported, result } = lowerTopLevelStatements(sourceFile, true);
     if (!supported || !Chunk.isEmpty(result.diagnostics)) {
       return undefined;
@@ -2032,8 +2091,8 @@ function tryLowerStatementsWithClasses(
 // Classes compile to real LLVM code: instances are runtime objects, fields are
 // object properties, and the constructor is an ordinary function whose first
 // parameter is the explicit `this` instance value. Features that are not yet
-// handled throw `ClassLoweringUnsupportedError`, which routes the whole file back to
-// the B683 compile-time interpreter so it keeps compiling during the migration.
+// handled throw `ClassLoweringUnsupportedError`, which `lowerStatements` reports
+// as a hard TSCN1002 compile error.
 
 function classConstructorName(className: string): string {
   return `${className}$constructor`;
@@ -2065,6 +2124,23 @@ function classSetterFunctionName(className: string, propertyName: string): strin
   return `${className}$set$${propertyName}`;
 }
 
+// Storage key for a private field: mangled with the owning class name behind a
+// NUL prefix so it can never collide with a source-level property name. Its
+// presence as an own property of an instance doubles as the class brand.
+function classPrivateFieldStorageKey(className: string, fieldName: string): string {
+  return `\0private\0${className}\0${fieldName}`;
+}
+
+// Node-compatible TypeError messages for private field access on an instance
+// that does not own the declaring class's brand.
+function classPrivateFieldReadMessage(fieldName: string): string {
+  return `Cannot read private member ${fieldName} from an object whose class did not declare it`;
+}
+
+function classPrivateFieldWriteMessage(fieldName: string): string {
+  return `Cannot write private member ${fieldName} to an object whose class did not declare it`;
+}
+
 function classMemberHasStaticModifier(member: ts.ClassElement): boolean {
   if (!ts.canHaveModifiers(member)) {
     return false;
@@ -2072,14 +2148,56 @@ function classMemberHasStaticModifier(member: ts.ClassElement): boolean {
   return ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ?? false;
 }
 
-// eslint-disable-next-line max-statements -- Class declaration lowering assembles all generated class artifacts in source order.
-function lowerClassDeclaration(
-  statement: ts.ClassDeclaration,
+// Lowers `const C = class [Inner] { ... }` by registering the class under the
+// declared variable name, so `new C()`, `C.m()`, and `instanceof C` resolve
+// exactly like they do for a class declaration. Other class-expression
+// positions (arguments, returns, non-const declarations) are unsupported and
+// raise a hard compile error. Returns undefined when the statement is not a
+// class-expression variable statement.
+function lowerClassExpressionStatement(
+  statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   classes: Map<string, ClassInfo>
-): readonly JsIrOperation[] {
-  if (statement.name === undefined) {
+): readonly JsIrOperation[] | undefined {
+  if (!ts.isVariableStatement(statement)) {
+    return undefined;
+  }
+  const [declaration] = statement.declarationList.declarations;
+  if (statement.declarationList.declarations.length !== 1 || declaration.initializer === undefined) {
+    return undefined;
+  }
+  const initializer = unwrapTypeOnlyExpression(declaration.initializer);
+  if (!ts.isClassExpression(initializer)) {
+    return undefined;
+  }
+  if (!ts.isIdentifier(declaration.name) || (statement.declarationList.flags & ts.NodeFlags.Const) === 0) {
     throw new ClassLoweringUnsupportedError();
+  }
+  return lowerClassDeclaration(initializer, bindings, classes, declaration.name.text);
+}
+
+// eslint-disable-next-line complexity, max-statements -- Class declaration lowering assembles all generated class artifacts in source order.
+function lowerClassDeclaration(
+  statement: ts.ClassDeclaration | ts.ClassExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  classes: Map<string, ClassInfo>,
+  expressionBindingName?: string
+): readonly JsIrOperation[] {
+  // Class expressions take their codegen name from the bound variable; a named
+  // class expression additionally binds its inner name inside the class body.
+  let infoName: string;
+  let innerName: string | undefined;
+  if (expressionBindingName === undefined) {
+    if (statement.name === undefined) {
+      throw new ClassLoweringUnsupportedError();
+    }
+    infoName = statement.name.text;
+  } else {
+    infoName = expressionBindingName;
+    innerName = statement.name?.text;
+    if (innerName === infoName) {
+      innerName = undefined;
+    }
   }
   let baseName: string | undefined;
   if (statement.heritageClauses !== undefined && statement.heritageClauses.length > 0) {
@@ -2096,56 +2214,158 @@ function lowerClassDeclaration(
     }
   }
 
-  const members = collectClassMembers(statement, bindings);
+  // The inner name of a named class expression shadows any outer binding inside
+  // the class body, per JS class-scope semantics.
+  let memberBindings: ReadonlyMap<string, JsIrBindingValue> = bindings;
+  if (innerName !== undefined && bindings.has(innerName)) {
+    const shadowed = new Map(bindings);
+    shadowed.delete(innerName);
+    memberBindings = shadowed;
+  }
+
+  const members = collectClassMembers(statement, memberBindings, infoName);
   let constructorParameters = constructorParametersOf(members.constructorDeclaration);
   if (baseName !== undefined && members.constructorDeclaration === undefined) {
     constructorParameters = classes.get(baseName)?.constructorParameters ?? [];
   }
   const info: ClassInfo = {
-    name: statement.name.text,
+    name: infoName,
     baseName,
     fields: members.fields,
     classId: nextClassId++,
     constructorParameters,
     methods: classMethodInfoMap(members.methodDeclarations),
     staticMethods: classMethodInfoMap(members.staticMethodDeclarations),
-    staticFields: new Set(members.staticFields.map((field) => field.name)),
-    getters: new Set(members.getAccessors.map((accessor) => accessorName(accessor))),
-    setters: new Set(members.setAccessors.map((accessor) => accessorName(accessor))),
-    iteratorMethod: members.iteratorMethod
+    staticFields: literalStaticFieldNames(members.staticFields),
+    getters: new Set(members.getAccessors.map((entry) => entry.name)),
+    setters: new Set(members.setAccessors.map((entry) => entry.name)),
+    iteratorMethod: members.iteratorMethod,
+    privateFields: members.privateFields
   };
   classes.set(info.name, info);
   activeClassRegistry = classes;
 
-  const operations: JsIrOperation[] = [];
-  operations.push(lowerClassPrototypeStorage(info));
-  operations.push(lowerClassStaticStorage(info, members.staticFields, bindings));
-  if (baseName !== undefined) {
-    operations.push({
-      kind: "valueObjectSetPrototype",
-      targetName: classPrototypeName(info.name),
-      prototypeName: classPrototypeName(baseName)
-    });
-    operations.push({
-      kind: "valueObjectSetPrototype",
-      targetName: classStaticStorageName(info.name),
-      prototypeName: classStaticStorageName(baseName)
-    });
+  let previousInnerName: ClassInfo | undefined;
+  if (innerName !== undefined) {
+    previousInnerName = classes.get(innerName);
+    classes.set(innerName, info);
   }
-  operations.push(lowerClassConstructor(info, members.constructorDeclaration, bindings));
-  for (const declaration of members.methodDeclarations) {
-    operations.push(lowerClassMethod(info, declaration, false, bindings));
+  try {
+    const operations: JsIrOperation[] = [];
+    // Computed member names evaluate once, in definition order, before any
+    // static initializer runs — matching Node's class-definition evaluation.
+    for (const computedKey of members.computedKeys) {
+      operations.push(lowerClassComputedKeySlot(computedKey, memberBindings));
+    }
+    operations.push(lowerClassPrototypeStorage(info));
+    operations.push(lowerClassStaticStorage(info, members.staticFields, memberBindings));
+    if (baseName !== undefined) {
+      operations.push({
+        kind: "valueObjectSetPrototype",
+        targetName: classPrototypeName(info.name),
+        prototypeName: classPrototypeName(baseName)
+      });
+      operations.push({
+        kind: "valueObjectSetPrototype",
+        targetName: classStaticStorageName(info.name),
+        prototypeName: classStaticStorageName(baseName)
+      });
+    }
+    for (const entry of members.computedMethodDeclarations) {
+      operations.push(lowerClassComputedMethodStore(info, entry, false, memberBindings));
+    }
+    for (const entry of members.computedStaticMethodDeclarations) {
+      operations.push(lowerClassComputedMethodStore(info, entry, true, memberBindings));
+    }
+    operations.push(lowerClassConstructor(info, members.constructorDeclaration, memberBindings));
+    for (const entry of members.methodDeclarations) {
+      operations.push(lowerClassMethod(info, entry, false, memberBindings));
+    }
+    for (const entry of members.staticMethodDeclarations) {
+      operations.push(lowerClassMethod(info, entry, true, memberBindings));
+    }
+    for (const entry of members.getAccessors) {
+      operations.push(lowerClassAccessor(info, entry.declaration, classGetterFunctionName(info.name, entry.name), memberBindings));
+    }
+    for (const entry of members.setAccessors) {
+      operations.push(lowerClassAccessor(info, entry.declaration, classSetterFunctionName(info.name, entry.name), memberBindings));
+    }
+    return operations;
+  } finally {
+    // The inner name stays registered when it does not clobber another class:
+    // the TypeScript checker names instance types after it, so receivers typed
+    // by the class (`const c = new C()`) resolve their class through it. Direct
+    // outer references to the inner name are rejected by the type checker, so
+    // the leaked binding is not observable in valid programs.
+    if (innerName !== undefined && previousInnerName !== undefined) {
+      classes.set(innerName, previousInnerName);
+    }
   }
-  for (const declaration of members.staticMethodDeclarations) {
-    operations.push(lowerClassMethod(info, declaration, true, bindings));
+}
+
+function literalStaticFieldNames(staticFields: readonly ClassFieldInfo[]): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const field of staticFields) {
+    if (field.key.kind === "literal") {
+      names.add(field.key.name);
+    }
   }
-  for (const accessor of members.getAccessors) {
-    operations.push(lowerClassAccessor(info, accessor, classGetterFunctionName(info.name, accessorName(accessor)), bindings));
+  return names;
+}
+
+// Emits the module-init slot holding a runtime-computed member name: the name
+// expression is evaluated exactly once, at class-definition time.
+function lowerClassComputedKeySlot(
+  computedKey: ClassComputedKeyInfo,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation {
+  const value = lowerValueExpression(computedKey.expression, bindings);
+  if (value === undefined) {
+    throw new ClassLoweringUnsupportedError();
   }
-  for (const accessor of members.setAccessors) {
-    operations.push(lowerClassAccessor(info, accessor, classSetterFunctionName(info.name, accessorName(accessor)), bindings));
+  return { kind: "letValue", name: computedKey.slotName, moduleGlobal: true, value };
+}
+
+function classComputedMethodTargetName(info: ClassInfo, isStatic: boolean): string {
+  if (isStatic) {
+    return classStaticStorageName(info.name);
   }
-  return operations;
+  return classPrototypeName(info.name);
+}
+
+// Stores a method whose name is only known at runtime as a function value on
+// the prototype (or statics slot) under the evaluated key. Calls to it resolve
+// through the ordinary dynamic property path, since static dispatch requires a
+// compile-time name.
+function lowerClassComputedMethodStore(
+  info: ClassInfo,
+  entry: ClassComputedMethodEntry,
+  isStatic: boolean,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation {
+  const previousThis = classThisInScope;
+  const previousClass = activeEnclosingClass;
+  const previousStatic = activeClassMethodStatic;
+  classThisInScope = false;
+  activeEnclosingClass = info;
+  activeClassMethodStatic = isStatic;
+  let methodValue: JsIrValueExpression | undefined;
+  try {
+    methodValue = lowerObjectMethodFunctionValue(entry.declaration, bindings);
+  } finally {
+    classThisInScope = previousThis;
+    activeEnclosingClass = previousClass;
+    activeClassMethodStatic = previousStatic;
+  }
+  if (methodValue === undefined) {
+    throw new ClassLoweringUnsupportedError();
+  }
+  return {
+    kind: "valueObjectStore",
+    targetName: classComputedMethodTargetName(info, isStatic),
+    key: { kind: "stringConversion", value: { kind: "variable", name: entry.slotName } },
+    value: methodValue
+  };
 }
 
 // Emits the module-init slot that backs a class's prototype object: an empty
@@ -2171,7 +2391,7 @@ function lowerClassStaticStorage(
 ): JsIrOperation {
   const fields: JsIrRuntimeObjectField[] = staticFields.map((field) => ({
     kind: "field",
-    key: { kind: "literal", value: field.name },
+    key: classMemberKeyStringExpression(field.key),
     value: lowerClassFieldInitializer(field, bindings)
   }));
   return {
@@ -2182,47 +2402,143 @@ function lowerClassStaticStorage(
   };
 }
 
-function accessorName(accessor: ts.AccessorDeclaration): string {
-  if (!ts.isIdentifier(accessor.name)) {
+// String expression addressing a member key: literal keys inline the name;
+// computed keys read the definition-time slot and coerce it to a property key.
+function classMemberKeyStringExpression(key: ClassMemberKey): JsIrStringExpression {
+  if (key.kind === "literal") {
+    return { kind: "literal", value: key.name };
+  }
+  return { kind: "stringConversion", value: { kind: "variable", name: key.slotName } };
+}
+
+// Resolves a computed member name that is constant at compile time (a string,
+// numeric, or template literal, or a const-bound string), so such members keep
+// using the ordinary static machinery.
+function resolveConstantComputedMemberName(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
+  if (ts.isStringLiteral(expression) || ts.isNumericLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+    return expression.text;
+  }
+  if (ts.isIdentifier(expression)) {
+    const binding = bindings.get(expression.text);
+    if (binding?.kind === "string") {
+      return binding.value;
+    }
+  }
+  return undefined;
+}
+
+// Resolves the key of a class member. Runtime-computed names are recorded in
+// `computedKeys` (in definition order) so their evaluation can be emitted once
+// at class-definition time. Returns undefined for names this lowering cannot
+// handle (private identifiers, symbol keys other than Symbol.iterator).
+function classMemberKeyOf(
+  name: ts.PropertyName,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  computedKeys: ClassComputedKeyInfo[],
+  slotPrefix: string
+): ClassMemberKey | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return { kind: "literal", name: name.text };
+  }
+  if (!ts.isComputedPropertyName(name)) {
+    return undefined;
+  }
+  const constant = resolveConstantComputedMemberName(name.expression, bindings);
+  if (constant !== undefined) {
+    return { kind: "literal", name: constant };
+  }
+  const slotName = `${slotPrefix}$computed$${computedKeys.length}`;
+  computedKeys.push({ slotName, expression: name.expression });
+  return { kind: "computed", slotName };
+}
+
+// Resolves the literal name of a member that only supports compile-time names
+// (accessors); runtime-computed names are rejected by the caller falling back.
+function classLiteralMemberName(name: ts.PropertyName, bindings: ReadonlyMap<string, JsIrBindingValue>): string {
+  const key = classMemberKeyOf(name, bindings, [], "");
+  if (key?.kind !== "literal") {
     throw new ClassLoweringUnsupportedError();
   }
-  return accessor.name.text;
+  return key.name;
 }
+
+type ClassComputedKeyInfo = {
+  readonly slotName: string;
+  readonly expression: ts.Expression;
+};
+
+type ClassMethodEntry = {
+  readonly name: string;
+  readonly declaration: ts.MethodDeclaration;
+};
+
+type ClassComputedMethodEntry = {
+  readonly slotName: string;
+  readonly declaration: ts.MethodDeclaration;
+};
+
+type ClassAccessorEntry = {
+  readonly name: string;
+  readonly declaration: ts.AccessorDeclaration;
+};
 
 type CollectedClassMembers = {
   readonly fields: readonly ClassFieldInfo[];
   readonly staticFields: readonly ClassFieldInfo[];
+  readonly computedKeys: readonly ClassComputedKeyInfo[];
   readonly constructorDeclaration: ts.ConstructorDeclaration | undefined;
-  readonly methodDeclarations: readonly ts.MethodDeclaration[];
-  readonly staticMethodDeclarations: readonly ts.MethodDeclaration[];
-  readonly getAccessors: readonly ts.GetAccessorDeclaration[];
-  readonly setAccessors: readonly ts.SetAccessorDeclaration[];
+  readonly methodDeclarations: readonly ClassMethodEntry[];
+  readonly staticMethodDeclarations: readonly ClassMethodEntry[];
+  readonly computedMethodDeclarations: readonly ClassComputedMethodEntry[];
+  readonly computedStaticMethodDeclarations: readonly ClassComputedMethodEntry[];
+  readonly getAccessors: readonly ClassAccessorEntry[];
+  readonly setAccessors: readonly ClassAccessorEntry[];
   readonly iteratorMethod: ts.MethodDeclaration | undefined;
+  readonly privateFields: ReadonlyMap<string, string>;
 };
 
-// eslint-disable-next-line complexity -- Class member classification keeps mutually exclusive syntax forms in declaration order.
+// eslint-disable-next-line complexity, max-statements -- Class member classification keeps mutually exclusive syntax forms in declaration order.
 function collectClassMembers(
-  statement: ts.ClassDeclaration,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  statement: ts.ClassDeclaration | ts.ClassExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  slotPrefix: string
 ): CollectedClassMembers {
   const fields: ClassFieldInfo[] = [];
   const staticFields: ClassFieldInfo[] = [];
-  const methodDeclarations: ts.MethodDeclaration[] = [];
-  const staticMethodDeclarations: ts.MethodDeclaration[] = [];
-  const getAccessors: ts.GetAccessorDeclaration[] = [];
-  const setAccessors: ts.SetAccessorDeclaration[] = [];
+  const computedKeys: ClassComputedKeyInfo[] = [];
+  const methodDeclarations: ClassMethodEntry[] = [];
+  const staticMethodDeclarations: ClassMethodEntry[] = [];
+  const computedMethodDeclarations: ClassComputedMethodEntry[] = [];
+  const computedStaticMethodDeclarations: ClassComputedMethodEntry[] = [];
+  const getAccessors: ClassAccessorEntry[] = [];
+  const setAccessors: ClassAccessorEntry[] = [];
+  const privateFields = new Map<string, string>();
   let constructorDeclaration: ts.ConstructorDeclaration | undefined;
   let iteratorMethod: ts.MethodDeclaration | undefined;
   for (const member of statement.members) {
-    if (ts.isPropertyDeclaration(member)) {
-      if (!ts.isIdentifier(member.name)) {
+    if (ts.isPropertyDeclaration(member) && ts.isPrivateIdentifier(member.name)) {
+      // Instance private fields join the ordinary field list (under a
+      // class-mangled key) so they initialize in declaration order. Static
+      // private fields are not lowered yet.
+      if (classMemberHasStaticModifier(member)) {
+        throw new ClassLoweringUnsupportedError();
+      }
+      const storageKey = classPrivateFieldStorageKey(slotPrefix, member.name.text);
+      privateFields.set(member.name.text, storageKey);
+      fields.push({ key: { kind: "literal", name: storageKey }, initializer: member.initializer });
+    } else if (ts.isPropertyDeclaration(member)) {
+      const key = classMemberKeyOf(member.name, bindings, computedKeys, slotPrefix);
+      if (key === undefined) {
         throw new ClassLoweringUnsupportedError();
       }
       let target = fields;
       if (classMemberHasStaticModifier(member)) {
         target = staticFields;
       }
-      target.push({ name: member.name.text, initializer: member.initializer });
+      target.push({ key, initializer: member.initializer });
     } else if (ts.isConstructorDeclaration(member)) {
       constructorDeclaration = member;
     } else if (ts.isMethodDeclaration(member) && member.body !== undefined && isSymbolIteratorPropertyName(member.name, bindings)) {
@@ -2230,22 +2546,32 @@ function collectClassMembers(
         throw new ClassLoweringUnsupportedError();
       }
       iteratorMethod = member;
-    } else if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.body !== undefined) {
-      if (classMemberHasStaticModifier(member)) {
-        staticMethodDeclarations.push(member);
+    } else if (ts.isMethodDeclaration(member) && member.body !== undefined) {
+      const key = classMemberKeyOf(member.name, bindings, computedKeys, slotPrefix);
+      if (key === undefined) {
+        throw new ClassLoweringUnsupportedError();
+      }
+      if (key.kind === "literal") {
+        if (classMemberHasStaticModifier(member)) {
+          staticMethodDeclarations.push({ name: key.name, declaration: member });
+        } else {
+          methodDeclarations.push({ name: key.name, declaration: member });
+        }
+      } else if (classMemberHasStaticModifier(member)) {
+        computedStaticMethodDeclarations.push({ slotName: key.slotName, declaration: member });
       } else {
-        methodDeclarations.push(member);
+        computedMethodDeclarations.push({ slotName: key.slotName, declaration: member });
       }
     } else if (ts.isGetAccessorDeclaration(member) && !classMemberHasStaticModifier(member) && member.body !== undefined) {
-      getAccessors.push(member);
+      getAccessors.push({ name: classLiteralMemberName(member.name, bindings), declaration: member });
     } else if (ts.isSetAccessorDeclaration(member) && !classMemberHasStaticModifier(member) && member.body !== undefined) {
-      setAccessors.push(member);
+      setAccessors.push({ name: classLiteralMemberName(member.name, bindings), declaration: member });
     } else {
-      // Computed/private members, static accessors, and overloads are handled later.
+      // Private methods/accessors, static accessors, runtime-computed accessors, and overloads are handled later.
       throw new ClassLoweringUnsupportedError();
     }
   }
-  return { fields, staticFields, constructorDeclaration, methodDeclarations, staticMethodDeclarations, getAccessors, setAccessors, iteratorMethod };
+  return { fields, staticFields, computedKeys, constructorDeclaration, methodDeclarations, staticMethodDeclarations, computedMethodDeclarations, computedStaticMethodDeclarations, getAccessors, setAccessors, iteratorMethod, privateFields };
 }
 
 function lowerClassAccessor(
@@ -2287,13 +2613,10 @@ function constructorParametersOf(declaration: ts.ConstructorDeclaration | undefi
   return classCallableParameters(declaration);
 }
 
-function classMethodInfoMap(declarations: readonly ts.MethodDeclaration[]): ReadonlyMap<string, ClassMethodInfo> {
+function classMethodInfoMap(entries: readonly ClassMethodEntry[]): ReadonlyMap<string, ClassMethodInfo> {
   const map = new Map<string, ClassMethodInfo>();
-  for (const declaration of declarations) {
-    if (!ts.isIdentifier(declaration.name)) {
-      throw new ClassLoweringUnsupportedError();
-    }
-    map.set(declaration.name.text, { parameters: classCallableParameters(declaration) });
+  for (const entry of entries) {
+    map.set(entry.name, { parameters: classCallableParameters(entry.declaration) });
   }
   return map;
 }
@@ -2319,14 +2642,15 @@ function classCallableParameters(
 
 function lowerClassMethod(
   info: ClassInfo,
-  declaration: ts.MethodDeclaration,
+  entry: ClassMethodEntry,
   isStatic: boolean,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation {
-  if (declaration.body === undefined || !ts.isIdentifier(declaration.name)) {
+  const { declaration } = entry;
+  if (declaration.body === undefined) {
     throw new ClassLoweringUnsupportedError();
   }
-  const methodName = declaration.name.text;
+  const methodName = entry.name;
   const parameters = classCallableParameters(declaration);
   const fnBindings = new Map(bindings);
   const fnParameters: JsIrFunctionParameter[] = [];
@@ -2452,7 +2776,7 @@ function lowerClassConstructor(
       body.push({
         kind: "valueObjectStore",
         targetName: CLASS_THIS_NAME,
-        key: { kind: "literal", value: field.name },
+        key: classMemberKeyStringExpression(field.key),
         value: lowerClassFieldInitializer(field, fnBindings)
       });
     }
@@ -2556,34 +2880,114 @@ function lowerClassValueExpression(
     return staticField;
   }
 
-  if (ts.isPropertyAccessExpression(expression)) {
-    // C.prototype where C is a class name (not in bindings) gives the prototype object
-    if (ts.isIdentifier(expression.expression) && !bindings.has(expression.expression.text) && expression.name.text === "prototype") {
-      const classInfo = activeClassRegistry.get(expression.expression.text);
-      if (classInfo !== undefined) {
-        return { kind: "variable", name: classPrototypeName(classInfo.name) };
-      }
-    }
+  return lowerClassPropertyValueAccess(expression, bindings);
+}
 
-    const receiver = lowerClassInstanceExpression(expression.expression, bindings);
-    if (receiver !== undefined) {
-      const receiverClass = resolveReceiverClass(expression.expression, bindings);
-      let getterClass: ClassInfo | undefined;
-      if (receiverClass !== undefined) {
-        getterClass = findClassInChain(receiverClass, (candidate) => candidate.getters.has(expression.name.text));
-      }
-      if (getterClass !== undefined) {
-        return {
-          kind: "call",
-          name: classGetterFunctionName(getterClass.name, expression.name.text),
-          arguments: [{ valueKind: "value", value: receiver }]
-        };
-      }
-      return { kind: "valueObjectDynamicAccess", value: receiver, key: { kind: "literal", value: expression.name.text } };
+// Lowers a property access on a class-related receiver: private field reads,
+// `C.prototype`, getter dispatch, and plain instance field reads.
+function lowerClassPropertyValueAccess(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (activeClassRegistry === undefined || !ts.isPropertyAccessExpression(expression)) {
+    return undefined;
+  }
+  if (ts.isPrivateIdentifier(expression.name)) {
+    return lowerClassPrivateFieldAccess(expression, bindings);
+  }
+
+  // C.prototype where C is a class name (not in bindings) gives the prototype object
+  if (ts.isIdentifier(expression.expression) && !bindings.has(expression.expression.text) && expression.name.text === "prototype") {
+    const classInfo = activeClassRegistry.get(expression.expression.text);
+    if (classInfo !== undefined) {
+      return { kind: "variable", name: classPrototypeName(classInfo.name) };
     }
   }
 
-  return undefined;
+  const receiver = lowerClassInstanceExpression(expression.expression, bindings);
+  if (receiver === undefined) {
+    return undefined;
+  }
+  const receiverClass = resolveReceiverClass(expression.expression, bindings);
+  let getterClass: ClassInfo | undefined;
+  if (receiverClass !== undefined) {
+    getterClass = findClassInChain(receiverClass, (candidate) => candidate.getters.has(expression.name.text));
+  }
+  if (getterClass !== undefined) {
+    return {
+      kind: "call",
+      name: classGetterFunctionName(getterClass.name, expression.name.text),
+      arguments: [{ valueKind: "value", value: receiver }]
+    };
+  }
+  return { kind: "valueObjectDynamicAccess", value: receiver, key: { kind: "literal", value: expression.name.text } };
+}
+
+// Lowers a private field read `recv.#x` inside a class body. The lexically
+// enclosing class must declare the private name; ownership of the brand is
+// enforced by a runtime check on the receiver.
+function lowerClassPrivateFieldAccess(
+  expression: ts.PropertyAccessExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression {
+  const fieldName = expression.name.text;
+  const storageKey = activeEnclosingClass?.privateFields.get(fieldName);
+  if (storageKey === undefined) {
+    throw new ClassLoweringUnsupportedError();
+  }
+  return {
+    kind: "privateFieldAccess",
+    receiver: lowerClassPrivateFieldReceiver(expression.expression, bindings),
+    key: storageKey,
+    message: classPrivateFieldReadMessage(fieldName)
+  };
+}
+
+// Resolves the receiver of a private field access to a stable instance value:
+// `this`, `new C(...)`, or a named value variable (e.g. a method parameter).
+function lowerClassPrivateFieldReceiver(
+  receiver: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression {
+  const instance = lowerClassInstanceExpression(receiver, bindings);
+  if (instance !== undefined) {
+    return instance;
+  }
+  if (ts.isIdentifier(receiver) && bindings.get(receiver.text)?.kind === "valueVariable") {
+    return { kind: "variable", name: receiver.text };
+  }
+  throw new ClassLoweringUnsupportedError();
+}
+
+// Lowers a private field write `recv.#x = value` inside a class body, with the
+// same lexical scoping and runtime brand check as reads.
+function lowerClassPrivateFieldStore(
+  left: ts.PropertyAccessExpression,
+  right: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isPrivateIdentifier(left.name)) {
+    return undefined;
+  }
+  const fieldName = left.name.text;
+  const storageKey = activeEnclosingClass?.privateFields.get(fieldName);
+  if (storageKey === undefined) {
+    throw new ClassLoweringUnsupportedError();
+  }
+  let targetName: string | undefined;
+  if (left.expression.kind === ts.SyntaxKind.ThisKeyword && bindings.get(CLASS_THIS_NAME)?.kind === "valueVariable") {
+    targetName = CLASS_THIS_NAME;
+  } else if (ts.isIdentifier(left.expression) && bindings.get(left.expression.text)?.kind === "valueVariable") {
+    targetName = left.expression.text;
+  }
+  if (targetName === undefined) {
+    throw new ClassLoweringUnsupportedError();
+  }
+  const value = lowerValueExpression(right, bindings);
+  if (value === undefined) {
+    throw new ClassLoweringUnsupportedError();
+  }
+  return { kind: "privateFieldStore", targetName, key: storageKey, value, message: classPrivateFieldWriteMessage(fieldName) };
 }
 
 // Resolves a static field read `C.x` to a property access on the class's
@@ -2729,6 +3133,18 @@ function resolveReceiverClass(
   if (ts.isNewExpression(receiver) && ts.isIdentifier(receiver.expression) && !bindings.has(receiver.expression.text)) {
     return activeClassRegistry.get(receiver.expression.text);
   }
+  if (ts.isIdentifier(receiver)) {
+    // A variable initialized with `new C(...)` resolves through its binding,
+    // which also covers class types the checker cannot name (anonymous class
+    // expressions).
+    const binding = bindings.get(receiver.text);
+    if (binding?.kind === "value" && binding.value.kind === "newInstance") {
+      return activeClassRegistry.get(binding.value.className);
+    }
+    if (binding?.kind === "valueVariable" && binding.className !== undefined) {
+      return activeClassRegistry.get(binding.className);
+    }
+  }
   if (ts.isIdentifier(receiver) && activeTypeChecker !== undefined) {
     const symbol = activeTypeChecker.getTypeAtLocation(receiver).getSymbol();
     if (symbol !== undefined) {
@@ -2740,7 +3156,7 @@ function resolveReceiverClass(
 
 // Lowers a method-call receiver to a stable instance value. Only inline
 // receivers (`this`, `new C()`) are supported; named-variable instances require
-// stable value storage and fall back to the interpreter for now.
+// stable value storage and are reported as unsupported for now.
 function lowerInstanceReceiverValue(
   receiver: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -2838,877 +3254,8 @@ function lowerClassPropertyAssignment(
   throw new ClassLoweringUnsupportedError();
 }
 
-function lowerB683NativeFeatureStatements(
-  sourceFile: ts.SourceFile
-): LoweredStatements | undefined {
-  if (!usesB683NativeFeatureSurface(sourceFile)) {
-    return undefined;
-  }
-  const unsupported = b683NativeFeatureUnsupportedDiagnostic(sourceFile);
-  if (unsupported !== undefined) {
-    return { operations: [], diagnostics: Chunk.of(unsupported), loweringMode: "compileTimeFallback" };
-  }
-  let printed: string[] | undefined;
-  try {
-    printed = evaluateB683NativeFeaturePrints(sourceFile);
-  } catch (error) {
-    if (error instanceof B683NativeThrow) {
-      return {
-        operations: [traceOperationFromNode(
-          { kind: "throwValue", value: { kind: "string", value: { kind: "literal", value: b683NativePrintString(error.value) } } },
-          sourceFile,
-          "synthesized"
-        )],
-        diagnostics: Chunk.empty(),
-        loweringMode: "compileTimeFallback"
-      };
-    }
-    throw error;
-  }
-  if (printed === undefined) {
-    return undefined;
-  }
-  return {
-    operations: printed.map((value): JsIrOperation => traceOperationFromNode(
-      { kind: "print", expression: { kind: "string", value } },
-      sourceFile,
-      "synthesized"
-    )),
-    diagnostics: Chunk.empty(),
-    loweringMode: "compileTimeFallback"
-  };
-}
-
-function usesB683NativeFeatureSurface(sourceFile: ts.SourceFile): boolean {
-  let used = false;
-  const visit = (node: ts.Node): void => {
-    if (used) {
-      return;
-    }
-    if (
-      ts.isClassDeclaration(node) ||
-      ts.isClassExpression(node) ||
-      isRuntimeJsonFollowupCall(node)
-    ) {
-      used = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return used;
-}
-
-/* eslint-disable no-ternary, no-use-before-define, unicorn/switch-case-braces, unicorn/no-array-for-each, unicorn/no-null, unicorn/explicit-length-check, unicorn/custom-error-definition, typescript/parameter-properties, typescript/explicit-member-accessibility, typescript/no-unnecessary-condition, typescript/no-base-to-string -- Package BN replaces the node:vm tracer scaffold with a bounded BI-BM nativeization shim. */
-type B683NativeValue =
-  | string
-  | number
-  | boolean
-  | null
-  | undefined
-  | B683NativeObject
-  | B683NativeRegex
-  | B683NativeClass
-  | B683NativeFunction
-  | B683NativePrototype;
-
-type B683NativeObject = {
-  readonly kind: "object";
-  readonly fields: Map<string, B683NativeValue>;
-  readonly className?: string;
-};
-
-type B683NativeRegex = {
-  readonly kind: "regex";
-  readonly source: string;
-  readonly flags: string;
-  lastIndex: number;
-};
-
-type B683NativeClass = {
-  readonly kind: "class";
-  readonly name: string;
-  readonly baseName?: string;
-  readonly fields: readonly ts.PropertyDeclaration[];
-  readonly staticFields: Map<string, B683NativeValue>;
-  readonly methods: Map<string, ts.MethodDeclaration>;
-  readonly staticMethods: Map<string, ts.MethodDeclaration>;
-  readonly getters: Map<string, ts.GetAccessorDeclaration>;
-  readonly setters: Map<string, ts.SetAccessorDeclaration>;
-  readonly constructorDeclaration?: ts.ConstructorDeclaration;
-};
-
-type B683NativeFunction = {
-  readonly kind: "function";
-  readonly declaration: ts.MethodDeclaration | ts.GetAccessorDeclaration | ts.SetAccessorDeclaration;
-  readonly thisValue?: B683NativeValue;
-};
-
-type B683NativePrototype = {
-  readonly kind: "prototype";
-  readonly className: string;
-};
-
-type B683NativeState = {
-  readonly env: Map<string, B683NativeValue>;
-  readonly classes: Map<string, B683NativeClass>;
-  readonly prints: string[];
-};
-
-class B683NativeUnsupported extends Error {}
-
-class B683NativeThrow extends Error {
-  constructor(readonly value: B683NativeValue) {
-    super("B683 native throw");
-  }
-}
-
-function evaluateB683NativeFeaturePrints(sourceFile: ts.SourceFile): string[] | undefined {
-  const state: B683NativeState = { env: new Map(), classes: new Map(), prints: [] };
-  try {
-    for (const statement of sourceFile.statements) {
-      evaluateB683Statement(statement, state);
-    }
-    return state.prints;
-  } catch (error) {
-    if (error instanceof B683NativeUnsupported) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function evaluateB683Statement(statement: ts.Statement, state: B683NativeState): void {
-  if (isNonExecutableDeclaration(statement)) {
-    return;
-  }
-  if (ts.isClassDeclaration(statement)) {
-    evaluateB683ClassDeclaration(statement, state);
-    return;
-  }
-  if (ts.isVariableStatement(statement)) {
-    for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name)) {
-        throw new B683NativeUnsupported();
-      }
-      state.env.set(declaration.name.text, declaration.initializer === undefined ? undefined : evaluateB683Expression(declaration.initializer, state));
-    }
-    return;
-  }
-  if (ts.isExpressionStatement(statement)) {
-    evaluateB683Expression(statement.expression, state);
-    return;
-  }
-  if (ts.isTryStatement(statement)) {
-    evaluateB683TryStatement(statement, state);
-    return;
-  }
-  throw new B683NativeUnsupported();
-}
-
-function evaluateB683ClassDeclaration(statement: ts.ClassDeclaration, state: B683NativeState): void {
-  if (statement.name === undefined) {
-    throw new B683NativeUnsupported();
-  }
-  let baseName: string | undefined;
-  const heritage = statement.heritageClauses?.find((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword);
-  if (heritage !== undefined) {
-    const [base] = heritage.types;
-    if (base === undefined || !ts.isIdentifier(base.expression)) {
-      throw new B683NativeUnsupported();
-    }
-    baseName = base.expression.text;
-  }
-  const model: B683NativeClass = {
-    kind: "class",
-    name: statement.name.text,
-    baseName,
-    fields: statement.members.filter(ts.isPropertyDeclaration).filter((member) => !hasB683StaticModifier(member)),
-    staticFields: new Map(),
-    methods: new Map(),
-    staticMethods: new Map(),
-    getters: new Map(),
-    setters: new Map(),
-    constructorDeclaration: statement.members.find(ts.isConstructorDeclaration)
-  };
-  state.classes.set(model.name, model);
-  state.env.set(model.name, model);
-  for (const member of statement.members) {
-    if (ts.isMethodDeclaration(member) && ts.isIdentifier(member.name)) {
-      const methods = hasB683StaticModifier(member) ? model.staticMethods : model.methods;
-      methods.set(member.name.text, member);
-    } else if (ts.isGetAccessorDeclaration(member) && ts.isIdentifier(member.name)) {
-      model.getters.set(member.name.text, member);
-    } else if (ts.isSetAccessorDeclaration(member) && ts.isIdentifier(member.name)) {
-      model.setters.set(member.name.text, member);
-    } else if (ts.isPropertyDeclaration(member) && hasB683StaticModifier(member) && ts.isIdentifier(member.name)) {
-      model.staticFields.set(member.name.text, member.initializer === undefined ? undefined : evaluateB683Expression(member.initializer, state));
-    }
-  }
-}
-
-function evaluateB683TryStatement(statement: ts.TryStatement, state: B683NativeState): void {
-  if (statement.catchClause === undefined || statement.finallyBlock !== undefined) {
-    throw new B683NativeUnsupported();
-  }
-  try {
-    for (const inner of statement.tryBlock.statements) {
-      evaluateB683Statement(inner, state);
-    }
-  } catch (error) {
-    if (!(error instanceof B683NativeThrow)) {
-      throw error;
-    }
-    const variable = statement.catchClause.variableDeclaration?.name;
-    if (variable === undefined || !ts.isIdentifier(variable)) {
-      throw new B683NativeUnsupported();
-    }
-    const previous = state.env.get(variable.text);
-    state.env.set(variable.text, error.value);
-    for (const inner of statement.catchClause.block.statements) {
-      evaluateB683Statement(inner, state);
-    }
-    if (previous === undefined) {
-      state.env.delete(variable.text);
-    } else {
-      state.env.set(variable.text, previous);
-    }
-  }
-}
-
-// eslint-disable-next-line complexity, max-statements -- Bounded nativeization for the committed BI-BM fixture surface.
-function evaluateB683Expression(expression: ts.Expression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
-  const unwrapped = unwrapTypeOnlyExpression(expression);
-  if (ts.isStringLiteralLike(unwrapped)) {
-    return unwrapped.text;
-  }
-  if (ts.isNumericLiteral(unwrapped)) {
-    return Number(unwrapped.text);
-  }
-  if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) {
-    return true;
-  }
-  if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) {
-    return false;
-  }
-  if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
-    return null;
-  }
-  if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) {
-    return thisValue;
-  }
-  if (ts.isIdentifier(unwrapped)) {
-    if (unwrapped.text === "undefined") {
-      return undefined;
-    }
-    if (state.env.has(unwrapped.text)) {
-      return state.env.get(unwrapped.text);
-    }
-    if (errorConstructorNames.has(unwrapped.text)) {
-      return b683NativeClassBuiltin(unwrapped.text);
-    }
-    throw new B683NativeUnsupported();
-  }
-  if (unwrapped.kind === ts.SyntaxKind.RegularExpressionLiteral) {
-    return b683NativeRegexFromLiteral(unwrapped);
-  }
-  if (ts.isObjectLiteralExpression(unwrapped)) {
-    return evaluateB683ObjectLiteral(unwrapped, state, thisValue);
-  }
-  if (ts.isArrayLiteralExpression(unwrapped)) {
-    const object: B683NativeObject = { kind: "object", fields: new Map() };
-    unwrapped.elements.forEach((element, index) => object.fields.set(String(index), evaluateB683Expression(element, state, thisValue)));
-    return object;
-  }
-  if (ts.isNewExpression(unwrapped)) {
-    return evaluateB683NewExpression(unwrapped, state, thisValue);
-  }
-  if (ts.isPropertyAccessExpression(unwrapped)) {
-    return evaluateB683PropertyAccess(unwrapped, state, thisValue);
-  }
-  if (ts.isElementAccessExpression(unwrapped)) {
-    return evaluateB683ElementAccess(unwrapped, state, thisValue);
-  }
-  if (ts.isCallExpression(unwrapped)) {
-    return evaluateB683CallExpression(unwrapped, state, thisValue);
-  }
-  if (ts.isConditionalExpression(unwrapped)) {
-    return b683NativeTruthy(evaluateB683Expression(unwrapped.condition, state, thisValue)) ? evaluateB683Expression(unwrapped.whenTrue, state, thisValue) : evaluateB683Expression(unwrapped.whenFalse, state, thisValue);
-  }
-  if (ts.isBinaryExpression(unwrapped)) {
-    return evaluateB683BinaryExpression(unwrapped, state, thisValue);
-  }
-  throw new B683NativeUnsupported();
-}
-
-function evaluateB683ObjectLiteral(expression: ts.ObjectLiteralExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeObject {
-  const object: B683NativeObject = { kind: "object", fields: new Map() };
-  for (const property of expression.properties) {
-    if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)) {
-      object.fields.set(property.name.text, evaluateB683Expression(property.initializer, state, thisValue));
-    } else if (ts.isMethodDeclaration(property) && ts.isIdentifier(property.name)) {
-      object.fields.set(property.name.text, { kind: "function", declaration: property, thisValue: object });
-    } else {
-      throw new B683NativeUnsupported();
-    }
-  }
-  return object;
-}
-
-function evaluateB683NewExpression(expression: ts.NewExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
-  if (!ts.isIdentifier(expression.expression)) {
-    throw new B683NativeUnsupported();
-  }
-  if (expression.expression.text === "RegExp") {
-    const args = expression.arguments ?? [];
-    if (args.length === 0 || args.length > regexpConstructorArgumentCount) {
-      throw new B683NativeUnsupported();
-    }
-    const source = evaluateB683Expression(args[0], state, thisValue);
-    const flags = args.length === regexpConstructorArgumentCount ? evaluateB683Expression(args[1], state, thisValue) : "";
-    if (typeof source !== "string" || typeof flags !== "string") {
-      throw new B683NativeUnsupported();
-    }
-    return { kind: "regex", source, flags, lastIndex: 0 };
-  }
-  const model = state.classes.get(expression.expression.text);
-  if (model === undefined) {
-    throw new B683NativeUnsupported();
-  }
-  const args = (expression.arguments ?? []).map((argument) => evaluateB683Expression(argument, state, thisValue));
-  return instantiateB683Class(model, args, state);
-}
-
-function evaluateB683PropertyAccess(expression: ts.PropertyAccessExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
-  const receiver = evaluateB683Expression(expression.expression, state, thisValue);
-  return getB683Property(receiver, expression.name.text, state);
-}
-
-function evaluateB683ElementAccess(expression: ts.ElementAccessExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
-  const receiver = evaluateB683Expression(expression.expression, state, thisValue);
-  const key = evaluateB683Expression(expression.argumentExpression, state, thisValue);
-  return getB683Property(receiver, String(key), state);
-}
-
-// eslint-disable-next-line complexity -- Calls are dispatched over the bounded BI-BM native surface.
-function evaluateB683CallExpression(expression: ts.CallExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
-  if (ts.isIdentifier(expression.expression) && expression.expression.text === "print") {
-    const [argument] = expression.arguments;
-    state.prints.push(b683NativePrintString(argument === undefined ? undefined : evaluateB683Expression(argument, state, thisValue)));
-    return undefined;
-  }
-  if (ts.isPropertyAccessExpression(expression.expression)) {
-    const method = expression.expression.name.text;
-    if (method === "call" && expression.expression.expression.getText() === "Object.prototype.hasOwnProperty") {
-      const [target, key] = expression.arguments;
-      if (target === undefined || key === undefined) {
-        throw new B683NativeUnsupported();
-      }
-      const targetValue = evaluateB683Expression(target, state, thisValue);
-      const keyValue = evaluateB683Expression(key, state, thisValue);
-      return b683HasOwn(targetValue, String(keyValue));
-    }
-    if (expression.expression.expression.getText() === "Object" && method === "getPrototypeOf") {
-      const [target] = expression.arguments;
-      const targetValue = target === undefined ? undefined : evaluateB683Expression(target, state, thisValue);
-      if (isB683Object(targetValue) && targetValue.className !== undefined) {
-        return { kind: "prototype", className: targetValue.className };
-      }
-      return undefined;
-    }
-    if (expression.expression.expression.getText() === "JSON") {
-      return evaluateB683JsonCall(method, expression.arguments, state, thisValue);
-    }
-    const receiver = evaluateB683Expression(expression.expression.expression, state, thisValue);
-    const args = expression.arguments.map((argument) => evaluateB683Expression(argument, state, thisValue));
-    return callB683Method(receiver, method, args, state);
-  }
-  const callee = evaluateB683Expression(expression.expression, state, thisValue);
-  if (isB683Function(callee)) {
-    const args = expression.arguments.map((argument) => evaluateB683Expression(argument, state, thisValue));
-    return callB683Function(callee, args, state);
-  }
-  throw new B683NativeUnsupported();
-}
-
-function evaluateB683BinaryExpression(expression: ts.BinaryExpression, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
-  if (expression.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(expression.left)) {
-    const receiver = evaluateB683Expression(expression.left.expression, state, thisValue);
-    const value = evaluateB683Expression(expression.right, state, thisValue);
-    setB683Property(receiver, expression.left.name.text, value, state);
-    return value;
-  }
-  const left = evaluateB683Expression(expression.left, state, thisValue);
-  if (expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
-    return b683NativeTruthy(left) ? evaluateB683Expression(expression.right, state, thisValue) : left;
-  }
-  const right = evaluateB683Expression(expression.right, state, thisValue);
-  if (expression.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword && isB683Object(right)) {
-    throw new B683NativeThrow(`TypeError: ${expression.right.getText()} is not a function. (evaluating '${expression.getText()}')`);
-  }
-  switch (expression.operatorToken.kind) {
-    case ts.SyntaxKind.PlusToken:
-      return typeof left === "string" || typeof right === "string" ? `${b683NativePrintString(left)}${b683NativePrintString(right)}` : Number(left) + Number(right);
-    case ts.SyntaxKind.AsteriskToken:
-      return Number(left) * Number(right);
-    case ts.SyntaxKind.SlashToken:
-      return Number(left) / Number(right);
-    case ts.SyntaxKind.GreaterThanToken:
-      return Number(left) > Number(right);
-    case ts.SyntaxKind.EqualsEqualsEqualsToken:
-      return b683NativeStrictEquals(left, right);
-    case ts.SyntaxKind.InstanceOfKeyword:
-      return b683InstanceOf(left, right, state);
-    default:
-      throw new B683NativeUnsupported();
-  }
-}
-
-function instantiateB683Class(model: B683NativeClass, args: readonly B683NativeValue[], state: B683NativeState): B683NativeObject {
-  const instance: B683NativeObject = { kind: "object", fields: new Map(), className: model.name };
-  const base = model.baseName === undefined ? undefined : state.classes.get(model.baseName);
-  if (base !== undefined) {
-    initializeB683Fields(instance, base, state);
-  }
-  initializeB683Fields(instance, model, state);
-  if (model.constructorDeclaration !== undefined) {
-    callB683Constructor(model, instance, args, state);
-  } else if (base !== undefined) {
-    callB683Constructor(base, instance, args, state);
-  }
-  return instance;
-}
-
-function initializeB683Fields(instance: B683NativeObject, model: B683NativeClass, state: B683NativeState): void {
-  for (const field of model.fields) {
-    if (!ts.isIdentifier(field.name)) {
-      throw new B683NativeUnsupported();
-    }
-    instance.fields.set(field.name.text, field.initializer === undefined ? undefined : evaluateB683Expression(field.initializer, state, instance));
-  }
-}
-
-function callB683Constructor(model: B683NativeClass, instance: B683NativeObject, args: readonly B683NativeValue[], state: B683NativeState): void {
-  const declaration = model.constructorDeclaration;
-  if (declaration === undefined) {
-    return;
-  }
-  const previous = bindB683Parameters(declaration.parameters, args, state);
-  try {
-    for (const statement of declaration.body?.statements ?? []) {
-      if (ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression) && statement.expression.expression.kind === ts.SyntaxKind.SuperKeyword && model.baseName !== undefined) {
-        const base = state.classes.get(model.baseName);
-        if (base === undefined) {
-          throw new B683NativeUnsupported();
-        }
-        callB683Constructor(base, instance, statement.expression.arguments.map((argument) => evaluateB683Expression(argument, state, instance)), state);
-      } else if (ts.isExpressionStatement(statement)) {
-        evaluateB683Expression(statement.expression, state, instance);
-      } else {
-        throw new B683NativeUnsupported();
-      }
-    }
-  } finally {
-    restoreB683Bindings(previous, state);
-  }
-}
-
-function callB683Function(fn: B683NativeFunction, args: readonly B683NativeValue[], state: B683NativeState): B683NativeValue {
-  const previous = bindB683Parameters(fn.declaration.parameters, args, state);
-  try {
-    for (const statement of fn.declaration.body?.statements ?? []) {
-      if (ts.isReturnStatement(statement)) {
-        return statement.expression === undefined ? undefined : evaluateB683Expression(statement.expression, state, fn.thisValue);
-      }
-      if (ts.isExpressionStatement(statement)) {
-        evaluateB683Expression(statement.expression, state, fn.thisValue);
-      } else {
-        throw new B683NativeUnsupported();
-      }
-    }
-    return undefined;
-  } finally {
-    restoreB683Bindings(previous, state);
-  }
-}
-
-function bindB683Parameters(parameters: ts.NodeArray<ts.ParameterDeclaration>, args: readonly B683NativeValue[], state: B683NativeState): Map<string, B683NativeValue | typeof b683MissingBinding> {
-  const previous = new Map<string, B683NativeValue | typeof b683MissingBinding>();
-  parameters.forEach((parameter, index) => {
-    if (!ts.isIdentifier(parameter.name)) {
-      throw new B683NativeUnsupported();
-    }
-    previous.set(parameter.name.text, state.env.has(parameter.name.text) ? state.env.get(parameter.name.text) : b683MissingBinding);
-    state.env.set(parameter.name.text, args[index]);
-  });
-  return previous;
-}
-
-const b683MissingBinding = Symbol("b683MissingBinding");
-
-function restoreB683Bindings(previous: ReadonlyMap<string, B683NativeValue | typeof b683MissingBinding>, state: B683NativeState): void {
-  for (const [name, value] of previous) {
-    if (value === b683MissingBinding) {
-      state.env.delete(name);
-    } else {
-      state.env.set(name, value);
-    }
-  }
-}
-
-function getB683Property(receiver: B683NativeValue, key: string, state: B683NativeState): B683NativeValue {
-  if (typeof receiver === "string" && key === "length") {
-    return receiver.length;
-  }
-  if (isB683Regex(receiver)) {
-    if (key === "source") return receiver.source;
-    if (key === "flags") return receiver.flags;
-    if (key === "global") return receiver.flags.includes("g");
-    if (key === "ignoreCase") return receiver.flags.includes("i");
-    if (key === "multiline") return receiver.flags.includes("m");
-    if (key === "sticky") return receiver.flags.includes("y");
-    if (key === "lastIndex") return receiver.lastIndex;
-  }
-  if (isB683Class(receiver)) {
-    if (key === "prototype") return { kind: "prototype", className: receiver.name };
-    if (receiver.staticFields.has(key)) return receiver.staticFields.get(key);
-    const method = receiver.staticMethods.get(key);
-    if (method !== undefined) return { kind: "function", declaration: method, thisValue: receiver };
-  }
-  if (isB683Object(receiver)) {
-    if (receiver.fields.has(key)) return receiver.fields.get(key);
-    if (receiver.className !== undefined) {
-      const getter = findB683ClassMember(receiver.className, state, (model) => model.getters.get(key));
-      if (getter !== undefined) return callB683Function({ kind: "function", declaration: getter, thisValue: receiver }, [], state);
-      const method = findB683ClassMember(receiver.className, state, (model) => model.methods.get(key));
-      if (method !== undefined) return { kind: "function", declaration: method, thisValue: receiver };
-    }
-  }
-  throw new B683NativeUnsupported();
-}
-
-function setB683Property(receiver: B683NativeValue, key: string, value: B683NativeValue, state: B683NativeState): void {
-  if (isB683Object(receiver) && receiver.className !== undefined) {
-    const setter = findB683ClassMember(receiver.className, state, (model) => model.setters.get(key));
-    if (setter !== undefined) {
-      callB683Function({ kind: "function", declaration: setter, thisValue: receiver }, [value], state);
-      return;
-    }
-  }
-  if (isB683Object(receiver)) {
-    receiver.fields.set(key, value);
-    return;
-  }
-  throw new B683NativeUnsupported();
-}
-
-function callB683Method(receiver: B683NativeValue, method: string, args: readonly B683NativeValue[], state: B683NativeState): B683NativeValue {
-  if (typeof receiver === "string" && method === "trim") return receiver.trim();
-  if (typeof receiver === "string" && method === "match" && isB683Regex(args[0])) return b683RegexExec(args[0], receiver, false);
-  if (isB683Regex(receiver) && method === "test" && typeof args[0] === "string") return b683RegexExec(receiver, args[0], true) !== null;
-  if (isB683Regex(receiver) && method === "exec" && typeof args[0] === "string") return b683RegexExec(receiver, args[0], true);
-  const property = getB683Property(receiver, method, state);
-  if (isB683Function(property)) {
-    return callB683Function(property, args, state);
-  }
-  throw new B683NativeUnsupported();
-}
-
-function evaluateB683JsonCall(method: string, args: ts.NodeArray<ts.Expression>, state: B683NativeState, thisValue?: B683NativeValue): B683NativeValue {
-  if (method === "parse" && args.length === 1) {
-    const text = evaluateB683Expression(args[0], state, thisValue);
-    if (typeof text !== "string") throw new B683NativeUnsupported();
-    try {
-      return b683NativeFromJson(JSON.parse(text));
-    } catch {
-      throw new B683NativeThrow(b683NativeError("SyntaxError", "Unexpected token in JSON"));
-    }
-  }
-  if (method === "stringify" && args.length >= 1) {
-    const value = evaluateB683Expression(args[0], state, thisValue);
-    try {
-      return JSON.stringify(b683NativeToJson(value, new Set())) ?? undefined;
-    } catch {
-      throw new B683NativeThrow(b683NativeError("TypeError", "Converting circular structure to JSON"));
-    }
-  }
-  throw new B683NativeUnsupported();
-}
-
-function b683NativeFromJson(value: unknown): B683NativeValue {
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  if (Array.isArray(value)) {
-    const object: B683NativeObject = { kind: "object", fields: new Map() };
-    value.forEach((element, index) => object.fields.set(String(index), b683NativeFromJson(element)));
-    return object;
-  }
-  if (typeof value === "object") {
-    const object: B683NativeObject = { kind: "object", fields: new Map() };
-    for (const [key, field] of Object.entries(value)) object.fields.set(key, b683NativeFromJson(field));
-    return object;
-  }
-  return undefined;
-}
-
-function b683NativeToJson(value: B683NativeValue, seen: Set<B683NativeObject>): unknown {
-  if (!isB683Object(value)) return value;
-  if (seen.has(value)) throw new B683NativeUnsupported();
-  const toJson = value.fields.get("toJSON");
-  if (isB683Function(toJson)) return b683NativeToJson(callB683Function(toJson, [], { env: new Map(), classes: new Map(), prints: [] }), seen);
-  seen.add(value);
-  const result: Record<string, unknown> = {};
-  for (const [key, field] of value.fields) {
-    if (key !== "toJSON") result[key] = b683NativeToJson(field, seen);
-  }
-  seen.delete(value);
-  return result;
-}
-
-function b683RegexExec(regex: B683NativeRegex, input: string, updateLastIndex: boolean): B683NativeObject | null {
-  const start = regex.flags.includes("g") ? regex.lastIndex : 0;
-  for (let index = start; index <= input.length; index += 1) {
-    const length = b683RegexMatchLength(regex.source, regex.flags, input, index);
-    if (length !== undefined) {
-      if (updateLastIndex && regex.flags.includes("g")) regex.lastIndex = index + length;
-      return { kind: "object", fields: new Map<string, B683NativeValue>([["0", input.slice(index, index + length)], ["index", index]]) };
-    }
-  }
-  if (updateLastIndex && regex.flags.includes("g")) regex.lastIndex = 0;
-  return null;
-}
-
-function b683RegexMatchLength(pattern: string, flags: string, input: string, index: number): number | undefined {
-  if (pattern === String.raw`\d+`) {
-    let end = index;
-    while (end < input.length && /[0-9]/.test(input[end] ?? "")) end += 1;
-    return end > index ? end - index : undefined;
-  }
-  if (pattern.includes(".")) {
-    if (index + pattern.length > input.length) return undefined;
-    for (let offset = 0; offset < pattern.length; offset += 1) {
-      if (pattern[offset] !== "." && !b683CharEquals(pattern[offset] ?? "", input[index + offset] ?? "", flags)) return undefined;
-    }
-    return pattern.length;
-  }
-  const candidate = input.slice(index, index + pattern.length);
-  return b683StringEquals(candidate, pattern, flags) ? pattern.length : undefined;
-}
-
-function b683NativeRegexFromLiteral(node: ts.Node): B683NativeRegex {
-  const text = node.getText();
-  const lastSlash = text.lastIndexOf("/");
-  return { kind: "regex", source: text.slice(1, lastSlash), flags: text.slice(lastSlash + 1), lastIndex: 0 };
-}
-
-function b683StringEquals(left: string, right: string, flags: string): boolean {
-  return flags.includes("i") ? left.toLowerCase() === right.toLowerCase() : left === right;
-}
-
-function b683CharEquals(left: string, right: string, flags: string): boolean {
-  return b683StringEquals(left, right, flags);
-}
-
-function b683InstanceOf(left: B683NativeValue, right: B683NativeValue, state: B683NativeState): boolean {
-  if (isB683Object(left) && left.fields.get("name") === right) return true;
-  if (!isB683Object(left) || !isB683Class(right)) return false;
-  let current: string | undefined = left.className;
-  while (current !== undefined) {
-    if (current === right.name) return true;
-    current = state.classes.get(current)?.baseName;
-  }
-  return false;
-}
-
-function findB683ClassMember<T>(className: string, state: B683NativeState, select: (model: B683NativeClass) => T | undefined): T | undefined {
-  let current: string | undefined = className;
-  while (current !== undefined) {
-    const model = state.classes.get(current);
-    if (model === undefined) return undefined;
-    const member = select(model);
-    if (member !== undefined) return member;
-    current = model.baseName;
-  }
-  return undefined;
-}
-
-function b683HasOwn(value: B683NativeValue, key: string): boolean {
-  return isB683Object(value) && value.fields.has(key);
-}
-
-function b683NativeClassBuiltin(name: string): B683NativeClass {
-  return { kind: "class", name, fields: [], staticFields: new Map(), methods: new Map(), staticMethods: new Map(), getters: new Map(), setters: new Map() };
-}
-
-function b683NativeError(name: string, message: string): B683NativeObject {
-  return { kind: "object", fields: new Map([["name", name], ["message", message]]), className: name };
-}
-
-function b683NativeTruthy(value: B683NativeValue): boolean {
-  return value !== false && value !== undefined && value !== null && value !== 0 && value !== "";
-}
-
-function b683NativePrintString(value: B683NativeValue): string {
-  if (value === undefined) return "undefined";
-  if (value === null) return "null";
-  if (isB683Object(value)) return "[object Object]";
-  if (isB683Regex(value)) return `/${value.source}/${value.flags}`;
-  return String(value);
-}
-
-function b683NativeStrictEquals(left: B683NativeValue, right: B683NativeValue): boolean {
-  if (isB683Prototype(left) && isB683Prototype(right)) {
-    return left.className === right.className;
-  }
-  return Object.is(left, right);
-}
-
-function hasB683StaticModifier(node: ts.Node): boolean {
-  return Boolean(ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword));
-}
-
-function isB683Object(value: B683NativeValue): value is B683NativeObject {
-  return typeof value === "object" && value !== null && "kind" in value && value.kind === "object";
-}
-
-function isB683Regex(value: B683NativeValue): value is B683NativeRegex {
-  return typeof value === "object" && value !== null && "kind" in value && value.kind === "regex";
-}
-
-function isB683Class(value: B683NativeValue): value is B683NativeClass {
-  return typeof value === "object" && value !== null && "kind" in value && value.kind === "class";
-}
-
-function isB683Function(value: B683NativeValue): value is B683NativeFunction {
-  return typeof value === "object" && value !== null && "kind" in value && value.kind === "function";
-}
-
-function isB683Prototype(value: B683NativeValue): value is B683NativePrototype {
-  return typeof value === "object" && value !== null && "kind" in value && value.kind === "prototype";
-}
-/* eslint-enable no-ternary, no-use-before-define, unicorn/switch-case-braces, unicorn/no-array-for-each, unicorn/no-null, unicorn/explicit-length-check, unicorn/custom-error-definition, typescript/parameter-properties, typescript/explicit-member-accessibility, typescript/no-unnecessary-condition, typescript/no-base-to-string */
-
 function isRegExpConstructorCall(node: ts.Node): node is ts.NewExpression {
   return ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "RegExp";
-}
-
-function isRuntimeJsonFollowupCall(node: ts.Node): boolean {
-  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression) || !ts.isIdentifier(node.expression.expression)) {
-    return false;
-  }
-  if (node.expression.expression.text !== "JSON") {
-    return false;
-  }
-  if (node.expression.name.text === "parse") {
-    return node.arguments.length !== 1 || !isStringLikeLiteral(node.arguments[0]);
-  }
-  if (node.expression.name.text === "stringify") {
-    return sourceTextContainsJsonRuntimeFollowup(node.getSourceFile().text);
-  }
-  return false;
-}
-
-function sourceTextContainsJsonRuntimeFollowup(text: string): boolean {
-  return text.includes("toJSON") || text.includes("self") || text.includes("cycle");
-}
-
-function b683NativeFeatureUnsupportedDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnostic | undefined {
-  const unsupported = findB683NativeFeatureUnsupportedNode(sourceFile);
-  if (unsupported === undefined) {
-    return undefined;
-  }
-  return {
-    code: "TSCN1002",
-    category: "error",
-    message: unsupported.message,
-    span: sourceSpan(sourceFile, unsupported.node.getStart(sourceFile))
-  };
-}
-
-function findB683NativeFeatureUnsupportedNode(sourceFile: ts.SourceFile): { readonly node: ts.Node; readonly message: string } | undefined {
-  const stringConstants = topLevelStringConstants(sourceFile);
-  let unsupported: { readonly node: ts.Node; readonly message: string } | undefined;
-  const visit = (node: ts.Node): void => {
-    if (unsupported !== undefined) {
-      return;
-    }
-    unsupported = unsupportedB683NativeFeatureNode(node, stringConstants);
-    if (unsupported !== undefined) {
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return unsupported;
-}
-
-function unsupportedB683NativeFeatureNode(
-  node: ts.Node,
-  stringConstants: ReadonlyMap<string, string>
-): { readonly node: ts.Node; readonly message: string } | undefined {
-  if (ts.isClassExpression(node)) {
-    return { node, message: "Class expressions are not supported yet" };
-  }
-  if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
-    return undefined;
-  }
-  if (ts.isPrivateIdentifier(node)) {
-    return { node, message: "Private class fields are not supported yet" };
-  }
-  if (ts.isArrowFunction(node) && containsLexicalThis(node.body)) {
-    return { node, message: "Lexical this capture in arrow callbacks is not supported yet" };
-  }
-  if ((ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) && ts.isComputedPropertyName(node.name)) {
-    return { node, message: "Computed class members are not supported yet" };
-  }
-  if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) {
-    return unsupportedRegExpLiteral(node);
-  }
-  if (isRegExpConstructorCall(node)) {
-    return unsupportedRegExpConstructor(node, stringConstants);
-  }
-  if (ts.isCallExpression(node) && isJsonParseWithReviver(node)) {
-    return { node, message: "JSON.parse reviver functions are not supported yet" };
-  }
-  return undefined;
-}
-
-function unsupportedRegExpLiteral(node: ts.Node): { readonly node: ts.Node; readonly message: string } | undefined {
-  const text = node.getText();
-  const lastSlash = text.lastIndexOf("/");
-  const pattern = text.slice(1, lastSlash);
-  const flags = text.slice(lastSlash + 1);
-  const message = unsupportedRegExpPatternMessage(pattern, flags);
-  if (message === undefined) {
-    return undefined;
-  }
-  return { node, message };
-}
-
-function unsupportedRegExpConstructor(
-  node: ts.NewExpression,
-  stringConstants: ReadonlyMap<string, string>
-): { readonly node: ts.Node; readonly message: string } | undefined {
-  const args = node.arguments ?? [];
-  if (args.length === 0 || args.length > regexpConstructorArgumentCount) {
-    return { node, message: "RegExp constructor arguments must be literal pattern and optional literal flags" };
-  }
-  const pattern = stringLiteralOrConstant(args[0], stringConstants);
-  let flags = "";
-  if (args.length === regexpConstructorArgumentCount) {
-    const loweredFlags = stringLiteralOrConstant(args[1], stringConstants);
-    if (loweredFlags === undefined) {
-      return { node, message: "Dynamic RegExp constructor arguments are not supported yet" };
-    }
-    flags = loweredFlags;
-  }
-  if (pattern === undefined) {
-    return { node, message: "Dynamic RegExp constructor arguments are not supported yet" };
-  }
-  const message = unsupportedRegExpPatternMessage(pattern, flags);
-  if (message === undefined) {
-    return undefined;
-  }
-  return { node, message };
 }
 
 function unsupportedRegExpPatternMessage(pattern: string, flags: string): string | undefined {
@@ -3719,50 +3266,6 @@ function unsupportedRegExpPatternMessage(pattern: string, flags: string): string
     return "RegExp named groups, lookbehind, and Unicode properties are not supported yet";
   }
   return undefined;
-}
-
-function isJsonParseWithReviver(node: ts.CallExpression): boolean {
-  if (node.arguments.length <= 1 || !ts.isPropertyAccessExpression(node.expression) || !ts.isIdentifier(node.expression.expression)) {
-    return false;
-  }
-  return node.expression.expression.text === "JSON" && node.expression.name.text === "parse";
-}
-
-function topLevelStringConstants(sourceFile: ts.SourceFile): ReadonlyMap<string, string> {
-  const constants = new Map<string, string>();
-  for (const statement of sourceFile.statements) {
-    if (!ts.isVariableStatement(statement)) {
-      continue;
-    }
-    const isConst = (ts.getCombinedNodeFlags(statement.declarationList) & ts.NodeFlags.Const) !== 0;
-    if (!isConst) {
-      continue;
-    }
-    for (const declaration of statement.declarationList.declarations) {
-      if (ts.isIdentifier(declaration.name) && declaration.initializer !== undefined) {
-        const value = stringLiteralOrConstant(declaration.initializer, constants);
-        if (value !== undefined) {
-          constants.set(declaration.name.text, value);
-        }
-      }
-    }
-  }
-  return constants;
-}
-
-function stringLiteralOrConstant(expression: ts.Expression, stringConstants: ReadonlyMap<string, string>): string | undefined {
-  const unwrapped = unwrapTypeOnlyExpression(expression);
-  if (isStringLikeLiteral(unwrapped)) {
-    return unwrapped.text;
-  }
-  if (ts.isIdentifier(unwrapped)) {
-    return stringConstants.get(unwrapped.text);
-  }
-  return undefined;
-}
-
-function isStringLikeLiteral(expression: ts.Expression): expression is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
-  return ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression);
 }
 
 function updateConstBindings(
@@ -3794,7 +3297,11 @@ function updateConstBindings(
     } else if (operation.value.kind === "regexCompile") {
       valueType = "regex";
     }
-    bindings.set(operation.name, { kind: "valueVariable", name: operation.name, valueType });
+    let className: string | undefined;
+    if (operation.value.kind === "newInstance") {
+      ({ className } = operation.value);
+    }
+    bindings.set(operation.name, { kind: "valueVariable", name: operation.name, valueType, className });
   }
   if (operation.kind === "constClosure") {
     bindings.set(operation.name, { kind: "closure", value: operation.value });
@@ -3966,7 +3473,7 @@ function collectRuntimeShadowObjectNames(operation: JsIrOperation, names: Set<st
 
 // eslint-disable-next-line complexity, max-statements -- Transitional aggregate JSValue tracking centralizes all operation variants.
 function collectOperationValueExpressions(operation: JsIrOperation, names: Set<string>): void {
-  if (operation.kind === "constValue" || operation.kind === "throwValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore") {
+  if (operation.kind === "constValue" || operation.kind === "throwValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore" || operation.kind === "privateFieldStore") {
     collectValueExpressionObjectNames(operation.value, names);
   }
   if (operation.kind === "arrayDestructureProtocol") {
@@ -4067,8 +3574,7 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
   }
 }
 
-function collectValueExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {
-  if (expression.kind === "objectDynamicAccess") {
+function collectValueExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {  if (expression.kind === "objectDynamicAccess") {
     names.add(expression.objectName);
   }
   if (expression.kind === "ternary") {
@@ -4083,25 +3589,7 @@ function collectValueExpressionObjectNames(expression: JsIrValueExpression, name
     }
   }
   if (expression.kind === "callValue") {
-    collectValueExpressionObjectNames(expression.callee, names);
-    if (expression.thisValue !== undefined) {
-      collectValueExpressionObjectNames(expression.thisValue, names);
-    }
-    if (expression.methodReceiver !== undefined) {
-      collectValueExpressionObjectNames(expression.methodReceiver, names);
-    }
-    for (const argument of expression.arguments) {
-      if (argument.valueKind === "value") {
-        collectValueExpressionObjectNames(argument.value, names);
-      }
-    }
-    for (const argument of expression.spreadArguments ?? []) {
-      if (argument.kind === "value") {
-        collectValueExpressionObjectNames(argument.value, names);
-      } else if (argument.kind === "iterableSpread") {
-        collectValueExpressionObjectNames(argument.source, names);
-      }
-    }
+    collectCallValueExpressionObjectNames(expression, names);
   }
   if (expression.kind === "nullishCoalesce" || expression.kind === "logicalValue" || expression.kind === "valuePlus") {
     collectValueExpressionObjectNames(expression.left, names);
@@ -4113,6 +3601,37 @@ function collectValueExpressionObjectNames(expression: JsIrValueExpression, name
   }
   if (expression.kind === "jsonStringify") {
     collectValueExpressionObjectNames(expression.value, names);
+  }
+  if (expression.kind === "jsonParse") {
+    collectValueExpressionObjectNames(expression.text, names);
+    if (expression.reviver !== undefined) {
+      collectValueExpressionObjectNames(expression.reviver, names);
+    }
+  }
+}
+
+function collectCallValueExpressionObjectNames(
+  expression: Extract<JsIrValueExpression, { readonly kind: "callValue" }>,
+  names: Set<string>
+): void {
+  collectValueExpressionObjectNames(expression.callee, names);
+  if (expression.thisValue !== undefined) {
+    collectValueExpressionObjectNames(expression.thisValue, names);
+  }
+  if (expression.methodReceiver !== undefined) {
+    collectValueExpressionObjectNames(expression.methodReceiver, names);
+  }
+  for (const argument of expression.arguments) {
+    if (argument.valueKind === "value") {
+      collectValueExpressionObjectNames(argument.value, names);
+    }
+  }
+  for (const argument of expression.spreadArguments ?? []) {
+    if (argument.kind === "value") {
+      collectValueExpressionObjectNames(argument.value, names);
+    } else if (argument.kind === "iterableSpread") {
+      collectValueExpressionObjectNames(argument.source, names);
+    }
   }
 }
 
@@ -5427,6 +4946,11 @@ function lowerCallStatement(
 ): JsIrOperation | undefined {
   if (ts.isIdentifier(expression.expression) && expression.expression.text === "print") {
     return undefined;
+  }
+
+  const jsonStatement = lowerJsonStatementCall(expression, bindings);
+  if (jsonStatement !== undefined) {
+    return jsonStatement;
   }
 
   const spreadCall = lowerSpreadCallValue(expression, bindings);
@@ -6816,7 +6340,7 @@ function lowerConstVariableBinding(
   if (value !== undefined) {
     // A class instance must be materialized once into a stable slot so later
     // references share object identity instead of re-running the constructor.
-    if (value.kind === "newInstance" || value.kind === "functionObject" || value.kind === "call" || value.kind === "callValue" || value.kind === "regexCompile" || value.kind === "regexExec" || value.kind === "regexMatch") {
+    if (value.kind === "newInstance" || value.kind === "functionObject" || value.kind === "call" || value.kind === "callValue" || value.kind === "regexCompile" || value.kind === "regexExec" || value.kind === "regexMatch" || value.kind === "jsonParse") {
       return { kind: "letValue", name, value };
     }
     return {
@@ -8327,6 +7851,11 @@ function lowerObjectPropertyAssignment(
   right: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
+  const privateStore = lowerClassPrivateFieldStore(left, right, bindings);
+  if (privateStore !== undefined) {
+    return privateStore;
+  }
+
   const thisStore = lowerThisPropertyAssignment(left, right, bindings);
   if (thisStore !== undefined) {
     return thisStore;
@@ -8523,12 +8052,12 @@ function lowerStringRuntimeExpression(
     if (numberFormatMethod !== undefined) {
       return numberFormatMethod;
     }
-    if (!ts.isIdentifier(expression.expression.expression)) {
-      return undefined;
-    }
     const runtimeStringMethod = lowerRuntimeStringMethodExpression(expression, bindings);
     if (runtimeStringMethod !== undefined) {
       return runtimeStringMethod;
+    }
+    if (!ts.isIdentifier(expression.expression.expression)) {
+      return undefined;
     }
     if (expression.expression.name.text === "toString" && expression.arguments.length === 0) {
       const receiverBinding = bindings.get(expression.expression.expression.text);
@@ -8918,16 +8447,32 @@ function lowerInstanceOfCondition(
   if (!ts.isIdentifier(right) || !errorConstructorNames.has(right.text) || bindings.has(right.text)) {
     return undefined;
   }
-  const left = unwrapTypeOnlyExpression(expression.left);
+  return lowerErrorInstanceOfCondition(expression.left, right.text, bindings);
+}
+
+function lowerErrorInstanceOfCondition(
+  leftExpression: ts.Expression,
+  constructorName: string,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrCondition | undefined {
+  const left = unwrapTypeOnlyExpression(leftExpression);
   if (!ts.isIdentifier(left)) {
     return undefined;
   }
   const binding = bindings.get(left.text);
   if (binding?.kind === "runtimeObject") {
-    return { kind: "boolean", value: errorInstanceMatches(binding.errorName, right.text) };
+    return { kind: "boolean", value: errorInstanceMatches(binding.errorName, constructorName) };
   }
   if (binding?.kind === "runtimeArray" || binding?.kind === "object" || binding?.kind === "array") {
     return { kind: "boolean", value: false };
+  }
+  // Boxed values (catch variables, JSON.parse results, dynamic property reads)
+  // resolve the error class at runtime; primitive bindings stay unsupported.
+  if (binding?.kind === "valueVariable" || binding?.kind === "value") {
+    const value = lowerValueExpression(left, bindings);
+    if (value !== undefined) {
+      return { kind: "errorInstanceOf", value, errorName: constructorName };
+    }
   }
   return undefined;
 }
@@ -10016,6 +9561,10 @@ function lowerDirectValueExpression(
   }
 
   if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
+    const jsonParse = lowerJsonParseCall(expression, bindings);
+    if (jsonParse !== undefined) {
+      return jsonParse;
+    }
     const jsonStringify = lowerJsonStringifyCall(expression, bindings);
     if (jsonStringify !== undefined) {
       return jsonStringify;
@@ -10287,6 +9836,61 @@ function lowerJsonStringifyCall(
     }
   }
   return { kind: "jsonStringify", value, replacerName, indent };
+}
+
+const jsonParseMaxArgumentCount = 2;
+
+function lowerJsonParseCall(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression)) {
+    return undefined;
+  }
+  if (expression.expression.expression.text !== "JSON" || expression.expression.name.text !== "parse" || bindings.has("JSON")) {
+    return undefined;
+  }
+  if (expression.arguments.length === 0 || expression.arguments.length > jsonParseMaxArgumentCount) {
+    return undefined;
+  }
+  const text = lowerValueExpression(expression.arguments[0], bindings);
+  if (text === undefined) {
+    return undefined;
+  }
+  let reviver: JsIrValueExpression | undefined;
+  if (expression.arguments.length === jsonParseMaxArgumentCount) {
+    reviver = lowerValueExpression(expression.arguments[1], bindings);
+    if (reviver === undefined) {
+      return undefined;
+    }
+  }
+  return { kind: "jsonParse", text, reviver };
+}
+
+// `JSON.parse(...)` / `JSON.stringify(...)` used as a standalone statement still
+// needs the call to execute (parse errors and cycles throw), so the value is
+// materialized into a fresh throwaway slot.
+function lowerJsonStatementCall(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression)) {
+    return undefined;
+  }
+  if (expression.expression.expression.text !== "JSON" || bindings.has("JSON")) {
+    return undefined;
+  }
+  const method = expression.expression.name.text;
+  if (method !== "parse" && method !== "stringify") {
+    return undefined;
+  }
+  const value = lowerValueExpression(expression, bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+  const name = `__tscn_json_stmt_${nextJsonStatementValueId}`;
+  nextJsonStatementValueId += 1;
+  return { kind: "letValue", name, value };
 }
 
 function lowerOptionalChainValueExpression(
@@ -11362,8 +10966,17 @@ function lowerLengthPropertyAccessExpression(
   expression: ts.PropertyAccessExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrNumberExpression | undefined {
-  if (expression.name.text !== "length" || !ts.isIdentifier(expression.expression)) {
+  if (expression.name.text !== "length") {
     return undefined;
+  }
+  if (!ts.isIdentifier(expression.expression)) {
+    // Chained receiver (for example `error.message.length`): the runtime
+    // dispatches on the boxed value's tag to read string/array/object lengths.
+    const value = lowerValueExpression(expression.expression, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    return { kind: "valueLength", value };
   }
   const binding = bindings.get(expression.expression.text);
   if (binding?.kind === "array" || binding?.kind === "runtimeArray") {
@@ -12229,7 +11842,7 @@ function unsupportedJsonMessage(callee: ts.PropertyAccessExpression): string | u
     return undefined;
   }
   if (callee.name.text === "parse") {
-    return "JSON.parse is only supported for compile-time string arguments in the current runtime lowering slice";
+    return "JSON.parse is only supported with a text argument and an optional reviver that lower to runtime values";
   }
   if (callee.name.text === "stringify") {
     return "JSON.stringify replacers must be string-array bindings and indents must be numeric literals between 0 and 10";

@@ -94,6 +94,20 @@ describe("tscn expanded runtime roadmap", () => {
     }
   });
 
+  test("exposes JavaScript function name and length descriptors", async () => {
+    const result = await expectSuccessfulCompile("function-name-length-descriptors.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, {
+        status: 0,
+        stdout: "arrow\nfn\ninner\ntrue\ntrue\ndeclared\nfalse\nfalse\ntrue\narrow\n2\nfalse\nfalse\ntrue\n1\n0\nfalse\n\nfalse\n0\n",
+        stderr: ""
+      });
+      await expectLlvmAsVerificationIfAvailable(result);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("defines multiple runtime data properties", async () => {
     const result = await expectSuccessfulCompile("object-runtime-define-properties.ts", { link: true });
     try {
@@ -1375,7 +1389,7 @@ describe("tscn expanded runtime roadmap", () => {
     ], { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
-  test("supports minimal class declarations, prototype identity, fields, and accessors", async () => {
+  test("supports minimal class declarations, expressions, computed members, prototype identity, fields, private fields, and accessors", async () => {
     const cases = [
       ["class-basic-method.ts", "42\n"],
       ["class-constructor.ts", "7\n"],
@@ -1384,30 +1398,45 @@ describe("tscn expanded runtime roadmap", () => {
       ["class-extends-super-constructor.ts", "9\n"],
       ["class-instanceof-basic.ts", "true\n"],
       ["class-instanceof-inheritance.ts", "true\ntrue\nfalse\ntrue\ntrue\n"],
-      ["class-prototype-method-lookup.ts", "5\nfalse\n"],
       ["class-prototype-identity.ts", "true\ntrue\n"],
       ["class-instanceof-plain-object.ts", "false\nfalse\nfalse\n"],
       ["class-public-field.ts", "3\n"],
       ["class-field-order.ts", "ab\n"],
       ["class-static-field.ts", "4\n"],
       ["class-getter-setter.ts", "3\n8\n"],
-      ["class-accessor-prototype-lookup.ts", "6\n"]
+      ["class-accessor-prototype-lookup.ts", "6\n"],
+      ["class-expression-unsupported.ts", "1\n"],
+      ["class-expression-instance.ts", "1\ntrue\n"],
+      ["class-expression-named.ts", "inner\ntrue\ninner\n"],
+      ["class-computed-field-unsupported.ts", "1\n"],
+      ["class-computed-members.ts", "first\nthird\ndefined\n2\nconstructed\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
 
-    await Promise.all([
-      expectUnsupportedMessage("class-expression-unsupported.ts", "Class expressions are not supported"),
-      expectUnsupportedMessage("class-private-field-unsupported.ts", "Private class fields are not supported"),
-      expectUnsupportedMessage("class-computed-field-unsupported.ts", "Computed class members are not supported")
-    ]);
-
-    const nonConstructor = await expectSuccessfulCompile("class-instanceof-non-constructor-unsupported.ts", { link: true });
+    const privateField = await expectSuccessfulCompile("class-private-field-unsupported.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(nonConstructor, { status: 1, stdout: "TypeError: notConstructor is not a function. (evaluating 'new C() instanceof notConstructor')\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(privateField, {
+        status: 1,
+        stdout:
+          "abc\nundefined\nc\nbase\nderived\n1\n" +
+          "TypeError: Cannot write private member #secret to an object whose class did not declare it\n" +
+          "TypeError: Cannot read private member #secret from an object whose class did not declare it\n",
+        stderr: ""
+      });
+      await expectLlvmAsVerificationIfAvailable(privateField);
     } finally {
-      await nonConstructor.cleanup();
+      await privateField.cleanup();
     }
+
+    // With the compile-time interpreter deleted, class files that native
+    // lowering cannot handle are hard compile errors instead of being
+    // evaluated at compile time.
+    await expectUnsupportedDiagnostic("class-prototype-method-lookup.ts");
+    await expectUnsupportedMessage(
+      "class-instanceof-non-constructor-unsupported.ts",
+      "instanceof right-hand sides are only supported for built-in error constructors"
+    );
   }, roadmapIntegrationTimeoutMs);
 
   test("supports runtime JSON parse, catchable JSON errors, and toJSON", async () => {
@@ -1416,13 +1445,12 @@ describe("tscn expanded runtime roadmap", () => {
       ["json-parse-runtime-object.ts", "1\ntrue\n"],
       ["json-parse-runtime-array.ts", "1\ntwo\nnull\n"],
       ["json-parse-runtime-malformed-catch.ts", "SyntaxError\ntrue\n"],
+      ["json-parse-reviver-unsupported.ts", "1\n"],
       ["json-stringify-cycle-catch.ts", "TypeError\ntrue\n"],
       ["json-stringify-to-json.ts", '{"x":2}\n']
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
-
-    await expectUnsupportedMessage("json-parse-reviver-unsupported.ts", "JSON.parse reviver functions are not supported");
   }, roadmapIntegrationTimeoutMs);
 
   test("emits nested runtime helper dependencies once", async () => {

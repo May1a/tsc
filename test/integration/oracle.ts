@@ -34,7 +34,6 @@ export type ObservedBehavior = {
 
 export type OracleOptions = {
   readonly verifyLlvm?: boolean;
-  readonly requireNativeLowering?: boolean;
   readonly keepArtifactsOnFailure?: boolean;
 };
 
@@ -63,7 +62,7 @@ function isTraceMapModule(value: unknown): boolean {
     typeof value.id === "string" &&
     typeof value.fileName === "string" &&
     typeof value.statementCount === "number" &&
-    (value.loweringMode === "native" || value.loweringMode === "compileTimeFallback") &&
+    value.loweringMode === "native" &&
     Array.isArray(value.operationIds) &&
     value.operationIds.every((id) => typeof id === "string");
 }
@@ -148,8 +147,7 @@ function formatFailure(
   fixture: string,
   outDir: string,
   native: ObservedBehavior | undefined,
-  node: ObservedBehavior | undefined,
-  fallbackModules: readonly string[] = []
+  node: ObservedBehavior | undefined
 ): string {
   const sections = [
     `Correctness oracle failed for ${fixture}`,
@@ -158,9 +156,6 @@ function formatFailure(
     `main.ll: ${path.join(outDir, "main.ll")}`,
     `trace-map.json: ${path.join(outDir, "trace-map.json")}`
   ];
-  if (fallbackModules.length > 0) {
-    sections.push(`Compile-time fallback modules:\n${fallbackModules.join("\n")}`);
-  }
   return sections.join("\n\n");
 }
 
@@ -179,7 +174,6 @@ export async function expectNativeMatchesNodeIfAvailable(
   fixture: string,
   options: OracleOptions = {}
 ): Promise<void> {
-  const requireNativeLowering = options.requireNativeLowering ?? true;
   const keepArtifactsOnFailure = options.keepArtifactsOnFailure ?? true;
   const result = await compileFixture(fixture, { link: true });
   let succeeded = false;
@@ -192,13 +186,10 @@ export async function expectNativeMatchesNodeIfAvailable(
       return;
     }
 
-    const traceMap = parseTraceMap(await result.readArtifact("trace-map.json"));
-    const fallbackModules = traceMap.modules
-      .filter((module) => module.loweringMode === "compileTimeFallback")
-      .map((module) => module.fileName);
-    if (requireNativeLowering && fallbackModules.length > 0) {
-      throw new Error(formatFailure(fixture, result.outDir, native, node, fallbackModules));
-    }
+    // Every module must lower natively; the compiler no longer has a
+    // compile-time fallback mode, so the trace-map envelope rejects anything
+    // but `loweringMode: "native"`.
+    parseTraceMap(await result.readArtifact("trace-map.json"));
 
     const nativeRun = await runNativeIfAvailable(result);
     if (nativeRun.skipped) {
