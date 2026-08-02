@@ -711,7 +711,7 @@ describe("tscn expanded runtime roadmap", () => {
 
   test("supports package X runtime array indexOf and lastIndexOf", async () => {
     const cases = [
-      ["array-runtime-index-of.ts", "1\n-1\n3\n4\n5\n"],
+      ["array-runtime-index-of.ts", "1\n-1\n3\n4\n-1\n"],
       ["array-runtime-index-of-from-index.ts", "3\n-1\n1\n3\n"],
       ["array-runtime-index-of-holes.ts", "-1\n-1\n"]
     ] as const;

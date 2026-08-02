@@ -460,7 +460,7 @@ describe("tscn CLI", () => {
       expect(result.stderr).toContain("error TSCN1002");
 
       const diagnostics = await result.readArtifact("diagnostics.txt");
-      expect(diagnostics).toContain("Only top-level const string, number, or boolean bindings, print calls, and if statements are supported");
+      expect(diagnostics).toContain("Unsupported statement in the current lowering slice: IfStatement");
     } finally {
       await result.cleanup();
     }

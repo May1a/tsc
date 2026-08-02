@@ -324,6 +324,12 @@ export type JsIrValueExpression =
       readonly other?: JsIrStringExpression;
     }
   | {
+      readonly kind: "stringIndexOf" | "stringLastIndexOf";
+      readonly receiver: JsIrStringExpression;
+      readonly search: JsIrStringExpression;
+      readonly position?: JsIrNumberExpression;
+    }
+  | {
       readonly kind: "runtimeArrayValue";
       readonly elements: readonly JsIrValueExpression[];
     }
@@ -554,7 +560,7 @@ export type JsIrStringExpression =
     }
   | {
       readonly kind: "stringMethod";
-      readonly method: "trim" | "trimStart" | "trimEnd" | "toUpperCase" | "toLowerCase" | "repeat" | "replace" | "replaceAll" | "padStart" | "padEnd" | "at" | "normalize";
+      readonly method: "trim" | "trimStart" | "trimEnd" | "toUpperCase" | "toLowerCase" | "repeat" | "replace" | "replaceAll" | "padStart" | "padEnd" | "at" | "charAt" | "slice" | "substring" | "substr" | "normalize";
       readonly receiver: JsIrStringExpression;
       readonly count?: JsIrNumberExpression;
       readonly search?: JsIrStringExpression;
@@ -562,6 +568,12 @@ export type JsIrStringExpression =
       readonly targetLength?: JsIrNumberExpression;
       readonly padString?: JsIrStringExpression;
       readonly position?: JsIrNumberExpression;
+      readonly start?: JsIrNumberExpression;
+      readonly end?: JsIrNumberExpression;
+    }
+  | {
+      readonly kind: "stringFromCharCode";
+      readonly codes: readonly JsIrNumberExpression[];
     }
   | {
       readonly kind: "taggedTemplate";
@@ -2585,7 +2597,7 @@ function lowerClassAccessor(
   }
   const parameters = classCallableParameters(accessor);
   const fnParameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...parameters];
-  const fnBindings = new Map(bindings);
+  const fnBindings = functionFrameBindings(bindings);
   fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
   for (const parameter of parameters) {
     bindFunctionParameter(parameter.name, parameter.valueKind, false, fnBindings);
@@ -2652,7 +2664,7 @@ function lowerClassMethod(
   }
   const methodName = entry.name;
   const parameters = classCallableParameters(declaration);
-  const fnBindings = new Map(bindings);
+  const fnBindings = functionFrameBindings(bindings);
   const fnParameters: JsIrFunctionParameter[] = [];
   if (!isStatic) {
     fnParameters.push({ name: CLASS_THIS_NAME, valueKind: "value" });
@@ -2723,7 +2735,7 @@ function lowerClassConstructor(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation {
   const parameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...info.constructorParameters];
-  const fnBindings = new Map(bindings);
+  const fnBindings = functionFrameBindings(bindings);
   fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
   for (const parameter of info.constructorParameters) {
     bindFunctionParameter(parameter.name, parameter.valueKind, false, fnBindings);
@@ -3765,15 +3777,56 @@ function lowerStatementCore(
   return undefined;
 }
 
+// Lowering-time nesting counters for the one finally-routing shape the
+// backend cannot complete correctly: a `throw` inside a finally block that
+// sits in the try region of an enclosing try/catch/finally. The emitted
+// completion routing sends such a throw straight past the enclosing catch
+// clause, so it is rejected at lowering time (a clean coverage-gap) instead
+// of running with wrong semantics.
+let tryRegionOfCatchFinallyDepth = 0;
+let finallyBlockDepth = 0;
+
 function lowerThrowStatement(
   statement: ts.ThrowStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
+  if (finallyBlockDepth > 0 && tryRegionOfCatchFinallyDepth > 0) {
+    return undefined;
+  }
   const value = lowerValueExpression(statement.expression, bindings);
   if (value === undefined) {
     return undefined;
   }
   return { kind: "throwValue", value };
+}
+
+function lowerTryRegionOperations(
+  statement: ts.TryStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrOperation[] | undefined {
+  const tracksTryRegion = statement.catchClause !== undefined && statement.finallyBlock !== undefined;
+  if (tracksTryRegion) {
+    tryRegionOfCatchFinallyDepth += 1;
+  }
+  try {
+    return lowerBlockStatements(statement.tryBlock, bindings);
+  } finally {
+    if (tracksTryRegion) {
+      tryRegionOfCatchFinallyDepth -= 1;
+    }
+  }
+}
+
+function lowerFinallyBlockOperations(
+  block: ts.Block,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrOperation[] | undefined {
+  finallyBlockDepth += 1;
+  try {
+    return lowerBlockStatements(block, bindings);
+  } finally {
+    finallyBlockDepth -= 1;
+  }
 }
 
 function lowerTryCatchStatement(
@@ -3796,7 +3849,7 @@ function lowerTryCatchStatement(
   // catch block (a fresh binding map shadows any outer binding of the same name
   // without leaking outwards). Cleanup/completion routing for finally is owned by
   // the LLVM backend's shared cleanup stack.
-  const tryOperations = lowerBlockStatements(statement.tryBlock, bindings);
+  const tryOperations = lowerTryRegionOperations(statement, bindings);
   if (tryOperations === undefined) {
     return undefined;
   }
@@ -3816,7 +3869,7 @@ function lowerTryCatchStatement(
 
   let finallyOperations: readonly JsIrOperation[] | undefined;
   if (statement.finallyBlock !== undefined) {
-    const loweredFinally = lowerBlockStatements(statement.finallyBlock, bindings);
+    const loweredFinally = lowerFinallyBlockOperations(statement.finallyBlock, bindings);
     if (loweredFinally === undefined) {
       return undefined;
     }
@@ -4176,8 +4229,7 @@ function lowerForStatement(
   if (
     statement.initializer === undefined ||
     statement.condition === undefined ||
-    statement.incrementor === undefined ||
-    !ts.isBlock(statement.statement)
+    statement.incrementor === undefined
   ) {
     return undefined;
   }
@@ -4199,7 +4251,7 @@ function lowerForStatement(
     return undefined;
   }
 
-  const body = lowerBlockStatements(statement.statement, forBindings);
+  const body = lowerStatementBody(statement.statement, forBindings);
   if (body === undefined) {
     return undefined;
   }
@@ -4218,7 +4270,7 @@ function lowerForOfStatement(
   statement: ts.ForOfStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1 || !ts.isBlock(statement.statement)) {
+  if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1) {
     return undefined;
   }
   const [declaration] = statement.initializer.declarations;
@@ -4226,8 +4278,8 @@ function lowerForOfStatement(
     return undefined;
   }
   const itemName = declaration.name.text;
-  const bodyBlock = statement.statement;
-  const specialized = lowerSpecializedForOf(statement.expression, itemName, bodyBlock, bindings);
+  const bodyStatement = statement.statement;
+  const specialized = lowerSpecializedForOf(statement.expression, itemName, bodyStatement, bindings);
   if (specialized !== undefined) {
     return specialized;
   }
@@ -4238,7 +4290,7 @@ function lowerForOfStatement(
   }
   const bodyBindings = new Map(bindings);
   bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-  const body = lowerBlockStatements(bodyBlock, bodyBindings);
+  const body = lowerStatementBody(bodyStatement, bodyBindings);
   if (body === undefined) {
     return undefined;
   }
@@ -4255,14 +4307,14 @@ function lowerForOfStatement(
 function lowerSpecializedForOf(
   sourceExpression: ts.Expression,
   itemName: string,
-  bodyBlock: ts.Block,
+  bodyStatement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   const sourceString = lowerStringRuntimeExpression(sourceExpression, bindings);
   if (sourceString !== undefined) {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
-    const body = lowerBlockStatements(bodyBlock, bodyBindings);
+    const body = lowerStatementBody(bodyStatement, bodyBindings);
     if (body === undefined) {
       return undefined;
     }
@@ -4276,7 +4328,7 @@ function lowerSpecializedForOf(
   if (sourceBinding?.kind === "runtimeSet") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-    const body = lowerBlockStatements(bodyBlock, bodyBindings);
+    const body = lowerStatementBody(bodyStatement, bodyBindings);
     if (body === undefined) {
       return undefined;
     }
@@ -4285,7 +4337,7 @@ function lowerSpecializedForOf(
   if (sourceBinding?.kind === "runtimeMap") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "runtimeArray", name: itemName });
-    const body = lowerBlockStatements(bodyBlock, bodyBindings);
+    const body = lowerStatementBody(bodyStatement, bodyBindings);
     if (body === undefined) {
       return undefined;
     }
@@ -4296,7 +4348,7 @@ function lowerSpecializedForOf(
   }
   const bodyBindings = new Map(bindings);
   bodyBindings.set(itemName, { kind: "number", value: { kind: "variable", name: itemName } });
-  const body = lowerBlockStatements(bodyBlock, bodyBindings);
+  const body = lowerStatementBody(bodyStatement, bodyBindings);
   if (body === undefined) {
     return undefined;
   }
@@ -4319,7 +4371,7 @@ function lowerForInStatement(
   statement: ts.ForInStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
-  if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1 || !ts.isBlock(statement.statement)) {
+  if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1) {
     return undefined;
   }
   const [declaration] = statement.initializer.declarations;
@@ -4334,7 +4386,7 @@ function lowerForInStatement(
   if (sourceBinding?.kind === "runtimeObject") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    const body = lowerStatementBody(statement.statement, bodyBindings);
     if (body === undefined) {
       return undefined;
     }
@@ -4343,7 +4395,7 @@ function lowerForInStatement(
   if (sourceBinding?.kind === "runtimeArray") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const body = lowerBlockStatements(statement.statement, bodyBindings);
+    const body = lowerStatementBody(statement.statement, bodyBindings);
     if (body === undefined) {
       return undefined;
     }
@@ -4361,7 +4413,7 @@ function lowerForInitializer(
   }
 
   const [declaration] = initializer.declarations;
-  if (!ts.isIdentifier(declaration.name) || !declaration.initializer || (initializer.flags & ts.NodeFlags.Let) === 0) {
+  if (!ts.isIdentifier(declaration.name) || !declaration.initializer || (initializer.flags & ts.NodeFlags.Const) !== 0) {
     return undefined;
   }
 
@@ -4386,7 +4438,7 @@ function lowerWhileStatement(
     return undefined;
   }
 
-  const body = lowerLoopBody(statement.statement, bindings);
+  const body = lowerStatementBody(statement.statement, bindings);
   if (body === undefined) {
     return undefined;
   }
@@ -4407,7 +4459,7 @@ function lowerDoWhileStatement(
     return undefined;
   }
 
-  const body = lowerLoopBody(statement.statement, bindings);
+  const body = lowerStatementBody(statement.statement, bindings);
   if (body === undefined) {
     return undefined;
   }
@@ -4419,7 +4471,10 @@ function lowerDoWhileStatement(
   };
 }
 
-function lowerLoopBody(
+// Lowers a statement body that may be a block or a single unbraced statement
+// (e.g. `if (x) foo();` or `while (x) y--;`), normalizing the latter through
+// the same statement-list channel blocks use.
+function lowerStatementBody(
   statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly JsIrOperation[] | undefined {
@@ -4523,11 +4578,11 @@ function lowerIfStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   const condition = lowerConditionExpression(statement.expression, bindings);
-  if (condition === undefined || !ts.isBlock(statement.thenStatement)) {
+  if (condition === undefined) {
     return undefined;
   }
 
-  const thenOperations = lowerBlockStatements(statement.thenStatement, bindings);
+  const thenOperations = lowerStatementBody(statement.thenStatement, bindings);
   if (thenOperations === undefined) {
     return undefined;
   }
@@ -4541,11 +4596,7 @@ function lowerIfStatement(
     };
   }
 
-  if (!ts.isBlock(statement.elseStatement)) {
-    return undefined;
-  }
-
-  const elseOperations = lowerBlockStatements(statement.elseStatement, bindings);
+  const elseOperations = lowerStatementBody(statement.elseStatement, bindings);
   if (elseOperations === undefined) {
     return undefined;
   }
@@ -4629,7 +4680,7 @@ function lowerFunctionDeclaration(
   }
 
   const parameters: JsIrFunctionParameter[] = [];
-  const fnBindings = new Map(bindings);
+  const fnBindings = functionFrameBindings(bindings);
   const prelude: JsIrOperation[] = [];
   for (let i = 0; i < statement.parameters.length; i++) {
     const param = statement.parameters[i];
@@ -4919,6 +4970,25 @@ function bindFunctionParameter(
     return;
   }
   fnBindings.set(name, { kind: "number", value: { kind: "parameter", name } });
+}
+
+// The backend has no cross-frame access to mutable number/string/boolean
+// bindings: referencing an enclosing frame's mutable variable from inside a
+// function would emit a load/store through a pointer that only exists in the
+// enclosing frame, producing invalid IR. Entering a new function frame drops
+// those inherited bindings so such references fail to lower (a clean TSCN1002
+// rejection) instead. Parameters and body-local bindings are added after this
+// copy and are unaffected. Returned closures are exempt:
+// lowerReturnedFunctionExpression re-binds free variables as explicit capture
+// parameters.
+function functionFrameBindings(bindings: ReadonlyMap<string, JsIrBindingValue>): Map<string, JsIrBindingValue> {
+  const frameBindings = new Map(bindings);
+  for (const [name, binding] of frameBindings) {
+    if (binding.kind === "stringVariable" || binding.kind === "booleanVariable" || (binding.kind === "number" && binding.value.kind === "variable")) {
+      frameBindings.delete(name);
+    }
+  }
+  return frameBindings;
 }
 
 function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValueKind {
@@ -5510,7 +5580,12 @@ function lowerReturnStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrOperation | undefined {
   if (!statement.expression) {
-    return undefined;
+    // Bare `return;` yields undefined, matching the class method normalization
+    // in lowerClassMethodBody.
+    return {
+      kind: "returnValue",
+      expression: { kind: "undefined" }
+    };
   }
 
   const closure = lowerReturnedFunctionExpression(statement.expression, bindings);
@@ -5689,7 +5764,7 @@ function lowerVariableBinding(
   }
 
   const isConst = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
-  const isLet = (statement.declarationList.flags & ts.NodeFlags.Let) !== 0;
+  const isVar = (statement.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) === 0;
 
   if (ts.isArrayBindingPattern(declaration.name) || ts.isObjectBindingPattern(declaration.name)) {
     if (!isConst) {
@@ -5702,12 +5777,15 @@ function lowerVariableBinding(
     return undefined;
   }
 
-  if (isLet) {
-    return lowerLetVariableBinding(declaration.name.text, declaration.initializer, bindings);
-  }
-
+  // Simple `var` bindings flow through the `let` path. Function-scoped hoisting
+  // (use before declaration) is not modeled, so a `var` is only supported where
+  // a `let` in the same position would be. A redeclaration in the same scope
+  // merges with the existing binding, matching function-scoped `var` semantics.
   if (!isConst) {
-    return undefined;
+    if (isVar && bindings.has(declaration.name.text)) {
+      return lowerVarRedeclaration(declaration.name.text, declaration.initializer, bindings);
+    }
+    return lowerLetVariableBinding(declaration.name.text, declaration.initializer, bindings);
   }
 
   return lowerConstVariableBinding(
@@ -6195,6 +6273,41 @@ function isRuntimeArrayTypeHint(type: ts.TypeNode | undefined): boolean {
     return type.elementType.kind === ts.SyntaxKind.UnknownKeyword || type.elementType.kind === ts.SyntaxKind.AnyKeyword;
   }
   return type.kind === ts.SyntaxKind.AnyKeyword;
+}
+
+// A `var` redeclaration in the same scope merges with the existing binding
+// (function-scoped `var` semantics): it lowers as a plain assignment to the
+// existing slot instead of a fresh allocation, which also keeps the emitted
+// LLVM free of duplicate allocas. A redeclaration whose initializer kind does
+// not match the existing binding is rejected rather than silently re-typed.
+function lowerVarRedeclaration(
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrOperation | undefined {
+  const binding = bindings.get(name);
+  if (binding?.kind === "stringVariable") {
+    const value = lowerStringRuntimeExpression(initializer, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    return { kind: "assignString", name, value };
+  }
+  if (binding?.kind === "booleanVariable") {
+    const value = lowerConditionExpression(initializer, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    return { kind: "assignBoolean", name, value };
+  }
+  if (binding?.kind !== "number" || binding.value.kind !== "variable") {
+    return undefined;
+  }
+  const value = lowerNumberExpression(initializer, bindings);
+  if (value === undefined) {
+    return undefined;
+  }
+  return { kind: "assignNumber", name, value };
 }
 
 function lowerLetVariableBinding(
@@ -7055,7 +7168,7 @@ function lowerInlineArrayCallbackFunctionObject(
     return undefined;
   }
   const parameters: JsIrFunctionParameter[] = [];
-  const callbackBindings = new Map(bindings);
+  const callbackBindings = functionFrameBindings(bindings);
   if (callbackKind === "ordinary") {
     callbackBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
   }
@@ -8052,6 +8165,10 @@ function lowerStringRuntimeExpression(
     if (numberFormatMethod !== undefined) {
       return numberFormatMethod;
     }
+    const fromCharCode = lowerStringFromCharCodeExpression(expression, bindings);
+    if (fromCharCode !== undefined) {
+      return fromCharCode;
+    }
     const runtimeStringMethod = lowerRuntimeStringMethodExpression(expression, bindings);
     if (runtimeStringMethod !== undefined) {
       return runtimeStringMethod;
@@ -8111,7 +8228,7 @@ function isRegexExpression(expression: ts.Expression, bindings: ReadonlyMap<stri
   return binding?.kind === "valueVariable" && binding.valueType === "regex";
 }
 
-// eslint-disable-next-line complexity -- String method argument validation mirrors the supported runtime surface explicitly.
+// eslint-disable-next-line complexity, max-statements -- String method argument validation mirrors the supported runtime surface explicitly.
 function lowerRuntimeStringMethodExpression(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -8154,7 +8271,60 @@ function lowerRuntimeStringMethodExpression(
     }
     return { kind: "stringMethod", method, receiver, targetLength, padString };
   }
+  if ((method === "charAt" || method === "at") && expression.arguments.length <= 1) {
+    const position = lowerOptionalStringIndexArgument(expression.arguments[0], bindings);
+    if (position === undefined) {
+      return undefined;
+    }
+    return { kind: "stringMethod", method, receiver, position };
+  }
+  if ((method === "slice" || method === "substring" || method === "substr") && expression.arguments.length <= 2) {
+    const start = lowerOptionalStringIndexArgument(expression.arguments[0], bindings);
+    if (start === undefined) {
+      return undefined;
+    }
+    let end: JsIrNumberExpression | undefined;
+    if (expression.arguments.length === 2) {
+      const loweredEnd = lowerNumberExpression(expression.arguments[1], bindings);
+      if (loweredEnd === undefined) {
+        return undefined;
+      }
+      end = loweredEnd;
+    }
+    return { kind: "stringMethod", method, receiver, start, end };
+  }
   return undefined;
+}
+
+function lowerOptionalStringIndexArgument(
+  argument: ts.Expression | undefined,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrNumberExpression | undefined {
+  if (argument === undefined) {
+    return { kind: "literal", value: 0 };
+  }
+  return lowerNumberExpression(argument, bindings);
+}
+
+function lowerStringFromCharCodeExpression(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrStringExpression | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression)) {
+    return undefined;
+  }
+  if (expression.expression.expression.text !== "String" || expression.expression.name.text !== "fromCharCode" || bindings.has("String")) {
+    return undefined;
+  }
+  const codes: JsIrNumberExpression[] = [];
+  for (const argument of expression.arguments) {
+    const code = lowerNumberExpression(argument, bindings);
+    if (code === undefined) {
+      return undefined;
+    }
+    codes.push(code);
+  }
+  return { kind: "stringFromCharCode", codes };
 }
 
 function lowerRuntimeNumberFormatExpression(
@@ -9280,6 +9450,9 @@ function lowerAggregatePropertyValueAccess(
     return undefined;
   }
   const binding = bindings.get(receiver.text);
+  if (isFunctionPrototypeAccess(expression, bindings)) {
+    return undefined;
+  }
   if (binding?.kind === "runtimeObject" && binding.errorName !== undefined && expression.name.text === "stack") {
     return undefined;
   }
@@ -9736,7 +9909,7 @@ function lowerFunctionObjectValue(
     return undefined;
   }
   const parameters: JsIrFunctionParameter[] = [];
-  const functionBindings = new Map(bindings);
+  const functionBindings = functionFrameBindings(bindings);
   if (functionKind === "ordinary") {
     functionBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
   }
@@ -9747,6 +9920,21 @@ function lowerFunctionObjectValue(
     const valueKind = parameterValueKind(parameter);
     parameters.push({ name: parameter.name.text, valueKind });
     bindFunctionParameter(parameter.name.text, valueKind, false, functionBindings);
+  }
+  const selfNames = new Set<string>();
+  if (ts.isFunctionExpression(expression) && expression.name !== undefined && bindings.get(expression.name.text) === undefined) {
+    selfNames.add(expression.name.text);
+  }
+  if (inferredName !== undefined && bindings.get(inferredName) === undefined) {
+    selfNames.add(inferredName);
+  }
+  // A function object is emitted under a generated `__tscn_fnobj_*` name with
+  // the dynamic (argc/argv) calling convention, so a recursive reference to
+  // its own name — or to the variable its initializer is being bound to, which
+  // is not bound yet during lowering — would compile into a direct call to a
+  // function that is never emitted. Reject such self-references outright.
+  if (selfNames.size > 0 && functionExpressionSelfReferences(expression.body, selfNames)) {
+    return undefined;
   }
   const body = lowerInlineFunctionBody(expression.body, functionBindings);
   if (body === undefined) {
@@ -9767,6 +9955,22 @@ function lowerFunctionObjectValue(
       inferredName: runtimeName
     }
   };
+}
+
+function functionExpressionSelfReferences(body: ts.ConciseBody, names: ReadonlySet<string>): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) {
+      return;
+    }
+    if (ts.isIdentifier(node) && names.has(node.text) && isRuntimeIdentifierReference(node)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+  return found;
 }
 
 function lowerRuntimeCollectionValueMethodCall(
@@ -9893,11 +10097,31 @@ function lowerJsonStatementCall(
   return { kind: "letValue", name, value };
 }
 
+// Function objects carry no `prototype` property in the current runtime;
+// reject the access instead of letting it evaluate to undefined.
+function isFunctionPrototypeAccess(
+  expression: ts.PropertyAccessExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): boolean {
+  if (expression.name.text !== "prototype" || !ts.isIdentifier(expression.expression)) {
+    return false;
+  }
+  const binding = bindings.get(expression.expression.text);
+  return (
+    binding?.kind === "function" ||
+    binding?.kind === "functionReference" ||
+    (binding?.kind === "valueVariable" && binding.valueType === "function")
+  );
+}
+
 function lowerOptionalChainValueExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
   if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.name)) {
+    if (isFunctionPrototypeAccess(expression, bindings)) {
+      return undefined;
+    }
     const receiver = lowerValueExpression(expression.expression, bindings);
     if (receiver === undefined) {
       return undefined;
@@ -10229,6 +10453,34 @@ function lowerRuntimeStringMethodCall(
       return { kind: "stringCharCodeAt", receiver, index };
     }
     return { kind: "stringCodePointAt", receiver, index };
+  }
+  if (method === "indexOf" && (args.length === 1 || args.length === 2)) {
+    if (first === undefined) {
+      return undefined;
+    }
+    const search = lowerStringRuntimeExpression(first, bindings);
+    if (search === undefined) {
+      return undefined;
+    }
+    let position: JsIrNumberExpression | undefined;
+    if (args.length === 2) {
+      const loweredPosition = lowerNumberExpression(args[1], bindings);
+      if (loweredPosition === undefined) {
+        return undefined;
+      }
+      position = loweredPosition;
+    }
+    return { kind: "stringIndexOf", receiver, search, position };
+  }
+  if (method === "lastIndexOf" && args.length === 1) {
+    if (first === undefined) {
+      return undefined;
+    }
+    const search = lowerStringRuntimeExpression(first, bindings);
+    if (search === undefined) {
+      return undefined;
+    }
+    return { kind: "stringLastIndexOf", receiver, search };
   }
   if (method === "localeCompare" && args.length === 1) {
     if (first === undefined) {
@@ -11706,9 +11958,6 @@ function unsupportedStatementMessage(statement: ts.Statement): string {
     if (statement.parameters.some((parameter) => parameter.type?.kind === ts.SyntaxKind.StringKeyword)) {
       return "String parameters in function declarations are not supported by the current runtime string ABI";
     }
-    if (statement.body?.statements.some((bodyStatement) => ts.isReturnStatement(bodyStatement) && bodyStatement.expression !== undefined && unsupportedStringExpression(bodyStatement.expression))) {
-      return "String returns from functions are not supported by the current runtime string ABI";
-    }
   }
 
   if (ts.isExpressionStatement(statement)) {
@@ -11718,7 +11967,7 @@ function unsupportedStatementMessage(statement: ts.Statement): string {
     }
   }
 
-  return "Only top-level const string, number, or boolean bindings, print calls, and if statements are supported by the current lowering slice";
+  return `Unsupported statement in the current lowering slice: ${ts.SyntaxKind[statement.kind]}`;
 }
 
 function unsupportedExpressionMessage(expression: ts.Expression): string | undefined {

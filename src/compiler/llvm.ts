@@ -4846,6 +4846,39 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines, value };
   }
 
+  if (expression.kind === "stringIndexOf" || expression.kind === "stringLastIndexOf") {
+    const receiver = emitStringExpression(expression.receiver, context);
+    const search = emitStringExpression(expression.search, context);
+    const doubleValue = `%num.${context.numIndex}`;
+    context.numIndex += 1;
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    if (expression.kind === "stringLastIndexOf") {
+      useRuntimeHelper(context.runtime, "stringLastIndexOf");
+      return {
+        lines: [
+          ...receiver.lines,
+          ...search.lines,
+          `  ${doubleValue} = call double @stringLastIndexOf(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value})`,
+          `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
+        ],
+        value
+      };
+    }
+    const position = emitStringIndexArgument(expression.position ?? { kind: "literal", value: 0 }, context);
+    useRuntimeHelper(context.runtime, "stringIndexOf");
+    return {
+      lines: [
+        ...receiver.lines,
+        ...search.lines,
+        ...position.lines,
+        `  ${doubleValue} = call double @stringIndexOf(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value}, i64 ${position.value})`,
+        `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
+      ],
+      value
+    };
+  }
+
   if (expression.kind === "runtimeArrayValue") {
     const lines: string[] = [];
     const values = expression.elements.map((element) => emitValueExpression(element, context));
@@ -7859,6 +7892,29 @@ function emitArrayIndex(expression: JsIrNumberExpression, context: EmitContext):
   return { lines: [...number.lines, `  ${name} = fptosi double ${number.value} to i64`], value: name };
 }
 
+// JS string index arguments convert NaN to zero before clamping; fptosi on NaN
+// is poison in LLVM, so the conversion is guarded explicitly.
+function emitStringIndexArgument(expression: JsIrNumberExpression, context: EmitContext): NumberValue {
+  if (expression.kind === "literal") {
+    return { lines: [], value: String(expression.value) };
+  }
+  const number = emitNumberExpression(expression, context);
+  const index = context.arrayIndex;
+  context.arrayIndex += 1;
+  const nanCheck = `%arr.idx.nan.${index}`;
+  const safe = `%arr.idx.safe.${index}`;
+  const name = `%arr.idx.${index}`;
+  return {
+    lines: [
+      ...number.lines,
+      `  ${nanCheck} = fcmp uno double ${number.value}, ${number.value}`,
+      `  ${safe} = select i1 ${nanCheck}, double 0.0, double ${number.value}`,
+      `  ${name} = fptosi double ${safe} to i64`
+    ],
+    value: name
+  };
+}
+
 function emitSimpleNumberExpression(
   expression: JsIrNumberExpression,
   context: EmitContext
@@ -8054,6 +8110,10 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
       padStart: "stringPadStart",
       padEnd: "stringPadEnd",
       at: "stringAt",
+      charAt: "stringCharAt",
+      slice: "stringSlice",
+      substring: "stringSubstring",
+      substr: "stringSubstr",
       normalize: "stringNormalize"
     } as const;
     const helper = helperByMethod[expression.method];
@@ -8118,6 +8178,36 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
         length
       };
     }
+    if (expression.method === "charAt") {
+      const position = emitStringIndexArgument(expression.position ?? { kind: "literal", value: 0 }, context);
+      return {
+        lines: [
+          ...receiver.lines,
+          ...position.lines,
+          `  ${raw} = call { ptr, i64 } @${helper}(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${position.value})`,
+          `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
+          `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+        ],
+        value,
+        length
+      };
+    }
+    if (expression.method === "slice" || expression.method === "substring" || expression.method === "substr") {
+      const start = emitStringIndexArgument(expression.start ?? { kind: "literal", value: 0 }, context);
+      const end = emitStringIndexArgument(expression.end ?? { kind: "literal", value: Number.MAX_SAFE_INTEGER }, context);
+      return {
+        lines: [
+          ...receiver.lines,
+          ...start.lines,
+          ...end.lines,
+          `  ${raw} = call { ptr, i64 } @${helper}(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${start.value}, i64 ${end.value})`,
+          `  ${value} = extractvalue { ptr, i64 } ${raw}, 0`,
+          `  ${length} = extractvalue { ptr, i64 } ${raw}, 1`
+        ],
+        value,
+        length
+      };
+    }
     return {
       lines: [
         ...receiver.lines,
@@ -8128,6 +8218,28 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
       value,
       length
     };
+  }
+
+  if (expression.kind === "stringFromCharCode") {
+    useRuntimeHelper(context.runtime, "stringFromCharCode");
+    const index = context.stringIndex;
+    context.stringIndex += 1;
+    const raw = `%str.result.${index}`;
+    const value = `%str.${index}`;
+    const length = `%str.len.${index}`;
+    const codesAddress = `%str.codes.${index}`;
+    const lines: string[] = [`  ${codesAddress} = alloca i64, i64 ${expression.codes.length}`];
+    for (let i = 0; i < expression.codes.length; i++) {
+      const code = emitStringIndexArgument(expression.codes[i], context);
+      const slot = `%str.code.${index}.${i}`;
+      lines.push(...code.lines);
+      lines.push(`  ${slot} = getelementptr i64, ptr ${codesAddress}, i64 ${i}`);
+      lines.push(`  store i64 ${code.value}, ptr ${slot}`);
+    }
+    lines.push(`  ${raw} = call { ptr, i64 } @stringFromCharCode(ptr ${codesAddress}, i64 ${expression.codes.length})`);
+    lines.push(`  ${value} = extractvalue { ptr, i64 } ${raw}, 0`);
+    lines.push(`  ${length} = extractvalue { ptr, i64 } ${raw}, 1`);
+    return { lines, value, length };
   }
 
   if (expression.kind === "taggedTemplate") {

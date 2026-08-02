@@ -38,6 +38,20 @@ describe("tscn strict-mode function declaration early errors", () => {
     );
   });
 
+  test("rejects a function declaration used directly as an if body", async () => {
+    await expectInvalidFunctionDeclaration(
+      "if-decl-function-body.ts",
+      "A function declaration cannot be used directly as the body of an if statement"
+    );
+  });
+
+  test("rejects a function declaration used directly as an else body", async () => {
+    await expectInvalidFunctionDeclaration(
+      "else-decl-function-body.ts",
+      "A function declaration cannot be used directly as the body of an if statement"
+    );
+  });
+
   test("rejects a catch parameter redeclared by a directly nested function declaration", async () => {
     await expectInvalidFunctionDeclaration(
       "catch-param-function-redeclare.ts",

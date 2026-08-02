@@ -187,6 +187,26 @@ describe("tscn function declarations and calls", () => {
     }
   });
 
+  test("lowers bare return statements as undefined in function declarations", async () => {
+    const result = await expectSuccessfulCompile("function-bare-return.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "positive\nnot positive\nundefined\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers bare return statements as undefined in class methods", async () => {
+    const result = await expectSuccessfulCompile("class-method-bare-return.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "positive\nundefined\nnot positive\nundefined\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("lowers recursive functions with forward declarations", async () => {
     const result = await expectSuccessfulCompile("function-recursive.ts");
 
@@ -552,6 +572,39 @@ describe("tscn loops", () => {
     }
   });
 
+  test("lowers unbraced for loop bodies", async () => {
+    const result = await expectSuccessfulCompile("for-single-statement-body.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br label %for.cond.0");
+      expect(llvmIr).toContain("for.body.0:");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "0\n1\n2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers unbraced for-of loop bodies", async () => {
+    const result = await expectSuccessfulCompile("for-of-single-statement-body.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n2\n3\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers unbraced for-in loop bodies", async () => {
+    const result = await expectSuccessfulCompile("for-in-single-statement-body.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "a\nb\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("lowers break statements to the current loop exit", async () => {
     const result = await expectSuccessfulCompile("while-break.ts");
 
@@ -572,6 +625,50 @@ describe("tscn loops", () => {
       expect(llvmIr).toContain("br label %for.step.0");
       expect(llvmIr).toContain("for.step.0:");
       expect(llvmIr).toContain("br label %for.cond.0");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn var declarations and unbraced if bodies", () => {
+  test("lowers simple var declarations through the let path", async () => {
+    const result = await expectSuccessfulCompile("var-declaration.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "2\nhello\ntrue\n0\n1\n2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("merges same-scope var redeclarations into assignments", async () => {
+    const result = await expectSuccessfulCompile("var-redeclaration.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "false\ntrue\nsecond\n2\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("never matches NaN in switch cases and compares -0 as equal to 0", async () => {
+    const result = await expectSuccessfulCompile("switch-nan-strict-equality.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "default\nfalse\ntrue\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers unbraced if and else bodies", async () => {
+    const result = await expectSuccessfulCompile("if-single-statement-body.ts", { link: true });
+
+    try {
+      const llvmIr = await result.readArtifact("main.ll");
+      expect(llvmIr).toContain("br i1 %cmp.0, label %if.then.0, label %if.else.0");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "greater\n", stderr: "" });
     } finally {
       await result.cleanup();
     }

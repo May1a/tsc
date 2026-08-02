@@ -193,6 +193,76 @@ describe("tscn string methods (package CB)", () => {
       await result.cleanup();
     }
   });
+
+  test("evaluates charAt with out-of-range and computed indices", async () => {
+    const result = await expectSuccessfulCompile("string-char-at-runtime.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "h\no\n\n\nl\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates slice with negative and out-of-range indices", async () => {
+    const result = await expectSuccessfulCompile("string-slice-runtime.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "hello\nworld\nworld\nllo worl\n\n\nhello world\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates substring with clamping and swapped bounds", async () => {
+    const result = await expectSuccessfulCompile("string-substring-runtime.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "world\nhello\nllo wo\nhello world\n world\n\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates substr with negative start and length clamping", async () => {
+    const result = await expectSuccessfulCompile("string-substr-runtime.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "world\nhello\nworld\nwo\n\n\n\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates String.fromCharCode with zero, one, and many codes", async () => {
+    const result = await expectSuccessfulCompile("string-from-char-code.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "hi\nA\npqrst\n[]\nhow\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("evaluates indexOf, lastIndexOf, and includes on runtime strings", async () => {
+    const result = await expectSuccessfulCompile("string-index-of-runtime.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "4\n7\n-1\n11\n4\n7\n-1\n11\ntrue\nfalse\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("composes at, slice, charAt, and substring inside concatenation", async () => {
+    const result = await expectSuccessfulCompile("string-at-concat.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "[o]\n[hel]\n[elo]\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
 
 describe("tscn template literals (package CC)", () => {

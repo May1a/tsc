@@ -27,6 +27,13 @@ export type RuntimeHelper =
   | "stringAt"
   | "stringNormalize"
   | "stringCharCodeAt"
+  | "stringCharAt"
+  | "stringSlice"
+  | "stringSubstring"
+  | "stringSubstr"
+  | "stringFromCharCode"
+  | "stringIndexOf"
+  | "stringLastIndexOf"
   | "regexCompile"
   | "regexValid"
   | "regexAtomEnd"
@@ -52,6 +59,7 @@ export type RuntimeHelper =
   | "regexReplace"
   | "stringStartsWithAt"
   | "valueStrictEquals"
+  | "valueIsNumberForSameValueZero"
   | "valueSameValueZero"
   | "valueLooseEquals"
   | "valueRelationalCompare"
@@ -352,8 +360,15 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["stringPadStart", ["malloc", "memcpy"]],
   ["stringPadEnd", ["malloc", "memcpy"]],
   ["stringSplit", ["arrayNew", "arraySet", "valueBoxString", "malloc", "memcpy", "memcmp"]],
-  ["valueStrictEquals", ["valueStringLength", "valueStringPtr", "memcmp"]],
-  ["valueSameValueZero", ["valueStrictEquals", "valueStringLength", "valueStringPtr", "memcmp"]],
+  ["stringCharAt", ["malloc", "memcpy"]],
+  ["stringSlice", ["malloc", "memcpy"]],
+  ["stringSubstring", ["malloc", "memcpy"]],
+  ["stringSubstr", ["malloc", "memcpy"]],
+  ["stringFromCharCode", ["malloc"]],
+  ["stringIndexOf", ["memcmp"]],
+  ["stringLastIndexOf", ["memcmp"]],
+  ["valueStrictEquals", ["valueIsNumberForSameValueZero", "valueStringLength", "valueStringPtr", "memcmp"]],
+  ["valueSameValueZero", ["valueStrictEquals", "valueIsNumberForSameValueZero", "valueStringLength", "valueStringPtr", "memcmp"]],
   ["valueLooseEquals", ["valueStrictEquals", "valueToNumber", "valueStringPtr", "valueStringLength", "memcmp"]],
   ["valueRelationalCompare", ["valueToNumber", "valueStringPtr", "valueStringLength", "memcmp"]],
   ["valueToNumber", ["valueStringPtr"]],
@@ -608,7 +623,7 @@ const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[
   ["arrayOwnPropertyDescriptor", ["arrayHasOwnIndex", "arrayGet", "objectNew", "objectSet", "objectOwnPropertyDescriptor", "valueBoxObject"]],
   ["arrayLengthPropertyDescriptor", ["arrayLength", "objectNew", "objectSet", "valueBoxObject"]],
   ["arrayOwnPropertyDescriptors", ["arrayLength", "arrayHasOwnIndex", "arrayOwnPropertyDescriptor", "arrayLengthPropertyDescriptor", "indexToString", "objectNew", "objectSet", "objectOwnPropertyDescriptors", "objectAssign"]],
-  ["arrayIncludes", ["arrayLength", "arrayHasOwnIndex", "valueStrictEquals", "valueStringLength", "valueStringPtr", "memcmp"]],
+  ["arrayIncludes", ["arrayLength", "arrayHasOwnIndex", "valueSameValueZero", "valueStringLength", "valueStringPtr", "memcmp"]],
   ["arrayIndexOf", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "valueStrictEquals"]],
   ["arrayLastIndexOf", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "valueStrictEquals"]],
   ["arrayFind", ["arrayLength", "arrayHasOwnIndex", "arrayGet"]],
@@ -3729,6 +3744,180 @@ miss:
 }
 `);
   }
+  if (runtime.used.has("stringCharAt")) {
+    definitions.push(`define { ptr, i64 } @stringCharAt(i64 %value.len, ptr %value.ptr, i64 %index) {
+entry:
+  %in.range = icmp ult i64 %index, %value.len
+  br i1 %in.range, label %hit, label %miss
+hit:
+  %result = call { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 %index, i64 1)
+  ret { ptr, i64 } %result
+miss:
+  %empty = call { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 0, i64 0)
+  ret { ptr, i64 } %empty
+}
+`);
+  }
+  // The slice helpers index raw bytes, matching the existing typed-string
+  // helpers (stringAt, stringCharCodeAt); they are exact for ASCII receivers.
+  if (runtime.used.has("stringSlice")) {
+    definitions.push(`define { ptr, i64 } @stringSlice(i64 %value.len, ptr %value.ptr, i64 %start, i64 %end) {
+entry:
+  %start.neg = icmp slt i64 %start, 0
+  %start.adjusted = add i64 %start, %value.len
+  %start.candidate = select i1 %start.neg, i64 %start.adjusted, i64 %start
+  %start.below = icmp slt i64 %start.candidate, 0
+  %start.low = select i1 %start.below, i64 0, i64 %start.candidate
+  %start.above = icmp sgt i64 %start.low, %value.len
+  %from = select i1 %start.above, i64 %value.len, i64 %start.low
+  %end.neg = icmp slt i64 %end, 0
+  %end.adjusted = add i64 %end, %value.len
+  %end.candidate = select i1 %end.neg, i64 %end.adjusted, i64 %end
+  %end.below = icmp slt i64 %end.candidate, 0
+  %end.low = select i1 %end.below, i64 0, i64 %end.candidate
+  %end.above = icmp sgt i64 %end.low, %value.len
+  %to = select i1 %end.above, i64 %value.len, i64 %end.low
+  %raw.len = sub i64 %to, %from
+  %len.neg = icmp slt i64 %raw.len, 0
+  %len = select i1 %len.neg, i64 0, i64 %raw.len
+  %result = call { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 %from, i64 %len)
+  ret { ptr, i64 } %result
+}
+`);
+  }
+  if (runtime.used.has("stringSubstring")) {
+    definitions.push(`define { ptr, i64 } @stringSubstring(i64 %value.len, ptr %value.ptr, i64 %start, i64 %end) {
+entry:
+  %start.neg = icmp slt i64 %start, 0
+  %start.low = select i1 %start.neg, i64 0, i64 %start
+  %start.above = icmp sgt i64 %start.low, %value.len
+  %a = select i1 %start.above, i64 %value.len, i64 %start.low
+  %end.neg = icmp slt i64 %end, 0
+  %end.low = select i1 %end.neg, i64 0, i64 %end
+  %end.above = icmp sgt i64 %end.low, %value.len
+  %b = select i1 %end.above, i64 %value.len, i64 %end.low
+  %swap = icmp sgt i64 %a, %b
+  %from = select i1 %swap, i64 %b, i64 %a
+  %to = select i1 %swap, i64 %a, i64 %b
+  %len = sub i64 %to, %from
+  %result = call { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 %from, i64 %len)
+  ret { ptr, i64 } %result
+}
+`);
+  }
+  if (runtime.used.has("stringSubstr")) {
+    definitions.push(`define { ptr, i64 } @stringSubstr(i64 %value.len, ptr %value.ptr, i64 %start, i64 %length) {
+entry:
+  %start.neg = icmp slt i64 %start, 0
+  %start.adjusted = add i64 %start, %value.len
+  %start.candidate = select i1 %start.neg, i64 %start.adjusted, i64 %start
+  %start.below = icmp slt i64 %start.candidate, 0
+  %start.low = select i1 %start.below, i64 0, i64 %start.candidate
+  %start.above = icmp sgt i64 %start.low, %value.len
+  %from = select i1 %start.above, i64 %value.len, i64 %start.low
+  %available = sub i64 %value.len, %from
+  %length.neg = icmp slt i64 %length, 0
+  %length.low = select i1 %length.neg, i64 0, i64 %length
+  %length.above = icmp sgt i64 %length.low, %available
+  %len = select i1 %length.above, i64 %available, i64 %length.low
+  %result = call { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 %from, i64 %len)
+  ret { ptr, i64 } %result
+}
+`);
+  }
+  if (runtime.used.has("stringFromCharCode")) {
+    definitions.push(`define { ptr, i64 } @stringFromCharCode(ptr %codes, i64 %count) {
+entry:
+  %alloc.size = add i64 %count, 1
+  %out = call ptr @malloc(i64 %alloc.size)
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %step ]
+  %done = icmp uge i64 %i, %count
+  br i1 %done, label %finish, label %step
+step:
+  %code.ptr = getelementptr i64, ptr %codes, i64 %i
+  %code = load i64, ptr %code.ptr
+  %byte = trunc i64 %code to i8
+  %out.ptr = getelementptr i8, ptr %out, i64 %i
+  store i8 %byte, ptr %out.ptr
+  %next = add i64 %i, 1
+  br label %loop
+finish:
+  %nul = getelementptr i8, ptr %out, i64 %count
+  store i8 0, ptr %nul
+  %r0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %r1 = insertvalue { ptr, i64 } %r0, i64 %count, 1
+  ret { ptr, i64 } %r1
+}
+`);
+  }
+  if (runtime.used.has("stringIndexOf")) {
+    definitions.push(`define double @stringIndexOf(i64 %hay.len, ptr %hay.ptr, i64 %needle.len, ptr %needle.ptr, i64 %from) {
+entry:
+  %from.neg = icmp slt i64 %from, 0
+  %from.low = select i1 %from.neg, i64 0, i64 %from
+  %from.above = icmp sgt i64 %from.low, %hay.len
+  %start = select i1 %from.above, i64 %hay.len, i64 %from.low
+  %empty = icmp eq i64 %needle.len, 0
+  br i1 %empty, label %found.start, label %scan
+found.start:
+  %start.double = sitofp i64 %start to double
+  ret double %start.double
+scan:
+  %last = sub i64 %hay.len, %needle.len
+  br label %loop
+loop:
+  %i = phi i64 [ %start, %scan ], [ %next, %continue ]
+  %past = icmp sgt i64 %i, %last
+  br i1 %past, label %miss, label %compare
+compare:
+  %ptr = getelementptr i8, ptr %hay.ptr, i64 %i
+  %cmp = call i32 @memcmp(ptr %ptr, ptr %needle.ptr, i64 %needle.len)
+  %same = icmp eq i32 %cmp, 0
+  br i1 %same, label %hit, label %continue
+continue:
+  %next = add i64 %i, 1
+  br label %loop
+hit:
+  %as.double = sitofp i64 %i to double
+  ret double %as.double
+miss:
+  ret double -1.0
+}
+`);
+  }
+  if (runtime.used.has("stringLastIndexOf")) {
+    definitions.push(`define double @stringLastIndexOf(i64 %hay.len, ptr %hay.ptr, i64 %needle.len, ptr %needle.ptr) {
+entry:
+  %empty = icmp eq i64 %needle.len, 0
+  br i1 %empty, label %found.end, label %scan
+found.end:
+  %end.double = sitofp i64 %hay.len to double
+  ret double %end.double
+scan:
+  %start = sub i64 %hay.len, %needle.len
+  br label %loop
+loop:
+  %i = phi i64 [ %start, %scan ], [ %next, %continue ]
+  %in.range = icmp sge i64 %i, 0
+  br i1 %in.range, label %compare, label %miss
+compare:
+  %ptr = getelementptr i8, ptr %hay.ptr, i64 %i
+  %cmp = call i32 @memcmp(ptr %ptr, ptr %needle.ptr, i64 %needle.len)
+  %same = icmp eq i32 %cmp, 0
+  br i1 %same, label %hit, label %continue
+continue:
+  %next = sub i64 %i, 1
+  br label %loop
+hit:
+  %as.double = sitofp i64 %i to double
+  ret double %as.double
+miss:
+  ret double -1.0
+}
+`);
+  }
   if (runtime.used.has("stringTrim") || runtime.used.has("stringTrimStart") || runtime.used.has("stringTrimEnd")) {
     definitions.push(`define i1 @stringIsAsciiWhitespace(i8 %byte) {
 entry:
@@ -3741,8 +3930,18 @@ entry:
   %result = or i1 %a, %b
   ret i1 %result
 }
-
-define { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 %start, i64 %len) {
+`);
+  }
+  if (
+    runtime.used.has("stringTrim") ||
+    runtime.used.has("stringTrimStart") ||
+    runtime.used.has("stringTrimEnd") ||
+    runtime.used.has("stringCharAt") ||
+    runtime.used.has("stringSlice") ||
+    runtime.used.has("stringSubstring") ||
+    runtime.used.has("stringSubstr")
+  ) {
+    definitions.push(`define { ptr, i64 } @stringSliceCopy(ptr %value.ptr, i64 %start, i64 %len) {
 entry:
   %alloc.size = add i64 %len, 1
   %out = call ptr @malloc(i64 %alloc.size)
@@ -4214,6 +4413,16 @@ exit:
   if (runtime.used.has("valueStrictEquals")) {
     definitions.push(`define i1 @valueStrictEquals(i64 %left, i64 %right) {
 entry:
+  %left.number = call i1 @valueIsNumberForSameValueZero(i64 %left)
+  %right.number = call i1 @valueIsNumberForSameValueZero(i64 %right)
+  %both.number = and i1 %left.number, %right.number
+  br i1 %both.number, label %number.compare, label %check.same
+number.compare:
+  %left.d = call double @valueNumber(i64 %left)
+  %right.d = call double @valueNumber(i64 %right)
+  %numeric.equal = fcmp oeq double %left.d, %right.d
+  br i1 %numeric.equal, label %equal, label %not.equal
+check.same:
   %same = icmp eq i64 %left, %right
   br i1 %same, label %equal, label %check.strings
 check.strings:
@@ -4241,7 +4450,7 @@ not.equal:
 }
 `);
   }
-  if (runtime.used.has("valueSameValueZero")) {
+  if (runtime.used.has("valueIsNumberForSameValueZero")) {
     definitions.push(`define i1 @valueIsNumberForSameValueZero(i64 %value) {
 entry:
   %is.undefined = icmp eq i64 %value, ${legacyJsValue.immediate("undefined")}
@@ -4273,8 +4482,10 @@ true:
 false:
   ret i1 false
 }
-
-define i1 @valueSameValueZero(i64 %left, i64 %right) {
+`);
+  }
+  if (runtime.used.has("valueSameValueZero")) {
+    definitions.push(`define i1 @valueSameValueZero(i64 %left, i64 %right) {
 entry:
   %strict = call i1 @valueStrictEquals(i64 %left, i64 %right)
   br i1 %strict, label %true, label %number.guard
@@ -7587,7 +7798,7 @@ hole:
   br label %compare
 compare:
   %candidate = phi i64 [ %value, %load ], [ ${legacyJsValue.immediate("undefined")}, %hole ]
-  %same = call i1 @valueStrictEquals(i64 %candidate, i64 %needle)
+  %same = call i1 @valueSameValueZero(i64 %candidate, i64 %needle)
   br i1 %same, label %found, label %string.check
 string.check:
   %candidate.tag = and i64 %candidate, ${legacyJsValue.tagMask()}

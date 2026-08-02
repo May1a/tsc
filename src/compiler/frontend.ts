@@ -459,6 +459,26 @@ const collectInvalidFunctionDeclarations = (sourceFile: ts.SourceFile): Compiler
         span: sourceSpan(sourceFile, node.statement.getStart(sourceFile))
       });
     }
+    if (ts.isIfStatement(node)) {
+      // Strict mode forbids the Annex B.3.4 `if (x) function f() {}` forms;
+      // the TypeScript parser accepts them, so reject both branches here.
+      if (isLabelledFunctionDeclaration(node.thenStatement)) {
+        found.push({
+          code: invalidFunctionDeclarationDiagnosticCode,
+          category: "error",
+          message: "A function declaration cannot be used directly as the body of an if statement",
+          span: sourceSpan(sourceFile, node.thenStatement.getStart(sourceFile))
+        });
+      }
+      if (node.elseStatement !== undefined && isLabelledFunctionDeclaration(node.elseStatement)) {
+        found.push({
+          code: invalidFunctionDeclarationDiagnosticCode,
+          category: "error",
+          message: "A function declaration cannot be used directly as the body of an if statement",
+          span: sourceSpan(sourceFile, node.elseStatement.getStart(sourceFile))
+        });
+      }
+    }
     if (ts.isCatchClause(node) && node.variableDeclaration !== undefined) {
       const boundNames = new Set<string>();
       collectBoundNames(node.variableDeclaration.name, boundNames);
@@ -480,9 +500,9 @@ const collectInvalidFunctionDeclarations = (sourceFile: ts.SourceFile): Compiler
 };
 
 // The TypeScript parser accepts function declarations as iteration-statement
-// bodies and lets a catch block redeclare its parameter with a function
-// declaration. Both are ECMAScript early errors, so reject them during the
-// frontend phase (issue #43).
+// or single-statement if/else bodies and lets a catch block redeclare its
+// parameter with a function declaration. All are ECMAScript early errors in
+// strict code, so reject them during the frontend phase (issue #43).
 const rejectInvalidFunctionDeclarations = (
   sourceFiles: readonly ts.SourceFile[]
 ): Effect.Effect<void, never, Diagnostics> =>

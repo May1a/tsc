@@ -185,14 +185,28 @@ export const runNativeIfAvailable = async (
           stderr: run.stderr
         })
       ),
-      Effect.catchTag("SystemError", (error) =>
-        Effect.succeed({ skipped: true, reason: error.message })
-      ),
-      Effect.catchAll((error) => {
-        if (error instanceof Error) {
+      Effect.catchTag("SystemError", (error) => {
+        // Only a genuinely missing executable is a skip (the host has no
+        // clang, so linking never produced `main`). Transient spawn failures
+        // (e.g. EAGAIN under load) must surface as real errors, not as a
+        // misleading skip that fails the ENOENT assertion downstream.
+        if (error.message.includes("ENOENT")) {
           return Effect.succeed({ skipped: true, reason: error.message });
         }
-        return Effect.succeed({ skipped: true, reason: String(error) });
+        return Effect.die(error);
+      }),
+      Effect.catchAll((error) => {
+        if (error instanceof Error) {
+          if (error.message.includes("ENOENT")) {
+            return Effect.succeed({ skipped: true, reason: error.message });
+          }
+          return Effect.die(error);
+        }
+        const message = String(error);
+        if (message.includes("ENOENT")) {
+          return Effect.succeed({ skipped: true, reason: message });
+        }
+        return Effect.die(error);
       }),
       Effect.provide(commandExecutorLayer)
     )
