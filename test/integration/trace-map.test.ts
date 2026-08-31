@@ -10,7 +10,7 @@ async function readTraceMap(result: Awaited<ReturnType<typeof expectSuccessfulCo
   return JSON.parse(await result.readArtifact("trace-map.json")) as TraceMapV1;
 }
 
-type MarkerInterval = { readonly start: number; readonly end: number };
+interface MarkerInterval { readonly start: number; readonly end: number }
 
 function collectMarkerIntervals(lines: readonly string[]): ReadonlyMap<string, readonly MarkerInterval[]> {
   const markerIntervals = new Map<string, MarkerInterval[]>();

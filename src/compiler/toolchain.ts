@@ -11,21 +11,21 @@ const jsValuePointerAddressBits = 48;
 
 export type TargetArchitecture = "x86_64" | "aarch64" | "x86" | "arm" | "unknown";
 
-export type TargetFacts = {
+export interface TargetFacts {
   readonly triple: string;
   readonly architecture: TargetArchitecture;
   readonly pointerWidthBits: number | undefined;
   readonly doubleFormat: "ieee754-binary64" | "other" | "unknown";
   readonly pointerAddressBits: number | undefined;
-};
+}
 
-export type Toolchain = {
+export interface Toolchain {
   readonly clang: Option.Option<string>;
   readonly clangxx: Option.Option<string>;
   readonly llvmAs: Option.Option<string>;
   readonly lli: Option.Option<string>;
   readonly target: TargetFacts;
-};
+}
 
 export const Toolchain = Context.GenericTag<Toolchain>("tscn/Toolchain");
 
@@ -34,7 +34,7 @@ export function normalizeHostTargetFacts(
   platform: NodeJS.Platform
 ): TargetFacts {
   let normalizedArchitecture: TargetArchitecture = "unknown";
-  let pointerWidthBits: number | undefined;
+  let pointerWidthBits: number | undefined = undefined;
   if (architecture === "x64") {
     normalizedArchitecture = "x86_64";
     pointerWidthBits = sixtyFourBitWord;
@@ -48,7 +48,7 @@ export function normalizeHostTargetFacts(
     normalizedArchitecture = "arm";
     pointerWidthBits = thirtyTwoBitWord;
   }
-  let pointerAddressBits: number | undefined;
+  let pointerAddressBits: number | undefined = undefined;
   // This records the active host ABI's default-allocation guarantee, not the CPU's
   // maximum virtual-address width. These x86-64 OS ABIs keep ordinary image,
   // stack, and allocator mappings in the low canonical 48-bit range; Linux also
@@ -111,7 +111,8 @@ const probeClangxx = (): Effect.Effect<Option.Option<string>, never, CommandExec
   );
 };
 
-let cachedToolchain: Toolchain | undefined;
+// eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+let cachedToolchain: Toolchain | undefined = undefined;
 
 const discoverToolchainUncached: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
   function* discoverAllTools() {

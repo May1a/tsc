@@ -46,7 +46,8 @@ export const compile = (
     const llvmIr = path.join(options.outDir, "main.ll");
     const traceMap = path.join(options.outDir, "trace-map.json");
     const executable = path.join(options.outDir, "main");
-    let inlineCpp: string | undefined;
+    // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+    let inlineCpp: string | undefined = undefined;
     if (jsIr.module.inlineCppBlocks.length > 0) {
       inlineCpp = path.join(options.outDir, "inline-cpp.cpp");
     }

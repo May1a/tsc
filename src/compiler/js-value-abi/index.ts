@@ -6,13 +6,13 @@ import { legacyLlvmJsValues, type LegacyLlvmJsValues } from "./legacy-llvm.js";
 import type { CompilerDiagnostic } from "../diagnostics.js";
 import type { TargetFacts } from "../toolchain.js";
 
-export type JsValueAbi = {
+export interface JsValueAbi {
   readonly llvmBoundaryType: typeof llvm.i64;
   forLlvm(block: LlvmBlockBuilder): LlvmJsValues;
   forLegacyLlvm(): LegacyLlvmJsValues;
   emitInlineCppSupport(): string;
   validateHost(target: TargetFacts): CompilerDiagnostic | undefined;
-};
+}
 
 export const jsValueAbi: JsValueAbi = Object.freeze({
   llvmBoundaryType: llvm.i64,

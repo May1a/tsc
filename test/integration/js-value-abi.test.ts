@@ -8,12 +8,12 @@ import { createLlvmModule, llvm, type LlvmModuleBuilder } from "../../src/compil
 import type { TargetFacts } from "../../src/compiler/toolchain.js";
 import { captureCommand, commandExecutorLayer, toolExecutable } from "./helpers.js";
 
-type AbiConformanceVector = {
+interface AbiConformanceVector {
   readonly name: string;
   readonly llvmExpression: string;
   readonly cppExpression: string;
   readonly expected: string;
-};
+}
 
 const pointerPayload = 4660n;
 const abiConformanceVectors: readonly AbiConformanceVector[] = [

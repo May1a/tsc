@@ -3,22 +3,22 @@ import type { PlatformError } from "@effect/platform/Error";
 import { Effect } from "effect";
 import ts from "typescript";
 import { Diagnostics } from "./diagnostics-service.js";
-import type { CompilerDiagnostic } from "./diagnostics.js";
+import type { CompilerDiagnostic, SourceSpan } from "./diagnostics.js";
 
-export type FrontendResult = {
+export interface FrontendResult {
   readonly program: ts.Program;
   readonly sourceFiles: readonly ts.SourceFile[];
-};
+}
 
-type ParsedConfigResult = {
+interface ParsedConfigResult {
   readonly parsed: ts.ParsedCommandLine;
   readonly diagnostics: readonly CompilerDiagnostic[];
-};
+}
 
-type CachedParsedConfigResult = {
+interface CachedParsedConfigResult {
   readonly content: string;
   readonly result: ParsedConfigResult;
-};
+}
 
 const inlineCppTag = "__tscn_inline_cpp";
 const inlineCppMarker = "@cpp";
@@ -67,7 +67,8 @@ const defaultCompilerOptions = (): ts.ParsedCommandLine => ({
 
 const tsDiagnosticsToCompiler = (diagnostics: readonly ts.Diagnostic[]): readonly CompilerDiagnostic[] =>
   diagnostics.map((diagnostic) => {
-    let span;
+    // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+    let span: SourceSpan | undefined = undefined;
     if (diagnostic.file && diagnostic.start !== undefined) {
       span = sourceSpan(diagnostic.file, diagnostic.start);
     }
@@ -85,7 +86,7 @@ const findAncestorTsConfig = (
   configName = "tsconfig.json"
 ): Effect.Effect<string | undefined, PlatformError, FileSystem.FileSystem | Path.Path> => {
   type Step = "found" | "stop" | "descend";
-  type ProbeResult = { readonly step: Step; readonly path: string };
+  interface ProbeResult { readonly step: Step; readonly path: string }
   const probeStep = (
     current: string
   ): Effect.Effect<ProbeResult, PlatformError, FileSystem.FileSystem | Path.Path> =>
@@ -179,7 +180,7 @@ const sourceFileCacheKey = (
     stableFileName = normalized.toLowerCase();
   }
 
-  let languageKey: string;
+  let languageKey: string | undefined = undefined;
   if (typeof languageVersionOrOptions === "number") {
     languageKey = String(languageVersionOrOptions);
   } else {
@@ -228,10 +229,10 @@ function skipBlockComment(content: string, index: number): number {
   return end + 2;
 }
 
-type RewriteResult = {
+interface RewriteResult {
   readonly rewritten: string;
   readonly index: number;
-};
+}
 
 function rewriteInlineCppMarker(content: string, index: number): RewriteResult | undefined {
   if (!isInlineCppMarkerAt(content, index)) {

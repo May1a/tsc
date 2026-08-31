@@ -26,7 +26,7 @@ const walkTestFiles = async (directory: string, prefix: string): Promise<readonl
   const files: string[] = [];
   const directoryPromises: Promise<readonly string[]>[] = [];
   for (const entry of entries) {
-    let relative: string;
+    let relative: string | undefined = undefined;
     if (prefix === "") {
       relative = entry.name;
     } else {
@@ -110,10 +110,10 @@ const classifyTest = (id: string, source: string, filters: HarnessFilters): Clas
   return { kind: "selected", expectation, parseGoal };
 };
 
-export type Selection = {
+export interface Selection {
   readonly selected: readonly SelectedTest[];
   readonly skipped: readonly TestCaseResult[];
-};
+}
 
 /**
  * Walks `suiteRoot/test/language` and classifies every test file against the

@@ -61,8 +61,8 @@ const parseBlockList = (blockLines: readonly string[]): readonly string[] | unde
   return items;
 };
 
-type MutableFrontmatter = { flags: string[]; includes: string[]; features: string[] };
-type NegativeResult = { readonly phase: string; readonly type: string };
+interface MutableFrontmatter { flags: string[]; includes: string[]; features: string[] }
+interface NegativeResult { readonly phase: string; readonly type: string }
 
 type LineResult =
   | { readonly kind: "ok"; readonly nextIndex: number; readonly negative: NegativeResult | undefined }
@@ -164,7 +164,7 @@ export const parseFrontmatter = (source: string): Test262Frontmatter | undefined
   }
   const lines = match[1].split("\n");
   const frontmatter: MutableFrontmatter = { flags: [], includes: [], features: [] };
-  let negative: NegativeResult | undefined;
+  let negative: NegativeResult | undefined = undefined;
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];

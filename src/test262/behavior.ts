@@ -9,12 +9,12 @@ export type ThrownObservation =
       readonly display: string;
     };
 
-export type ObservedBehavior = {
+export interface ObservedBehavior {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
   readonly thrown?: ThrownObservation;
-};
+}
 
 // Same thrown-observation sentinel technique as the existing Node correctness
 // oracle (test/integration/oracle.ts): the Node wrapper reports uncaught
@@ -23,7 +23,7 @@ export type ObservedBehavior = {
 export const thrownSentinel = "__TSCN_NODE_THROWN_V1__";
 
 const parseThrownObservation = (json: string): ThrownObservation | undefined => {
-  let parsed: unknown;
+  let parsed: unknown = undefined;
   try {
     parsed = JSON.parse(json);
   } catch {

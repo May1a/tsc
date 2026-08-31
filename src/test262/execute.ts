@@ -30,11 +30,11 @@ const compileLayer = Layer.provideMerge(
 const unsupportedFeatureCode = "TSCN1002";
 const missingClangMarker = "clang was not found";
 
-export type ExecuteTestOptions = {
+export interface ExecuteTestOptions {
   readonly timeoutMs: number;
   readonly keepArtifactsOnFailure: boolean;
   readonly workDirRoot?: string;
-};
+}
 
 type CompileOutcome =
   | { readonly kind: "compiled"; readonly executable?: string; readonly diagnostics: string }
@@ -58,12 +58,12 @@ const runCompile = async (entry: string, outDir: string, suppressSemanticDiagnos
   return { kind: "failed", diagnostics: Cause.pretty(exit.cause) };
 };
 
-type OutcomeContext = {
+interface OutcomeContext {
   readonly test: SelectedTest;
   readonly workDir: string;
   readonly outDir: string;
   readonly options: ExecuteTestOptions;
-};
+}
 
 const conclude = async (context: OutcomeContext, result: TestCaseResult): Promise<TestCaseResult> => {
   if (result.classification === "fail" && context.options.keepArtifactsOnFailure) {

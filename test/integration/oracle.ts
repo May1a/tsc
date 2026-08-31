@@ -25,17 +25,17 @@ export type ThrownObservation =
       readonly display: string;
     };
 
-export type ObservedBehavior = {
+export interface ObservedBehavior {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
   readonly thrown?: ThrownObservation;
-};
+}
 
-export type OracleOptions = {
+export interface OracleOptions {
   readonly verifyLlvm?: boolean;
   readonly keepArtifactsOnFailure?: boolean;
-};
+}
 
 const thrownSentinel = "__TSCN_NODE_THROWN_V1__";
 const nodeWrapper = `
@@ -177,8 +177,8 @@ export async function expectNativeMatchesNodeIfAvailable(
   const keepArtifactsOnFailure = options.keepArtifactsOnFailure ?? true;
   const result = await compileFixture(fixture, { link: true });
   let succeeded = false;
-  let native: ObservedBehavior | undefined;
-  let node: ObservedBehavior | undefined;
+  let native: ObservedBehavior | undefined = undefined;
+  let node: ObservedBehavior | undefined = undefined;
 
   try {
     if (!compilerIsAvailable(result, formatFailure(fixture, result.outDir, native, node))) {

@@ -4,10 +4,10 @@ import { Data, Effect, Fiber, Option, Stream } from "effect";
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { Toolchain } from "./toolchain.js";
 
-export type LinkResult = {
+export interface LinkResult {
   readonly executable?: string;
   readonly diagnostics: readonly CompilerDiagnostic[];
-};
+}
 
 export class LinkerLaunchFailed extends Data.TaggedError("LinkerLaunchFailed")<{
   readonly message: string;
@@ -81,7 +81,8 @@ const runClang = (
       if (error instanceof LinkerExitFailed) {
         return Effect.fail(error);
       }
-      let description: string;
+      // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+      let description: string | undefined = undefined;
       if (error instanceof Error) {
         description = error.message;
       } else {

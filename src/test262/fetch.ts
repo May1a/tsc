@@ -45,11 +45,11 @@ export const verifyCheckout = async (cacheDir: string, revision: string): Promis
   return "mismatch";
 };
 
-export type FetchOutcome = {
+export interface FetchOutcome {
   readonly status: "already-present" | "fetched";
   readonly revision: string;
   readonly checkoutDir: string;
-};
+}
 
 /**
  * Resolves the pinned Test262 revision into `cacheDir/checkout` and verifies
@@ -80,7 +80,7 @@ export const ensureSuiteFetched = async (pin: SuitePin, cacheDir: string): Promi
 const main = async (): Promise<number> => {
   const pin = await loadPin();
   const outcome = await ensureSuiteFetched(pin, defaultCacheDir);
-  let message: string;
+  let message: string | undefined = undefined;
   if (outcome.status === "already-present") {
     message = `Test262 ${outcome.revision} already present at ${outcome.checkoutDir}`;
   } else {
@@ -99,7 +99,8 @@ if (isMainModule) {
       process.exitCode = code;
     })
     .catch((error: unknown) => {
-      let message: string;
+      // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+      let message: string | undefined = undefined;
       if (error instanceof Error) {
         ({ message } = error);
       } else {

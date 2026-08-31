@@ -7,7 +7,8 @@ import { SYMBOL_ITERATOR_SENTINEL } from "./runtime-helpers.js";
 // The TypeScript checker for the program currently being lowered. Set by
 // `lowerToJsIr` and read by the class-lowering path for static method dispatch.
 // Lowering is synchronous and single-threaded, so a module-level handle is safe.
-let activeTypeChecker: ts.TypeChecker | undefined;
+// eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+let activeTypeChecker: ts.TypeChecker | undefined = undefined;
 
 // Name of the synthetic `this` parameter threaded through constructors/methods.
 const CLASS_THIS_NAME = "this";
@@ -19,16 +20,16 @@ type ClassMemberKey =
   | { readonly kind: "literal"; readonly name: string }
   | { readonly kind: "computed"; readonly slotName: string };
 
-type ClassFieldInfo = {
+interface ClassFieldInfo {
   readonly key: ClassMemberKey;
   readonly initializer: ts.Expression | undefined;
-};
+}
 
-type ClassMethodInfo = {
+interface ClassMethodInfo {
   readonly parameters: readonly JsIrFunctionParameter[];
-};
+}
 
-type ClassInfo = {
+interface ClassInfo {
   readonly name: string;
   readonly baseName?: string;
   readonly fields: readonly ClassFieldInfo[];
@@ -43,16 +44,18 @@ type ClassInfo = {
   // Source-level private field name (`#x`) → class-mangled storage key on the
   // instance object. Presence of the storage key doubles as the brand check.
   readonly privateFields: ReadonlyMap<string, string>;
-};
+}
 
 // Registry of classes in the file being lowered, consulted by the deep value
 // lowerers to resolve `new C(...)`. Scoped per file by `lowerTopLevelStatements`.
-let activeClassRegistry: Map<string, ClassInfo> | undefined;
+// eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+let activeClassRegistry: Map<string, ClassInfo> | undefined = undefined;
 
 // True while lowering a constructor or method body, so `this` resolves to the
 // synthetic instance parameter.
 let classThisInScope = false;
-let activeEnclosingClass: ClassInfo | undefined;
+// eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+let activeEnclosingClass: ClassInfo | undefined = undefined;
 let activeClassMethodStatic = false;
 
 let nextClassId = 1;
@@ -60,52 +63,53 @@ let nextClassId = 1;
 const inlineCppTag = "__tscn_inline_cpp";
 
 let activeInlineCppEnabled = false;
-let activeInlineCppBlocks: JsIrInlineCppBlock[] | undefined;
+// eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+let activeInlineCppBlocks: JsIrInlineCppBlock[] | undefined = undefined;
 let nextFunctionObjectId = 0;
 let nextJsonStatementValueId = 0;
 
-export type JsIrInlineCppBlock = {
+export interface JsIrInlineCppBlock {
   readonly symbol: string;
   readonly code: string;
-};
+}
 
-export type JsIrModule = {
+export interface JsIrModule {
   readonly entry: string;
   readonly modules: readonly JsIrSourceModule[];
   readonly inlineCppBlocks: readonly JsIrInlineCppBlock[];
-};
+}
 
 export type JsIrLoweringMode = "native";
 
 export type JsIrTraceOrigin = "source" | "synthesized";
 
-export type JsIrOperationTrace = {
+export interface JsIrOperationTrace {
   readonly id: string;
   readonly source?: SourceSpan;
   readonly origin: JsIrTraceOrigin;
-};
+}
 
-export type JsIrSourceModule = {
+export interface JsIrSourceModule {
   readonly fileName: string;
   readonly statementCount: number;
   readonly loweringMode: JsIrLoweringMode;
   readonly operations: readonly JsIrOperation[];
   readonly functionObjects: readonly JsIrFunctionObjectDefinition[];
-};
+}
 
 export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide" | "remainder" | "bitAnd" | "bitOr" | "bitXor" | "shiftLeft" | "shiftRight" | "shiftRightUnsigned" | "power";
 export type JsIrValueComparisonOperator = "==" | "!=" | "<" | "<=" | ">" | ">=";
 
 export type JsIrValueKind = "number" | "string" | "value";
 
-export type JsIrFunctionParameter = {
+export interface JsIrFunctionParameter {
   readonly name: string;
   readonly valueKind: JsIrValueKind;
   readonly defaultValue?: JsIrNumberExpression;
   readonly isRest?: boolean;
-};
+}
 
-export type JsIrFunctionObjectDefinition = {
+export interface JsIrFunctionObjectDefinition {
   readonly codeName: string;
   readonly parameters: readonly JsIrFunctionParameter[];
   readonly functionKind: "arrow" | "ordinary";
@@ -118,7 +122,7 @@ export type JsIrFunctionObjectDefinition = {
     readonly valueKind: JsIrValueKind;
     readonly value: JsIrValueExpression;
   }[];
-};
+}
 
 export type JsIrCallArgument =
   | {
@@ -609,14 +613,14 @@ export type JsIrObjectFieldValue =
       readonly value: JsIrObjectValue;
     };
 
-export type JsIrObjectField = {
+export interface JsIrObjectField {
   readonly name: string;
   readonly value: JsIrObjectFieldValue;
-};
+}
 
-export type JsIrObjectValue = {
+export interface JsIrObjectValue {
   readonly fields: readonly JsIrObjectField[];
-};
+}
 
 export type JsIrRuntimeObjectField =
   | {
@@ -629,19 +633,19 @@ export type JsIrRuntimeObjectField =
       readonly sourceName: string;
     };
 
-export type JsIrRuntimeObjectValue = {
+export interface JsIrRuntimeObjectValue {
   readonly fields: readonly JsIrRuntimeObjectField[];
-};
+}
 
-export type JsIrSwitchClause = {
+export interface JsIrSwitchClause {
   readonly test?: JsIrValueExpression;
   readonly operations: readonly JsIrOperation[];
-};
+}
 
-export type JsIrClosureValue = {
+export interface JsIrClosureValue {
   readonly functionName: string;
   readonly captures: readonly JsIrNumberExpression[];
-};
+}
 
 export type JsIrBindingValue =
   | {
@@ -870,13 +874,13 @@ export type JsIrCondition =
       readonly state: "isExtensible" | "isSealed" | "isFrozen";
     };
 
-export type JsIrRuntimeDataDescriptor = {
+export interface JsIrRuntimeDataDescriptor {
   readonly key: JsIrStringExpression;
   readonly value: JsIrValueExpression;
   readonly writable: boolean;
   readonly enumerable: boolean;
   readonly configurable: boolean;
-};
+}
 
 export type JsIrRuntimeArrayConcatElement =
   | {
@@ -1685,13 +1689,13 @@ export function visitJsIrOperations(
   }
 }
 
-export type JsIrResult = {
+export interface JsIrResult {
   readonly module: JsIrModule;
-};
+}
 
-export type JsIrLowerOptions = {
+export interface JsIrLowerOptions {
   readonly fcpp?: boolean;
-};
+}
 
 type ArrayLiteralClassification =
   | {
@@ -1903,11 +1907,11 @@ class ClassLoweringUnsupportedError extends Error {
   }
 }
 
-type LoweredStatements = {
+interface LoweredStatements {
   readonly operations: readonly JsIrOperation[];
   readonly diagnostics: Chunk.Chunk<CompilerDiagnostic>;
   readonly loweringMode: JsIrLoweringMode;
-};
+}
 
 function sourceFileContainsClass(sourceFile: ts.SourceFile): boolean {
   let found = false;
@@ -1976,7 +1980,7 @@ function isInlineCppTaggedTemplate(expression: ts.Expression): expression is ts.
 }
 
 function findInlineCppTaggedTemplate(sourceFile: ts.SourceFile): ts.TaggedTemplateExpression | undefined {
-  let found: ts.TaggedTemplateExpression | undefined;
+  let found: ts.TaggedTemplateExpression | undefined = undefined;
   const visit = (node: ts.Node): void => {
     if (found !== undefined) {
       return;
@@ -2197,8 +2201,8 @@ function lowerClassDeclaration(
 ): readonly JsIrOperation[] {
   // Class expressions take their codegen name from the bound variable; a named
   // class expression additionally binds its inner name inside the class body.
-  let infoName: string;
-  let innerName: string | undefined;
+  let infoName: string | undefined = undefined;
+  let innerName: string | undefined = undefined;
   if (expressionBindingName === undefined) {
     if (statement.name === undefined) {
       throw new ClassLoweringUnsupportedError();
@@ -2211,7 +2215,7 @@ function lowerClassDeclaration(
       innerName = undefined;
     }
   }
-  let baseName: string | undefined;
+  let baseName: string | undefined = undefined;
   if (statement.heritageClauses !== undefined && statement.heritageClauses.length > 0) {
     if (statement.heritageClauses.length !== 1) {
       throw new ClassLoweringUnsupportedError();
@@ -2257,7 +2261,7 @@ function lowerClassDeclaration(
   classes.set(info.name, info);
   activeClassRegistry = classes;
 
-  let previousInnerName: ClassInfo | undefined;
+  let previousInnerName: ClassInfo | undefined = undefined;
   if (innerName !== undefined) {
     previousInnerName = classes.get(innerName);
     classes.set(innerName, info);
@@ -2361,7 +2365,7 @@ function lowerClassComputedMethodStore(
   classThisInScope = false;
   activeEnclosingClass = info;
   activeClassMethodStatic = isStatic;
-  let methodValue: JsIrValueExpression | undefined;
+  let methodValue: JsIrValueExpression | undefined = undefined;
   try {
     methodValue = lowerObjectMethodFunctionValue(entry.declaration, bindings);
   } finally {
@@ -2477,27 +2481,27 @@ function classLiteralMemberName(name: ts.PropertyName, bindings: ReadonlyMap<str
   return key.name;
 }
 
-type ClassComputedKeyInfo = {
+interface ClassComputedKeyInfo {
   readonly slotName: string;
   readonly expression: ts.Expression;
-};
+}
 
-type ClassMethodEntry = {
+interface ClassMethodEntry {
   readonly name: string;
   readonly declaration: ts.MethodDeclaration;
-};
+}
 
-type ClassComputedMethodEntry = {
+interface ClassComputedMethodEntry {
   readonly slotName: string;
   readonly declaration: ts.MethodDeclaration;
-};
+}
 
-type ClassAccessorEntry = {
+interface ClassAccessorEntry {
   readonly name: string;
   readonly declaration: ts.AccessorDeclaration;
-};
+}
 
-type CollectedClassMembers = {
+interface CollectedClassMembers {
   readonly fields: readonly ClassFieldInfo[];
   readonly staticFields: readonly ClassFieldInfo[];
   readonly computedKeys: readonly ClassComputedKeyInfo[];
@@ -2510,7 +2514,7 @@ type CollectedClassMembers = {
   readonly setAccessors: readonly ClassAccessorEntry[];
   readonly iteratorMethod: ts.MethodDeclaration | undefined;
   readonly privateFields: ReadonlyMap<string, string>;
-};
+}
 
 // eslint-disable-next-line complexity, max-statements -- Class member classification keeps mutually exclusive syntax forms in declaration order.
 function collectClassMembers(
@@ -2528,8 +2532,8 @@ function collectClassMembers(
   const getAccessors: ClassAccessorEntry[] = [];
   const setAccessors: ClassAccessorEntry[] = [];
   const privateFields = new Map<string, string>();
-  let constructorDeclaration: ts.ConstructorDeclaration | undefined;
-  let iteratorMethod: ts.MethodDeclaration | undefined;
+  let constructorDeclaration: ts.ConstructorDeclaration | undefined = undefined;
+  let iteratorMethod: ts.MethodDeclaration | undefined = undefined;
   for (const member of statement.members) {
     if (ts.isPropertyDeclaration(member) && ts.isPrivateIdentifier(member.name)) {
       // Instance private fields join the ordinary field list (under a
@@ -2755,7 +2759,7 @@ function lowerClassConstructor(
       if (base === undefined) {
         throw new ClassLoweringUnsupportedError();
       }
-      let superArguments: readonly JsIrCallArgument[] | undefined;
+      let superArguments: readonly JsIrCallArgument[] | undefined = undefined;
       if (constructorDeclaration === undefined) {
         superArguments = info.constructorParameters.map(forwardedClassArgument);
       } else {
@@ -2832,7 +2836,7 @@ function lowerClassIteratorStore(
   }
   const previousClassThisInScope = classThisInScope;
   classThisInScope = false;
-  let iteratorMethod: JsIrValueExpression | undefined;
+  let iteratorMethod: JsIrValueExpression | undefined = undefined;
   try {
     iteratorMethod = lowerObjectMethodFunctionValue(info.iteratorMethod, bindings);
   } finally {
@@ -2921,7 +2925,7 @@ function lowerClassPropertyValueAccess(
     return undefined;
   }
   const receiverClass = resolveReceiverClass(expression.expression, bindings);
-  let getterClass: ClassInfo | undefined;
+  let getterClass: ClassInfo | undefined = undefined;
   if (receiverClass !== undefined) {
     getterClass = findClassInChain(receiverClass, (candidate) => candidate.getters.has(expression.name.text));
   }
@@ -2986,7 +2990,7 @@ function lowerClassPrivateFieldStore(
   if (storageKey === undefined) {
     throw new ClassLoweringUnsupportedError();
   }
-  let targetName: string | undefined;
+  let targetName: string | undefined = undefined;
   if (left.expression.kind === ts.SyntaxKind.ThisKeyword && bindings.get(CLASS_THIS_NAME)?.kind === "valueVariable") {
     targetName = CLASS_THIS_NAME;
   } else if (ts.isIdentifier(left.expression) && bindings.get(left.expression.text)?.kind === "valueVariable") {
@@ -3042,7 +3046,7 @@ function lowerClassMethodCall(
 
   if (callee.expression.kind === ts.SyntaxKind.SuperKeyword) {
     const enclosing = activeEnclosingClass;
-    let base: ClassInfo | undefined;
+    let base: ClassInfo | undefined = undefined;
     if (enclosing?.baseName !== undefined) {
       base = activeClassRegistry.get(enclosing.baseName);
     }
@@ -3079,7 +3083,7 @@ function lowerClassMethodCall(
 
   if (ts.isIdentifier(callee.expression) && !bindings.has(callee.expression.text)) {
     const staticClass = activeClassRegistry.get(callee.expression.text);
-    let definingClass: ClassInfo | undefined;
+    let definingClass: ClassInfo | undefined = undefined;
     if (staticClass !== undefined) {
       definingClass = findClassInChain(staticClass, (candidate) => candidate.staticMethods.has(methodName));
     }
@@ -3094,7 +3098,7 @@ function lowerClassMethodCall(
   }
 
   const receiverClass = resolveReceiverClass(callee.expression, bindings);
-  let definingClass: ClassInfo | undefined;
+  let definingClass: ClassInfo | undefined = undefined;
   if (receiverClass !== undefined) {
     definingClass = findClassInChain(receiverClass, (candidate) => candidate.methods.has(methodName));
   }
@@ -3303,13 +3307,13 @@ function updateConstBindings(
     bindings.set(operation.name, { kind: "value", value: operation.value });
   }
   if (operation.kind === "letValue") {
-    let valueType: "function" | "regex" | undefined;
+    let valueType: "function" | "regex" | undefined = undefined;
     if (operation.value.kind === "functionObject") {
       valueType = "function";
     } else if (operation.value.kind === "regexCompile") {
       valueType = "regex";
     }
-    let className: string | undefined;
+    let className: string | undefined = undefined;
     if (operation.value.kind === "newInstance") {
       ({ className } = operation.value);
     }
@@ -3350,7 +3354,7 @@ function updateBindings(
     bindings.set(operation.name, { kind: "stringVariable", name: operation.name });
   }
   if (operation.kind === "letBoolean") {
-    let initialValue: boolean | undefined;
+    let initialValue: boolean | undefined = undefined;
     if (operation.value.kind === "boolean") {
       initialValue = operation.value.value;
     }
@@ -3689,7 +3693,7 @@ function isNonExecutableDeclaration(statement: ts.Statement): boolean {
     return true;
   }
 
-  let modifiers: readonly ts.Modifier[] | undefined;
+  let modifiers: readonly ts.Modifier[] | undefined = undefined;
   if (ts.canHaveModifiers(statement)) {
     modifiers = ts.getModifiers(statement);
   }
@@ -3867,7 +3871,7 @@ function lowerTryCatchStatement(
     catchOperations = loweredCatch.operations;
   }
 
-  let finallyOperations: readonly JsIrOperation[] | undefined;
+  let finallyOperations: readonly JsIrOperation[] | undefined = undefined;
   if (statement.finallyBlock !== undefined) {
     const loweredFinally = lowerFinallyBlockOperations(statement.finallyBlock, bindings);
     if (loweredFinally === undefined) {
@@ -3905,7 +3909,7 @@ function lowerCatchClause(
     variable = `__catch${statement.pos}`;
     catchBindings.set(variable, { kind: "valueVariable", name: variable });
     const source: DestructuringSource = { name: variable, binding: { kind: "valueVariable", name: variable } };
-    let lowered: boolean;
+    let lowered: boolean | undefined = undefined;
     if (ts.isArrayBindingPattern(catchBinding)) {
       lowered = lowerArrayDestructuringElements(catchBinding, source, catchBindings, destructuringOperations, true);
     } else {
@@ -4008,7 +4012,7 @@ function lowerRuntimeErrorLiteral(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Extract<JsIrOperation, { readonly kind: "runtimeErrorLiteral" }> | undefined {
-  let call: ts.NewExpression | ts.CallExpression | undefined;
+  let call: ts.NewExpression | ts.CallExpression | undefined = undefined;
   if (ts.isNewExpression(expression) || ts.isCallExpression(expression)) {
     call = expression;
   }
@@ -4651,7 +4655,7 @@ function lowerSwitchStatement(
   const clauses: JsIrSwitchClause[] = [];
   const switchBindings = new Map(bindings);
   for (const clause of statement.caseBlock.clauses) {
-    let test: JsIrValueExpression | undefined;
+    let test: JsIrValueExpression | undefined = undefined;
     if (ts.isCaseClause(clause)) {
       test = lowerValueExpression(clause.expression, switchBindings);
       if (test === undefined) {
@@ -4692,7 +4696,7 @@ function lowerFunctionDeclaration(
     if (isRest && isDestructuring) {
       return undefined;
     }
-    let valueKind: JsIrValueKind;
+    let valueKind: JsIrValueKind | undefined = undefined;
     if (isRest || isDestructuring) {
       valueKind = "value";
     } else if (ts.isIdentifier(param.name)) {
@@ -4700,12 +4704,12 @@ function lowerFunctionDeclaration(
     } else {
       return undefined;
     }
-    let defaultValue: JsIrNumberExpression | undefined;
+    let defaultValue: JsIrNumberExpression | undefined = undefined;
     if (!isRest && !isDestructuring) {
       defaultValue = lowerNumericDefaultValue(param, fnBindings);
     }
-    let parameter: JsIrFunctionParameter;
-    let paramName: string;
+    let parameter: JsIrFunctionParameter | undefined = undefined;
+    let paramName: string | undefined = undefined;
     if (isDestructuring) {
       if (isRest) {
         paramName = "";
@@ -4735,7 +4739,7 @@ function lowerFunctionDeclaration(
       const pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern = param.name;
       const destructuringOperations: JsIrOperation[] = [];
       const destructuringBindings = new Map(fnBindings);
-      let loweredDestructuring: boolean;
+      let loweredDestructuring: boolean | undefined = undefined;
       if (ts.isArrayBindingPattern(pattern)) {
         loweredDestructuring = lowerArrayProtocolDestructuringFromSource(
           pattern,
@@ -4771,7 +4775,7 @@ function lowerFunctionDeclaration(
     return undefined;
   }
 
-  let body: readonly JsIrOperation[];
+  let body: readonly JsIrOperation[] | undefined = undefined;
   if (prelude.length === 0) {
     body = bodyStatements;
   } else {
@@ -5028,7 +5032,7 @@ function lowerCallStatement(
     return spreadCall;
   }
 
-  let identifierBinding: JsIrBindingValue | undefined;
+  let identifierBinding: JsIrBindingValue | undefined = undefined;
   if (ts.isIdentifier(expression.expression)) {
     identifierBinding = bindings.get(expression.expression.text);
   }
@@ -5187,7 +5191,7 @@ function lowerRuntimeArrayCallStatement(
   if (method === "copyWithin" && (expression.arguments.length === 2 || expression.arguments.length === arrayCopyWithinArgumentCount)) {
     const target = lowerNumberExpression(expression.arguments[0], bindings);
     const start = lowerNumberExpression(expression.arguments[1], bindings);
-    let end: JsIrNumberExpression | undefined;
+    let end: JsIrNumberExpression | undefined = undefined;
     if (expression.arguments.length === arrayCopyWithinArgumentCount) {
       end = lowerNumberExpression(expression.arguments[2], bindings);
     }
@@ -5215,7 +5219,7 @@ function lowerRuntimeArrayFillCallStatement(
     return { kind: "runtimeArrayFill", arrayName, value };
   }
   const start = lowerNumberExpression(args[1], bindings);
-  let end: JsIrNumberExpression | undefined;
+  let end: JsIrNumberExpression | undefined = undefined;
   if (args.length === arrayFillRangeArgumentCount) {
     end = lowerNumberExpression(args[2], bindings);
   }
@@ -5266,7 +5270,7 @@ function lowerRuntimeSetPrototypeCall(
     return undefined;
   }
   const targetBinding = bindings.get(target.text);
-  let targetKind: "object" | "array" | undefined;
+  let targetKind: "object" | "array" | undefined = undefined;
   if (targetBinding?.kind === "runtimeObject") {
     targetKind = "object";
   }
@@ -5433,7 +5437,7 @@ function lowerRuntimeDataDescriptor(
     }
     return undefined;
   }
-  let value: JsIrValueExpression | undefined;
+  let value: JsIrValueExpression | undefined = undefined;
   let writable = false;
   let enumerable = false;
   let configurable = false;
@@ -5498,7 +5502,7 @@ function lowerRuntimeDataDescriptorValue(
   if (value === undefined) {
     return undefined;
   }
-  let descriptorValue: JsIrValueExpression | undefined;
+  let descriptorValue: JsIrValueExpression | undefined = undefined;
   let writable = false;
   let enumerable = false;
   let configurable = false;
@@ -5812,7 +5816,7 @@ function lowerDestructuringBinding(
   if (source === undefined) {
     return undefined;
   }
-  let lowered: boolean;
+  let lowered: boolean | undefined = undefined;
   if (ts.isArrayBindingPattern(pattern)) {
     lowered = lowerArrayDestructuringElements(pattern, source, working, operations);
   } else {
@@ -5834,7 +5838,7 @@ function lowerArrayProtocolDestructuring(
   if (ts.isIdentifier(unwrapped) && working.get(unwrapped.text)?.kind === "array") {
     return false;
   }
-  let source: Extract<JsIrOperation, { readonly kind: "arrayDestructureProtocol" }>["source"] | undefined;
+  let source: Extract<JsIrOperation, { readonly kind: "arrayDestructureProtocol" }>["source"] | undefined = undefined;
   if (ts.isIdentifier(unwrapped)) {
     const binding = working.get(unwrapped.text);
     if (binding?.kind === "runtimeMap" || binding?.kind === "runtimeSet") {
@@ -5890,7 +5894,7 @@ function lowerArrayProtocolDestructuringFromSource(
       continue;
     }
     if (ts.isIdentifier(element.name)) {
-      let defaultValue: JsIrValueExpression | undefined;
+      let defaultValue: JsIrValueExpression | undefined = undefined;
       if (element.initializer !== undefined) {
         defaultValue = lowerFunctionObjectValue(element.initializer, working, element.name.text) ?? lowerValueExpression(element.initializer, working);
         if (defaultValue === undefined) {
@@ -5945,10 +5949,10 @@ function lowerArrayProtocolDestructuringFromSource(
   return true;
 }
 
-type DestructuringSource = {
+interface DestructuringSource {
   readonly name: string;
   readonly binding: JsIrBindingValue;
-};
+}
 
 function resolveDestructuringSource(
   initializer: ts.Expression,
@@ -6149,7 +6153,7 @@ function lowerObjectDestructuringElements(
       }
       continue;
     }
-    let access: JsIrValueExpression;
+    let access: JsIrValueExpression | undefined = undefined;
     if (sourceBinding.kind === "valueVariable") {
       access = { kind: "valueObjectDynamicAccess", value: { kind: "variable", name: source.name }, key: { kind: "literal", value: key } };
     } else {
@@ -6723,7 +6727,7 @@ function lowerJsonParseBinding(
   if (text === undefined) {
     return undefined;
   }
-  let parsed: unknown;
+  let parsed: unknown = undefined;
   try {
     parsed = JSON.parse(text);
   } catch {
@@ -6904,14 +6908,14 @@ function lowerArrayFromCallbacks(
 ): { readonly mapper?: JsIrValueExpression; readonly thisArg?: JsIrValueExpression } | undefined {
   const mapperExpression = arguments_.at(1);
   const thisArgExpression = arguments_.at(2);
-  let mapper: JsIrValueExpression | undefined;
+  let mapper: JsIrValueExpression | undefined = undefined;
   if (mapperExpression !== undefined) {
     mapper = lowerValueExpression(mapperExpression, bindings);
   }
   if (mapperExpression !== undefined && mapper === undefined) {
     return undefined;
   }
-  let thisArg: JsIrValueExpression | undefined;
+  let thisArg: JsIrValueExpression | undefined = undefined;
   if (thisArgExpression !== undefined) {
     thisArg = lowerValueExpression(thisArgExpression, bindings);
   }
@@ -6964,7 +6968,7 @@ function lowerRuntimeStringSplitBinding(
     if (regex === undefined) {
       return undefined;
     }
-    let limit: JsIrNumberExpression | undefined;
+    let limit: JsIrNumberExpression | undefined = undefined;
     if (initializer.arguments.length === 2) {
       limit = lowerNumberExpression(initializer.arguments[1], bindings);
       if (limit === undefined) {
@@ -6980,7 +6984,7 @@ function lowerRuntimeStringSplitBinding(
   if (receiver === undefined || separator === undefined) {
     return undefined;
   }
-  let limit: JsIrNumberExpression | undefined;
+  let limit: JsIrNumberExpression | undefined = undefined;
   if (initializer.arguments.length === 2) {
     limit = lowerNumberExpression(initializer.arguments[1], bindings);
     if (limit === undefined) {
@@ -7080,7 +7084,7 @@ function lowerRuntimeArrayReduceCallbackBinding(
   if (callbackBinding === undefined || callbackBinding.returnKind === "void") {
     return undefined;
   }
-  let initialValue: JsIrValueExpression | undefined;
+  let initialValue: JsIrValueExpression | undefined = undefined;
   if (args.length === 2) {
     initialValue = lowerValueExpression(args[1], bindings);
     if (initialValue === undefined) {
@@ -7187,7 +7191,7 @@ function lowerInlineArrayCallbackFunctionObject(
   if (returnKind === "void" && method !== "forEach") {
     return undefined;
   }
-  let thisArg: JsIrValueExpression | undefined;
+  let thisArg: JsIrValueExpression | undefined = undefined;
   if (thisArgExpression !== undefined) {
     thisArg = lowerValueExpression(thisArgExpression, bindings);
     if (thisArg === undefined) {
@@ -7320,7 +7324,7 @@ function lowerRuntimeArrayMutatorResultBinding(
   if (method === "copyWithin" && (initializer.arguments.length === 2 || initializer.arguments.length === arrayCopyWithinArgumentCount)) {
     const target = lowerNumberExpression(initializer.arguments[0], bindings);
     const start = lowerNumberExpression(initializer.arguments[1], bindings);
-    let end: JsIrNumberExpression | undefined;
+    let end: JsIrNumberExpression | undefined = undefined;
     if (initializer.arguments.length === arrayCopyWithinArgumentCount) {
       end = lowerNumberExpression(initializer.arguments[2], bindings);
     }
@@ -7487,7 +7491,7 @@ function lowerRuntimeArraySliceBinding(
   if (initializer.arguments.length > 0) {
     start = lowerNumberExpression(initializer.arguments[0], bindings);
   }
-  let end: JsIrNumberExpression | undefined;
+  let end: JsIrNumberExpression | undefined = undefined;
   if (initializer.arguments.length === 2) {
     end = lowerNumberExpression(initializer.arguments[1], bindings);
   }
@@ -7556,7 +7560,7 @@ function lowerRuntimeArraySpliceBinding(
   if (start === undefined) {
     return undefined;
   }
-  let deleteCount: JsIrNumberExpression | undefined;
+  let deleteCount: JsIrNumberExpression | undefined = undefined;
   const items: JsIrValueExpression[] = [];
   for (let index = 1; index < initializer.arguments.length; index += 1) {
     const argument = initializer.arguments[index];
@@ -7588,7 +7592,7 @@ function lowerRuntimeArraySpliceStatement(
   if (start === undefined) {
     return undefined;
   }
-  let deleteCount: JsIrNumberExpression | undefined;
+  let deleteCount: JsIrNumberExpression | undefined = undefined;
   const items: JsIrValueExpression[] = [];
   for (let index = 1; index < args.length; index += 1) {
     const argument = args[index];
@@ -7841,7 +7845,7 @@ function lowerNullishAssignmentStatement(
   if (currentValue === undefined) {
     return undefined;
   }
-  let store: JsIrOperation | undefined;
+  let store: JsIrOperation | undefined = undefined;
   if (ts.isElementAccessExpression(expression.left)) {
     store = lowerElementAssignment(expression.left, expression.right, bindings);
   } else if (ts.isPropertyAccessExpression(expression.left)) {
@@ -8246,7 +8250,7 @@ function lowerRuntimeStringMethodExpression(
   }
   if (method === "repeat" && expression.arguments.length === 1) {
     const count = lowerNumberExpression(expression.arguments[0], bindings);
-    let literal: number | undefined;
+    let literal: number | undefined = undefined;
     if (count !== undefined) {
       literal = numericLiteralValue(count);
     }
@@ -8283,7 +8287,7 @@ function lowerRuntimeStringMethodExpression(
     if (start === undefined) {
       return undefined;
     }
-    let end: JsIrNumberExpression | undefined;
+    let end: JsIrNumberExpression | undefined = undefined;
     if (expression.arguments.length === 2) {
       const loweredEnd = lowerNumberExpression(expression.arguments[1], bindings);
       if (loweredEnd === undefined) {
@@ -8943,7 +8947,7 @@ function lowerPresenceConditionExpression(
   }
   if (binding?.kind === "runtimeArray") {
     let index = lowerNumberExpression(expression.left, bindings);
-    let key: JsIrStringExpression | undefined;
+    let key: JsIrStringExpression | undefined = undefined;
       if (ts.isNumericLiteral(expression.left)) {
         key = { kind: "literal", value: expression.left.text };
       }
@@ -9520,7 +9524,7 @@ function lowerRuntimeArrayValueAccess(
     return undefined;
   }
   let index = lowerNumberExpression(expression.argumentExpression, bindings);
-  let key: JsIrStringExpression | undefined;
+  let key: JsIrStringExpression | undefined = undefined;
   const stringIndex = lowerCanonicalArrayIndexString(expression.argumentExpression);
   if (stringIndex !== undefined) {
     index = { kind: "literal", value: stringIndex };
@@ -10013,7 +10017,7 @@ function lowerJsonStringifyCall(
   if (value === undefined) {
     return undefined;
   }
-  let replacerName: string | undefined;
+  let replacerName: string | undefined = undefined;
   if (expression.arguments.length >= 2) {
     const replacer = unwrapTypeOnlyExpression(expression.arguments[1]);
     const isNullish = replacer.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(replacer) && replacer.text === "undefined");
@@ -10061,7 +10065,7 @@ function lowerJsonParseCall(
   if (text === undefined) {
     return undefined;
   }
-  let reviver: JsIrValueExpression | undefined;
+  let reviver: JsIrValueExpression | undefined = undefined;
   if (expression.arguments.length === jsonParseMaxArgumentCount) {
     reviver = lowerValueExpression(expression.arguments[1], bindings);
     if (reviver === undefined) {
@@ -10356,7 +10360,7 @@ function lowerSpreadCallValue(
     }
     spreadArguments.push({ kind: "value", value });
   }
-  let thisValue: JsIrValueExpression | undefined;
+  let thisValue: JsIrValueExpression | undefined = undefined;
   if (methodTarget === undefined) {
     thisValue = lowerCallThisValue(expression.expression, bindings);
   }
@@ -10422,7 +10426,7 @@ function lowerRuntimeStringMethodCall(
     if (search === undefined) {
       return undefined;
     }
-    let position: JsIrNumberExpression | undefined;
+    let position: JsIrNumberExpression | undefined = undefined;
     if (args.length === 2) {
       const pos = lowerNumberExpression(args[1], bindings);
       if (pos === undefined) {
@@ -10462,7 +10466,7 @@ function lowerRuntimeStringMethodCall(
     if (search === undefined) {
       return undefined;
     }
-    let position: JsIrNumberExpression | undefined;
+    let position: JsIrNumberExpression | undefined = undefined;
     if (args.length === 2) {
       const loweredPosition = lowerNumberExpression(args[1], bindings);
       if (loweredPosition === undefined) {
@@ -10549,7 +10553,7 @@ function lowerStringMethodCall(
       return value.startsWith(search, fromIndex);
     }
     if (method === "endsWith") {
-      let endPosition: number | undefined;
+      let endPosition: number | undefined = undefined;
       if (second !== undefined) {
         endPosition = fromIndex;
       }
@@ -10566,14 +10570,14 @@ function lowerStringMethodCall(
   if (method === "trimEnd" && expression.arguments.length === 0) {
     return value.trimEnd();
   }
-  let firstLiteral: number | undefined;
+  let firstLiteral: number | undefined = undefined;
   if (first !== undefined) {
     const firstNumber = lowerNumberExpression(first, bindings);
     if (firstNumber !== undefined) {
       firstLiteral = numericLiteralValue(firstNumber);
     }
   }
-  let secondLiteral: number | undefined;
+  let secondLiteral: number | undefined = undefined;
   if (second !== undefined) {
     const secondNumber = lowerNumberExpression(second, bindings);
     if (secondNumber !== undefined) {
@@ -11111,7 +11115,7 @@ function lowerArrayNumberMethodCall(
   if (method !== "push" && method !== "unshift") {
     if ((method === "indexOf" || method === "lastIndexOf") && (expression.arguments.length === 1 || expression.arguments.length === 2)) {
       const value = lowerValueExpression(expression.arguments[0], bindings);
-      let fromIndex: JsIrNumberExpression | undefined;
+      let fromIndex: JsIrNumberExpression | undefined = undefined;
       if (expression.arguments.length === 2) {
         fromIndex = lowerNumberExpression(expression.arguments[1], bindings);
       }
@@ -12317,7 +12321,8 @@ export const lowerToJsIr = (
     activeTypeChecker = checker;
     activeInlineCppEnabled = options.fcpp === true;
     activeInlineCppBlocks = inlineCppBlocks;
-    let modules;
+    // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+    let modules: readonly JsIrSourceModule[] | undefined = undefined;
     try {
       modules = sourceFiles.map((sourceFile, moduleIndex) => {
         const lowered = lowerStatements(sourceFile);

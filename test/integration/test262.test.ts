@@ -24,13 +24,16 @@ const expectedFailCount = 4;
 const expectedSkipCount = 7;
 const shaHashLength = 40;
 
-let filters: HarnessFilters;
+// eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+let filters: HarnessFilters | undefined = undefined;
 
 beforeAll(async () => {
   filters = await loadFilters();
 });
 
-const runSuite = async (options: Partial<RunOptions> = {}) => runFilteredSuite({ suiteRoot, filters, ...options });
+const runSuite = async (options: Partial<RunOptions> = {}) =>
+  // eslint-disable-next-line typescript/no-non-null-assertion -- Initialized in beforeAll
+  runFilteredSuite({ suiteRoot, filters: filters!, ...options });
 
 const completedResults = (run: Awaited<ReturnType<typeof runSuite>>): readonly TestCaseResult[] => {
   if (run.kind !== "completed") {
@@ -217,7 +220,8 @@ describe("filtered Test262 harness", () => {
   }, roadmapIntegrationTimeoutMs);
 
   test("reports a missing checkout as a skip, never a failure", async () => {
-    const run = await runFilteredSuite({ suiteRoot: path.join(tmpdir(), "t262-missing-checkout"), filters });
+    // eslint-disable-next-line typescript/no-non-null-assertion -- Initialized in beforeAll
+    const run = await runFilteredSuite({ suiteRoot: path.join(tmpdir(), "t262-missing-checkout"), filters: filters! });
     expect(run.kind).toBe("missing-checkout");
     const report = formatReport(run);
     expect(report).toContain("SKIP");
@@ -260,8 +264,10 @@ describe("filtered Test262 harness", () => {
 describe("Test262 assembly and reporting", () => {
   test("carries the declared parse goal on selected tests", async () => {
     const moduleEnabledFilters: HarnessFilters = {
-      ...filters,
-      unsupportedFlags: filters.unsupportedFlags.filter((flag) => flag !== "module")
+      // eslint-disable-next-line typescript/no-non-null-assertion -- Initialized in beforeAll
+      ...filters!,
+      // eslint-disable-next-line typescript/no-non-null-assertion -- Initialized in beforeAll
+      unsupportedFlags: filters!.unsupportedFlags.filter((flag) => flag !== "module")
     };
     const selection = await selectTests(suiteRoot, moduleEnabledFilters);
     const byId = new Map(selection.selected.map((selected) => [selected.id, selected]));

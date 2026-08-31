@@ -6,12 +6,12 @@ import { defaultCacheDir, defaultCheckoutDir } from "./paths.js";
 import { buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite } from "./runner.js";
 import type { Classification } from "./types.js";
 
-export type RunArguments = {
+export interface RunArguments {
   readonly pathPrefixes: readonly string[];
   readonly classification?: Classification;
   readonly jsonPath?: string;
   readonly baselinePath?: string;
-};
+}
 
 const parseClassification = (value: string | undefined): Classification | undefined => {
   if (value === "pass" || value === "fail" || value === "skip" || value === "coverage-gap") {
@@ -23,9 +23,9 @@ const parseClassification = (value: string | undefined): Classification | undefi
 // eslint-disable-next-line max-statements -- Sequential option parsing keeps missing-value errors local to each flag.
 export const parseRunArguments = (argv: readonly string[]): RunArguments => {
   const pathPrefixes: string[] = [];
-  let classification: Classification | undefined;
-  let jsonPath: string | undefined;
-  let baselinePath: string | undefined;
+  let classification: Classification | undefined = undefined;
+  let jsonPath: string | undefined = undefined;
+  let baselinePath: string | undefined = undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv.at(index);
     const value = argv.at(index + 1);
@@ -93,7 +93,7 @@ const main = async (): Promise<number> => {
   }
   const filters = await loadFilters();
   const { baselinePath, classification, jsonPath, pathPrefixes: requestedPathPrefixes } = args;
-  let pathPrefixes: readonly string[] | undefined;
+  let pathPrefixes: readonly string[] | undefined = undefined;
   if (requestedPathPrefixes.length > 0) {
     pathPrefixes = requestedPathPrefixes;
   }
@@ -105,7 +105,7 @@ const main = async (): Promise<number> => {
   if (jsonPath !== "-") {
     process.stdout.write(formatReport(run, { classification }));
   }
-  let machineReport: ReturnType<typeof buildMachineReport> | undefined;
+  let machineReport: ReturnType<typeof buildMachineReport> | undefined = undefined;
   if (run.kind === "completed") {
     machineReport = buildMachineReport(run, pin.revision);
   }
@@ -142,7 +142,8 @@ if (isMainModule) {
       process.exitCode = code;
     })
     .catch((error: unknown) => {
-      let message: string;
+      // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+      let message: string | undefined = undefined;
       if (error instanceof Error) {
         ({ message } = error);
       } else {

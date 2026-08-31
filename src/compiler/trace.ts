@@ -7,34 +7,34 @@ import {
   visitJsIrOperations
 } from "./ir.js";
 
-export type LlvmLineRange = {
+export interface LlvmLineRange {
   readonly startLine: number;
   readonly endLine: number;
-};
+}
 
-export type TraceMapOperation = {
+export interface TraceMapOperation {
   readonly id: string;
   readonly moduleId: string;
   readonly kind: JsIrOperation["kind"];
   readonly source: SourceSpan | null;
   readonly origin: JsIrTraceOrigin;
   readonly llvmRanges: readonly LlvmLineRange[];
-};
+}
 
-export type TraceMapModule = {
+export interface TraceMapModule {
   readonly id: string;
   readonly fileName: string;
   readonly statementCount: number;
   readonly loweringMode: JsIrLoweringMode;
   readonly operationIds: readonly string[];
-};
+}
 
-export type TraceMapV1 = {
+export interface TraceMapV1 {
   readonly version: 1;
   readonly entry: string;
   readonly modules: readonly TraceMapModule[];
   readonly operations: readonly TraceMapOperation[];
-};
+}
 
 export function traceOperationId(operation: JsIrOperation): string {
   if (operation.trace === undefined || operation.trace.id.length === 0) {

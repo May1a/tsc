@@ -103,7 +103,8 @@ entry:
     })).toThrow("missing a terminator");
 
     const escapedModule = createLlvmModule();
-    let escaped: LlvmBlockBuilder | undefined;
+    // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+    let escaped: LlvmBlockBuilder | undefined = undefined;
     escapedModule.defineFunction({ name: "escaped", parameters: [], returns: llvm.void }, (fn) => {
       fn.block("entry", (block) => {
         escaped = block;
@@ -119,7 +120,8 @@ entry:
 
     const crossBlockValue = createLlvmModule();
     expect(() => crossBlockValue.defineFunction({ name: "crossBlock", parameters: [], returns: llvm.i64 }, (fn) => {
-      let siblingValue: ReturnType<LlvmBlockBuilder["int"]> | undefined;
+      // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+      let siblingValue: ReturnType<LlvmBlockBuilder["int"]> | undefined = undefined;
       fn.block("entry", (block) => {
         siblingValue = block.int(llvm.i64, 1n);
         block.br("next");
@@ -281,7 +283,8 @@ entry:
     const module = createLlvmModule();
     // Cross-block: a value created in one block cannot be used in another
     expect(() => module.defineFunction({ name: "crossBlock", parameters: [], returns: llvm.i64 }, (fn) => {
-      let sibling: ReturnType<LlvmBlockBuilder["undef"]> | undefined;
+      // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+      let sibling: ReturnType<LlvmBlockBuilder["undef"]> | undefined = undefined;
       fn.block("entry", (block) => {
         sibling = block.undef(llvm.struct([llvm.i64]), "owned");
         block.br("next");
@@ -298,7 +301,8 @@ entry:
     // Cross-module: a value from another module cannot be used here
     expect(() => {
       const foreign = createLlvmModule();
-      let external: ReturnType<LlvmBlockBuilder["undef"]> | undefined;
+      // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
+      let external: ReturnType<LlvmBlockBuilder["undef"]> | undefined = undefined;
       foreign.defineFunction({ name: "foreign", parameters: [], returns: llvm.void }, (fn) => {
         fn.block("entry", (block) => {
           external = block.undef(llvm.struct([llvm.i64]), "owned");

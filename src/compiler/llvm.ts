@@ -41,7 +41,7 @@ const COMPLETION_THROW = 2;
 const COMPLETION_BREAK = 3;
 const COMPLETION_CONTINUE = 4;
 
-type CleanupFrame = {
+interface CleanupFrame {
   readonly index: number;
   readonly entryLabel: string;
   readonly finalDispatchLabel: string;
@@ -56,16 +56,16 @@ type CleanupFrame = {
   /** Same-loop continue targets this label and must not run IteratorClose. */
   readonly skipContinueLabel?: string;
   iteratorSlot?: string;
-};
+}
 
-type CompletionSlots = {
+interface CompletionSlots {
   readonly kind: string;
   readonly value: string;
   readonly destination: string;
   readonly until: string;
-};
+}
 
-type EmitContext = {
+interface EmitContext {
   readonly bindings: Map<string, JsIrBindingValue>;
   readonly stringConstants: string[];
   readonly arrayGlobals: string[];
@@ -109,55 +109,55 @@ type EmitContext = {
   gcFrameName: string;
   readonly traceMarkers: Map<string, Omit<LegacyLlvmTraceMarker, "line">>;
   readonly suppressTrace?: boolean;
-};
+}
 
 type ObjectLayout = ObjectValue;
 
-type NumberValue = {
+interface NumberValue {
   readonly lines: readonly string[];
   readonly value: string;
-};
+}
 
-type StringValue = {
+interface StringValue {
   readonly lines: readonly string[];
   readonly value: string;
   readonly length: string;
-};
+}
 
-type JsValue = {
+interface JsValue {
   readonly lines: readonly string[];
   readonly value: string;
-};
+}
 
-type ArrayValue = {
+interface ArrayValue {
   readonly name: string;
   readonly length: number;
   readonly storageKind: "global" | "stack";
-};
+}
 
-type RuntimeArrayValue = {
+interface RuntimeArrayValue {
   readonly pointerName: string;
-};
+}
 
-type ObjectValue = {
+interface ObjectValue {
   readonly typeName: string;
   readonly pointerName: string;
   readonly runtimePointerName?: string;
   readonly value: JsIrObjectValue;
-};
+}
 
-type RuntimeObjectValue = {
+interface RuntimeObjectValue {
   readonly pointerName: string;
-};
+}
 
-type LoopLabels = {
+interface LoopLabels {
   readonly breakLabel: string;
   readonly continueLabel?: string;
   /** cleanupStack.length when the loop was entered; cleanups at or above this depth run on break. */
   readonly cleanupDepth: number;
-};
+}
 
-type FunctionDef = {
+interface FunctionDef {
   readonly name: string;
   readonly parameters: readonly JsIrFunctionParameter[];
   readonly body: readonly JsIrOperation[];
@@ -167,7 +167,7 @@ type FunctionDef = {
   readonly usesDynamicThis?: boolean;
   readonly captures?: JsIrFunctionObjectDefinition["captures"];
   returnType: LlvmReturnType;
-};
+}
 
 // Generated JavaScript functions use an explicit payload/status ABI. Most runtime
 // helpers remain scalar; jsCall / getIteratorValue / callIteratorNext use the
@@ -323,10 +323,10 @@ ${jsValueAbi.emitInlineCppSupport()}
 
 ${blocks.map(emitInlineCppFunction).join("\n")}`;
 
-type LlvmIrEmission = {
+interface LlvmIrEmission {
   readonly rendered: RenderedLlvmModule;
   readonly diagnostics: readonly CompilerDiagnostic[];
-};
+}
 
 // eslint-disable-next-line max-statements -- Legacy section assembly and tracked builder composition remain together during incremental migration.
 function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
@@ -542,11 +542,11 @@ function splitLegacyDefinition(definition: string): readonly string[] {
   return definition.split("\n");
 }
 
-export type LlvmEmission = {
+export interface LlvmEmission {
   readonly llvmIr: string;
   readonly traceMap: TraceMapV1;
   readonly diagnostics: readonly CompilerDiagnostic[];
-};
+}
 
 export function emitLlvmModule(module: JsIrModule): LlvmEmission {
   const { rendered, diagnostics } = emitLlvmIr(module);
@@ -600,7 +600,7 @@ function classifyAndProcessOperation(
   } else if (operation.kind === "constValue") {
     context.bindings.set(operation.name, { kind: "value", value: operation.value });
   } else if (operation.kind === "letValue") {
-    let valueType: "function" | undefined;
+    let valueType: "function" | undefined = undefined;
     if (operation.value.kind === "functionObject") {
       valueType = "function";
     }
@@ -733,12 +733,12 @@ function internCompletionDest(context: EmitContext, label: string, frame: Cleanu
   return id;
 }
 
-type CompletionTransfer = {
+interface CompletionTransfer {
   readonly kind: number;
   readonly value?: string;
   readonly destLabel?: string;
   readonly untilDepth: number;
-};
+}
 
 /**
  * Route a completion through active cleanup frames (innermost first), or execute it
@@ -884,7 +884,7 @@ function createCleanupFrame(
   const index = context.cleanupStack.length;
   const id = context.tryIndex;
   context.tryIndex += 1;
-  let outerEntryLabel: string | undefined;
+  let outerEntryLabel: string | undefined = undefined;
   if (index > 0) {
     outerEntryLabel = context.cleanupStack[index - 1]?.entryLabel;
   }
@@ -2303,7 +2303,7 @@ function emitRuntimeCollectionResultOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeMapSetResult" | "runtimeSetAddResult" }>,
   context: EmitContext
 ): string[] {
-  let sourceName: string;
+  let sourceName: string | undefined = undefined;
   if (operation.kind === "runtimeMapSetResult") {
     sourceName = operation.mapName;
   } else {
@@ -2802,7 +2802,7 @@ function emitRuntimeArrayReduceCallbackOperationWithReturn(
   const currentIndex = `%arr.reduce.i.${index}`;
   const nextIndex = `%arr.reduce.next.${index}`;
   const element = `%arr.reduce.value.${index}`;
-  let initial: JsValue | undefined;
+  let initial: JsValue | undefined = undefined;
   if (operation.initialValue !== undefined) {
     initial = emitValueExpression(operation.initialValue, context);
   }
@@ -2945,7 +2945,7 @@ function emitObjectLiteralOperation(
 ): string[] {
   const typeName = defineObjectType(operation.value, context);
   const pointerName = variablePointerName(operation.name);
-  let runtimePointerName: string | undefined;
+  let runtimePointerName: string | undefined = undefined;
   if (operation.needsRuntimeShadow) {
     runtimePointerName = `%${operation.name}.obj.addr`;
   }
@@ -3191,7 +3191,7 @@ function emitRuntimeArraySliceOperation(
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const start = emitArrayIndex(operation.start, context);
-  let end: NumberValue;
+  let end: NumberValue | undefined = undefined;
   if (operation.end === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
@@ -3215,7 +3215,7 @@ function emitRuntimeArraySpliceOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const start = emitArrayIndex(operation.start, context);
   const lines = [`  ${pointerName} = alloca ptr`, ...array.lines, ...start.lines];
-  let deleteCountArg: string;
+  let deleteCountArg: string | undefined = undefined;
   if (operation.deleteCount === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
@@ -3252,7 +3252,7 @@ function emitRuntimeArraySpliceStatementOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const start = emitArrayIndex(operation.start, context);
   const lines = [...array.lines, ...start.lines];
-  let deleteCountArg: string;
+  let deleteCountArg: string | undefined = undefined;
   if (operation.deleteCount === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
@@ -4032,7 +4032,7 @@ function emitRuntimeArrayFillOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const value = emitValueExpression(operation.value, context);
   let start: NumberValue = { lines: [], value: "0" };
-  let end: NumberValue;
+  let end: NumberValue | undefined = undefined;
   if (operation.start !== undefined) {
     start = emitArrayIndex(operation.start, context);
   }
@@ -4064,7 +4064,7 @@ function emitRuntimeArrayCopyWithinOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const target = emitArrayIndex(operation.target, context);
   const start = emitArrayIndex(operation.start, context);
-  let end: NumberValue;
+  let end: NumberValue | undefined = undefined;
   if (operation.end === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
@@ -6328,8 +6328,8 @@ function emitArrayDestructureProtocolOperation(
   useRuntimeHelper(context.runtime, "arrayPush");
   useRuntimeHelper(context.runtime, "valueBoxArray");
 
-  let iteratorCall: JsValue;
-  let setupLines: string[];
+  let iteratorCall: JsValue | undefined = undefined;
+  let setupLines: string[] | undefined = undefined;
   if (operation.source.kind === "collection") {
     useRuntimeHelper(context.runtime, "getCollectionIterator");
     const collection = emitRuntimeCollectionPointer(operation.source.name, context);
@@ -6732,7 +6732,7 @@ function emitBreakOperation(context: EmitContext): string[] {
 }
 
 function emitContinueOperation(context: EmitContext): string[] {
-  let labels: LoopLabels | undefined;
+  let labels: LoopLabels | undefined = undefined;
   for (let index = context.loopLabels.length - 1; index >= 0; index--) {
     const candidate = context.loopLabels[index];
     if (candidate.continueLabel !== undefined) {
@@ -7189,10 +7189,11 @@ function valueComparisonOperatorCode(operator: "==" | "!=" | "<" | "<=" | ">" | 
     case "!=": {
       return looseNotEqualCode;
     }
+    default: {
+      const unsupported: never = operator;
+      throw new Error(`Unsupported value comparison operator: ${String(unsupported)}`);
+    }
   }
-  const unsupported: never = operator;
-  void unsupported;
-  throw new Error("Unsupported value comparison operator");
 }
 
 function emitRuntimeObjectHasCondition(
@@ -7412,11 +7413,11 @@ function llvmComparisonInstruction(operator: "===" | "!==" | "<" | "<=" | ">" | 
     case ">=": {
       return "fcmp oge";
     }
+    default: {
+      const unsupported: never = operator;
+      throw new Error(`Unsupported comparison operator: ${String(unsupported)}`);
+    }
   }
-
-  const unsupported: never = operator;
-  void unsupported;
-  throw new Error("Unsupported comparison operator");
 }
 
 // eslint-disable-next-line complexity, max-statements -- Number expression lowering includes temporary runtime array method branches.
@@ -8466,11 +8467,11 @@ function llvmNumberOperator(operator: JsIrNumberOperator): string {
     case "power": {
       throw new Error("Power operator is emitted through mathPow");
     }
+    default: {
+      const unsupported: never = operator;
+      throw new Error(`Unsupported number operator: ${String(unsupported)}`);
+    }
   }
-
-  const unsupported: never = operator;
-  void unsupported;
-  throw new Error("Unsupported number operator");
 }
 
 function emitOperationsWithScopedBindings(operations: readonly JsIrOperation[], context: EmitContext): string[] {
