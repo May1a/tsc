@@ -1,7 +1,7 @@
 import { Command, type CommandExecutor } from "@effect/platform";
-import { SystemError } from "@effect/platform/Error";
 import { Data, Effect, Fiber, Option, Stream } from "effect";
 import type { CompilerDiagnostic } from "./diagnostics.js";
+import { SystemError } from "@effect/platform/Error";
 import { Toolchain } from "./toolchain.js";
 
 export interface LinkResult {

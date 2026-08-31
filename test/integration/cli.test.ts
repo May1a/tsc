@@ -1,23 +1,9 @@
+import { type CompileResult, captureCommand, commandExecutorLayer, compileFixture, expectLlvmAsVerificationIfAvailable, expectNativeBehaviorIfAvailable, expectSuccessfulCompile, expectUnsupportedDiagnostic, expectUnsupportedMessage, repoRoot, roadmapIntegrationTimeoutMs, runNativeIfAvailable, toolExecutable } from "./helpers.js";
 import { describe, expect, test } from "vitest";
-import { Effect } from "effect";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { Effect } from "effect";
 import path from "node:path";
-import {
-  compileFixture,
-  expectSuccessfulCompile,
-  expectUnsupportedDiagnostic,
-  expectUnsupportedMessage,
-  expectNativeBehaviorIfAvailable,
-  expectLlvmAsVerificationIfAvailable,
-  runNativeIfAvailable,
-  captureCommand,
-  toolExecutable,
-  roadmapIntegrationTimeoutMs,
-  repoRoot,
-  type CompileResult,
-  commandExecutorLayer
-} from "./helpers.js";
+import { tmpdir } from "node:os";
 
 // eslint-disable-next-line max-statements -- CLI coverage intentionally groups diagnostics and smoke tests.
 describe("tscn CLI", () => {

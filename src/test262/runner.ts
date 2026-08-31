@@ -1,17 +1,8 @@
+import type { Classification, HarnessFilters, SuiteRun, SuiteSummary, Test262Baseline, Test262MachineReport, TestCaseResult, TestFamilySummary } from "./types.js";
+import { executeTest } from "./execute.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { executeTest } from "./execute.js";
 import { selectTests } from "./selection.js";
-import type {
-  Classification,
-  HarnessFilters,
-  SuiteRun,
-  SuiteSummary,
-  Test262Baseline,
-  Test262MachineReport,
-  TestCaseResult,
-  TestFamilySummary
-} from "./types.js";
 
 export interface RunOptions {
   readonly suiteRoot: string;

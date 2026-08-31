@@ -1,9 +1,9 @@
-import { FileSystem, Path } from "@effect/platform";
-import type { PlatformError } from "@effect/platform/Error";
-import { Effect } from "effect";
-import ts from "typescript";
-import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic, SourceSpan } from "./diagnostics.js";
+import { FileSystem, Path } from "@effect/platform";
+import { Diagnostics } from "./diagnostics-service.js";
+import { Effect } from "effect";
+import type { PlatformError } from "@effect/platform/Error";
+import ts from "typescript";
 
 export interface FrontendResult {
   readonly program: ts.Program;

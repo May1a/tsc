@@ -1,13 +1,13 @@
-import { describe, expect, test } from "vitest";
-import { NodeContext } from "@effect/platform-node";
 import { Cause, Effect, Exit, Layer, Option } from "effect";
+import { Toolchain, type Toolchain as ToolchainService, normalizeHostTargetFacts } from "../../src/compiler/toolchain.js";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { DiagnosticsLive } from "../../src/compiler/diagnostics-service.js";
+import { describe, expect, test } from "vitest";
 import type { CompilationFailed } from "../../src/compiler/errors.js";
+import { DiagnosticsLive } from "../../src/compiler/diagnostics-service.js";
+import { NodeContext } from "@effect/platform-node";
 import { compile } from "../../src/compiler/pipeline.js";
-import { normalizeHostTargetFacts, Toolchain, type Toolchain as ToolchainService } from "../../src/compiler/toolchain.js";
+import path from "node:path";
+import { tmpdir } from "node:os";
 
 describe("toolchain target facts", () => {
   test("normalizes supported x86-64 hosts", () => {

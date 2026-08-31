@@ -1,4 +1,4 @@
-import { jsValueLayout, type JsValueImmediateKind, type JsValueReferenceKind } from "./layout.js";
+import { type JsValueImmediateKind, type JsValueReferenceKind, jsValueLayout } from "./layout.js";
 
 export interface LegacyLlvmJsValues {
   readonly immediate: (kind: JsValueImmediateKind) => string;

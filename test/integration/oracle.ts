@@ -1,18 +1,9 @@
-import { expect } from "vitest";
+import { type CapturedRun, type CompileResult, captureCommand, commandExecutorLayer, compileFixture, expectLlvmAsVerificationIfAvailable, repoRoot, runNativeIfAvailable } from "./helpers.js";
 import { Effect } from "effect";
+import type { TraceMapV1 } from "../../src/compiler/trace.js";
+import { expect } from "vitest";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { TraceMapV1 } from "../../src/compiler/trace.js";
-import {
-  captureCommand,
-  commandExecutorLayer,
-  compileFixture,
-  expectLlvmAsVerificationIfAvailable,
-  repoRoot,
-  runNativeIfAvailable,
-  type CapturedRun,
-  type CompileResult
-} from "./helpers.js";
 
 export type ThrownObservation =
   | {

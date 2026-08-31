@@ -1,11 +1,5 @@
+import { compileFixture, countOccurrences, expectNativeBehaviorIfAvailable, expectSuccessfulCompile, expectUnsupportedDiagnostic } from "./helpers.js";
 import { describe, expect, test } from "vitest";
-import {
-  compileFixture,
-  expectSuccessfulCompile,
-  expectUnsupportedDiagnostic,
-  expectNativeBehaviorIfAvailable,
-  countOccurrences
-} from "./helpers.js";
 
 describe("tscn numeric conditions and bindings", () => {
   test("lowers numeric strict equality in if conditions", async () => {

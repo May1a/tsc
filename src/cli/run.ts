@@ -1,12 +1,12 @@
 import { Args, Command, HelpDoc, Options } from "@effect/cli";
 import type { CommandExecutor, FileSystem, Path } from "@effect/platform";
-import type { PlatformError } from "@effect/platform/Error";
 import { Console, Effect } from "effect";
-import { formatDiagnostic } from "../compiler/diagnostics.js";
-import type { Diagnostics } from "../compiler/diagnostics-service.js";
 import { CompilationFailed } from "../compiler/errors.js";
-import { compile } from "../compiler/pipeline.js";
+import type { Diagnostics } from "../compiler/diagnostics-service.js";
+import type { PlatformError } from "@effect/platform/Error";
 import type { Toolchain } from "../compiler/toolchain.js";
+import { compile } from "../compiler/pipeline.js";
+import { formatDiagnostic } from "../compiler/diagnostics.js";
 
 interface CliConfig {
   readonly entry: string;

@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
-import { filtersPath, pinPath } from "./paths.js";
 import type { FilterGroup, HarnessFilters, SuitePin, Test262Baseline } from "./types.js";
+import { filtersPath, pinPath } from "./paths.js";
+import { readFile } from "node:fs/promises";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 

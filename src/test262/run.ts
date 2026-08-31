@@ -1,10 +1,10 @@
-import { writeFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
-import { loadBaseline, loadFilters, loadPin } from "./config.js";
-import { verifyCheckout } from "./fetch.js";
-import { defaultCacheDir, defaultCheckoutDir } from "./paths.js";
 import { buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite } from "./runner.js";
+import { defaultCacheDir, defaultCheckoutDir } from "./paths.js";
+import { loadBaseline, loadFilters, loadPin } from "./config.js";
 import type { Classification } from "./types.js";
+import { pathToFileURL } from "node:url";
+import { verifyCheckout } from "./fetch.js";
+import { writeFile } from "node:fs/promises";
 
 export interface RunArguments {
   readonly pathPrefixes: readonly string[];

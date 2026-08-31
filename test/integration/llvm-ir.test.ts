@@ -1,5 +1,5 @@
+import { type LlvmBlockBuilder, createLlvmModule, llvm, renderLlvmType, sameLlvmType } from "../../src/compiler/llvm-ir/index.js";
 import { describe, expect, test } from "vitest";
-import { createLlvmModule, llvm, renderLlvmType, sameLlvmType, type LlvmBlockBuilder } from "../../src/compiler/llvm-ir/index.js";
 
 describe("LLVM IR builder", () => {
   test("renders typed functions and records trace ranges without scanning markers", () => {

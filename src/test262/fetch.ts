@@ -1,10 +1,10 @@
-import { rm } from "node:fs/promises";
+import type { SuitePin } from "./types.js";
+import { captureProcessWithTimeout } from "./process.js";
+import { defaultCacheDir } from "./paths.js";
+import { loadPin } from "./config.js";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadPin } from "./config.js";
-import { defaultCacheDir } from "./paths.js";
-import { captureProcessWithTimeout } from "./process.js";
-import type { SuitePin } from "./types.js";
+import { rm } from "node:fs/promises";
 
 export class FetchError extends Error {
   public override readonly name = "FetchError";

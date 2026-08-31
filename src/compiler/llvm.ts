@@ -1,8 +1,6 @@
 import {
-  aggregateBindingForOperation,
-  visitJsIrOperations,
-  type JsIrCallArgument,
   type JsIrBindingValue,
+  type JsIrCallArgument,
   type JsIrCondition,
   type JsIrExpression,
   type JsIrFunctionObjectDefinition,
@@ -15,24 +13,26 @@ import {
   type JsIrOperation,
   type JsIrRuntimeArrayElement,
   type JsIrRuntimeObjectValue,
-  type JsIrSwitchClause,
   type JsIrStringExpression,
+  type JsIrSwitchClause,
+  type JsIrValueExpression,
   type JsIrValueKind,
-  type JsIrValueExpression
+  aggregateBindingForOperation,
+  visitJsIrOperations
 } from "./ir.js";
-import type { CompilerDiagnostic } from "./diagnostics.js";
-import { buildTraceMap, traceOperationId, type TraceMapV1 } from "./trace.js";
+import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
 import {
+  type RuntimeHelper,
+  type RuntimeHelperEmitter,
   createRuntimeHelperEmitter,
   defineStructuredRuntimeHelpers,
   emitRuntimeDeclarations,
   emitRuntimeDefinitions,
-  useRuntimeHelper,
-  type RuntimeHelper,
-  type RuntimeHelperEmitter
+  useRuntimeHelper
 } from "./runtime-helpers.js";
+import { type TraceMapV1, buildTraceMap, traceOperationId } from "./trace.js";
+import type { CompilerDiagnostic } from "./diagnostics.js";
 import { jsValueAbi } from "./js-value-abi/index.js";
-import { createLlvmModule, type LegacyLlvmTraceMarker, type RenderedLlvmModule } from "./llvm-ir/index.js";
 
 /** Pending abrupt/normal completion kinds for finally / IteratorClose cleanup. */
 const COMPLETION_NORMAL = 0;

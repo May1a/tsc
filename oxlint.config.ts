@@ -8,8 +8,6 @@ const disabledRules: DummyRuleMap = {
     "id-length": "off",
     // Many helpers take 3-4 args; Phase 2 will migrate to object params where it helps.
     "max-params": "off",
-    // Will be enabled with auto-fix in Phase 1; kept off until the one-shot sort lands.
-    "sort-imports": "off",
     // Object key order is semantic in IR descriptors (e.g. JsIrOperation unions).
     "eslint/sort-keys": "off",
     // Scoped to src/cli/** via override below; compiler core must not use console.

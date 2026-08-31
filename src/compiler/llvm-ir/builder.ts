@@ -1,4 +1,3 @@
-import type { LlvmLineRange } from "../trace.js";
 import {
   type LlvmIntegerType,
   type LlvmPointerType,
@@ -10,6 +9,7 @@ import {
   renderLlvmType,
   sameLlvmType
 } from "./types.js";
+import type { LlvmLineRange } from "../trace.js";
 
 interface ValueData {
   readonly owner: symbol;

@@ -1,19 +1,19 @@
+import type { Classification, HarnessFilters, TestCaseResult } from "../../src/test262/types.js";
+import { FetchError, ensureSuiteFetched, verifyCheckout } from "../../src/test262/fetch.js";
+import { type RunOptions, buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite } from "../../src/test262/runner.js";
 import { beforeAll, describe, expect, test } from "vitest";
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { nodeBehavior, nodeScriptWrapperSource, nodeWrapperSource } from "../../src/test262/behavior.js";
-import { loadFilters } from "../../src/test262/config.js";
-import { ensureSuiteFetched, FetchError, verifyCheckout } from "../../src/test262/fetch.js";
+import { repoRoot, roadmapIntegrationTimeoutMs, toolExecutable } from "./helpers.js";
 import { assembleEntry } from "../../src/test262/prelude.js";
 import { captureProcessWithTimeout } from "../../src/test262/process.js";
-import { buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite, type RunOptions } from "../../src/test262/runner.js";
+import { existsSync } from "node:fs";
+import { loadFilters } from "../../src/test262/config.js";
 import { parseRunArguments } from "../../src/test262/run.js";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { selectTests } from "../../src/test262/selection.js";
-import type { Classification, HarnessFilters, TestCaseResult } from "../../src/test262/types.js";
-import { repoRoot, roadmapIntegrationTimeoutMs, toolExecutable } from "./helpers.js";
+import { tmpdir } from "node:os";
 
 const suiteRoot = path.join(repoRoot, "test/fixtures/test262/suite");
 const hangTimeoutMs = 3000;

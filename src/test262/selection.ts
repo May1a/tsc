@@ -1,7 +1,7 @@
-import { readdir, readFile } from "node:fs/promises";
-import path from "node:path";
+import type { Expectation, HarnessFilters, ParseGoal, SelectedTest, Test262Frontmatter, TestCaseResult } from "./types.js";
+import { readFile, readdir } from "node:fs/promises";
 import { parseFrontmatter } from "./frontmatter.js";
-import type { Expectation, HarnessFilters, ParseGoal, SelectedTest, TestCaseResult, Test262Frontmatter } from "./types.js";
+import path from "node:path";
 
 // Flags Test262 uses that do not change how the harness assembles a test.
 const benignFlags = new Set(["noStrict", "onlyStrict", "generated", "CanBlockIsFalse", "CanBlockIsTrue"]);

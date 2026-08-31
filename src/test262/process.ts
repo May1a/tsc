@@ -1,6 +1,6 @@
+import { Effect, Fiber, Stream } from "effect";
 import { Command } from "@effect/platform";
 import { NodeContext } from "@effect/platform-node";
-import { Effect, Fiber, Stream } from "effect";
 
 export interface CapturedProcess {
   readonly timedOut: boolean;

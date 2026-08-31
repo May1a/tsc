@@ -1,8 +1,8 @@
 import { Chunk, Effect } from "effect";
-import ts from "typescript";
-import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic, SourceSpan } from "./diagnostics.js";
+import { Diagnostics } from "./diagnostics-service.js";
 import { SYMBOL_ITERATOR_SENTINEL } from "./runtime-helpers.js";
+import ts from "typescript";
 
 // The TypeScript checker for the program currently being lowered. Set by
 // `lowerToJsIr` and read by the class-lowering path for static method dispatch.
