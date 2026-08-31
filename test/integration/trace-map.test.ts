@@ -1,6 +1,6 @@
+import { describe, expect, test } from "vitest";
 import type { TraceMapOperation, TraceMapV1 } from "../../src/compiler/trace.js";
 import { compileFixture, expectLlvmAsVerificationIfAvailable, expectSuccessfulCompile, roadmapIntegrationTimeoutMs } from "./helpers.js";
-import { describe, expect, test } from "vitest";
 
 const functionDeclarationLine = 4;
 const functionBodyPrintLine = 5;

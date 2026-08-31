@@ -1,5 +1,5 @@
-import { type LlvmModuleBuilder, llvm } from "./llvm-ir/index.js";
 import { jsValueAbi } from "./js-value-abi/index.js";
+import { type LlvmModuleBuilder, llvm } from "./llvm-ir/index.js";
 
 const legacyJsValue = jsValueAbi.forLegacyLlvm();
 

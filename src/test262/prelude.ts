@@ -1,5 +1,5 @@
-import type { Expectation } from "./types.js";
 import ts from "typescript";
+import type { Expectation } from "./types.js";
 
 // Marker lines printed by the negative-runtime wrapper when the observed throw
 // does not match the declared expectation. Kept distinctive so they cannot be

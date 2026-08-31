@@ -1,9 +1,9 @@
-import type { CompilerDiagnostic, SourceSpan } from "./diagnostics.js";
 import { FileSystem, Path } from "@effect/platform";
-import { Diagnostics } from "./diagnostics-service.js";
-import { Effect } from "effect";
 import type { PlatformError } from "@effect/platform/Error";
+import { Effect } from "effect";
 import ts from "typescript";
+import { Diagnostics } from "./diagnostics-service.js";
+import type { CompilerDiagnostic } from "./diagnostics.js";
 
 export interface FrontendResult {
   readonly program: ts.Program;
@@ -67,8 +67,7 @@ const defaultCompilerOptions = (): ts.ParsedCommandLine => ({
 
 const tsDiagnosticsToCompiler = (diagnostics: readonly ts.Diagnostic[]): readonly CompilerDiagnostic[] =>
   diagnostics.map((diagnostic) => {
-    // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
-    let span: SourceSpan | undefined = undefined;
+    let span;
     if (diagnostic.file && diagnostic.start !== undefined) {
       span = sourceSpan(diagnostic.file, diagnostic.start);
     }
@@ -180,7 +179,7 @@ const sourceFileCacheKey = (
     stableFileName = normalized.toLowerCase();
   }
 
-  let languageKey: string | undefined = undefined;
+  let languageKey: string;
   if (typeof languageVersionOrOptions === "number") {
     languageKey = String(languageVersionOrOptions);
   } else {

@@ -1,8 +1,17 @@
-import type { Classification, HarnessFilters, SuiteRun, SuiteSummary, Test262Baseline, Test262MachineReport, TestCaseResult, TestFamilySummary } from "./types.js";
-import { executeTest } from "./execute.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { executeTest } from "./execute.js";
 import { selectTests } from "./selection.js";
+import type {
+  Classification,
+  HarnessFilters,
+  SuiteRun,
+  SuiteSummary,
+  Test262Baseline,
+  Test262MachineReport,
+  TestCaseResult,
+  TestFamilySummary
+} from "./types.js";
 
 export interface RunOptions {
   readonly suiteRoot: string;
@@ -94,13 +103,13 @@ export const runFilteredSuite = async (options: RunOptions): Promise<SuiteRun> =
 };
 
 const formatResultLine = (result: TestCaseResult): string => {
-  let label: string | undefined = undefined;
+  let label: string;
   if (result.classification === "coverage-gap") {
     label = "COVERAGE-GAP";
   } else {
     label = result.classification.toUpperCase();
   }
-  let reason: string | undefined = undefined;
+  let reason: string;
   if (result.reason === undefined) {
     reason = "";
   } else {

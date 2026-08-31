@@ -1,10 +1,10 @@
-import { buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite } from "./runner.js";
-import { defaultCacheDir, defaultCheckoutDir } from "./paths.js";
-import { loadBaseline, loadFilters, loadPin } from "./config.js";
-import type { Classification } from "./types.js";
-import { pathToFileURL } from "node:url";
-import { verifyCheckout } from "./fetch.js";
 import { writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+import { loadBaseline, loadFilters, loadPin } from "./config.js";
+import { verifyCheckout } from "./fetch.js";
+import { defaultCacheDir, defaultCheckoutDir } from "./paths.js";
+import { buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite } from "./runner.js";
+import type { Classification } from "./types.js";
 
 export interface RunArguments {
   readonly pathPrefixes: readonly string[];
@@ -23,9 +23,9 @@ const parseClassification = (value: string | undefined): Classification | undefi
 // eslint-disable-next-line max-statements -- Sequential option parsing keeps missing-value errors local to each flag.
 export const parseRunArguments = (argv: readonly string[]): RunArguments => {
   const pathPrefixes: string[] = [];
-  let classification: Classification | undefined = undefined;
-  let jsonPath: string | undefined = undefined;
-  let baselinePath: string | undefined = undefined;
+  let classification: Classification | undefined;
+  let jsonPath: string | undefined;
+  let baselinePath: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv.at(index);
     const value = argv.at(index + 1);
@@ -93,7 +93,7 @@ const main = async (): Promise<number> => {
   }
   const filters = await loadFilters();
   const { baselinePath, classification, jsonPath, pathPrefixes: requestedPathPrefixes } = args;
-  let pathPrefixes: readonly string[] | undefined = undefined;
+  let pathPrefixes: readonly string[] | undefined;
   if (requestedPathPrefixes.length > 0) {
     pathPrefixes = requestedPathPrefixes;
   }
@@ -105,7 +105,7 @@ const main = async (): Promise<number> => {
   if (jsonPath !== "-") {
     process.stdout.write(formatReport(run, { classification }));
   }
-  let machineReport: ReturnType<typeof buildMachineReport> | undefined = undefined;
+  let machineReport: ReturnType<typeof buildMachineReport> | undefined;
   if (run.kind === "completed") {
     machineReport = buildMachineReport(run, pin.revision);
   }
@@ -142,8 +142,7 @@ if (isMainModule) {
       process.exitCode = code;
     })
     .catch((error: unknown) => {
-      // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
-      let message: string | undefined = undefined;
+      let message: string;
       if (error instanceof Error) {
         ({ message } = error);
       } else {

@@ -1,5 +1,15 @@
-import { compileFixture, countOccurrences, expectLlvmAsVerificationIfAvailable, expectNativeBehaviorIfAvailable, expectNativeFixtures, expectSuccessfulCompile, expectUnsupportedDiagnostic, expectUnsupportedMessage, roadmapIntegrationTimeoutMs } from "./helpers.js";
 import { describe, expect, test } from "vitest";
+import {
+  compileFixture,
+  countOccurrences,
+  expectLlvmAsVerificationIfAvailable,
+  expectNativeBehaviorIfAvailable,
+  expectNativeFixtures,
+  expectSuccessfulCompile,
+  expectUnsupportedDiagnostic,
+  expectUnsupportedMessage,
+  roadmapIntegrationTimeoutMs
+} from "./helpers.js";
 
 // eslint-disable-next-line max-statements -- Expanded runtime roadmap coverage intentionally groups many vertical fixtures.
 describe("tscn expanded runtime roadmap", () => {

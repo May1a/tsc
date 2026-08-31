@@ -1,15 +1,15 @@
-import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect";
-import { Command, type CommandExecutor } from "@effect/platform";
-import { Toolchain, ToolchainLive } from "../../src/compiler/toolchain.js";
-import { devNull, tmpdir } from "node:os";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import type { CompilationFailed } from "../../src/compiler/errors.js";
-import { DiagnosticsLive } from "../../src/compiler/diagnostics-service.js";
-import { NodeContext } from "@effect/platform-node";
-import { compile } from "../../src/compiler/pipeline.js";
 import { expect } from "vitest";
-import { formatDiagnostic } from "../../src/compiler/diagnostics.js";
+import { Command, type CommandExecutor } from "@effect/platform";
+import { NodeContext } from "@effect/platform-node";
+import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { devNull, tmpdir } from "node:os";
 import path from "node:path";
+import { formatDiagnostic } from "../../src/compiler/diagnostics.js";
+import { DiagnosticsLive } from "../../src/compiler/diagnostics-service.js";
+import type { CompilationFailed } from "../../src/compiler/errors.js";
+import { compile } from "../../src/compiler/pipeline.js";
+import { Toolchain, ToolchainLive } from "../../src/compiler/toolchain.js";
 
 export const repoRoot = path.resolve(import.meta.dirname, "../..");
 export const roadmapIntegrationTimeoutMs = 60_000;

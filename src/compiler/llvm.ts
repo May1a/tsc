@@ -20,7 +20,8 @@ import {
   aggregateBindingForOperation,
   visitJsIrOperations
 } from "./ir.js";
-import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
+import type { CompilerDiagnostic } from "./diagnostics.js";
+import { type TraceMapV1, buildTraceMap, traceOperationId } from "./trace.js";
 import {
   type RuntimeHelper,
   type RuntimeHelperEmitter,
@@ -30,9 +31,8 @@ import {
   emitRuntimeDefinitions,
   useRuntimeHelper
 } from "./runtime-helpers.js";
-import { type TraceMapV1, buildTraceMap, traceOperationId } from "./trace.js";
-import type { CompilerDiagnostic } from "./diagnostics.js";
 import { jsValueAbi } from "./js-value-abi/index.js";
+import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
 
 /** Pending abrupt/normal completion kinds for finally / IteratorClose cleanup. */
 const COMPLETION_NORMAL = 0;
@@ -600,7 +600,7 @@ function classifyAndProcessOperation(
   } else if (operation.kind === "constValue") {
     context.bindings.set(operation.name, { kind: "value", value: operation.value });
   } else if (operation.kind === "letValue") {
-    let valueType: "function" | undefined = undefined;
+    let valueType: "function" | undefined;
     if (operation.value.kind === "functionObject") {
       valueType = "function";
     }
@@ -884,7 +884,7 @@ function createCleanupFrame(
   const index = context.cleanupStack.length;
   const id = context.tryIndex;
   context.tryIndex += 1;
-  let outerEntryLabel: string | undefined = undefined;
+  let outerEntryLabel: string | undefined;
   if (index > 0) {
     outerEntryLabel = context.cleanupStack[index - 1]?.entryLabel;
   }
@@ -2303,7 +2303,7 @@ function emitRuntimeCollectionResultOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeMapSetResult" | "runtimeSetAddResult" }>,
   context: EmitContext
 ): string[] {
-  let sourceName: string | undefined = undefined;
+  let sourceName: string;
   if (operation.kind === "runtimeMapSetResult") {
     sourceName = operation.mapName;
   } else {
@@ -2802,7 +2802,7 @@ function emitRuntimeArrayReduceCallbackOperationWithReturn(
   const currentIndex = `%arr.reduce.i.${index}`;
   const nextIndex = `%arr.reduce.next.${index}`;
   const element = `%arr.reduce.value.${index}`;
-  let initial: JsValue | undefined = undefined;
+  let initial: JsValue | undefined;
   if (operation.initialValue !== undefined) {
     initial = emitValueExpression(operation.initialValue, context);
   }
@@ -2945,7 +2945,7 @@ function emitObjectLiteralOperation(
 ): string[] {
   const typeName = defineObjectType(operation.value, context);
   const pointerName = variablePointerName(operation.name);
-  let runtimePointerName: string | undefined = undefined;
+  let runtimePointerName: string | undefined;
   if (operation.needsRuntimeShadow) {
     runtimePointerName = `%${operation.name}.obj.addr`;
   }
@@ -3191,7 +3191,7 @@ function emitRuntimeArraySliceOperation(
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const start = emitArrayIndex(operation.start, context);
-  let end: NumberValue | undefined = undefined;
+  let end: NumberValue;
   if (operation.end === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
@@ -3215,7 +3215,7 @@ function emitRuntimeArraySpliceOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const start = emitArrayIndex(operation.start, context);
   const lines = [`  ${pointerName} = alloca ptr`, ...array.lines, ...start.lines];
-  let deleteCountArg: string | undefined = undefined;
+  let deleteCountArg: string;
   if (operation.deleteCount === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
@@ -3252,7 +3252,7 @@ function emitRuntimeArraySpliceStatementOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const start = emitArrayIndex(operation.start, context);
   const lines = [...array.lines, ...start.lines];
-  let deleteCountArg: string | undefined = undefined;
+  let deleteCountArg: string;
   if (operation.deleteCount === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
@@ -4032,7 +4032,7 @@ function emitRuntimeArrayFillOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const value = emitValueExpression(operation.value, context);
   let start: NumberValue = { lines: [], value: "0" };
-  let end: NumberValue | undefined = undefined;
+  let end: NumberValue;
   if (operation.start !== undefined) {
     start = emitArrayIndex(operation.start, context);
   }
@@ -4064,7 +4064,7 @@ function emitRuntimeArrayCopyWithinOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const target = emitArrayIndex(operation.target, context);
   const start = emitArrayIndex(operation.start, context);
-  let end: NumberValue | undefined = undefined;
+  let end: NumberValue;
   if (operation.end === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
@@ -6328,8 +6328,8 @@ function emitArrayDestructureProtocolOperation(
   useRuntimeHelper(context.runtime, "arrayPush");
   useRuntimeHelper(context.runtime, "valueBoxArray");
 
-  let iteratorCall: JsValue | undefined = undefined;
-  let setupLines: string[] | undefined = undefined;
+  let iteratorCall: JsValue;
+  let setupLines: string[];
   if (operation.source.kind === "collection") {
     useRuntimeHelper(context.runtime, "getCollectionIterator");
     const collection = emitRuntimeCollectionPointer(operation.source.name, context);
@@ -6732,7 +6732,7 @@ function emitBreakOperation(context: EmitContext): string[] {
 }
 
 function emitContinueOperation(context: EmitContext): string[] {
-  let labels: LoopLabels | undefined = undefined;
+  let labels: LoopLabels | undefined;
   for (let index = context.loopLabels.length - 1; index >= 0; index--) {
     const candidate = context.loopLabels[index];
     if (candidate.continueLabel !== undefined) {

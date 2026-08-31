@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 import { CliConfig, Command } from "@effect/cli";
-import { Effect, Layer } from "effect";
 import { NodeContext, NodeRuntime } from "@effect/platform-node";
+import { Effect, Layer } from "effect";
+import { readFileSync } from "node:fs";
 import { DiagnosticsLive } from "../compiler/diagnostics-service.js";
 import { ToolchainLive } from "../compiler/toolchain.js";
-import { readFileSync } from "node:fs";
 import { tscnCommand } from "./run.js";
 
 const packageMetadata: unknown = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));

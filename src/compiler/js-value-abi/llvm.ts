@@ -1,5 +1,5 @@
-import { type JsValueImmediateKind, type JsValueReferenceKind, jsValueLayout } from "./layout.js";
 import { type LlvmBlockBuilder, type LlvmDoubleType, type LlvmPointerType, type LlvmValue, llvm } from "../llvm-ir/index.js";
+import { type JsValueImmediateKind, type JsValueReferenceKind, jsValueLayout } from "./layout.js";
 
 declare const jsValueBrand: unique symbol;
 export type LlvmJsValue = LlvmValue<typeof llvm.i64> & { readonly [jsValueBrand]: true };

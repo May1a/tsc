@@ -1,3 +1,4 @@
+import type { LlvmLineRange } from "../trace.js";
 import {
   type LlvmIntegerType,
   type LlvmPointerType,
@@ -9,7 +10,6 @@ import {
   renderLlvmType,
   sameLlvmType
 } from "./types.js";
-import type { LlvmLineRange } from "../trace.js";
 
 interface ValueData {
   readonly owner: symbol;
@@ -622,7 +622,7 @@ class ModuleBuilder implements LlvmModuleBuilder {
       throw internalError(`LLVM definition conflicts with declaration ${copied.name}`);
     }
     const fn = new FunctionBuilder(copied, this.#owner);
-    let built: BuiltFunction | undefined = undefined;
+    let built: BuiltFunction;
     try {
       build(fn);
       built = fn.finish();
@@ -631,7 +631,6 @@ class ModuleBuilder implements LlvmModuleBuilder {
       throw error;
     }
     this.#definitions.add(copied.name);
-    // eslint-disable-next-line typescript/no-non-null-assertion, typescript/no-unnecessary-type-assertion -- built is set in try before any throw
     this.#items.push({ kind: "function", value: built });
     return copied;
   }

@@ -1,6 +1,6 @@
 import { describe, test } from "vitest";
-import { expectNativeMatchesNodeIfAvailable } from "./oracle.js";
 import { roadmapIntegrationTimeoutMs } from "./helpers.js";
+import { expectNativeMatchesNodeIfAvailable } from "./oracle.js";
 
 const oracleFixtures = [
   "hello.ts",

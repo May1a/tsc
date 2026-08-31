@@ -1,7 +1,7 @@
-import type { Expectation, HarnessFilters, ParseGoal, SelectedTest, Test262Frontmatter, TestCaseResult } from "./types.js";
 import { readFile, readdir } from "node:fs/promises";
-import { parseFrontmatter } from "./frontmatter.js";
 import path from "node:path";
+import { parseFrontmatter } from "./frontmatter.js";
+import type { Expectation, HarnessFilters, ParseGoal, SelectedTest, Test262Frontmatter, TestCaseResult } from "./types.js";
 
 // Flags Test262 uses that do not change how the harness assembles a test.
 const benignFlags = new Set(["noStrict", "onlyStrict", "generated", "CanBlockIsFalse", "CanBlockIsTrue"]);
@@ -26,7 +26,7 @@ const walkTestFiles = async (directory: string, prefix: string): Promise<readonl
   const files: string[] = [];
   const directoryPromises: Promise<readonly string[]>[] = [];
   for (const entry of entries) {
-    let relative: string | undefined = undefined;
+    let relative: string;
     if (prefix === "") {
       relative = entry.name;
     } else {

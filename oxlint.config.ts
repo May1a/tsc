@@ -8,6 +8,8 @@ const disabledRules: DummyRuleMap = {
     "id-length": "off",
     // Many helpers take 3-4 args; Phase 2 will migrate to object params where it helps.
     "max-params": "off",
+    // Definite-assignment checks are more useful than placeholder `undefined` initializers.
+    "init-declarations": "off",
     // Object key order is semantic in IR descriptors (e.g. JsIrOperation unions).
     "eslint/sort-keys": "off",
     // Scoped to src/cli/** via override below; compiler core must not use console.
@@ -73,6 +75,8 @@ const stricterRules: DummyRuleMap = {
     "unicorn/no-useless-switch-case": "error",
     "unicorn/no-useless-undefined": ["error", { checkArguments: false }],
     "no-self-compare": "error",
+    // Preserve declaration order so imports can express builtin/external/internal layering.
+    "sort-imports": ["error", { ignoreDeclarationSort: true }],
     "typescript/consistent-type-definitions": ["error", "interface"],
     "unicorn/consistent-empty-array-spread": "error",
     "unicorn/explicit-length-check": "error",

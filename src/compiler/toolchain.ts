@@ -34,7 +34,7 @@ export function normalizeHostTargetFacts(
   platform: NodeJS.Platform
 ): TargetFacts {
   let normalizedArchitecture: TargetArchitecture = "unknown";
-  let pointerWidthBits: number | undefined = undefined;
+  let pointerWidthBits: number | undefined;
   if (architecture === "x64") {
     normalizedArchitecture = "x86_64";
     pointerWidthBits = sixtyFourBitWord;
@@ -48,7 +48,7 @@ export function normalizeHostTargetFacts(
     normalizedArchitecture = "arm";
     pointerWidthBits = thirtyTwoBitWord;
   }
-  let pointerAddressBits: number | undefined = undefined;
+  let pointerAddressBits: number | undefined;
   // This records the active host ABI's default-allocation guarantee, not the CPU's
   // maximum virtual-address width. These x86-64 OS ABIs keep ordinary image,
   // stack, and allocator mappings in the low canonical 48-bit range; Linux also
@@ -110,9 +110,7 @@ const probeClangxx = (): Effect.Effect<Option.Option<string>, never, CommandExec
     Effect.catchAll(() => Effect.succeed(Option.none<string>()))
   );
 };
-
-// eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
-let cachedToolchain: Toolchain | undefined = undefined;
+let cachedToolchain: Toolchain | undefined;
 
 const discoverToolchainUncached: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
   function* discoverAllTools() {

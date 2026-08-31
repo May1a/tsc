@@ -1,19 +1,19 @@
-import type { Classification, HarnessFilters, TestCaseResult } from "../../src/test262/types.js";
-import { FetchError, ensureSuiteFetched, verifyCheckout } from "../../src/test262/fetch.js";
-import { type RunOptions, buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite } from "../../src/test262/runner.js";
 import { beforeAll, describe, expect, test } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { nodeBehavior, nodeScriptWrapperSource, nodeWrapperSource } from "../../src/test262/behavior.js";
-import { repoRoot, roadmapIntegrationTimeoutMs, toolExecutable } from "./helpers.js";
-import { assembleEntry } from "../../src/test262/prelude.js";
-import { captureProcessWithTimeout } from "../../src/test262/process.js";
 import { existsSync } from "node:fs";
-import { loadFilters } from "../../src/test262/config.js";
-import { parseRunArguments } from "../../src/test262/run.js";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { nodeBehavior, nodeScriptWrapperSource, nodeWrapperSource } from "../../src/test262/behavior.js";
+import { loadFilters } from "../../src/test262/config.js";
+import { FetchError, ensureSuiteFetched, verifyCheckout } from "../../src/test262/fetch.js";
+import { assembleEntry } from "../../src/test262/prelude.js";
+import { captureProcessWithTimeout } from "../../src/test262/process.js";
+import { type RunOptions, buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite } from "../../src/test262/runner.js";
+import { parseRunArguments } from "../../src/test262/run.js";
 import { selectTests } from "../../src/test262/selection.js";
-import { tmpdir } from "node:os";
+import type { Classification, HarnessFilters, TestCaseResult } from "../../src/test262/types.js";
+import { repoRoot, roadmapIntegrationTimeoutMs, toolExecutable } from "./helpers.js";
 
 const suiteRoot = path.join(repoRoot, "test/fixtures/test262/suite");
 const hangTimeoutMs = 3000;
@@ -23,17 +23,14 @@ const expectedPassCount = 8;
 const expectedFailCount = 4;
 const expectedSkipCount = 7;
 const shaHashLength = 40;
-
-// eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
-let filters: HarnessFilters | undefined = undefined;
+let filters: HarnessFilters;
 
 beforeAll(async () => {
   filters = await loadFilters();
 });
 
 const runSuite = async (options: Partial<RunOptions> = {}) =>
-  // eslint-disable-next-line typescript/no-non-null-assertion -- Initialized in beforeAll
-  runFilteredSuite({ suiteRoot, filters: filters!, ...options });
+  runFilteredSuite({ suiteRoot, filters, ...options });
 
 const completedResults = (run: Awaited<ReturnType<typeof runSuite>>): readonly TestCaseResult[] => {
   if (run.kind !== "completed") {
@@ -220,8 +217,7 @@ describe("filtered Test262 harness", () => {
   }, roadmapIntegrationTimeoutMs);
 
   test("reports a missing checkout as a skip, never a failure", async () => {
-    // eslint-disable-next-line typescript/no-non-null-assertion -- Initialized in beforeAll
-    const run = await runFilteredSuite({ suiteRoot: path.join(tmpdir(), "t262-missing-checkout"), filters: filters! });
+    const run = await runFilteredSuite({ suiteRoot: path.join(tmpdir(), "t262-missing-checkout"), filters });
     expect(run.kind).toBe("missing-checkout");
     const report = formatReport(run);
     expect(report).toContain("SKIP");
@@ -264,10 +260,8 @@ describe("filtered Test262 harness", () => {
 describe("Test262 assembly and reporting", () => {
   test("carries the declared parse goal on selected tests", async () => {
     const moduleEnabledFilters: HarnessFilters = {
-      // eslint-disable-next-line typescript/no-non-null-assertion -- Initialized in beforeAll
-      ...filters!,
-      // eslint-disable-next-line typescript/no-non-null-assertion -- Initialized in beforeAll
-      unsupportedFlags: filters!.unsupportedFlags.filter((flag) => flag !== "module")
+      ...filters,
+      unsupportedFlags: filters.unsupportedFlags.filter((flag) => flag !== "module")
     };
     const selection = await selectTests(suiteRoot, moduleEnabledFilters);
     const byId = new Map(selection.selected.map((selected) => [selected.id, selected]));

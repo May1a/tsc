@@ -1,10 +1,10 @@
-import type { SuitePin } from "./types.js";
-import { captureProcessWithTimeout } from "./process.js";
-import { defaultCacheDir } from "./paths.js";
-import { loadPin } from "./config.js";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { rm } from "node:fs/promises";
+import { loadPin } from "./config.js";
+import { defaultCacheDir } from "./paths.js";
+import { captureProcessWithTimeout } from "./process.js";
+import type { SuitePin } from "./types.js";
 
 export class FetchError extends Error {
   public override readonly name = "FetchError";
@@ -80,7 +80,7 @@ export const ensureSuiteFetched = async (pin: SuitePin, cacheDir: string): Promi
 const main = async (): Promise<number> => {
   const pin = await loadPin();
   const outcome = await ensureSuiteFetched(pin, defaultCacheDir);
-  let message: string | undefined = undefined;
+  let message: string;
   if (outcome.status === "already-present") {
     message = `Test262 ${outcome.revision} already present at ${outcome.checkoutDir}`;
   } else {
@@ -99,8 +99,7 @@ if (isMainModule) {
       process.exitCode = code;
     })
     .catch((error: unknown) => {
-      // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
-      let message: string | undefined = undefined;
+      let message: string;
       if (error instanceof Error) {
         ({ message } = error);
       } else {

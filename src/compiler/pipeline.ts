@@ -1,16 +1,16 @@
 import { type CommandExecutor, FileSystem, Path } from "@effect/platform";
-import type { CompileOptions, CompileResult } from "./types.js";
-import { type LinkResult, linkWithClang, linkWithClangxx, linkerErrorToLinkResult } from "./linker.js";
-import { emitInlineCppSource, emitLlvmModule } from "./llvm.js";
-import { CompilationFailed } from "./errors.js";
-import { Diagnostics } from "./diagnostics-service.js";
-import { Effect } from "effect";
 import type { PlatformError } from "@effect/platform/Error";
-import { Toolchain } from "./toolchain.js";
+import { Effect } from "effect";
 import { formatDiagnostic } from "./diagnostics.js";
-import { jsValueAbi } from "./js-value-abi/index.js";
+import { Diagnostics } from "./diagnostics-service.js";
+import { CompilationFailed } from "./errors.js";
 import { loadProgram } from "./frontend.js";
 import { lowerToJsIr } from "./ir.js";
+import { type LinkResult, linkWithClang, linkWithClangxx, linkerErrorToLinkResult } from "./linker.js";
+import { emitInlineCppSource, emitLlvmModule } from "./llvm.js";
+import { Toolchain } from "./toolchain.js";
+import type { CompileOptions, CompileResult } from "./types.js";
+import { jsValueAbi } from "./js-value-abi/index.js";
 
 export const compile = (
   options: CompileOptions
@@ -46,8 +46,7 @@ export const compile = (
     const llvmIr = path.join(options.outDir, "main.ll");
     const traceMap = path.join(options.outDir, "trace-map.json");
     const executable = path.join(options.outDir, "main");
-    // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
-    let inlineCpp: string | undefined = undefined;
+    let inlineCpp: string | undefined;
     if (jsIr.module.inlineCppBlocks.length > 0) {
       inlineCpp = path.join(options.outDir, "inline-cpp.cpp");
     }

@@ -1,5 +1,5 @@
-import type { CompilerDiagnostic } from "./diagnostics.js";
 import { Data } from "effect";
+import type { CompilerDiagnostic } from "./diagnostics.js";
 
 export class CompilationFailed extends Data.TaggedError("CompilationFailed")<{
   readonly diagnostics: readonly CompilerDiagnostic[];

@@ -1,6 +1,13 @@
-import { compileFixture, countOccurrences, expectLlvmAsVerificationIfAvailable, expectNativeBehaviorIfAvailable, expectSuccessfulCompile, expectToolBehaviorIfAvailable } from "./helpers.js";
 import { describe, expect, test } from "vitest";
 import path from "node:path";
+import {
+  compileFixture,
+  countOccurrences,
+  expectLlvmAsVerificationIfAvailable,
+  expectNativeBehaviorIfAvailable,
+  expectSuccessfulCompile,
+  expectToolBehaviorIfAvailable
+} from "./helpers.js";
 
 describe("tscn objects", () => {
   test("lowers object literals and dot access", async () => {

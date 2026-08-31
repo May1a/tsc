@@ -1,5 +1,10 @@
-import { countOccurrences, expectLlvmAsVerificationIfAvailable, expectNativeBehaviorIfAvailable, expectSuccessfulCompile } from "./helpers.js";
 import { describe, expect, test } from "vitest";
+import {
+  countOccurrences,
+  expectLlvmAsVerificationIfAvailable,
+  expectNativeBehaviorIfAvailable,
+  expectSuccessfulCompile
+} from "./helpers.js";
 
 // Phase A coverage for the GC scaffolding. The test confirms that:
 //   - the runtime helpers emit the gcInit definition

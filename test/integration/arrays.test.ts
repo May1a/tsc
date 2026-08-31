@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { expectLlvmAsVerificationIfAvailable, expectNativeBehaviorIfAvailable, expectSuccessfulCompile } from "./helpers.js";
+import {
+  expectLlvmAsVerificationIfAvailable,
+  expectNativeBehaviorIfAvailable,
+  expectSuccessfulCompile
+} from "./helpers.js";
 
 describe("tscn arrays", () => {
   test("lowers array literals and constant element access", async () => {

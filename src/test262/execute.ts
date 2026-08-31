@@ -1,19 +1,26 @@
-import { type CapturedProcess, captureProcessWithTimeout } from "./process.js";
-import { Cause, Effect, Exit, Layer, Option } from "effect";
-import type { Classification, SelectedTest, TestCaseResult } from "./types.js";
-import { type ObservedBehavior, behaviorsEqual, nativeBehavior, nodeBehavior, nodeScriptWrapperSource, nodeWrapperSource } from "./behavior.js";
-import { assembleEntry, assembledTsConfig, missingThrowMarker, unexpectedThrowMarker } from "./prelude.js";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { CompilationFailed } from "../compiler/errors.js";
-import { DiagnosticsLive } from "../compiler/diagnostics-service.js";
 import { NodeContext } from "@effect/platform-node";
-import { ToolchainLive } from "../compiler/toolchain.js";
-import { compile } from "../compiler/pipeline.js";
-import { formatDiagnostic } from "../compiler/diagnostics.js";
+import { Cause, Effect, Exit, Layer, Option } from "effect";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { formatDiagnostic } from "../compiler/diagnostics.js";
+import { DiagnosticsLive } from "../compiler/diagnostics-service.js";
+import { CompilationFailed } from "../compiler/errors.js";
+import { compile } from "../compiler/pipeline.js";
+import { ToolchainLive } from "../compiler/toolchain.js";
+import {
+  type ObservedBehavior,
+  behaviorsEqual,
+  nativeBehavior,
+  nodeBehavior,
+  nodeScriptWrapperSource,
+  nodeWrapperSource
+} from "./behavior.js";
 import { repoRoot } from "./paths.js";
-import { tmpdir } from "node:os";
+import { assembleEntry, assembledTsConfig, missingThrowMarker, unexpectedThrowMarker } from "./prelude.js";
+import { type CapturedProcess, captureProcessWithTimeout } from "./process.js";
+import type { Classification, SelectedTest, TestCaseResult } from "./types.js";
 
 const compileLayer = Layer.provideMerge(
   Layer.provideMerge(ToolchainLive, NodeContext.layer),

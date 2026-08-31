@@ -164,7 +164,7 @@ export const parseFrontmatter = (source: string): Test262Frontmatter | undefined
   }
   const lines = match[1].split("\n");
   const frontmatter: MutableFrontmatter = { flags: [], includes: [], features: [] };
-  let negative: NegativeResult | undefined = undefined;
+  let negative: NegativeResult | undefined;
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];

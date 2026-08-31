@@ -23,7 +23,7 @@ export interface ObservedBehavior {
 export const thrownSentinel = "__TSCN_NODE_THROWN_V1__";
 
 const parseThrownObservation = (json: string): ThrownObservation | undefined => {
-  let parsed: unknown = undefined;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(json);
   } catch {

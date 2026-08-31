@@ -1,5 +1,5 @@
-import { compileFixture, expectSuccessfulCompile } from "./helpers.js";
 import { describe, expect, test } from "vitest";
+import { compileFixture, expectSuccessfulCompile } from "./helpers.js";
 
 // Issue #43: function declarations in positions the ECMAScript grammar forbids
 // (iteration-statement bodies, catch-parameter redeclaration) are early errors

@@ -1,7 +1,7 @@
 import { Command, type CommandExecutor } from "@effect/platform";
+import { SystemError } from "@effect/platform/Error";
 import { Data, Effect, Fiber, Option, Stream } from "effect";
 import type { CompilerDiagnostic } from "./diagnostics.js";
-import { SystemError } from "@effect/platform/Error";
 import { Toolchain } from "./toolchain.js";
 
 export interface LinkResult {
@@ -81,8 +81,7 @@ const runClang = (
       if (error instanceof LinkerExitFailed) {
         return Effect.fail(error);
       }
-      // eslint-disable-next-line unicorn/no-useless-undefined -- init-declarations requires explicit initializer
-      let description: string | undefined = undefined;
+      let description: string;
       if (error instanceof Error) {
         description = error.message;
       } else {

@@ -1,5 +1,9 @@
 import { describe, test } from "vitest";
-import { expectNativeBehaviorIfAvailable, expectSuccessfulCompile, expectUnsupportedDiagnostic } from "./helpers.js";
+import {
+  expectNativeBehaviorIfAvailable,
+  expectSuccessfulCompile,
+  expectUnsupportedDiagnostic
+} from "./helpers.js";
 
 describe("tscn operator expansion (package BZ)", () => {
   test("evaluates the `in` operator against runtime objects and arrays", async () => {

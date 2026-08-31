@@ -1,9 +1,18 @@
-import { type CapturedRun, type CompileResult, captureCommand, commandExecutorLayer, compileFixture, expectLlvmAsVerificationIfAvailable, repoRoot, runNativeIfAvailable } from "./helpers.js";
-import { Effect } from "effect";
-import type { TraceMapV1 } from "../../src/compiler/trace.js";
 import { expect } from "vitest";
+import { Effect } from "effect";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import type { TraceMapV1 } from "../../src/compiler/trace.js";
+import {
+  type CapturedRun,
+  type CompileResult,
+  captureCommand,
+  commandExecutorLayer,
+  compileFixture,
+  expectLlvmAsVerificationIfAvailable,
+  repoRoot,
+  runNativeIfAvailable
+} from "./helpers.js";
 
 export type ThrownObservation =
   | {
@@ -168,8 +177,8 @@ export async function expectNativeMatchesNodeIfAvailable(
   const keepArtifactsOnFailure = options.keepArtifactsOnFailure ?? true;
   const result = await compileFixture(fixture, { link: true });
   let succeeded = false;
-  let native: ObservedBehavior | undefined = undefined;
-  let node: ObservedBehavior | undefined = undefined;
+  let native: ObservedBehavior | undefined;
+  let node: ObservedBehavior | undefined;
 
   try {
     if (!compilerIsAvailable(result, formatFailure(fixture, result.outDir, native, node))) {
