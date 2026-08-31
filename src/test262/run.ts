@@ -6,12 +6,12 @@ import { defaultCacheDir, defaultCheckoutDir } from "./paths.js";
 import { buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite } from "./runner.js";
 import type { Classification } from "./types.js";
 
-export type RunArguments = {
+export interface RunArguments {
   readonly pathPrefixes: readonly string[];
   readonly classification?: Classification;
   readonly jsonPath?: string;
   readonly baselinePath?: string;
-};
+}
 
 const parseClassification = (value: string | undefined): Classification | undefined => {
   if (value === "pass" || value === "fail" || value === "skip" || value === "coverage-gap") {

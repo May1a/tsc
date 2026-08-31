@@ -4,10 +4,10 @@ import { Data, Effect, Fiber, Option, Stream } from "effect";
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { Toolchain } from "./toolchain.js";
 
-export type LinkResult = {
+export interface LinkResult {
   readonly executable?: string;
   readonly diagnostics: readonly CompilerDiagnostic[];
-};
+}
 
 export class LinkerLaunchFailed extends Data.TaggedError("LinkerLaunchFailed")<{
   readonly message: string;

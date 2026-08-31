@@ -1,22 +1,22 @@
-export type SuitePin = {
+export interface SuitePin {
   readonly repository: string;
   readonly revision: string;
-};
+}
 
-export type FilterGroup = {
+export interface FilterGroup {
   readonly id: string;
   readonly include: readonly string[];
   readonly exclude: readonly string[];
-};
+}
 
-export type HarnessFilters = {
+export interface HarnessFilters {
   readonly groups: readonly FilterGroup[];
   readonly unsupportedFlags: readonly string[];
   readonly unsupportedFeatures: readonly string[];
   readonly supportedIncludes: readonly string[];
-};
+}
 
-export type Test262Frontmatter = {
+export interface Test262Frontmatter {
   readonly flags: readonly string[];
   readonly includes: readonly string[];
   readonly features: readonly string[];
@@ -24,7 +24,7 @@ export type Test262Frontmatter = {
     readonly phase: string;
     readonly type: string;
   };
-};
+}
 
 export type Expectation =
   | { readonly kind: "positive" }
@@ -37,25 +37,25 @@ export type Expectation =
 // unsupported, so selected tests are always "script" today.
 export type ParseGoal = "script" | "module";
 
-export type SelectedTest = {
+export interface SelectedTest {
   readonly id: string;
   readonly filePath: string;
   readonly source: string;
   readonly expectation: Expectation;
   readonly parseGoal: ParseGoal;
-};
+}
 
 export type Classification = "pass" | "fail" | "skip" | "coverage-gap";
 
-export type TestCaseResult = {
+export interface TestCaseResult {
   readonly id: string;
   readonly classification: Classification;
   readonly reason?: string;
   readonly detail?: string;
   readonly artifactsDir?: string;
-};
+}
 
-export type SuiteSummary = {
+export interface SuiteSummary {
   readonly total: number;
   readonly selected: number;
   readonly pass: number;
@@ -64,31 +64,31 @@ export type SuiteSummary = {
   readonly coverageGap: number;
   readonly skipReasons: Readonly<Record<string, number>>;
   readonly failReasons: Readonly<Record<string, number>>;
-};
+}
 
-export type TestFamilySummary = {
+export interface TestFamilySummary {
   readonly family: string;
   readonly total: number;
   readonly pass: number;
   readonly fail: number;
   readonly skip: number;
   readonly coverageGap: number;
-};
+}
 
-export type Test262MachineReport = {
+export interface Test262MachineReport {
   readonly pinRevision: string;
   readonly nodeVersion: string;
   readonly selected: number;
   readonly summary: SuiteSummary;
   readonly families: readonly TestFamilySummary[];
-};
+}
 
-export type Test262Baseline = {
+export interface Test262Baseline {
   readonly pinRevision: string;
   readonly minimumPass: number;
   readonly maximumFail: number;
   readonly maximumBehaviorMismatch: number;
-};
+}
 
 export type SuiteRun =
   | {

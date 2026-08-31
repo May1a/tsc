@@ -4,14 +4,14 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { TraceMapV1 } from "../../src/compiler/trace.js";
 import {
+  type CapturedRun,
+  type CompileResult,
   captureCommand,
   commandExecutorLayer,
   compileFixture,
   expectLlvmAsVerificationIfAvailable,
   repoRoot,
-  runNativeIfAvailable,
-  type CapturedRun,
-  type CompileResult
+  runNativeIfAvailable
 } from "./helpers.js";
 
 export type ThrownObservation =
@@ -25,17 +25,17 @@ export type ThrownObservation =
       readonly display: string;
     };
 
-export type ObservedBehavior = {
+export interface ObservedBehavior {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
   readonly thrown?: ThrownObservation;
-};
+}
 
-export type OracleOptions = {
+export interface OracleOptions {
   readonly verifyLlvm?: boolean;
   readonly keepArtifactsOnFailure?: boolean;
-};
+}
 
 const thrownSentinel = "__TSCN_NODE_THROWN_V1__";
 const nodeWrapper = `

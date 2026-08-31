@@ -2,13 +2,13 @@ import { Command } from "@effect/platform";
 import { NodeContext } from "@effect/platform-node";
 import { Effect, Fiber, Stream } from "effect";
 
-export type CapturedProcess = {
+export interface CapturedProcess {
   readonly timedOut: boolean;
   readonly status: number;
   readonly stdout: string;
   readonly stderr: string;
   readonly termination?: string;
-};
+}
 
 type ExitObservation =
   | { readonly kind: "exited"; readonly code: number }

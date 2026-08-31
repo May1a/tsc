@@ -2,25 +2,25 @@
 export const jsValueLayout = Object.freeze({
   wordBits: 64,
   payloadBits: 48,
-  payloadMask: 0x0000_ffff_ffff_ffffn,
-  tagMask: 0xffff_0000_0000_0000n,
-  exponentMask: 0x7ff0_0000_0000_0000n,
-  fractionMask: 0x000f_ffff_ffff_ffffn,
-  reservedTagMaximum: 0x7fff_0000_0000_0000n,
+  payloadMask: 0x0000_FFFF_FFFF_FFFFn,
+  tagMask: 0xFFFF_0000_0000_0000n,
+  exponentMask: 0x7FF0_0000_0000_0000n,
+  fractionMask: 0x000F_FFFF_FFFF_FFFFn,
+  reservedTagMaximum: 0x7FFF_0000_0000_0000n,
   references: Object.freeze({
-    object: 0x7ff8_0000_0000_0000n,
-    array: 0x7ff9_0000_0000_0000n,
-    string: 0x7ffa_0000_0000_0000n,
-    function: 0x7ffb_0000_0000_0000n
+    object: 0x7FF8_0000_0000_0000n,
+    array: 0x7FF9_0000_0000_0000n,
+    string: 0x7FFA_0000_0000_0000n,
+    function: 0x7FFB_0000_0000_0000n
   }),
   immediates: Object.freeze({
-    undefined: 0x7ffc_0000_0000_0000n,
-    false: 0x7ffc_0000_0000_0001n,
-    true: 0x7ffc_0000_0000_0002n,
-    null: 0x7ffc_0000_0000_0003n
+    undefined: 0x7FFC_0000_0000_0000n,
+    false: 0x7FFC_0000_0000_0001n,
+    true: 0x7FFC_0000_0000_0002n,
+    null: 0x7FFC_0000_0000_0003n
   }),
   internalSentinels: Object.freeze({
-    arrayHole: 0x7ffc_0000_0000_0007n
+    arrayHole: 0x7FFC_0000_0000_0007n
   })
 });
 

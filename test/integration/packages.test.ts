@@ -1,8 +1,8 @@
 import { describe, test } from "vitest";
 import {
+  expectNativeBehaviorIfAvailable,
   expectSuccessfulCompile,
-  expectUnsupportedDiagnostic,
-  expectNativeBehaviorIfAvailable
+  expectUnsupportedDiagnostic
 } from "./helpers.js";
 
 describe("tscn operator expansion (package BZ)", () => {

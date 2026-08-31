@@ -1,17 +1,17 @@
 export type DiagnosticCategory = "error" | "warning" | "info";
 
-export type SourceSpan = {
+export interface SourceSpan {
   readonly fileName: string;
   readonly line: number;
   readonly column: number;
-};
+}
 
-export type CompilerDiagnostic = {
+export interface CompilerDiagnostic {
   readonly code: string;
   readonly category: DiagnosticCategory;
   readonly message: string;
   readonly span?: SourceSpan;
-};
+}
 
 export const formatDiagnostic = (diagnostic: CompilerDiagnostic): string => {
   let location = "";

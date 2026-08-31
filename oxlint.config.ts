@@ -8,8 +8,8 @@ const disabledRules: DummyRuleMap = {
     "id-length": "off",
     // Many helpers take 3-4 args; Phase 2 will migrate to object params where it helps.
     "max-params": "off",
-    // Will be enabled with auto-fix in Phase 1; kept off until the one-shot sort lands.
-    "sort-imports": "off",
+    // Definite-assignment checks are more useful than placeholder `undefined` initializers.
+    "init-declarations": "off",
     // Object key order is semantic in IR descriptors (e.g. JsIrOperation unions).
     "eslint/sort-keys": "off",
     // Scoped to src/cli/** via override below; compiler core must not use console.
@@ -24,22 +24,10 @@ const disabledRules: DummyRuleMap = {
     "no-plusplus": "off",
     // `undefined` is a sentinel in the IR and value ABI.
     "no-undefined": "off",
-    // Will be enabled as kebab-case in Phase 1; kept off until files are renamed.
-    "filename-case": "off",
     // Will be enabled as warn in Phase 3 after ir/llvm decomposition.
     "prefer-readonly-parameter-types": "off",
-    // Trivial stylistic rule; hex literal casing is not a quality signal here.
-    "unicorn/number-literal-case": "off",
-    // Will be enabled as warn in Phase 1; `let` globals in ir.ts are tracked separately.
-    "init-declarations": "off",
-    // Will enforce one style (type vs interface) in Phase 3; codebase currently mixes both.
-    "typescript/consistent-type-definitions": "off",
     // Spread is core to IR and runtime helpers.
     "oxc/no-rest-spread-properties": "off",
-    // Will be enabled as error in Phase 1; `!!value`/`+str` hide intent in predicates.
-    "no-implicit-coercion": "off",
-    // Will be enabled as warn in Phase 1; exhaustive switches already enforce exhaustiveness.
-    "default-case": "off",
     // Low value for this team; comments already carry doc weight.
     "capitalized-comments": "off",
     // Overly restrictive for the codebase; optional chaining is used deliberately.
@@ -87,6 +75,9 @@ const stricterRules: DummyRuleMap = {
     "unicorn/no-useless-switch-case": "error",
     "unicorn/no-useless-undefined": ["error", { checkArguments: false }],
     "no-self-compare": "error",
+    // Preserve declaration order so imports can express builtin/external/internal layering.
+    "sort-imports": ["error", { ignoreDeclarationSort: true }],
+    "typescript/consistent-type-definitions": ["error", "interface"],
     "unicorn/consistent-empty-array-spread": "error",
     "unicorn/explicit-length-check": "error",
     // Deduplicated: no-else-return is configured in the main override with allowElseIf:false — see C-3.

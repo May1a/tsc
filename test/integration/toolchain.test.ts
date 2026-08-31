@@ -7,7 +7,7 @@ import path from "node:path";
 import { DiagnosticsLive } from "../../src/compiler/diagnostics-service.js";
 import type { CompilationFailed } from "../../src/compiler/errors.js";
 import { compile } from "../../src/compiler/pipeline.js";
-import { normalizeHostTargetFacts, Toolchain, type Toolchain as ToolchainService } from "../../src/compiler/toolchain.js";
+import { Toolchain, type Toolchain as ToolchainService, normalizeHostTargetFacts } from "../../src/compiler/toolchain.js";
 
 describe("toolchain target facts", () => {
   test("normalizes supported x86-64 hosts", () => {

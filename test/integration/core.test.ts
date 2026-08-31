@@ -1,10 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
   compileFixture,
-  expectSuccessfulCompile,
-  expectUnsupportedDiagnostic,
+  countOccurrences,
   expectNativeBehaviorIfAvailable,
-  countOccurrences
+  expectSuccessfulCompile,
+  expectUnsupportedDiagnostic
 } from "./helpers.js";
 
 describe("tscn numeric conditions and bindings", () => {

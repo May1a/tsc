@@ -1,5 +1,5 @@
 import { jsValueAbi } from "./js-value-abi/index.js";
-import { llvm, type LlvmModuleBuilder } from "./llvm-ir/index.js";
+import { type LlvmModuleBuilder, llvm } from "./llvm-ir/index.js";
 
 const legacyJsValue = jsValueAbi.forLegacyLlvm();
 
@@ -277,9 +277,9 @@ export type RuntimeHelper =
  */
 export const SYMBOL_ITERATOR_SENTINEL = "\uF8FFSymbol.iterator";
 
-export type RuntimeHelperEmitter = {
+export interface RuntimeHelperEmitter {
   readonly used: Set<RuntimeHelper>;
-};
+}
 
 export const createRuntimeHelperEmitter = (): RuntimeHelperEmitter => ({ used: new Set() });
 

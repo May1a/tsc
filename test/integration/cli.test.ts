@@ -4,19 +4,19 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  type CompileResult,
+  captureCommand,
+  commandExecutorLayer,
   compileFixture,
+  expectLlvmAsVerificationIfAvailable,
+  expectNativeBehaviorIfAvailable,
   expectSuccessfulCompile,
   expectUnsupportedDiagnostic,
   expectUnsupportedMessage,
-  expectNativeBehaviorIfAvailable,
-  expectLlvmAsVerificationIfAvailable,
-  runNativeIfAvailable,
-  captureCommand,
-  toolExecutable,
-  roadmapIntegrationTimeoutMs,
   repoRoot,
-  type CompileResult,
-  commandExecutorLayer
+  roadmapIntegrationTimeoutMs,
+  runNativeIfAvailable,
+  toolExecutable
 } from "./helpers.js";
 
 // eslint-disable-next-line max-statements -- CLI coverage intentionally groups diagnostics and smoke tests.

@@ -8,11 +8,11 @@ import { CompilationFailed } from "../compiler/errors.js";
 import { compile } from "../compiler/pipeline.js";
 import type { Toolchain } from "../compiler/toolchain.js";
 
-type CliConfig = {
+interface CliConfig {
   readonly entry: string;
   readonly outDir: string;
   readonly fcpp: boolean;
-};
+}
 
 const rejectFlagLikeEntry = (value: string): string => {
   if (value.startsWith("-")) {

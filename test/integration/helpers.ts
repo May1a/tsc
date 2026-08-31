@@ -14,28 +14,28 @@ import { Toolchain, ToolchainLive } from "../../src/compiler/toolchain.js";
 export const repoRoot = path.resolve(import.meta.dirname, "../..");
 export const roadmapIntegrationTimeoutMs = 60_000;
 
-export type CompileResult = {
+export interface CompileResult {
   readonly outDir: string;
   readonly status: number | null;
   readonly stdout: string;
   readonly stderr: string;
   readonly readArtifact: (name: string) => Promise<string>;
   readonly cleanup: () => Promise<void>;
-};
+}
 
-export type NativeRunResult = {
+export interface NativeRunResult {
   readonly skipped: boolean;
   readonly reason?: string;
   readonly status?: number | null;
   readonly stdout?: string;
   readonly stderr?: string;
-};
+}
 
-export type ExpectedNativeBehavior = {
+export interface ExpectedNativeBehavior {
   readonly stdout: string;
   readonly stderr: string;
   readonly status: number;
-};
+}
 
 export type ToolRunResult = NativeRunResult & {
   readonly tool: string;
@@ -43,16 +43,16 @@ export type ToolRunResult = NativeRunResult & {
 
 export type ToolName = "clang" | "clang++" | "llvm-as" | "lli";
 
-export type CompileFixtureOptions = {
+export interface CompileFixtureOptions {
   readonly link?: boolean;
   readonly fcpp?: boolean;
-};
+}
 
-export type CapturedRun = {
+export interface CapturedRun {
   readonly status: number;
   readonly stdout: string;
   readonly stderr: string;
-};
+}
 
 const toolExecutableCache = new Map<ToolName, Promise<string | undefined>>();
 

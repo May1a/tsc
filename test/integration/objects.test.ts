@@ -2,11 +2,11 @@ import { describe, expect, test } from "vitest";
 import path from "node:path";
 import {
   compileFixture,
-  expectSuccessfulCompile,
-  expectNativeBehaviorIfAvailable,
-  expectToolBehaviorIfAvailable,
+  countOccurrences,
   expectLlvmAsVerificationIfAvailable,
-  countOccurrences
+  expectNativeBehaviorIfAvailable,
+  expectSuccessfulCompile,
+  expectToolBehaviorIfAvailable
 } from "./helpers.js";
 
 describe("tscn objects", () => {

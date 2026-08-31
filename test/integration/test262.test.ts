@@ -6,10 +6,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { nodeBehavior, nodeScriptWrapperSource, nodeWrapperSource } from "../../src/test262/behavior.js";
 import { loadFilters } from "../../src/test262/config.js";
-import { ensureSuiteFetched, FetchError, verifyCheckout } from "../../src/test262/fetch.js";
+import { FetchError, ensureSuiteFetched, verifyCheckout } from "../../src/test262/fetch.js";
 import { assembleEntry } from "../../src/test262/prelude.js";
 import { captureProcessWithTimeout } from "../../src/test262/process.js";
-import { buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite, type RunOptions } from "../../src/test262/runner.js";
+import { type RunOptions, buildMachineReport, evaluateBaseline, formatReport, runFilteredSuite } from "../../src/test262/runner.js";
 import { parseRunArguments } from "../../src/test262/run.js";
 import { selectTests } from "../../src/test262/selection.js";
 import type { Classification, HarnessFilters, TestCaseResult } from "../../src/test262/types.js";
@@ -23,14 +23,14 @@ const expectedPassCount = 8;
 const expectedFailCount = 4;
 const expectedSkipCount = 7;
 const shaHashLength = 40;
-
 let filters: HarnessFilters;
 
 beforeAll(async () => {
   filters = await loadFilters();
 });
 
-const runSuite = async (options: Partial<RunOptions> = {}) => runFilteredSuite({ suiteRoot, filters, ...options });
+const runSuite = async (options: Partial<RunOptions> = {}) =>
+  runFilteredSuite({ suiteRoot, filters, ...options });
 
 const completedResults = (run: Awaited<ReturnType<typeof runSuite>>): readonly TestCaseResult[] => {
   if (run.kind !== "completed") {

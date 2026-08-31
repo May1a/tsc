@@ -6,7 +6,7 @@ import { Diagnostics } from "./diagnostics-service.js";
 import { CompilationFailed } from "./errors.js";
 import { loadProgram } from "./frontend.js";
 import { lowerToJsIr } from "./ir.js";
-import { linkerErrorToLinkResult, linkWithClang, linkWithClangxx, type LinkResult } from "./linker.js";
+import { type LinkResult, linkWithClang, linkWithClangxx, linkerErrorToLinkResult } from "./linker.js";
 import { emitInlineCppSource, emitLlvmModule } from "./llvm.js";
 import { Toolchain } from "./toolchain.js";
 import type { CompileOptions, CompileResult } from "./types.js";

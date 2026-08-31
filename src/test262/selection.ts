@@ -1,7 +1,7 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
-import type { Expectation, HarnessFilters, ParseGoal, SelectedTest, TestCaseResult, Test262Frontmatter } from "./types.js";
+import type { Expectation, HarnessFilters, ParseGoal, SelectedTest, Test262Frontmatter, TestCaseResult } from "./types.js";
 
 // Flags Test262 uses that do not change how the harness assembles a test.
 const benignFlags = new Set(["noStrict", "onlyStrict", "generated", "CanBlockIsFalse", "CanBlockIsTrue"]);
@@ -110,10 +110,10 @@ const classifyTest = (id: string, source: string, filters: HarnessFilters): Clas
   return { kind: "selected", expectation, parseGoal };
 };
 
-export type Selection = {
+export interface Selection {
   readonly selected: readonly SelectedTest[];
   readonly skipped: readonly TestCaseResult[];
-};
+}
 
 /**
  * Walks `suiteRoot/test/language` and classifies every test file against the

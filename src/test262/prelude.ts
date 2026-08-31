@@ -317,11 +317,11 @@ const assertionMethodNames = new Map([
   ["compareArray", "__t262CompareArray"]
 ]);
 
-type SourceReplacement = {
+interface SourceReplacement {
   readonly start: number;
   readonly end: number;
   readonly text: string;
-};
+}
 
 const rewriteAssertionCalls = (source: string): string => {
   const sourceFile = ts.createSourceFile("test262.js", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);

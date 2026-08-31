@@ -5,20 +5,20 @@ import ts from "typescript";
 import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
 
-export type FrontendResult = {
+export interface FrontendResult {
   readonly program: ts.Program;
   readonly sourceFiles: readonly ts.SourceFile[];
-};
+}
 
-type ParsedConfigResult = {
+interface ParsedConfigResult {
   readonly parsed: ts.ParsedCommandLine;
   readonly diagnostics: readonly CompilerDiagnostic[];
-};
+}
 
-type CachedParsedConfigResult = {
+interface CachedParsedConfigResult {
   readonly content: string;
   readonly result: ParsedConfigResult;
-};
+}
 
 const inlineCppTag = "__tscn_inline_cpp";
 const inlineCppMarker = "@cpp";
@@ -85,7 +85,7 @@ const findAncestorTsConfig = (
   configName = "tsconfig.json"
 ): Effect.Effect<string | undefined, PlatformError, FileSystem.FileSystem | Path.Path> => {
   type Step = "found" | "stop" | "descend";
-  type ProbeResult = { readonly step: Step; readonly path: string };
+  interface ProbeResult { readonly step: Step; readonly path: string }
   const probeStep = (
     current: string
   ): Effect.Effect<ProbeResult, PlatformError, FileSystem.FileSystem | Path.Path> =>
@@ -228,10 +228,10 @@ function skipBlockComment(content: string, index: number): number {
   return end + 2;
 }
 
-type RewriteResult = {
+interface RewriteResult {
   readonly rewritten: string;
   readonly index: number;
-};
+}
 
 function rewriteInlineCppMarker(content: string, index: number): RewriteResult | undefined {
   if (!isInlineCppMarkerAt(content, index)) {

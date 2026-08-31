@@ -9,35 +9,35 @@ type LlvmIntegerBitWidth =
   | typeof integerBitWidth
   | typeof valueBitWidth;
 
-export type LlvmVoidType = {
+export interface LlvmVoidType {
   readonly kind: "void";
-};
+}
 
-export type LlvmIntegerType = {
+export interface LlvmIntegerType {
   readonly kind: "integer";
   readonly bits: LlvmIntegerBitWidth;
-};
+}
 
-export type LlvmDoubleType = {
+export interface LlvmDoubleType {
   readonly kind: "double";
-};
+}
 
-export type LlvmPointerType = {
+export interface LlvmPointerType {
   readonly kind: "pointer";
-};
+}
 
-export type LlvmStructType = {
+export interface LlvmStructType {
   readonly kind: "struct";
   readonly elements: readonly LlvmValueType[];
-};
+}
 
 export type LlvmType = LlvmVoidType | LlvmIntegerType | LlvmDoubleType | LlvmPointerType | LlvmStructType;
 export type LlvmValueType = Exclude<LlvmType, LlvmVoidType>;
 export type LlvmStructElementType<T extends LlvmStructType> = T["elements"][number];
 
-export type LlvmValue<T extends LlvmValueType = LlvmValueType> = {
+export interface LlvmValue<T extends LlvmValueType = LlvmValueType> {
   readonly type: T;
-};
+}
 
 export const llvm = {
   void: { kind: "void" } as LlvmVoidType,

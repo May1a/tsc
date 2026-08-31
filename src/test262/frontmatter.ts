@@ -61,8 +61,8 @@ const parseBlockList = (blockLines: readonly string[]): readonly string[] | unde
   return items;
 };
 
-type MutableFrontmatter = { flags: string[]; includes: string[]; features: string[] };
-type NegativeResult = { readonly phase: string; readonly type: string };
+interface MutableFrontmatter { flags: string[]; includes: string[]; features: string[] }
+interface NegativeResult { readonly phase: string; readonly type: string }
 
 type LineResult =
   | { readonly kind: "ok"; readonly nextIndex: number; readonly negative: NegativeResult | undefined }

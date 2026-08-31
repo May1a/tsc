@@ -1,19 +1,19 @@
 import { Chunk, Context, Effect, Layer, Ref } from "effect";
 import type { CompilerDiagnostic, DiagnosticCategory, SourceSpan } from "./diagnostics.js";
 
-export type DiagnosticsErrorInput = {
+export interface DiagnosticsErrorInput {
   readonly code: string;
   readonly message: string;
   readonly span?: SourceSpan;
-};
+}
 
-export type Diagnostics = {
+export interface Diagnostics {
   readonly error: (input: DiagnosticsErrorInput) => Effect.Effect<void>;
   readonly warning: (input: DiagnosticsErrorInput) => Effect.Effect<void>;
   readonly info: (input: DiagnosticsErrorInput) => Effect.Effect<void>;
   readonly add: (diagnostic: CompilerDiagnostic) => Effect.Effect<void>;
   readonly drain: () => Effect.Effect<readonly CompilerDiagnostic[]>;
-};
+}
 
 export const Diagnostics = Context.GenericTag<Diagnostics>("tscn/Diagnostics");
 

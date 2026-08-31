@@ -11,21 +11,21 @@ const jsValuePointerAddressBits = 48;
 
 export type TargetArchitecture = "x86_64" | "aarch64" | "x86" | "arm" | "unknown";
 
-export type TargetFacts = {
+export interface TargetFacts {
   readonly triple: string;
   readonly architecture: TargetArchitecture;
   readonly pointerWidthBits: number | undefined;
   readonly doubleFormat: "ieee754-binary64" | "other" | "unknown";
   readonly pointerAddressBits: number | undefined;
-};
+}
 
-export type Toolchain = {
+export interface Toolchain {
   readonly clang: Option.Option<string>;
   readonly clangxx: Option.Option<string>;
   readonly llvmAs: Option.Option<string>;
   readonly lli: Option.Option<string>;
   readonly target: TargetFacts;
-};
+}
 
 export const Toolchain = Context.GenericTag<Toolchain>("tscn/Toolchain");
 
@@ -110,7 +110,6 @@ const probeClangxx = (): Effect.Effect<Option.Option<string>, never, CommandExec
     Effect.catchAll(() => Effect.succeed(Option.none<string>()))
   );
 };
-
 let cachedToolchain: Toolchain | undefined;
 
 const discoverToolchainUncached: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(

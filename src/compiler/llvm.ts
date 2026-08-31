@@ -1,8 +1,6 @@
 import {
-  aggregateBindingForOperation,
-  visitJsIrOperations,
-  type JsIrCallArgument,
   type JsIrBindingValue,
+  type JsIrCallArgument,
   type JsIrCondition,
   type JsIrExpression,
   type JsIrFunctionObjectDefinition,
@@ -15,24 +13,26 @@ import {
   type JsIrOperation,
   type JsIrRuntimeArrayElement,
   type JsIrRuntimeObjectValue,
-  type JsIrSwitchClause,
   type JsIrStringExpression,
+  type JsIrSwitchClause,
+  type JsIrValueExpression,
   type JsIrValueKind,
-  type JsIrValueExpression
+  aggregateBindingForOperation,
+  visitJsIrOperations
 } from "./ir.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
-import { buildTraceMap, traceOperationId, type TraceMapV1 } from "./trace.js";
+import { type TraceMapV1, buildTraceMap, traceOperationId } from "./trace.js";
 import {
+  type RuntimeHelper,
+  type RuntimeHelperEmitter,
   createRuntimeHelperEmitter,
   defineStructuredRuntimeHelpers,
   emitRuntimeDeclarations,
   emitRuntimeDefinitions,
-  useRuntimeHelper,
-  type RuntimeHelper,
-  type RuntimeHelperEmitter
+  useRuntimeHelper
 } from "./runtime-helpers.js";
 import { jsValueAbi } from "./js-value-abi/index.js";
-import { createLlvmModule, type LegacyLlvmTraceMarker, type RenderedLlvmModule } from "./llvm-ir/index.js";
+import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
 
 /** Pending abrupt/normal completion kinds for finally / IteratorClose cleanup. */
 const COMPLETION_NORMAL = 0;
@@ -41,7 +41,7 @@ const COMPLETION_THROW = 2;
 const COMPLETION_BREAK = 3;
 const COMPLETION_CONTINUE = 4;
 
-type CleanupFrame = {
+interface CleanupFrame {
   readonly index: number;
   readonly entryLabel: string;
   readonly finalDispatchLabel: string;
@@ -56,16 +56,16 @@ type CleanupFrame = {
   /** Same-loop continue targets this label and must not run IteratorClose. */
   readonly skipContinueLabel?: string;
   iteratorSlot?: string;
-};
+}
 
-type CompletionSlots = {
+interface CompletionSlots {
   readonly kind: string;
   readonly value: string;
   readonly destination: string;
   readonly until: string;
-};
+}
 
-type EmitContext = {
+interface EmitContext {
   readonly bindings: Map<string, JsIrBindingValue>;
   readonly stringConstants: string[];
   readonly arrayGlobals: string[];
@@ -109,55 +109,55 @@ type EmitContext = {
   gcFrameName: string;
   readonly traceMarkers: Map<string, Omit<LegacyLlvmTraceMarker, "line">>;
   readonly suppressTrace?: boolean;
-};
+}
 
 type ObjectLayout = ObjectValue;
 
-type NumberValue = {
+interface NumberValue {
   readonly lines: readonly string[];
   readonly value: string;
-};
+}
 
-type StringValue = {
+interface StringValue {
   readonly lines: readonly string[];
   readonly value: string;
   readonly length: string;
-};
+}
 
-type JsValue = {
+interface JsValue {
   readonly lines: readonly string[];
   readonly value: string;
-};
+}
 
-type ArrayValue = {
+interface ArrayValue {
   readonly name: string;
   readonly length: number;
   readonly storageKind: "global" | "stack";
-};
+}
 
-type RuntimeArrayValue = {
+interface RuntimeArrayValue {
   readonly pointerName: string;
-};
+}
 
-type ObjectValue = {
+interface ObjectValue {
   readonly typeName: string;
   readonly pointerName: string;
   readonly runtimePointerName?: string;
   readonly value: JsIrObjectValue;
-};
+}
 
-type RuntimeObjectValue = {
+interface RuntimeObjectValue {
   readonly pointerName: string;
-};
+}
 
-type LoopLabels = {
+interface LoopLabels {
   readonly breakLabel: string;
   readonly continueLabel?: string;
   /** cleanupStack.length when the loop was entered; cleanups at or above this depth run on break. */
   readonly cleanupDepth: number;
-};
+}
 
-type FunctionDef = {
+interface FunctionDef {
   readonly name: string;
   readonly parameters: readonly JsIrFunctionParameter[];
   readonly body: readonly JsIrOperation[];
@@ -167,7 +167,7 @@ type FunctionDef = {
   readonly usesDynamicThis?: boolean;
   readonly captures?: JsIrFunctionObjectDefinition["captures"];
   returnType: LlvmReturnType;
-};
+}
 
 // Generated JavaScript functions use an explicit payload/status ABI. Most runtime
 // helpers remain scalar; jsCall / getIteratorValue / callIteratorNext use the
@@ -323,10 +323,10 @@ ${jsValueAbi.emitInlineCppSupport()}
 
 ${blocks.map(emitInlineCppFunction).join("\n")}`;
 
-type LlvmIrEmission = {
+interface LlvmIrEmission {
   readonly rendered: RenderedLlvmModule;
   readonly diagnostics: readonly CompilerDiagnostic[];
-};
+}
 
 // eslint-disable-next-line max-statements -- Legacy section assembly and tracked builder composition remain together during incremental migration.
 function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
@@ -542,11 +542,11 @@ function splitLegacyDefinition(definition: string): readonly string[] {
   return definition.split("\n");
 }
 
-export type LlvmEmission = {
+export interface LlvmEmission {
   readonly llvmIr: string;
   readonly traceMap: TraceMapV1;
   readonly diagnostics: readonly CompilerDiagnostic[];
-};
+}
 
 export function emitLlvmModule(module: JsIrModule): LlvmEmission {
   const { rendered, diagnostics } = emitLlvmIr(module);
@@ -733,12 +733,12 @@ function internCompletionDest(context: EmitContext, label: string, frame: Cleanu
   return id;
 }
 
-type CompletionTransfer = {
+interface CompletionTransfer {
   readonly kind: number;
   readonly value?: string;
   readonly destLabel?: string;
   readonly untilDepth: number;
-};
+}
 
 /**
  * Route a completion through active cleanup frames (innermost first), or execute it
@@ -7189,10 +7189,11 @@ function valueComparisonOperatorCode(operator: "==" | "!=" | "<" | "<=" | ">" | 
     case "!=": {
       return looseNotEqualCode;
     }
+    default: {
+      const unsupported: never = operator;
+      throw new Error(`Unsupported value comparison operator: ${String(unsupported)}`);
+    }
   }
-  const unsupported: never = operator;
-  void unsupported;
-  throw new Error("Unsupported value comparison operator");
 }
 
 function emitRuntimeObjectHasCondition(
@@ -7412,11 +7413,11 @@ function llvmComparisonInstruction(operator: "===" | "!==" | "<" | "<=" | ">" | 
     case ">=": {
       return "fcmp oge";
     }
+    default: {
+      const unsupported: never = operator;
+      throw new Error(`Unsupported comparison operator: ${String(unsupported)}`);
+    }
   }
-
-  const unsupported: never = operator;
-  void unsupported;
-  throw new Error("Unsupported comparison operator");
 }
 
 // eslint-disable-next-line complexity, max-statements -- Number expression lowering includes temporary runtime array method branches.
@@ -8466,11 +8467,11 @@ function llvmNumberOperator(operator: JsIrNumberOperator): string {
     case "power": {
       throw new Error("Power operator is emitted through mathPow");
     }
+    default: {
+      const unsupported: never = operator;
+      throw new Error(`Unsupported number operator: ${String(unsupported)}`);
+    }
   }
-
-  const unsupported: never = operator;
-  void unsupported;
-  throw new Error("Unsupported number operator");
 }
 
 function emitOperationsWithScopedBindings(operations: readonly JsIrOperation[], context: EmitContext): string[] {

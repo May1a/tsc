@@ -45,11 +45,11 @@ export const verifyCheckout = async (cacheDir: string, revision: string): Promis
   return "mismatch";
 };
 
-export type FetchOutcome = {
+export interface FetchOutcome {
   readonly status: "already-present" | "fetched";
   readonly revision: string;
   readonly checkoutDir: string;
-};
+}
 
 /**
  * Resolves the pinned Test262 revision into `cacheDir/checkout` and verifies

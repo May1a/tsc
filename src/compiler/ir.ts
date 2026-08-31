@@ -19,16 +19,16 @@ type ClassMemberKey =
   | { readonly kind: "literal"; readonly name: string }
   | { readonly kind: "computed"; readonly slotName: string };
 
-type ClassFieldInfo = {
+interface ClassFieldInfo {
   readonly key: ClassMemberKey;
   readonly initializer: ts.Expression | undefined;
-};
+}
 
-type ClassMethodInfo = {
+interface ClassMethodInfo {
   readonly parameters: readonly JsIrFunctionParameter[];
-};
+}
 
-type ClassInfo = {
+interface ClassInfo {
   readonly name: string;
   readonly baseName?: string;
   readonly fields: readonly ClassFieldInfo[];
@@ -43,7 +43,7 @@ type ClassInfo = {
   // Source-level private field name (`#x`) → class-mangled storage key on the
   // instance object. Presence of the storage key doubles as the brand check.
   readonly privateFields: ReadonlyMap<string, string>;
-};
+}
 
 // Registry of classes in the file being lowered, consulted by the deep value
 // lowerers to resolve `new C(...)`. Scoped per file by `lowerTopLevelStatements`.
@@ -64,48 +64,48 @@ let activeInlineCppBlocks: JsIrInlineCppBlock[] | undefined;
 let nextFunctionObjectId = 0;
 let nextJsonStatementValueId = 0;
 
-export type JsIrInlineCppBlock = {
+export interface JsIrInlineCppBlock {
   readonly symbol: string;
   readonly code: string;
-};
+}
 
-export type JsIrModule = {
+export interface JsIrModule {
   readonly entry: string;
   readonly modules: readonly JsIrSourceModule[];
   readonly inlineCppBlocks: readonly JsIrInlineCppBlock[];
-};
+}
 
 export type JsIrLoweringMode = "native";
 
 export type JsIrTraceOrigin = "source" | "synthesized";
 
-export type JsIrOperationTrace = {
+export interface JsIrOperationTrace {
   readonly id: string;
   readonly source?: SourceSpan;
   readonly origin: JsIrTraceOrigin;
-};
+}
 
-export type JsIrSourceModule = {
+export interface JsIrSourceModule {
   readonly fileName: string;
   readonly statementCount: number;
   readonly loweringMode: JsIrLoweringMode;
   readonly operations: readonly JsIrOperation[];
   readonly functionObjects: readonly JsIrFunctionObjectDefinition[];
-};
+}
 
 export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide" | "remainder" | "bitAnd" | "bitOr" | "bitXor" | "shiftLeft" | "shiftRight" | "shiftRightUnsigned" | "power";
 export type JsIrValueComparisonOperator = "==" | "!=" | "<" | "<=" | ">" | ">=";
 
 export type JsIrValueKind = "number" | "string" | "value";
 
-export type JsIrFunctionParameter = {
+export interface JsIrFunctionParameter {
   readonly name: string;
   readonly valueKind: JsIrValueKind;
   readonly defaultValue?: JsIrNumberExpression;
   readonly isRest?: boolean;
-};
+}
 
-export type JsIrFunctionObjectDefinition = {
+export interface JsIrFunctionObjectDefinition {
   readonly codeName: string;
   readonly parameters: readonly JsIrFunctionParameter[];
   readonly functionKind: "arrow" | "ordinary";
@@ -118,7 +118,7 @@ export type JsIrFunctionObjectDefinition = {
     readonly valueKind: JsIrValueKind;
     readonly value: JsIrValueExpression;
   }[];
-};
+}
 
 export type JsIrCallArgument =
   | {
@@ -609,14 +609,14 @@ export type JsIrObjectFieldValue =
       readonly value: JsIrObjectValue;
     };
 
-export type JsIrObjectField = {
+export interface JsIrObjectField {
   readonly name: string;
   readonly value: JsIrObjectFieldValue;
-};
+}
 
-export type JsIrObjectValue = {
+export interface JsIrObjectValue {
   readonly fields: readonly JsIrObjectField[];
-};
+}
 
 export type JsIrRuntimeObjectField =
   | {
@@ -629,19 +629,19 @@ export type JsIrRuntimeObjectField =
       readonly sourceName: string;
     };
 
-export type JsIrRuntimeObjectValue = {
+export interface JsIrRuntimeObjectValue {
   readonly fields: readonly JsIrRuntimeObjectField[];
-};
+}
 
-export type JsIrSwitchClause = {
+export interface JsIrSwitchClause {
   readonly test?: JsIrValueExpression;
   readonly operations: readonly JsIrOperation[];
-};
+}
 
-export type JsIrClosureValue = {
+export interface JsIrClosureValue {
   readonly functionName: string;
   readonly captures: readonly JsIrNumberExpression[];
-};
+}
 
 export type JsIrBindingValue =
   | {
@@ -870,13 +870,13 @@ export type JsIrCondition =
       readonly state: "isExtensible" | "isSealed" | "isFrozen";
     };
 
-export type JsIrRuntimeDataDescriptor = {
+export interface JsIrRuntimeDataDescriptor {
   readonly key: JsIrStringExpression;
   readonly value: JsIrValueExpression;
   readonly writable: boolean;
   readonly enumerable: boolean;
   readonly configurable: boolean;
-};
+}
 
 export type JsIrRuntimeArrayConcatElement =
   | {
@@ -1685,13 +1685,13 @@ export function visitJsIrOperations(
   }
 }
 
-export type JsIrResult = {
+export interface JsIrResult {
   readonly module: JsIrModule;
-};
+}
 
-export type JsIrLowerOptions = {
+export interface JsIrLowerOptions {
   readonly fcpp?: boolean;
-};
+}
 
 type ArrayLiteralClassification =
   | {
@@ -1903,11 +1903,11 @@ class ClassLoweringUnsupportedError extends Error {
   }
 }
 
-type LoweredStatements = {
+interface LoweredStatements {
   readonly operations: readonly JsIrOperation[];
   readonly diagnostics: Chunk.Chunk<CompilerDiagnostic>;
   readonly loweringMode: JsIrLoweringMode;
-};
+}
 
 function sourceFileContainsClass(sourceFile: ts.SourceFile): boolean {
   let found = false;
@@ -2477,27 +2477,27 @@ function classLiteralMemberName(name: ts.PropertyName, bindings: ReadonlyMap<str
   return key.name;
 }
 
-type ClassComputedKeyInfo = {
+interface ClassComputedKeyInfo {
   readonly slotName: string;
   readonly expression: ts.Expression;
-};
+}
 
-type ClassMethodEntry = {
+interface ClassMethodEntry {
   readonly name: string;
   readonly declaration: ts.MethodDeclaration;
-};
+}
 
-type ClassComputedMethodEntry = {
+interface ClassComputedMethodEntry {
   readonly slotName: string;
   readonly declaration: ts.MethodDeclaration;
-};
+}
 
-type ClassAccessorEntry = {
+interface ClassAccessorEntry {
   readonly name: string;
   readonly declaration: ts.AccessorDeclaration;
-};
+}
 
-type CollectedClassMembers = {
+interface CollectedClassMembers {
   readonly fields: readonly ClassFieldInfo[];
   readonly staticFields: readonly ClassFieldInfo[];
   readonly computedKeys: readonly ClassComputedKeyInfo[];
@@ -2510,7 +2510,7 @@ type CollectedClassMembers = {
   readonly setAccessors: readonly ClassAccessorEntry[];
   readonly iteratorMethod: ts.MethodDeclaration | undefined;
   readonly privateFields: ReadonlyMap<string, string>;
-};
+}
 
 // eslint-disable-next-line complexity, max-statements -- Class member classification keeps mutually exclusive syntax forms in declaration order.
 function collectClassMembers(
@@ -5945,10 +5945,10 @@ function lowerArrayProtocolDestructuringFromSource(
   return true;
 }
 
-type DestructuringSource = {
+interface DestructuringSource {
   readonly name: string;
   readonly binding: JsIrBindingValue;
-};
+}
 
 function resolveDestructuringSource(
   initializer: ts.Expression,

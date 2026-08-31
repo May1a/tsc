@@ -11,11 +11,11 @@ import {
   sameLlvmType
 } from "./types.js";
 
-type ValueData = {
+interface ValueData {
   readonly owner: symbol;
   readonly block?: symbol;
   readonly text: string;
-};
+}
 
 const values = new WeakMap<object, ValueData>();
 const functionSpecs = new WeakMap<object, symbol>();
@@ -51,43 +51,43 @@ function valueData(value: LlvmValue): ValueData {
   return data;
 }
 
-type RenderLine = {
+interface RenderLine {
   readonly text: string;
   readonly traceIds: readonly string[];
-};
+}
 
-type MutableLlvmLineRange = {
+interface MutableLlvmLineRange {
   readonly startLine: number;
   endLine: number;
-};
+}
 
-export type LlvmFunctionParameter = {
+export interface LlvmFunctionParameter {
   readonly name: string;
   readonly type: LlvmValueType;
-};
+}
 
-export type LlvmFunctionSpec = {
+export interface LlvmFunctionSpec {
   readonly name: string;
   readonly parameters: readonly LlvmFunctionParameter[];
   readonly returns: LlvmType;
-};
+}
 
-export type LegacyLlvmTraceMarker = {
+export interface LegacyLlvmTraceMarker {
   readonly line: number;
   readonly kind: "start" | "end";
   readonly id: string;
-};
+}
 
-export type LegacyLlvmModuleText = {
+export interface LegacyLlvmModuleText {
   readonly origin: string;
   readonly text: string;
   readonly traceMarkers?: readonly LegacyLlvmTraceMarker[];
-};
+}
 
-export type RenderedLlvmModule = {
+export interface RenderedLlvmModule {
   readonly text: string;
   readonly traceRanges: ReadonlyMap<string, readonly LlvmLineRange[]>;
-};
+}
 
 export interface LlvmBlockBuilder {
   int<T extends LlvmIntegerType>(type: T, value: bigint): LlvmValue<T>;
@@ -125,10 +125,10 @@ export interface LlvmModuleBuilder {
   render(): RenderedLlvmModule;
 }
 
-type BuiltFunction = {
+interface BuiltFunction {
   readonly spec: LlvmFunctionSpec;
   readonly lines: readonly RenderLine[];
-};
+}
 
 type ModuleItem =
   | { readonly kind: "function"; readonly value: BuiltFunction }

@@ -13,7 +13,7 @@ import type {
   TestFamilySummary
 } from "./types.js";
 
-export type RunOptions = {
+export interface RunOptions {
   readonly suiteRoot: string;
   readonly filters: HarnessFilters;
   readonly only?: readonly string[];
@@ -23,7 +23,7 @@ export type RunOptions = {
   readonly keepArtifactsOnFailure?: boolean;
   readonly workDirRoot?: string;
   readonly onResult?: (result: TestCaseResult) => void;
-};
+}
 
 const defaultConcurrency = 4;
 const defaultTimeoutMs = 10_000;
