@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import ts from "typescript";
 import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
+import { inlineCppTag, rewriteInlineCppSyntax } from "./inline-cpp-rewriter.js";
 
 export interface FrontendResult {
   readonly program: ts.Program;
@@ -20,8 +21,6 @@ interface CachedParsedConfigResult {
   readonly result: ParsedConfigResult;
 }
 
-const inlineCppTag = "__tscn_inline_cpp";
-const inlineCppMarker = "@cpp";
 const missingInlineCppTagDiagnosticCode = 2304;
 const suggestedInlineCppTagDiagnosticCode = 2552;
 // Early-error syntax rejections the TypeScript parser deliberately accepts.
@@ -191,157 +190,6 @@ const sourceFileCacheKey = (
   }
   return `${stableFileName}:${languageKey}`;
 };
-
-function isInlineCppMarkerAt(content: string, index: number): boolean {
-  return content.startsWith(`${inlineCppMarker}\``, index);
-}
-
-function skipQuotedString(content: string, index: number, quote: string): number {
-  let current = index + 1;
-  while (current < content.length) {
-    const char = content[current];
-    if (char === "\\") {
-      current += 2;
-      continue;
-    }
-    if (char === quote) {
-      return current + 1;
-    }
-    current += 1;
-  }
-  return current;
-}
-
-function skipLineComment(content: string, index: number): number {
-  const end = content.indexOf("\n", index + 2);
-  if (end === -1) {
-    return content.length;
-  }
-  return end;
-}
-
-function skipBlockComment(content: string, index: number): number {
-  const end = content.indexOf("*/", index + 2);
-  if (end === -1) {
-    return content.length;
-  }
-  return end + 2;
-}
-
-interface RewriteResult {
-  readonly rewritten: string;
-  readonly index: number;
-}
-
-function rewriteInlineCppMarker(content: string, index: number): RewriteResult | undefined {
-  if (!isInlineCppMarkerAt(content, index)) {
-    return undefined;
-  }
-  return { rewritten: inlineCppTag, index: index + inlineCppMarker.length };
-}
-
-function copyQuotedString(content: string, index: number, quote: string): RewriteResult {
-  const next = skipQuotedString(content, index, quote);
-  return { rewritten: content.slice(index, next), index: next };
-}
-
-function copyComment(content: string, index: number): RewriteResult | undefined {
-  if (content[index] === "/" && content[index + 1] === "/") {
-    const next = skipLineComment(content, index);
-    return { rewritten: content.slice(index, next), index: next };
-  }
-  if (content[index] === "/" && content[index + 1] === "*") {
-    const next = skipBlockComment(content, index);
-    return { rewritten: content.slice(index, next), index: next };
-  }
-  return undefined;
-}
-
-function rewriteTemplatePlaceholder(content: string, index: number): RewriteResult {
-  const body = rewriteCode(content, index, true);
-  if (body.index >= content.length || content[body.index] !== "}") {
-    return body;
-  }
-  return { rewritten: `${body.rewritten}}`, index: body.index + 1 };
-}
-
-function rewriteTemplateLiteral(content: string, index: number): RewriteResult {
-  let rewritten = "`";
-  let current = index + 1;
-  while (current < content.length) {
-    const char = content[current];
-    if (char === "\\") {
-      rewritten += content.slice(current, current + 2);
-      current += 2;
-      continue;
-    }
-    if (char === "`") {
-      return { rewritten: `${rewritten}\``, index: current + 1 };
-    }
-    if (char === "$" && content[current + 1] === "{") {
-      const placeholder = rewriteTemplatePlaceholder(content, current + 2);
-      rewritten += `\${${placeholder.rewritten}`;
-      current = placeholder.index;
-      continue;
-    }
-    rewritten += char;
-    current += 1;
-  }
-  return { rewritten, index: current };
-}
-
-function rewriteCopiedLiteralOrComment(content: string, index: number): RewriteResult | undefined {
-  const char = content[index];
-  if (char === "\"" || char === "'") {
-    return copyQuotedString(content, index, char);
-  }
-  if (char === "`") {
-    return rewriteTemplateLiteral(content, index);
-  }
-  return copyComment(content, index);
-}
-
-// eslint-disable-next-line complexity -- This scanner tracks JS template placeholder boundaries without parsing raw @cpp as TypeScript.
-function rewriteCode(content: string, index: number, stopAtTemplatePlaceholderEnd: boolean): RewriteResult {
-  let rewritten = "";
-  let current = index;
-  let braceDepth = 0;
-  while (current < content.length) {
-    const char = content[current];
-    if (stopAtTemplatePlaceholderEnd && char === "}" && braceDepth === 0) {
-      return { rewritten, index: current };
-    }
-
-    const marker = rewriteInlineCppMarker(content, current);
-    if (marker !== undefined) {
-      rewritten += marker.rewritten;
-      current = marker.index;
-      continue;
-    }
-
-    const copied = rewriteCopiedLiteralOrComment(content, current);
-    if (copied !== undefined) {
-      rewritten += copied.rewritten;
-      current = copied.index;
-      continue;
-    }
-
-    if (stopAtTemplatePlaceholderEnd && char === "{") {
-      braceDepth += 1;
-    }
-    if (stopAtTemplatePlaceholderEnd && char === "}") {
-      braceDepth -= 1;
-    }
-
-    rewritten += char;
-    current += 1;
-  }
-  return { rewritten, index: current };
-}
-
-function rewriteInlineCppSyntax(content: string): string {
-  return rewriteCode(content, 0, false).rewritten;
-}
 
 function isSyntheticInlineCppDiagnostic(diagnostic: ts.Diagnostic): boolean {
   if (diagnostic.code !== missingInlineCppTagDiagnosticCode && diagnostic.code !== suggestedInlineCppTagDiagnosticCode) {
