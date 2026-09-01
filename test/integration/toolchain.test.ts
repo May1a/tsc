@@ -20,7 +20,16 @@ describe("toolchain target facts", () => {
     });
   });
 
-  test("does not claim low-48-bit compatibility for unapproved targets", () => {
+  test("approves the current arm64 Darwin host without approving other AArch64 targets", () => {
+    // FIXME(arm64-darwin): This locks in a narrow host exception, not general
+    // AArch64 support. Replace it when target capabilities become explicit.
+    expect(normalizeHostTargetFacts("arm64", "darwin")).toEqual({
+      triple: "aarch64-darwin",
+      architecture: "aarch64",
+      pointerWidthBits: 64,
+      doubleFormat: "ieee754-binary64",
+      pointerAddressBits: 47
+    });
     expect(normalizeHostTargetFacts("arm64", "linux")).toMatchObject({
       architecture: "aarch64",
       pointerWidthBits: 64,

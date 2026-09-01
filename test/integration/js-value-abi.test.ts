@@ -35,8 +35,10 @@ const abiConformanceVectors: readonly AbiConformanceVector[] = [
   { name: "is-array-hole", llvmExpression: "call i64 @abi_is_array_hole(i64 9222246136947933191)", cppExpression: "tscn::is_array_hole(tscn::array_hole())", expected: "1" },
   { name: "number", llvmExpression: "call i64 @abi_number(double 1.500000e+00)", cppExpression: "tscn::number(1.5)", expected: "4609434218613702656" },
   { name: "is-number", llvmExpression: "call i64 @abi_is_number(i64 4609434218613702656)", cppExpression: "tscn::is_number(tscn::number(1.5))", expected: "1" },
-  { name: "safe-nan", llvmExpression: "call i64 @abi_number(double 0x7FF5000000000000)", cppExpression: "tscn::number(std::bit_cast<double>(0x7ff5000000000000ULL))", expected: "9220275812110958592" },
-  { name: "reserved-nan", llvmExpression: "call i64 @abi_number(double 0x7FF8000000000000)", cppExpression: "tscn::number(std::numeric_limits<double>::quiet_NaN())", expected: "9221120237041090560" }
+  // FIXME(arm64-darwin): These vectors document canonicalization as a stopgap.
+  // Remove the exact-bit assertion when NaNs cannot overlap tags by design.
+  { name: "signaling-nan", llvmExpression: "call i64 @abi_number(double 0x7FF5000000000000)", cppExpression: "tscn::number(std::bit_cast<double>(0x7ff5000000000000ULL))", expected: "9220275812110958592" },
+  { name: "reserved-quiet-nan", llvmExpression: "call i64 @abi_number(double 0x7FF8000000000000)", cppExpression: "tscn::number(std::numeric_limits<double>::quiet_NaN())", expected: "18444492273895866368" }
 ];
 
 function defineAbiConformanceFunctions(module: LlvmModuleBuilder): void {
@@ -144,7 +146,8 @@ describe("JSValue ABI", () => {
     expect(module.render().text).toContain("%value = or i64 %payload, 9221120237041090560");
 
     const cpp = jsValueAbi.emitInlineCppSupport();
-    expect(cpp).toContain("return std::bit_cast<std::uint64_t>(value);");
+    expect(cpp).toContain("const auto bits = std::bit_cast<std::uint64_t>(value);");
+    expect(cpp).toContain("return is_arm64_nan ? 18444492273895866368ULL : bits;");
     expect(cpp).toContain("return 9222246136947933184ULL;");
     expect(cpp).toContain("return 9222246136947933185ULL;");
     expect(cpp).toContain("return 9222246136947933186ULL;");

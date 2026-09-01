@@ -9,7 +9,11 @@ static_assert(std::numeric_limits<double>::is_iec559);
 
 namespace tscn {
 inline std::uint64_t number(double value) {
-  return std::bit_cast<std::uint64_t>(value);
+  const auto bits = std::bit_cast<std::uint64_t>(value);
+  // FIXME(arm64-darwin): Keep this duplicate check in sync with the LLVM
+  // adapter. This recognizes one hardware NaN, not every IEEE-754 NaN.
+  const auto is_arm64_nan = bits == ${cppUnsigned(jsValueLayout.arm64CanonicalNaN)};
+  return is_arm64_nan ? ${cppUnsigned(jsValueLayout.canonicalNaN)} : bits;
 }
 
 inline std::uint64_t undefined() {
