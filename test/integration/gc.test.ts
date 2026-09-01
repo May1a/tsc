@@ -355,8 +355,10 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
+      // Runtime bodies also create function objects, so ordering is checked
+      // from the receiver call onwards (generated code only).
       const receiverCall = llvmIr.indexOf("call { i64, i1 } @receiver(");
-      const functionObjectCall = llvmIr.indexOf("call i64 @functionObjectNew(");
+      const functionObjectCall = llvmIr.indexOf("call i64 @functionObjectNew(", receiverCall);
       expect(receiverCall).toBeGreaterThanOrEqual(0);
       expect(functionObjectCall).toBeGreaterThan(receiverCall);
       expect(llvmIr).toMatch(/call i64 @functionObjectNew\(ptr @[^,]+, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 \d+\)/);
