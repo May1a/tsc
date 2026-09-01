@@ -13,45 +13,17 @@ import {
   repoRoot,
   runNativeIfAvailable
 } from "./helpers.js";
-
-export type ThrownObservation =
-  | {
-      readonly kind: "error";
-      readonly name: string;
-      readonly message: string;
-    }
-  | {
-      readonly kind: "value";
-      readonly display: string;
-    };
-
-export interface ObservedBehavior {
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly thrown?: ThrownObservation;
-}
+import {
+  type ObservedBehavior,
+  nativeBehavior,
+  nodeBehavior,
+  nodeWrapperSource
+} from "../../src/testing/process-behavior.js";
 
 export interface OracleOptions {
   readonly verifyLlvm?: boolean;
   readonly keepArtifactsOnFailure?: boolean;
 }
-
-const thrownSentinel = "__TSCN_NODE_THROWN_V1__";
-const nodeWrapper = `
-globalThis.print = (value) => {
-  process.stdout.write(String(value) + "\\n");
-};
-try {
-  await import(process.argv[1]);
-} catch (thrown) {
-  const payload = thrown instanceof Error
-    ? { kind: "error", name: thrown.name, message: thrown.message }
-    : { kind: "value", display: String(thrown) };
-  process.stderr.write(${JSON.stringify(thrownSentinel)} + JSON.stringify(payload) + "\\n");
-  process.exitCode = 1;
-}
-`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -93,54 +65,21 @@ function parseTraceMap(contents: string): TraceMapV1 {
   if (!value.operations.every(isTraceMapOperation)) {
     throw new Error("trace-map.json contains an invalid operation record");
   }
-  return value as TraceMapV1;
+  return {
+    version: 1,
+    entry: value.entry,
+    modules: value.modules,
+    operations: value.operations,
+  };
 }
 
 async function runFixtureWithNode(fixture: string): Promise<CapturedRun> {
   const fixtureUrl = pathToFileURL(path.join(repoRoot, "test/fixtures", fixture)).href;
   return Effect.runPromise(
-    captureCommand(process.execPath, ["--input-type=module", "--eval", nodeWrapper, fixtureUrl], { cwd: repoRoot }).pipe(
+    captureCommand(process.execPath, ["--input-type=module", "--eval", nodeWrapperSource, fixtureUrl], { cwd: repoRoot }).pipe(
       Effect.provide(commandExecutorLayer)
     )
   );
-}
-
-function nodeBehavior(run: CapturedRun): ObservedBehavior {
-  const terminalRecord = new RegExp(`(?:^|\\n)${thrownSentinel}([^\\n]+)\\n$`);
-  const match = terminalRecord.exec(run.stderr);
-  if (match === null) {
-    return { exitCode: run.status, stdout: run.stdout, stderr: run.stderr };
-  }
-  const thrown = JSON.parse(match[1]) as ThrownObservation;
-  let sentinelStart = match.index;
-  if (match[0].startsWith("\n")) {
-    sentinelStart += 1;
-  }
-  return {
-    exitCode: run.status,
-    stdout: run.stdout,
-    stderr: run.stderr.slice(0, sentinelStart),
-    thrown
-  };
-}
-
-function nativeBehavior(run: { readonly status: number; readonly stdout: string; readonly stderr: string }): ObservedBehavior {
-  if (run.status !== 1 || !run.stdout.endsWith("\n")) {
-    return { exitCode: run.status, stdout: run.stdout, stderr: run.stderr };
-  }
-  const withoutTerminalNewline = run.stdout.slice(0, -1);
-  const previousNewline = withoutTerminalNewline.lastIndexOf("\n");
-  const display = withoutTerminalNewline.slice(previousNewline + 1);
-  let stdout = "";
-  if (previousNewline !== -1) {
-    stdout = withoutTerminalNewline.slice(0, previousNewline + 1);
-  }
-  const error = /^([A-Za-z_$][\w$]*Error|Error):(?: (.*))?$/.exec(display);
-  let thrown: ThrownObservation = { kind: "value", display };
-  if (error !== null) {
-    thrown = { kind: "error", name: error[1], message: error[2] || "" };
-  }
-  return { exitCode: run.status, stdout, stderr: run.stderr, thrown };
 }
 
 function formatFailure(

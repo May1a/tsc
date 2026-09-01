@@ -168,6 +168,16 @@ export default defineConfig({
                 "max-lines-per-function": "off",
             },
         },
+        // Step 5: re-enable no-unsafe-type-assertion for the oracle boundary now that
+        // the unchecked `as ThrownObservation` JSON cast is gone. Later overrides win,
+        // so this narrow entry restores the guard for this file while keeping the
+        // blanket `off` for other test helpers/fixtures.
+        {
+            files: ["test/integration/oracle.ts"],
+            rules: {
+                "typescript/no-unsafe-type-assertion": "error",
+            },
+        },
     ],
     plugins: ["typescript", "eslint", "unicorn", "oxc"],
     rules: {
