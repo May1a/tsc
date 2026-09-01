@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { nodeBehavior, nodeScriptWrapperSource, nodeWrapperSource } from "../../src/test262/behavior.js";
+import { nodeBehavior, nodeModuleWrapperSource } from "../../src/testing/process-behavior.js";
+import { nodeScriptWrapperSource } from "../../src/test262/behavior.js";
 import { loadFilters } from "../../src/test262/config.js";
 import { FetchError, ensureSuiteFetched, verifyCheckout } from "../../src/test262/fetch.js";
 import { assembleEntry } from "../../src/test262/prelude.js";
@@ -282,7 +283,7 @@ describe("Test262 assembly and reporting", () => {
         ),
         captureProcessWithTimeout(
           process.execPath,
-          ["--input-type=module", "--eval", nodeWrapperSource, pathToFileURL(entry).href],
+          ["--input-type=module", "--eval", nodeModuleWrapperSource, pathToFileURL(entry).href],
           { cwd: repoRoot, timeoutMs: hangTimeoutMs }
         )
       ]);
