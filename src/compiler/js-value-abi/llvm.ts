@@ -33,7 +33,12 @@ export function llvmJsValues(block: LlvmBlockBuilder): LlvmJsValues {
       return asJsValue(block.int(llvm.i64, jsValueLayout.internalSentinels.arrayHole));
     },
     boxNumber(value) {
-      return asJsValue(block.bitcast(value, llvm.i64, "number.value"));
+      const bits = block.bitcast(value, llvm.i64, "number.bits");
+      // FIXME(arm64-darwin): This exact comparison intentionally avoids
+      // rewriting tagged objects that other compiler paths pass through a
+      // double. Redesign those paths and then canonicalize every NaN here.
+      const isArm64NaN = block.icmp("eq", bits, block.int(llvm.i64, jsValueLayout.arm64CanonicalNaN), "number.is.arm64.nan");
+      return asJsValue(block.select(isArm64NaN, block.int(llvm.i64, jsValueLayout.canonicalNaN), bits, "number.value"));
     },
     unboxNumber(value) {
       return block.bitcast(value, llvm.double, "number");

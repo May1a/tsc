@@ -8,6 +8,7 @@ export type ToolName = "clang" | "clang++" | "llvm-as" | "lli";
 const thirtyTwoBitWord = 32;
 const sixtyFourBitWord = 64;
 const jsValuePointerAddressBits = 48;
+const darwinArm64PointerAddressBits = 47;
 
 export type TargetArchitecture = "x86_64" | "aarch64" | "x86" | "arm" | "unknown";
 
@@ -56,6 +57,11 @@ export function normalizeHostTargetFacts(
   // The compiler runtime and inline extension allocator never request such hints.
   if (normalizedArchitecture === "x86_64" && (platform === "linux" || platform === "darwin" || platform === "win32")) {
     pointerAddressBits = jsValuePointerAddressBits;
+  } else if (normalizedArchitecture === "aarch64" && platform === "darwin") {
+    // FIXME(arm64-darwin): This is a host allowlist shortcut based on Darwin's
+    // current 47-bit userspace VM ceiling. Replace it with target capabilities
+    // before adding cross-compilation, arm64e, or another AArch64 OS.
+    pointerAddressBits = darwinArm64PointerAddressBits;
   }
   return {
     triple: `${normalizedArchitecture}-${platform}`,

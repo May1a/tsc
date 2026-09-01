@@ -6,6 +6,12 @@ export const jsValueLayout = Object.freeze({
   tagMask: 0xFFFF_0000_0000_0000n,
   exponentMask: 0x7FF0_0000_0000_0000n,
   fractionMask: 0x000F_FFFF_FFFF_FFFFn,
+  // FIXME(arm64-darwin): This recognizes only the exact NaN emitted by current
+  // Apple ARM floating-point operations. It is not general NaN canonicalization.
+  arm64CanonicalNaN: 0x7FF8_0000_0000_0000n,
+  // FIXME(arm64-darwin): A future value representation should make every
+  // hardware NaN safe without rewriting it to a chosen negative quiet NaN.
+  canonicalNaN: 0xFFF8_0000_0000_0000n,
   reservedTagMaximum: 0x7FFF_0000_0000_0000n,
   references: Object.freeze({
     object: 0x7FF8_0000_0000_0000n,
@@ -36,6 +42,14 @@ function assertAcceptedLayout(): void {
   }
   if (jsValueLayout.payloadMask !== (1n << BigInt(jsValueLayout.payloadBits)) - 1n) {
     throw new Error("Internal compiler error: JSValue ABI payload mask does not match its payload width");
+  }
+  const canonicalNaNTag = jsValueLayout.canonicalNaN & jsValueLayout.tagMask;
+  const canonicalNaNIsReserved = canonicalNaNTag >= jsValueLayout.references.object &&
+    canonicalNaNTag <= jsValueLayout.reservedTagMaximum;
+  const canonicalNaNHasExponent = (jsValueLayout.canonicalNaN & jsValueLayout.exponentMask) === jsValueLayout.exponentMask;
+  const canonicalNaNHasFraction = (jsValueLayout.canonicalNaN & jsValueLayout.fractionMask) !== 0n;
+  if (canonicalNaNIsReserved || !canonicalNaNHasExponent || !canonicalNaNHasFraction) {
+    throw new Error("Internal compiler error: canonical JSValue NaN must be a non-reserved IEEE-754 NaN");
   }
   for (const tag of referenceTags) {
     if ((tag & jsValueLayout.payloadMask) !== 0n) {
