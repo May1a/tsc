@@ -147,13 +147,26 @@ export default defineConfig({
                 "max-lines-per-function": ["warn", { max: 400, skipBlankLines: true, skipComments: true }],
             },
         },
-        // C-7: only the CLI boundary should use console / process.exit. Compiler core
-        // and test helpers are covered by the restriction category (error) via the main override.
+        // C-7: only the CLI boundary and build scripts should use console /
+        // process.exit. Compiler core and test helpers are covered by the
+        // restriction category (error) via the main override.
         {
-            files: ["src/cli/**/*.{ts,mts,cts,js,mjs,cjs}"],
+            files: ["src/cli/**/*.{ts,mts,cts,js,mjs,cjs}", "scripts/**/*.{js,mjs,cjs}"],
             rules: {
                 "no-console": "off",
                 "unicorn/no-process-exit": "off",
+            },
+        },
+        {
+            // Scripts are untyped JavaScript by choice; the type-aware unsafe-*
+            // family would demand JSDoc types on every ts compiler-API call.
+            files: ["scripts/**/*.{js,mjs,cjs}"],
+            rules: {
+                "typescript/no-unsafe-assignment": "off",
+                "typescript/no-unsafe-argument": "off",
+                "typescript/no-unsafe-member-access": "off",
+                "typescript/no-unsafe-return": "off",
+                "typescript/restrict-template-expressions": "off",
             },
         },
         {
@@ -163,6 +176,8 @@ export default defineConfig({
                 "typescript/no-unsafe-member-access": "off",
                 "typescript/no-unsafe-return": "off",
                 "typescript/no-unsafe-type-assertion": "off",
+                // Expected values in assertions are data, not magic.
+                "eslint/no-magic-numbers": "off",
                 // Test fixtures and integration suites are large by nature; size guards are for src/**.
                 "max-lines": "off",
                 "max-lines-per-function": "off",
