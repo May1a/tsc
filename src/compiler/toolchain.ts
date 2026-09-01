@@ -88,6 +88,7 @@ const probeTool = (
 };
 
 const probeClang = (): Effect.Effect<Option.Option<string>, never, CommandExecutor.CommandExecutor> => {
+  // inline-llvm-ir-allowed: opaque-pointer capability probe fed to clang, not emitted IR.
   const opaquePointerProbe = "declare i32 @puts(ptr)\ndefine i32 @main() {\nentry:\n  ret i32 0\n}\n";
   return Command.exitCode(
     Command.feed(Command.make("clang", "-x", "ir", "-", "-o", devNull, "-lm"), opaquePointerProbe)
@@ -103,6 +104,7 @@ const probeClang = (): Effect.Effect<Option.Option<string>, never, CommandExecut
 };
 
 const probeClangxx = (): Effect.Effect<Option.Option<string>, never, CommandExecutor.CommandExecutor> => {
+  // inline-llvm-ir-allowed: minimal module probe fed to clang++, not emitted IR.
   const llvmIrProbe = "define i32 @main() {\nentry:\n  ret i32 0\n}\n";
   return Command.exitCode(
     Command.feed(Command.make("clang++", "-std=c++20", "-x", "ir", "-", "-x", "c++", devNull, "-o", devNull, "-lm"), llvmIrProbe)
