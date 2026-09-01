@@ -9,14 +9,8 @@ import { DiagnosticsLive } from "../compiler/diagnostics-service.js";
 import { CompilationFailed } from "../compiler/errors.js";
 import { compile } from "../compiler/pipeline.js";
 import { ToolchainLive } from "../compiler/toolchain.js";
-import {
-  type ObservedBehavior,
-  behaviorsEqual,
-  nativeBehavior,
-  nodeBehavior,
-  nodeScriptWrapperSource,
-  nodeWrapperSource
-} from "./behavior.js";
+import { type ObservedBehavior, nativeBehavior, nodeBehavior, nodeModuleWrapperSource } from "../testing/process-behavior.js";
+import { behaviorsEqual, nodeScriptWrapperSource } from "./behavior.js";
 import { repoRoot } from "./paths.js";
 import { assembleEntry, assembledTsConfig, missingThrowMarker, unexpectedThrowMarker } from "./prelude.js";
 import { type CapturedProcess, captureProcessWithTimeout } from "./process.js";
@@ -122,7 +116,7 @@ const runAndCompare = async (context: OutcomeContext, executable: string): Promi
   }
   let nodeArguments = ["--input-type=commonjs", "--eval", nodeScriptWrapperSource, entry];
   if (test.parseGoal === "module") {
-    nodeArguments = ["--input-type=module", "--eval", nodeWrapperSource, pathToFileURL(entry).href];
+    nodeArguments = ["--input-type=module", "--eval", nodeModuleWrapperSource, pathToFileURL(entry).href];
   }
   const nodeRun = await captureProcessWithTimeout(
     process.execPath,

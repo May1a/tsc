@@ -168,6 +168,13 @@ export default defineConfig({
                 "max-lines-per-function": "off",
             },
         },
+        {
+            // The oracle is the process-data boundary; unchecked casts must not return here.
+            files: ["test/integration/oracle.ts", "test/integration/oracle.test.ts"],
+            rules: {
+                "typescript/no-unsafe-type-assertion": "error",
+            },
+        },
     ],
     plugins: ["typescript", "eslint", "unicorn", "oxc"],
     rules: {
