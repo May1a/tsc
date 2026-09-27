@@ -1,5 +1,6 @@
 import { jsValueAbi } from "./js-value-abi/index.js";
 import { type LlvmModuleBuilder, llvm } from "./llvm-ir/index.js";
+import { SYMBOL_ITERATOR_SENTINEL } from "./symbols.js";
 
 const legacyJsValue = jsValueAbi.forLegacyLlvm();
 
@@ -268,18 +269,41 @@ export type RuntimeHelper =
   | "mapFromIterable"
   | "setFromIterable"
   | "arrayFromValue"
-  | "iteratorResultObject";
-
-/**
- * Compiler-owned private-use property key for well-known `Symbol.iterator`.
- * Starts with U+F8FF (BMP private-use) so ordinary user-authored keys are
- * vanishingly unlikely to collide; general Symbol values remain out of scope.
- */
-export const SYMBOL_ITERATOR_SENTINEL = "\uF8FFSymbol.iterator";
+  | "iteratorResultObject"
+  | "gcRootSave"
+  | "gcRootRestore"
+  | "gcSafepoint"
+  | "gcMarkPayloadPtr"
+  | "gcStatsLiveBytes"
+  | "gcStatsCollections"
+  | "stringIsAsciiWhitespace"
+  | "stringSliceCopy"
+  | "stringTrimStartIndex"
+  | "stringTrimEndIndex"
+  | "stringPad"
+  | "iteratorTypeError"
+  | "createIteratorObject"
+  | "iteratorNotCallableMessage"
+  | "iteratorResultNotObjectMessage"
+  | "iteratorEntryNotObjectMessage";
 
 export interface RuntimeHelperEmitter {
   readonly used: Set<RuntimeHelper>;
 }
+
+/**
+ * The libc functions the runtime declares rather than defines. Every other RuntimeHelper is
+ * emitted as a `define` in the generated module; these four are provided by the C runtime and
+ * linked in by clang.
+ */
+const libcExterns = ["malloc", "memcpy", "memcmp", "sprintf"] as const satisfies readonly RuntimeHelper[];
+
+const libcDeclarations: Readonly<Record<(typeof libcExterns)[number], string>> = {
+  malloc: "declare ptr @malloc(i64)",
+  memcpy: "declare ptr @memcpy(ptr, ptr, i64)",
+  memcmp: "declare i32 @memcmp(ptr, ptr, i64)",
+  sprintf: "declare i32 @sprintf(ptr, ptr, ...)"
+};
 
 export const createRuntimeHelperEmitter = (): RuntimeHelperEmitter => ({ used: new Set() });
 
@@ -318,448 +342,335 @@ export function defineStructuredRuntimeHelpers(module: LlvmModuleBuilder, runtim
   );
 }
 
-const runtimeHelperDependencies = new Map<RuntimeHelper, readonly RuntimeHelper[]>([
-  ["regexCompile", ["regexValid", "objectNew", "objectSet", "errorNew", "strConcat", "valueBoxObject", "valueBoxString", "valueStringPtr", "valueStringLength"]],
-  ["regexValid", []],
-  ["regexAtomEnd", []],
-  ["regexDecodeUtf8", []],
-  ["regexAtomMatches", ["regexAtomEnd", "regexDecodeUtf8"]],
-  ["regexAtomStep", []],
-  ["regexQuantifierInfo", []],
-  ["regexCaptureIndex", []],
-  ["regexIsWordAt", []],
-  ["regexGroupEnd", []],
-  ["regexMatchHere", ["regexAtomEnd", "regexAtomMatches", "regexAtomStep", "regexQuantifierInfo", "regexCaptureIndex", "regexIsWordAt", "regexGroupEnd", "regexMatchAlternatives", "memcmp"]],
-  ["regexMatchAlternatives", ["regexMatchHere"]],
-  ["regexUtf16Index", []],
-  ["regexByteOffset", []],
-  ["regexFind", ["objectGet", "objectSet", "valueObjectPtr", "valueStringPtr", "valueStringLength", "regexMatchAlternatives", "regexByteOffset", "regexUtf16Index"]],
-  ["regexSlice", ["malloc", "memcpy", "valueBoxString", "valueStringPtr"]],
-  ["regexTest", ["regexFind"]],
-  ["regexExec", ["regexFind", "regexSlice", "regexUtf16Index", "regexCaptureIndex", "objectGet", "valueObjectPtr", "arrayNew", "arraySet", "arraySetNamed", "valueBoxArray", "valueStringPtr", "valueStringLength"]],
-  ["regexMatch", ["regexExec", "regexFind", "regexSlice", "regexUtf16Index", "objectGet", "objectSet", "valueObjectPtr", "valueStringPtr", "valueStringLength", "arrayNew", "arrayPush", "arrayLength", "valueBoxArray"]],
-  ["regexSearch", ["regexFind", "regexUtf16Index", "objectGet", "objectSet", "valueObjectPtr", "valueStringPtr"]],
-  ["regexSplit", ["regexFind", "regexSlice", "regexUtf16Index", "regexCaptureIndex", "objectGet", "objectSet", "valueObjectPtr", "valueStringPtr", "valueStringLength", "arrayNew", "arrayPush", "arrayLength"]],
-  ["regexExpandReplacement", ["valueStringPtr", "valueStringLength", "valueBoxString", "strConcat", "malloc"]],
-  ["regexReplace", ["regexFind", "regexSlice", "regexUtf16Index", "regexExpandReplacement", "objectGet", "objectSet", "valueObjectPtr", "valueStringPtr", "valueStringLength", "valueBoxString", "strConcat", "malloc"]],
-  ["strConcat", ["malloc", "memcpy"]],
-  ["strEquals", ["memcmp"]],
-  ["stringIncludes", ["memcmp"]],
-  ["stringStartsWith", ["memcmp"]],
-  ["stringStartsWithAt", ["memcmp"]],
-  ["stringEndsWith", ["memcmp"]],
-  ["stringTrim", ["malloc", "memcpy"]],
-  ["stringTrimStart", ["malloc", "memcpy"]],
-  ["stringTrimEnd", ["malloc", "memcpy"]],
-  ["stringNormalize", ["malloc", "memcpy"]],
-  ["stringToUpperCase", ["malloc"]],
-  ["stringToLowerCase", ["malloc"]],
-  ["stringRepeat", ["malloc", "memcpy"]],
-  ["stringReplace", ["malloc", "memcpy", "memcmp"]],
-  ["stringReplaceAll", ["malloc", "memcpy", "memcmp"]],
-  ["stringPadStart", ["malloc", "memcpy"]],
-  ["stringPadEnd", ["malloc", "memcpy"]],
-  ["stringSplit", ["arrayNew", "arraySet", "valueBoxString", "malloc", "memcpy", "memcmp"]],
-  ["stringCharAt", ["malloc", "memcpy"]],
-  ["stringSlice", ["malloc", "memcpy"]],
-  ["stringSubstring", ["malloc", "memcpy"]],
-  ["stringSubstr", ["malloc", "memcpy"]],
-  ["stringFromCharCode", ["malloc"]],
-  ["stringIndexOf", ["memcmp"]],
-  ["stringLastIndexOf", ["memcmp"]],
-  ["valueStrictEquals", ["valueIsNumberForSameValueZero", "valueStringLength", "valueStringPtr", "memcmp"]],
-  ["valueSameValueZero", ["valueStrictEquals", "valueIsNumberForSameValueZero", "valueStringLength", "valueStringPtr", "memcmp"]],
-  ["valueLooseEquals", ["valueStrictEquals", "valueToNumber", "valueStringPtr", "valueStringLength", "memcmp"]],
-  ["valueRelationalCompare", ["valueToNumber", "valueStringPtr", "valueStringLength", "memcmp"]],
-  ["valueToNumber", ["valueStringPtr"]],
-  ["valuePlus", ["valueToNumber", "valueToString", "valueBoxString", "strConcat"]],
-  ["globalIsNaN", ["valueToNumber"]],
-  ["numberIsNaN", []],
-  ["numberIsFinite", []],
-  ["numberIsInteger", ["numberIsFinite"]],
-  ["numberIsSafeInteger", ["numberIsInteger", "mathAbs"]],
-  ["numberToFixed", ["malloc", "sprintf"]],
-  ["numberToPrecision", ["malloc", "sprintf"]],
-  ["numberToExponential", ["malloc", "sprintf"]],
-  ["numberToStringRadix", ["malloc", "sprintf"]],
-  ["parseInt", []],
-  ["parseFloat", []],
-  ["mathAbs", []],
-  ["mathFloor", []],
-  ["mathCeil", []],
-  ["mathTrunc", []],
-  ["mathRound", []],
-  ["mathSqrt", []],
-  ["mathCbrt", ["mathAbs"]],
-  ["mathPow", []],
-  ["mathExp", []],
-  ["mathLog", []],
-  ["mathLog2", []],
-  ["mathLog10", []],
-  ["mathHypot2", ["mathSqrt"]],
-  ["mathMin2", []],
-  ["mathMax2", []],
-  ["mathRandom", []],
-  ["mathFround", []],
-  ["mathClz32", []],
-  ["mathImul", []],
-  ["mathSin", []],
-  ["mathCos", []],
-  ["mathTan", []],
-  ["mathSign", []],
-  ["arrayNew", ["gcAlloc", "objectNew"]],
-  ["objectNew", ["gcAlloc"]],
-  ["collectionNew", ["gcAlloc"]],
-  ["valueBoxString", ["gcAlloc"]],
-  ["valuePrint", ["valueStringPtr", "valueObjectPtr", "errorToString"]],
-  ["valueToString", ["valueStringPtr", "valueStringLength", "valueArrayPtr", "arrayJoin", "malloc", "sprintf"]],
-  ["valueStringPtr", ["valueBoxString"]],
-  ["valueStringLength", ["valueBoxString"]],
-  ["valueBoxObject", []],
-  ["valueBoxArray", []],
-  ["valueBoxFunction", []],
-  ["valueObjectPtr", []],
-  ["valueArrayPtr", []],
-  ["valueFunctionPtr", []],
-  ["functionObjectNew", ["gcAlloc", "valueBoxFunction"]],
-  ["functionObjectGet", ["valueFunctionPtr", "valueBoxString", "memcmp"]],
-  ["functionObjectHasOwn", ["valueFunctionPtr", "memcmp"]],
-  ["functionObjectDelete", ["valueFunctionPtr", "memcmp"]],
-  ["functionObjectOwnPropertyDescriptor", ["valueFunctionPtr", "valueBoxString", "objectNew", "objectSet", "valueBoxObject", "memcmp"]],
-  ["jsCall", ["valueFunctionPtr"]],
-  ["valueIsFunction", []],
-  ["valueIsString", []],
-  [
-    "valuePropertyGet",
-    [
-      "valueIsObject",
-      "valueIsArray",
-      "valueIsString",
-      "valueIsFunction",
-      "valueObjectPtr",
-      "valueArrayPtr",
-      "functionObjectGet",
-      "objectGet",
-      "arrayGetWithKey",
-      "arrayIteratorMethod",
-      "stringIteratorMethod",
-      "functionObjectNew",
-      "memcmp"
-    ]
-  ],
-  [
-    "getIteratorValue",
-    [
-      "valueIsObject",
-      "valueIsArray",
-      "valueIsString",
-      "valueIsFunction",
-      "valuePropertyGet",
-      "jsCall",
-      "errorNew",
-      "valueBoxObject",
-      "valueBoxString",
-      "gcRootPush"
-    ]
-  ],
-  [
-    "callIteratorNext",
-    ["valueIsObject", "valueIsFunction", "valueObjectGet", "jsCall", "errorNew", "valueBoxObject", "valueBoxString", "valueToString", "strConcat", "gcRootPush"]
-  ],
-  [
-    "iteratorClose",
-    [
-      "valueIsObject",
-      "valueIsFunction",
-      "valuePropertyGet",
-      "jsCall",
-      "errorNew",
-      "valueBoxObject",
-      "valueBoxString",
-      "valueToString",
-      "strConcat",
-      "gcRootPush"
-    ]
-  ],
-  [
-    "createArrayIterator",
-    ["gcAlloc", "functionObjectNew", "objectNew", "objectSet", "valueBoxObject", "valueBoxString", "builtinIteratorNext", "errorNew", "gcRootPush"]
-  ],
-  [
-    "createStringIterator",
-    ["gcAlloc", "functionObjectNew", "objectNew", "objectSet", "valueBoxObject", "valueBoxString", "builtinIteratorNext", "errorNew", "gcRootPush"]
-  ],
-  [
-    "createCollectionIterator",
-    ["gcAlloc", "functionObjectNew", "objectNew", "objectSet", "valueBoxObject", "valueBoxString", "builtinIteratorNext", "errorNew", "gcRootPush"]
-  ],
-  [
-    "getCollectionIterator",
-    ["createCollectionIterator", "valueIsFunction", "valueIsObject", "jsCall", "iteratorResultObject", "errorNew", "valueBoxObject", "valueBoxString", "valueToString", "strConcat", "gcRootPush"]
-  ],
-  [
-    "builtinIteratorNext",
-    [
-      "arrayLength",
-      "arrayGet",
-      "valueArrayPtr",
-      "valueStringPtr",
-      "valueStringLength",
-      "valueBoxString",
-      "valueBoxArray",
-      "valueBoxObject",
-      "arrayNew",
-      "arraySet",
-      "objectNew",
-      "objectSet",
-      "iteratorResultObject",
-      "malloc",
-      "memcpy",
-      "gcRootPush"
-    ]
-  ],
-  ["arrayIteratorMethod", ["createArrayIterator", "gcRootPush"]],
-  ["stringIteratorMethod", ["createStringIterator", "gcRootPush"]],
-  [
-    "mapFromIterable",
-    [
-      "getIteratorValue",
-      "callIteratorNext",
-      "collectionNew",
-      "collectionSet",
-      "valueIsObject",
-      "valueIsArray",
-      "valueObjectGet",
-      "valueArrayGet",
-      "valueTruthy",
-      "valueBoxString",
-      "errorNew",
-      "valueBoxObject",
-      "gcRootPush"
-    ]
-  ],
-  [
-    "setFromIterable",
-    [
-      "getIteratorValue",
-      "callIteratorNext",
-      "collectionNew",
-      "collectionSet",
-      "valueObjectGet",
-      "valueTruthy",
-      "valueBoxString",
-      "errorNew",
-      "valueBoxObject",
-      "gcRootPush"
-    ]
-  ],
-  [
-    "arrayFromValue",
-    [
-      "valueIsObject",
-      "valueIsArray",
-      "valueIsFunction",
-      "valuePropertyGet",
-      "jsCall",
-      "callIteratorNext",
-      "arrayNew",
-      "arrayPush",
-      "arrayLength",
-      "arrayGet",
-      "arraySet",
-      "arrayFromArray",
-      "arrayFromObject",
-      "valueArrayPtr",
-      "valueObjectPtr",
-      "valueObjectGet",
-      "valueTruthy",
-      "valueBoxArray",
-      "valueBoxString",
-      "errorNew",
-      "valueBoxObject",
-      "gcRootPush"
-    ]
-  ],
-  ["iteratorResultObject", ["objectNew", "objectSet", "valueBoxObject"]],
-  ["valueObjectGet", ["valueIsFunction", "functionObjectGet", "valueObjectPtr", "objectGet"]],
-  ["valueArrayGet", ["valueArrayPtr", "arrayGetWithKey"]],
-  ["valueArrayLength", ["valueArrayPtr", "arrayLength"]],
-  ["valueLength", ["valueStringLength", "valueArrayPtr", "arrayLength", "valueObjectPtr", "objectGet"]],
-  ["valueObjectSet", ["valueObjectPtr", "objectSet"]],
-  ["valueArraySet", ["valueArrayPtr", "arraySet"]],
-  ["valueArraySetLength", ["valueArrayPtr", "arraySetLength"]],
-  ["valueObjectDelete", ["valueObjectPtr", "objectDelete", "functionObjectDelete"]],
-  ["valueArrayDelete", ["valueArrayPtr", "arrayDelete"]],
-  ["valueObjectHasOwn", ["valueObjectPtr", "valueArrayPtr", "objectHasOwn", "arrayHasOwnIndex", "functionObjectHasOwn"]],
-  ["valueObjectKeys", ["valueObjectPtr", "valueArrayPtr", "objectKeys", "arrayKeys", "arrayNew"]],
-  ["valueObjectValues", ["valueObjectPtr", "valueArrayPtr", "objectValues", "arrayValues", "arrayNew"]],
-  ["valueObjectEntries", ["valueObjectPtr", "valueArrayPtr", "objectEntries", "arrayEntries", "arrayNew"]],
-  ["valueObjectOwnPropertyDescriptor", ["valueObjectPtr", "valueArrayPtr", "objectOwnPropertyDescriptor", "arrayOwnPropertyDescriptor", "arrayLengthPropertyDescriptor", "functionObjectOwnPropertyDescriptor", "memcmp"]],
-  ["valueObjectOwnPropertyNames", ["valueObjectPtr", "valueArrayPtr", "objectOwnPropertyNames", "arrayOwnPropertyNames", "arrayNew"]],
-  ["valueObjectOwnPropertyDescriptors", ["valueObjectPtr", "valueArrayPtr", "objectOwnPropertyDescriptors", "arrayOwnPropertyDescriptors", "objectNew"]],
-  ["objectEntries", ["arrayNew", "arraySet", "valueBoxString", "valueBoxArray"]],
-  ["objectFromEntries", ["objectNew", "objectSet", "arrayLength", "arrayHasOwnIndex", "valueArrayPtr", "arrayGet", "valueStringPtr", "valueStringLength", "valueIsArray"]],
-  ["arrayEntries", ["arrayLength", "arrayHasOwnIndex", "arrayNew", "arraySet", "indexToString", "valueBoxString", "valueBoxArray", "objectEntries", "arrayAppendElements"]],
-  ["objectOwnPropertyNames", ["arrayNew", "arraySet", "valueBoxString"]],
-  ["arrayOwnPropertyNames", ["arrayLength", "arrayHasOwnIndex", "arrayNew", "arraySet", "arrayPush", "valueBoxString", "indexToString", "objectOwnPropertyNames", "arrayAppendElements"]],
-  ["objectOwnPropertyDescriptors", ["objectNew", "objectOwnPropertyDescriptor", "objectSet"]],
-  ["objectIs", ["valueStringLength", "valueStringPtr", "memcmp", "valueObjectPtr", "valueArrayPtr", "valueFunctionPtr"]],
-  ["valueTruthy", ["valueStringLength"]],
-  ["indexToString", ["malloc"]],
-  ["arrayGet", ["arrayLength"]],
-  ["arrayGetWithKey", ["arrayLength", "arrayHasOwnIndex", "objectGet", "objectGetOwn", "memcmp"]],
-  ["arraySetNamed", ["objectSet"]],
-  ["arrayDeleteNamed", ["objectDelete"]],
-  ["arraySet", ["arrayLength", "malloc", "memcpy"]],
-  ["arrayDelete", ["arrayLength"]],
-  ["arraySetLength", ["arrayLength", "malloc", "memcpy"]],
-  ["arrayHasOwnIndex", ["arrayLength"]],
-  ["arrayPush", ["arraySet", "arrayLength"]],
-  ["arrayPop", ["arrayLength"]],
-  ["arrayShift", ["arrayLength"]],
-  ["arrayUnshift", ["arraySetLength", "arrayLength"]],
-  ["arrayKeys", ["arrayNew", "arraySet", "arrayHasOwnIndex", "valueBoxString", "indexToString", "objectKeys", "arrayConcat"]],
-  ["arrayValues", ["arrayNew", "arraySet", "arrayHasOwnIndex", "objectValues", "arrayAppendElements"]],
-  ["arrayOwnPropertyDescriptor", ["arrayHasOwnIndex", "arrayGet", "objectNew", "objectSet", "objectOwnPropertyDescriptor", "valueBoxObject"]],
-  ["arrayLengthPropertyDescriptor", ["arrayLength", "objectNew", "objectSet", "valueBoxObject"]],
-  ["arrayOwnPropertyDescriptors", ["arrayLength", "arrayHasOwnIndex", "arrayOwnPropertyDescriptor", "arrayLengthPropertyDescriptor", "indexToString", "objectNew", "objectSet", "objectOwnPropertyDescriptors", "objectAssign"]],
-  ["arrayIncludes", ["arrayLength", "arrayHasOwnIndex", "valueSameValueZero", "valueStringLength", "valueStringPtr", "memcmp"]],
-  ["arrayIndexOf", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "valueStrictEquals"]],
-  ["arrayLastIndexOf", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "valueStrictEquals"]],
-  ["arrayFind", ["arrayLength", "arrayHasOwnIndex", "arrayGet"]],
-  ["arrayFindIndex", ["arrayLength", "arrayHasOwnIndex"]],
-  ["arrayAt", ["arrayLength"]],
-  ["arrayCopyWithin", ["arrayLength", "arrayHasOwnIndex", "arraySet", "arrayDelete"]],
-  ["arraySlice", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet"]],
-  ["arraySplice", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet", "arrayGet", "arraySetLength", "arrayDelete"]],
-  ["arrayFlat", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arrayGet", "valueIsArray", "valueArrayPtr", "arraySet"]],
-  ["arrayFromArray", ["arrayLength", "arrayNew", "arrayGet", "arraySet"]],
-  ["arrayFromObject", ["arrayNew", "arraySet", "objectGet", "valueToNumber", "indexToString"]],
-  ["arraySortDefault", ["arrayLength", "arrayGet", "arraySet", "valueToString", "memcmp"]],
-  ["arrayJoin", ["arrayLength", "arrayHasOwnIndex", "valueToString", "malloc", "memcpy"]],
-  ["arrayConcat", ["arrayLength", "arrayNew", "arrayHasOwnIndex", "arraySet", "arrayGet", "valueIsArray", "valueArrayPtr"]],
-  ["arrayAppendElements", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "arrayPush"]],
-  ["arrayFill", ["arrayLength", "arraySet"]],
-  ["arrayReverse", ["arrayLength"]],
-  ["arrayHas", ["arrayHasOwnIndex", "objectHas", "objectHasOwn", "objectGetOwn", "memcmp"]],
-  ["arrayGetPrototype", ["arrayLength"]],
-  ["collectionNew", ["gcAlloc"]],
-  ["collectionSize", []],
-  ["collectionFind", ["valueSameValueZero"]],
-  ["collectionSet", ["collectionFind", "malloc", "memcpy"]],
-  ["collectionGet", ["collectionFind"]],
-  ["collectionHas", ["collectionFind"]],
-  ["collectionDelete", ["collectionFind"]],
-  ["objectCreate", ["objectNew"]],
-  ["errorNew", ["objectNew", "valueBoxString", "objectDefineDataProperty"]],
-  ["errorToString", ["objectGet", "valueToString", "malloc", "memcpy"]],
-  ["jsonQuote", ["malloc"]],
-  ["jsonPad", ["malloc"]],
-  ["jsonFilterHas", ["arrayLength", "arrayGet", "valueStringPtr", "valueStringLength", "memcmp"]],
-  ["jsonStrOk", []],
-  ["jsonStrThrow", []],
-  ["jsonStackHasValue", ["arrayLength", "arrayGet"]],
-  [
-    "jsonStringifyValue",
-    ["jsonStringifyInner", "jsonStrThrow", "valuePropertyGet", "valueIsFunction", "jsCall"]
-  ],
-  [
-    "jsonStringifyInner",
-    [
-      "jsonQuote",
-      "jsonStringifyArray",
-      "jsonStringifyObject",
-      "jsonStrOk",
-      "jsonStrThrow",
-      "jsonStackHasValue",
-      "valueStringPtr",
-      "valueStringLength",
-      "valueObjectPtr",
-      "valueArrayPtr",
-      "arrayPush",
-      "arrayPop",
-      "errorNew",
-      "valueBoxObject",
-      "valueBoxString",
-      "malloc",
-      "sprintf"
-    ]
-  ],
-  ["jsonStringifyArray", ["arrayLength", "arrayGet", "jsonStringifyValue", "jsonStrOk", "jsonPad", "strConcat", "indexToString", "valueBoxString"]],
-  ["jsonStringifyObject", ["jsonStringifyValue", "jsonQuote", "jsonPad", "jsonFilterHas", "strConcat", "jsonStrOk", "valueBoxString"]],
-  ["jsonStringify", ["jsonStringifyValue", "valueBoxString", "arrayNew", "valueBoxArray"]],
-  ["jsonSkipWhitespace", []],
-  ["jsonMatchLiteral", ["memcmp"]],
-  ["jsonHex4", []],
-  ["jsonParseString", ["jsonHex4", "malloc"]],
-  ["jsonParseNumber", ["malloc", "memcpy"]],
-  ["jsonParseValue", ["jsonParseObject", "jsonParseArray", "jsonParseString", "jsonParseNumber", "jsonMatchLiteral", "valueBoxString"]],
-  ["jsonParseObject", ["jsonParseValue", "jsonParseString", "jsonSkipWhitespace", "objectNew", "objectSet", "valueBoxObject"]],
-  ["jsonParseArray", ["jsonParseValue", "jsonSkipWhitespace", "arrayNew", "arrayPush", "valueBoxArray"]],
-  [
-    "jsonReviverWalk",
-    [
-      "valueIsArray",
-      "valueIsObject",
-      "valueArrayPtr",
-      "valueObjectPtr",
-      "arrayGet",
-      "arraySet",
-      "arrayDelete",
-      "arrayLength",
-      "objectGet",
-      "objectSet",
-      "objectDelete",
-      "indexToString",
-      "valueBoxString",
-      "valueStringPtr",
-      "valueStringLength",
-      "jsCall",
-      "malloc"
-    ]
-  ],
-  ["jsonParse", ["jsonParseValue", "jsonSkipWhitespace", "jsonReviverWalk", "errorNew", "objectNew", "objectSet", "valueBoxObject", "valueBoxString", "valueStringPtr", "valueStringLength"]],
-  ["objectGet", ["objectGetOwn"]],
-  ["objectHasOwn", ["objectGetOwn"]],
-  ["objectHas", ["objectHasOwn", "objectGetOwn", "memcmp"]],
-  ["objectSetPrototype", ["objectWouldCreateCycle"]],
-  ["jsInstanceOf", ["valueIsObject", "valueObjectPtr", "objectGetPrototype"]],
-  ["objectKeys", ["arrayNew", "arraySet", "valueBoxString"]],
-  ["objectValues", ["arrayNew", "arraySet"]],
-  ["objectOwnPropertyDescriptor", ["objectNew", "objectSet", "valueBoxObject", "memcmp"]],
-  ["objectPropertyIsEnumerable", ["memcmp"]],
-  ["objectSeal", ["objectPreventExtensions"]],
-  ["objectFreeze", ["objectPreventExtensions", "objectSeal"]],
-  ["objectIsSealed", ["objectPreventExtensions", "objectIsExtensible"]],
-  ["objectIsFrozen", ["objectPreventExtensions", "objectIsSealed"]],
-  ["objectAssign", ["objectSet"]],
-  ["objectAssignArray", ["arrayLength", "arrayHasOwnIndex", "arrayGet", "indexToString", "objectSet", "objectAssign"]],
-  ["valueObjectAssign", ["valueObjectPtr", "valueArrayPtr", "objectAssign", "objectAssignArray"]],
-  ["objectGetOwn", ["memcmp"]],
-  ["objectSet", ["objectGet", "objectGetOwn", "memcmp", "malloc", "memcpy"]],
-  ["objectDefineDataProperty", ["objectGet", "objectGetOwn", "memcmp", "malloc", "memcpy"]],
-  ["objectDelete", ["memcmp"]],
-  ["gcInit", ["malloc", "memcpy"]],
-  ["gcRootPush", []],
-  ["gcRootPop", []],
-  ["gcMarkValue", ["gcMarkObject"]],
-  ["gcMarkObject", []],
-  ["gcSweep", []],
-  ["gcCollect", ["gcMarkValue", "gcSweep"]],
-  ["gcAlloc", ["gcCollect", "gcRootPush", "gcRootPop", "gcInit"]],
-  ["environmentNew", ["gcAlloc", "malloc"]],
-  ["environmentGet", []],
-  ["environmentSet", []]
-]);
+// Direct helper-to-helper dependencies, derived from the emitted LLVM bodies and verified by
+// test/integration/runtime-helpers.test.ts. Every RuntimeHelper needs a row, including leaves
+// (as `[]`): the Record type makes an omission a compile error, and the reachability closure in
+// useRuntimeHelper is what decides which definitions reach the output. A helper whose row omits
+// an `@call` in its body emits a call to an undefined symbol.
+//
+// `valueBoxObject` has no raw-text definition: it is emitted through the typed builder by
+// defineStructuredRuntimeHelpers. `malloc`/`memcpy`/`memcmp`/`sprintf` are libc, declared not
+// defined by emitRuntimeDeclarations.
+const runtimeHelperDependencies: Readonly<Record<RuntimeHelper, readonly RuntimeHelper[]>> = {
+  "strConcat": ["malloc", "memcpy"],
+  "strEquals": ["memcmp"],
+  "stringIncludes": ["memcmp"],
+  "stringStartsWith": ["memcmp"],
+  "stringEndsWith": ["memcmp"],
+  "stringTrim": ["stringSliceCopy", "stringTrimEndIndex", "stringTrimStartIndex"],
+  "stringTrimStart": ["stringSliceCopy", "stringTrimStartIndex"],
+  "stringTrimEnd": ["stringSliceCopy", "stringTrimEndIndex"],
+  "stringToUpperCase": ["malloc"],
+  "stringToLowerCase": ["malloc"],
+  "stringRepeat": ["malloc", "memcpy"],
+  "stringReplace": ["malloc", "memcmp", "memcpy"],
+  "stringReplaceAll": ["malloc", "memcmp", "memcpy"],
+  "stringPadStart": ["stringPad"],
+  "stringPadEnd": ["stringPad"],
+  "stringSplit": ["arrayNew", "arraySet", "malloc", "memcmp", "memcpy", "valueBoxString"],
+  "stringAt": ["malloc"],
+  "stringNormalize": ["malloc", "memcpy"],
+  "stringCharCodeAt": [],
+  "stringCharAt": ["stringSliceCopy"],
+  "stringSlice": ["stringSliceCopy"],
+  "stringSubstring": ["stringSliceCopy"],
+  "stringSubstr": ["stringSliceCopy"],
+  "stringFromCharCode": ["malloc"],
+  "stringIndexOf": ["memcmp"],
+  "stringLastIndexOf": ["memcmp"],
+  "regexCompile": ["errorNew", "objectNew", "objectSet", "regexValid", "strConcat", "valueBoxObject", "valueBoxString", "valueStringLength", "valueStringPtr"],
+  "regexValid": [],
+  "regexAtomEnd": [],
+  "regexDecodeUtf8": [],
+  "regexAtomMatches": ["regexDecodeUtf8"],
+  "regexAtomStep": [],
+  "regexQuantifierInfo": [],
+  "regexCaptureIndex": [],
+  "regexIsWordAt": [],
+  "regexGroupEnd": [],
+  "regexMatchHere": ["memcmp", "regexAtomEnd", "regexAtomMatches", "regexAtomStep", "regexCaptureIndex", "regexGroupEnd", "regexIsWordAt", "regexMatchAlternatives", "regexQuantifierInfo"],
+  "regexMatchAlternatives": ["regexMatchHere"],
+  "regexUtf16Index": [],
+  "regexByteOffset": [],
+  "regexFind": ["objectGet", "objectSet", "regexByteOffset", "regexMatchAlternatives", "regexUtf16Index", "valueObjectPtr", "valueStringLength", "valueStringPtr"],
+  "regexSlice": ["malloc", "memcpy", "valueBoxString", "valueStringPtr"],
+  "regexTest": ["regexFind"],
+  "regexExec": ["arrayNew", "arraySet", "arraySetNamed", "objectGet", "regexCaptureIndex", "regexFind", "regexSlice", "regexUtf16Index", "valueBoxArray", "valueObjectPtr", "valueStringLength", "valueStringPtr"],
+  "regexMatch": ["arrayLength", "arrayNew", "arrayPush", "objectGet", "objectSet", "regexExec", "regexFind", "regexSlice", "regexUtf16Index", "valueBoxArray", "valueObjectPtr", "valueStringLength", "valueStringPtr"],
+  "regexSearch": ["objectGet", "objectSet", "regexFind", "regexUtf16Index", "valueObjectPtr", "valueStringPtr"],
+  "regexSplit": ["arrayLength", "arrayNew", "arrayPush", "objectGet", "objectSet", "regexCaptureIndex", "regexFind", "regexSlice", "regexUtf16Index", "valueObjectPtr", "valueStringLength", "valueStringPtr"],
+  "regexExpandReplacement": ["malloc", "strConcat", "valueBoxString", "valueStringLength", "valueStringPtr"],
+  "regexReplace": ["malloc", "objectGet", "objectSet", "regexExpandReplacement", "regexFind", "regexUtf16Index", "strConcat", "valueBoxString", "valueObjectPtr", "valueStringLength", "valueStringPtr"],
+  "stringStartsWithAt": ["memcmp"],
+  "valueStrictEquals": ["memcmp", "valueIsNumberForSameValueZero", "valueStringLength", "valueStringPtr"],
+  "valueIsNumberForSameValueZero": [],
+  "valueSameValueZero": ["valueIsNumberForSameValueZero", "valueStrictEquals"],
+  "valueLooseEquals": ["valueStrictEquals", "valueToNumber"],
+  "valueRelationalCompare": ["memcmp", "valueStringLength", "valueStringPtr", "valueToNumber"],
+  "valueToNumber": ["valueStringPtr"],
+  "valuePlus": ["strConcat", "valueBoxString", "valueToNumber", "valueToString"],
+  "globalIsNaN": ["valueToNumber"],
+  "numberIsNaN": [],
+  "numberIsFinite": [],
+  "numberIsInteger": ["numberIsFinite"],
+  "numberIsSafeInteger": ["mathAbs", "numberIsInteger"],
+  "numberToFixed": ["malloc", "sprintf"],
+  "numberToPrecision": ["malloc", "sprintf"],
+  "numberToExponential": ["malloc", "sprintf"],
+  "numberToStringRadix": ["malloc", "sprintf"],
+  "parseInt": [],
+  "parseFloat": [],
+  "mathAbs": [],
+  "mathFloor": [],
+  "mathCeil": [],
+  "mathTrunc": [],
+  "mathRound": [],
+  "mathSqrt": [],
+  "mathCbrt": ["mathAbs"],
+  "mathPow": [],
+  "mathExp": [],
+  "mathLog": [],
+  "mathLog2": [],
+  "mathLog10": [],
+  "mathHypot2": ["mathSqrt"],
+  "mathMin2": [],
+  "mathMax2": [],
+  "mathRandom": [],
+  "mathFround": [],
+  "mathClz32": [],
+  "mathImul": [],
+  "mathSin": [],
+  "mathCos": [],
+  "mathTan": [],
+  "mathSign": [],
+  "valueBoxString": ["gcAlloc"],
+  "valueStringPtr": [],
+  "valueStringLength": [],
+  "valueBoxObject": [],
+  "valueBoxArray": [],
+  "valueObjectPtr": [],
+  "valueArrayPtr": [],
+  "valueBoxFunction": [],
+  "valueFunctionPtr": [],
+  "functionObjectNew": ["gcAlloc", "valueBoxFunction"],
+  "functionObjectGet": ["memcmp", "valueBoxString", "valueFunctionPtr"],
+  "functionObjectHasOwn": ["memcmp", "valueFunctionPtr"],
+  "functionObjectDelete": ["memcmp", "valueFunctionPtr"],
+  "functionObjectOwnPropertyDescriptor": ["memcmp", "objectNew", "objectSet", "valueBoxObject", "valueBoxString", "valueFunctionPtr"],
+  "jsCall": ["valueFunctionPtr"],
+  "valueIsObject": [],
+  "valueIsArray": [],
+  "valueObjectGet": ["functionObjectGet", "objectGet", "valueIsFunction", "valueObjectPtr"],
+  "valueArrayGet": ["arrayGetWithKey", "valueArrayPtr"],
+  "valueArrayLength": ["arrayLength", "valueArrayPtr"],
+  "valueLength": ["arrayLength", "objectGet", "valueArrayPtr", "valueObjectPtr", "valueStringLength"],
+  "valueObjectSet": ["objectSet", "valueObjectPtr"],
+  "valueArraySet": ["arraySet", "valueArrayPtr"],
+  "valueArraySetLength": ["arraySetLength", "valueArrayPtr"],
+  "valueObjectDelete": ["functionObjectDelete", "objectDelete", "valueObjectPtr"],
+  "valueArrayDelete": ["arrayDelete", "valueArrayPtr"],
+  "valueObjectHasOwn": ["arrayHasOwnIndex", "functionObjectHasOwn", "objectHasOwn", "valueArrayPtr", "valueObjectPtr"],
+  "valueObjectKeys": ["arrayKeys", "arrayNew", "objectKeys", "valueArrayPtr", "valueObjectPtr"],
+  "valueObjectValues": ["arrayNew", "arrayValues", "objectValues", "valueArrayPtr", "valueObjectPtr"],
+  "valueObjectEntries": ["arrayEntries", "arrayNew", "objectEntries", "valueArrayPtr", "valueObjectPtr"],
+  "valueObjectOwnPropertyDescriptor": ["arrayLengthPropertyDescriptor", "arrayOwnPropertyDescriptor", "functionObjectOwnPropertyDescriptor", "objectOwnPropertyDescriptor", "valueArrayPtr", "valueObjectPtr"],
+  "valueObjectOwnPropertyNames": ["arrayNew", "arrayOwnPropertyNames", "objectOwnPropertyNames", "valueArrayPtr", "valueObjectPtr"],
+  "valueObjectOwnPropertyDescriptors": ["arrayOwnPropertyDescriptors", "objectNew", "objectOwnPropertyDescriptors", "valueArrayPtr", "valueObjectPtr"],
+  "objectEntries": ["arrayNew", "arraySet", "valueBoxArray", "valueBoxString"],
+  "objectFromEntries": ["arrayGet", "arrayHasOwnIndex", "arrayLength", "objectNew", "objectSet", "valueArrayPtr", "valueIsArray", "valueStringLength", "valueStringPtr"],
+  "arrayEntries": ["arrayAppendElements", "arrayHasOwnIndex", "arrayLength", "arrayNew", "arraySet", "indexToString", "objectEntries", "valueBoxArray", "valueBoxString"],
+  "objectOwnPropertyNames": ["arrayNew", "arraySet", "valueBoxString"],
+  "arrayOwnPropertyNames": ["arrayAppendElements", "arrayHasOwnIndex", "arrayLength", "arrayNew", "arrayPush", "arraySet", "indexToString", "objectOwnPropertyNames", "valueBoxString"],
+  "arrayOwnPropertyDescriptors": ["arrayHasOwnIndex", "arrayLength", "arrayLengthPropertyDescriptor", "arrayOwnPropertyDescriptor", "indexToString", "objectAssign", "objectNew", "objectOwnPropertyDescriptors", "objectSet"],
+  "objectOwnPropertyDescriptors": ["objectNew", "objectOwnPropertyDescriptor", "objectSet"],
+  "objectIs": ["memcmp", "valueArrayPtr", "valueFunctionPtr", "valueObjectPtr", "valueStringLength", "valueStringPtr"],
+  "valueTruthy": ["valueStringLength"],
+  "valuePrint": ["errorToString", "valueObjectPtr", "valueStringPtr"],
+  "valueToString": ["arrayJoin", "malloc", "sprintf", "valueArrayPtr", "valueStringLength", "valueStringPtr"],
+  "indexToString": ["malloc"],
+  "arrayNew": ["gcAlloc", "malloc", "objectNew"],
+  "arrayLength": [],
+  "arrayGet": ["arrayLength"],
+  "arrayGetWithKey": ["arrayHasOwnIndex", "objectGet"],
+  "arraySetNamed": ["objectSet"],
+  "arrayDeleteNamed": ["objectDelete"],
+  "arraySet": ["malloc", "memcpy"],
+  "arrayDelete": ["arrayLength"],
+  "arraySetLength": ["malloc", "memcpy"],
+  "arrayHasOwnIndex": ["arrayLength"],
+  "arrayHas": ["arrayHasOwnIndex", "objectHas", "objectHasOwn"],
+  "arrayKeys": ["arrayConcat", "arrayHasOwnIndex", "arrayLength", "arrayNew", "arraySet", "indexToString", "objectKeys", "valueBoxString"],
+  "arrayValues": ["arrayAppendElements", "arrayHasOwnIndex", "arrayLength", "arrayNew", "arraySet", "objectValues"],
+  "arrayOwnPropertyDescriptor": ["arrayGet", "arrayHasOwnIndex", "objectNew", "objectOwnPropertyDescriptor", "objectSet", "valueBoxObject"],
+  "arrayLengthPropertyDescriptor": ["arrayLength", "objectNew", "objectSet", "valueBoxObject"],
+  "arrayIncludes": ["arrayHasOwnIndex", "arrayLength", "memcmp", "valueSameValueZero", "valueStringLength", "valueStringPtr"],
+  "arrayIndexOf": ["arrayGet", "arrayHasOwnIndex", "arrayLength", "valueStrictEquals"],
+  "arrayLastIndexOf": ["arrayGet", "arrayHasOwnIndex", "arrayLength", "valueStrictEquals"],
+  "arrayFind": ["arrayGet", "arrayHasOwnIndex", "arrayLength"],
+  "arrayFindIndex": ["arrayHasOwnIndex", "arrayLength"],
+  "arrayAt": ["arrayLength"],
+  "arrayCopyWithin": ["arrayDelete", "arrayHasOwnIndex", "arrayLength", "arraySet"],
+  "arraySlice": ["arrayHasOwnIndex", "arrayLength", "arrayNew", "arraySet"],
+  "arraySplice": ["arrayDelete", "arrayGet", "arrayHasOwnIndex", "arrayLength", "arrayNew", "arraySet", "arraySetLength"],
+  "arrayFlat": ["arrayGet", "arrayHasOwnIndex", "arrayLength", "arrayNew", "arraySet", "valueArrayPtr", "valueIsArray"],
+  "arrayFromArray": ["arrayGet", "arrayLength", "arrayNew", "arraySet"],
+  "arrayFromObject": ["arrayNew", "arraySet", "indexToString", "objectGet", "valueToNumber"],
+  "arraySortDefault": ["arrayGet", "arrayLength", "arraySet", "memcmp", "valueToString"],
+  "arrayJoin": ["arrayHasOwnIndex", "arrayLength", "malloc", "memcpy", "valueToString"],
+  "arrayConcat": ["arrayGet", "arrayHasOwnIndex", "arrayLength", "arrayNew", "arraySet", "valueArrayPtr", "valueIsArray"],
+  "arrayAppendElements": ["arrayGet", "arrayHasOwnIndex", "arrayLength", "arrayPush"],
+  "arrayFill": ["arrayLength", "arraySet"],
+  "arrayReverse": ["arrayLength"],
+  "arrayPush": ["arrayLength", "arraySet"],
+  "arrayPop": ["arrayLength"],
+  "arrayUnshift": ["arrayLength", "arraySetLength"],
+  "arrayShift": ["arrayLength"],
+  "arraySetPrototype": [],
+  "arrayGetPrototype": [],
+  "collectionNew": ["gcAlloc", "malloc"],
+  "collectionSize": [],
+  "collectionFind": ["valueSameValueZero"],
+  "collectionSet": ["collectionFind", "malloc", "memcpy"],
+  "collectionGet": ["collectionFind"],
+  "collectionHas": ["collectionFind"],
+  "collectionDelete": ["collectionFind"],
+  "objectNew": ["gcAlloc", "malloc"],
+  "errorNew": ["objectDefineDataProperty", "objectNew", "valueBoxString"],
+  "errorToString": ["malloc", "memcpy", "objectGet", "valueToString"],
+  "jsonQuote": ["malloc"],
+  "jsonPad": ["malloc"],
+  "jsonFilterHas": ["arrayGet", "arrayLength", "memcmp", "valueStringLength", "valueStringPtr"],
+  "jsonStrOk": [],
+  "jsonStrThrow": [],
+  "jsonStackHasValue": ["arrayGet", "arrayLength"],
+  "jsonStringifyValue": ["jsCall", "jsonStrThrow", "jsonStringifyInner", "valueIsFunction", "valuePropertyGet"],
+  "jsonStringifyInner": ["arrayPop", "arrayPush", "errorNew", "jsonQuote", "jsonStackHasValue", "jsonStrOk", "jsonStrThrow", "jsonStringifyArray", "jsonStringifyObject", "malloc", "sprintf", "valueArrayPtr", "valueBoxObject", "valueBoxString", "valueObjectPtr", "valueStringLength", "valueStringPtr"],
+  "jsonStringifyArray": ["arrayGet", "arrayLength", "indexToString", "jsonPad", "jsonStrOk", "jsonStringifyValue", "strConcat", "valueBoxString"],
+  "jsonStringifyObject": ["jsonFilterHas", "jsonPad", "jsonQuote", "jsonStrOk", "jsonStringifyValue", "strConcat", "valueBoxString"],
+  "jsonStringify": ["arrayNew", "gcRootPush", "gcRootRestore", "gcRootSave", "jsonStringifyValue", "valueBoxArray", "valueBoxString"],
+  "jsonSkipWhitespace": [],
+  "jsonMatchLiteral": ["memcmp"],
+  "jsonHex4": [],
+  "jsonParseString": ["jsonHex4", "malloc"],
+  "jsonParseNumber": ["malloc", "memcpy"],
+  "jsonParseValue": ["jsonMatchLiteral", "jsonParseArray", "jsonParseNumber", "jsonParseObject", "jsonParseString", "valueBoxString"],
+  "jsonParseObject": ["jsonParseString", "jsonParseValue", "jsonSkipWhitespace", "objectNew", "objectSet", "valueBoxObject"],
+  "jsonParseArray": ["arrayNew", "arrayPush", "jsonParseValue", "jsonSkipWhitespace", "valueBoxArray"],
+  "jsonReviverWalk": ["arrayDelete", "arrayGet", "arrayLength", "arraySet", "gcRootPush", "gcRootRestore", "gcRootSave", "indexToString", "jsCall", "malloc", "objectDelete", "objectGet", "objectSet", "valueArrayPtr", "valueBoxString", "valueIsArray", "valueIsObject", "valueObjectPtr", "valueStringLength", "valueStringPtr"],
+  "jsonParse": ["errorNew", "gcRootPush", "gcRootRestore", "gcRootSave", "jsonParseValue", "jsonReviverWalk", "jsonSkipWhitespace", "objectNew", "objectSet", "valueBoxObject", "valueBoxString", "valueStringLength", "valueStringPtr"],
+  "objectCreate": ["objectNew"],
+  "objectGetOwn": ["memcmp"],
+  "objectGet": ["objectGetOwn"],
+  "objectHasOwn": ["objectGetOwn"],
+  "objectHas": ["objectHasOwn"],
+  "objectSetPrototype": ["objectWouldCreateCycle"],
+  "objectWouldCreateCycle": [],
+  "objectGetPrototype": [],
+  "jsInstanceOf": ["objectGetPrototype", "valueIsObject", "valueObjectPtr"],
+  "objectPreventExtensions": [],
+  "objectIsExtensible": [],
+  "objectSeal": ["objectPreventExtensions"],
+  "objectFreeze": ["objectSeal"],
+  "objectIsSealed": ["objectIsExtensible"],
+  "objectIsFrozen": ["objectIsSealed"],
+  "objectAssign": ["objectSet"],
+  "objectAssignArray": ["arrayGet", "arrayHasOwnIndex", "arrayLength", "indexToString", "objectAssign", "objectSet"],
+  "valueObjectAssign": ["objectAssign", "objectAssignArray", "valueArrayPtr", "valueObjectPtr"],
+  "objectDefineDataProperty": ["malloc", "memcmp", "memcpy"],
+  "objectValues": ["arrayNew", "arraySet"],
+  "objectOwnPropertyDescriptor": ["memcmp", "objectNew", "objectSet", "valueBoxObject"],
+  "objectPropertyIsEnumerable": ["memcmp"],
+  "objectKeys": ["arrayNew", "arraySet", "valueBoxString"],
+  "objectDelete": ["memcmp"],
+  "boxedValueOf": [],
+  "boxedToString": ["valueToString"],
+  "objectSet": ["malloc", "memcmp", "memcpy"],
+  "gcInit": ["malloc"],
+  "gcRootPush": ["malloc", "memcpy"],
+  "gcRootPop": [],
+  "gcMarkValue": ["malloc", "memcpy"],
+  "gcMarkObject": ["gcMarkPayloadPtr", "gcMarkValue"],
+  "gcSweep": [],
+  "gcCollect": ["gcMarkObject", "gcMarkValue", "gcSweep"],
+  "gcAlloc": [],
+  "environmentNew": ["gcAlloc", "malloc"],
+  "environmentGet": [],
+  "environmentSet": [],
+  "valueIsFunction": [],
+  "valueIsString": [],
+  "valuePropertyGet": ["arrayGetWithKey", "arrayIteratorMethod", "functionObjectGet", "functionObjectNew", "memcmp", "objectGet", "stringIteratorMethod", "valueArrayPtr", "valueIsArray", "valueIsFunction", "valueIsObject", "valueIsString", "valueObjectPtr"],
+  "getIteratorValue": ["gcRootPush", "gcRootRestore", "gcRootSave", "iteratorTypeError", "jsCall", "valueBoxString", "valueIsArray", "valueIsFunction", "valueIsObject", "valueIsString", "valuePropertyGet"],
+  "callIteratorNext": ["gcRootPush", "gcRootRestore", "gcRootSave", "iteratorNotCallableMessage", "iteratorResultNotObjectMessage", "iteratorTypeError", "jsCall", "valueIsFunction", "valueIsObject", "valueObjectGet"],
+  "iteratorClose": ["gcRootPush", "gcRootRestore", "gcRootSave", "iteratorNotCallableMessage", "iteratorResultNotObjectMessage", "iteratorTypeError", "jsCall", "valueIsFunction", "valueIsObject", "valueObjectGet", "valuePropertyGet"],
+  "createArrayIterator": ["createIteratorObject"],
+  "createStringIterator": ["createIteratorObject"],
+  "createCollectionIterator": ["createIteratorObject"],
+  "getCollectionIterator": ["createCollectionIterator", "gcRootPush", "gcRootRestore", "gcRootSave", "iteratorNotCallableMessage", "iteratorTypeError", "jsCall", "valueBoxString", "valueIsFunction", "valueIsObject", "valueObjectGet"],
+  "builtinIteratorNext": ["arrayGet", "arrayLength", "arrayNew", "arraySet", "functionObjectNew", "gcRootPush", "gcRootRestore", "gcRootSave", "iteratorResultObject", "malloc", "memcpy", "valueArrayPtr", "valueBoxArray", "valueBoxString", "valueStringLength", "valueStringPtr"],
+  "arrayIteratorMethod": ["createArrayIterator"],
+  "stringIteratorMethod": ["createStringIterator"],
+  "mapFromIterable": ["callIteratorNext", "collectionNew", "collectionSet", "gcRootPush", "gcRootRestore", "gcRootSave", "gcSafepoint", "getIteratorValue", "iteratorEntryNotObjectMessage", "iteratorTypeError", "valueArrayGet", "valueBoxObject", "valueIsArray", "valueIsObject", "valueObjectGet", "valueTruthy"],
+  "setFromIterable": ["callIteratorNext", "collectionNew", "collectionSet", "gcRootPush", "gcRootRestore", "gcRootSave", "gcSafepoint", "getIteratorValue", "valueBoxObject", "valueObjectGet", "valueTruthy"],
+  "arrayFromValue": ["arrayFromArray", "arrayFromObject", "arrayGet", "arrayLength", "arrayNew", "arrayPush", "arraySet", "callIteratorNext", "gcRootPush", "gcRootRestore", "gcRootSave", "gcSafepoint", "iteratorNotCallableMessage", "iteratorTypeError", "jsCall", "valueArrayPtr", "valueBoxArray", "valueBoxString", "valueIsArray", "valueIsFunction", "valueIsObject", "valueObjectGet", "valueObjectPtr", "valuePropertyGet", "valueTruthy"],
+  "iteratorResultObject": ["gcRootPush", "gcRootRestore", "gcRootSave", "objectNew", "objectSet", "valueBoxObject"],
+  "gcRootSave": [],
+  "gcRootRestore": [],
+  "gcSafepoint": ["gcCollect"],
+  "gcMarkPayloadPtr": ["malloc", "memcpy"],
+  "gcStatsLiveBytes": [],
+  "gcStatsCollections": [],
+  "stringIsAsciiWhitespace": [],
+  "stringSliceCopy": ["malloc", "memcpy"],
+  "stringTrimStartIndex": ["stringIsAsciiWhitespace"],
+  "stringTrimEndIndex": ["stringIsAsciiWhitespace"],
+  "stringPad": ["malloc", "memcpy"],
+  "iteratorTypeError": ["errorNew", "gcRootPush", "gcRootRestore", "gcRootSave", "valueBoxObject"],
+  "createIteratorObject": ["builtinIteratorNext", "functionObjectNew", "gcAlloc", "gcRootPush", "gcRootRestore", "gcRootSave", "objectNew", "objectSet", "valueBoxObject"],
+  "iteratorNotCallableMessage": ["strConcat", "valueBoxString", "valueToString"],
+  "iteratorResultNotObjectMessage": ["strConcat", "valueBoxString", "valueToString"],
+  "iteratorEntryNotObjectMessage": ["strConcat", "valueBoxString", "valueToString"],
+  "malloc": [],
+  "memcpy": [],
+  "memcmp": [],
+  "sprintf": []
+};
+
+/**
+ * Every RuntimeHelper, in registry order.
+ *
+ * Sound because `runtimeHelperDependencies` is typed as a total
+ * `Record<RuntimeHelper, ...>`: if the union ever gains a member without a row, this file
+ * fails to compile rather than silently reporting a short list.
+ */
+export function runtimeHelpers(): readonly RuntimeHelper[] {
+  // Sound because `runtimeHelperDependencies` is typed as a total
+  // `Record<RuntimeHelper, ...>`: if the union ever gains a member without a row, this file
+  // fails to compile rather than silently reporting a short list. The assertion only re-widens
+  // `string[]` to the union it was already checked against.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- totality of the Record is the check
+  return Object.keys(runtimeHelperDependencies) as RuntimeHelper[];
+}
 
 export function useRuntimeHelper(runtime: RuntimeHelperEmitter, helper: RuntimeHelper): void {
   if (runtime.used.has(helper)) {
     return;
   }
   runtime.used.add(helper);
-  for (const dependency of runtimeHelperDependencies.get(helper) ?? []) {
+  for (const dependency of runtimeHelperDependencies[helper]) {
     useRuntimeHelper(runtime, dependency);
   }
+}
+
+/**
+ * The transitive closure of helpers `helper` needs, as a fresh set.
+ *
+ * This is a pure query. Callers that only need to know *what* a helper pulls in
+ * (tests, diagnostics) should not have to mutate an emitter to find out.
+ */
+export function runtimeHelperClosure(helper: RuntimeHelper): ReadonlySet<RuntimeHelper> {
+  const runtime = createRuntimeHelperEmitter();
+  useRuntimeHelper(runtime, helper);
+  return runtime.used;
 }
 
 // eslint-disable-next-line complexity -- Runtime declarations are emitted only for helpers used by the current module.
@@ -770,22 +681,11 @@ export function emitRuntimeDeclarations(runtime: RuntimeHelperEmitter): string[]
   // (@getenv, @strtol) are emitted before the gcInit body references them.
   useRuntimeHelper(runtime, "gcInit");
   const declarations: string[] = [];
-  const declarationByHelper = new Map<RuntimeHelper, string>([
-    ["malloc", "declare ptr @malloc(i64)"],
-    ["memcpy", "declare ptr @memcpy(ptr, ptr, i64)"],
-    ["memcmp", "declare i32 @memcmp(ptr, ptr, i64)"],
-    ["sprintf", "declare i32 @sprintf(ptr, ptr, ...)"]
-  ]);
-
-  for (const helper of ["malloc", "memcpy", "memcmp", "sprintf"] as const) {
+  for (const helper of libcExterns) {
     if (runtime.used.has(helper)) {
-      const declaration = declarationByHelper.get(helper);
-      if (declaration !== undefined) {
-        declarations.push(declaration);
-      }
+      declarations.push(libcDeclarations[helper]);
     }
   }
-
   // GC runtime helpers (Phase B): getenv/strtol are needed by gcInit to honor
   // TSCN_GC_HEAP_SIZE. gcInit is always in `used` (forced above).
   if (runtime.used.has("gcInit")) {
@@ -5666,8 +5566,13 @@ missing:
 @.iter.msg.entry.suffix = private unnamed_addr constant [24 x i8] c" is not an entry object\\00"
 @.iter.msg.from.undefined = private unnamed_addr constant [73 x i8] c"undefined is not iterable (cannot read property Symbol(Symbol.iterator))\\00"
 @.iter.msg.from.null = private unnamed_addr constant [75 x i8] c"object null is not iterable (cannot read property Symbol(Symbol.iterator))\\00"
-
-define { i64, i1 } @iteratorTypeError(i64 %message) {
+`);
+    // Gated individually, unlike its siblings above: it is an ordinary registry member, and the
+    // helpers that call it declare it as a dependency, so it arrives in `used` exactly when
+    // needed. Emitting it whenever the shared block is entered would drag @errorNew and the
+    // object runtime into modules that never construct an iterator error.
+    if (runtime.used.has("iteratorTypeError")) {
+      definitions.push(`define { i64, i1 } @iteratorTypeError(i64 %message) {
 entry:
   %frame = call i64 @gcRootSave()
   call void @gcRootPush(i64 %message)
@@ -5679,6 +5584,7 @@ entry:
   ret { i64, i1 } %result.1
 }
 `);
+    }
     if (runtime.used.has("iteratorResultObject") || runtime.used.has("builtinIteratorNext")) {
       definitions.push(`define i64 @iteratorResultObject(i64 %value, i1 %done) {
 entry:
@@ -6148,8 +6054,11 @@ object:
   %object.message = call i64 @valueBoxString(ptr @.iter.msg.object.not.fn, i64 24)
   ret i64 %object.message
 }
-
-define i64 @iteratorResultNotObjectMessage(i64 %value) {
+`);
+    // Individually gated for the same reason as iteratorTypeError above: ordinary registry
+    // members whose callers declare them, so they do not bloat unrelated modules.
+    if (runtime.used.has("iteratorResultNotObjectMessage")) {
+      definitions.push(`define i64 @iteratorResultNotObjectMessage(i64 %value) {
 entry:
   %raw = call { ptr, i64 } @valueToString(i64 %value)
   %raw.ptr = extractvalue { ptr, i64 } %raw, 0
@@ -6161,8 +6070,10 @@ entry:
   %message = call i64 @valueBoxString(ptr %message.ptr, i64 %message.len)
   ret i64 %message
 }
-
-define i64 @iteratorEntryNotObjectMessage(i64 %value) {
+`);
+    }
+    if (runtime.used.has("iteratorEntryNotObjectMessage")) {
+      definitions.push(`define i64 @iteratorEntryNotObjectMessage(i64 %value) {
 entry:
   %raw = call { ptr, i64 } @valueToString(i64 %value)
   %raw.ptr = extractvalue { ptr, i64 } %raw, 0
@@ -6174,8 +6085,10 @@ entry:
   %message = call i64 @valueBoxString(ptr %message.ptr, i64 %message.len)
   ret i64 %message
 }
-
-define { i64, i1 } @callIteratorNext(i64 %iterator) {
+`);
+    }
+    if (runtime.used.has("callIteratorNext")) {
+      definitions.push(`define { i64, i1 } @callIteratorNext(i64 %iterator) {
 entry:
   %frame = call i64 @gcRootSave()
   call void @gcRootPush(i64 %iterator)
@@ -6219,6 +6132,7 @@ result.not.object:
   ret { i64, i1 } %result.not.object.error
 }
 `);
+    }
     }
     if (runtime.used.has("iteratorClose")) {
       // IteratorClose protocol mechanics only. Resolution against a pending throw

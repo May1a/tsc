@@ -3,7 +3,6 @@ import type { CommandExecutor, FileSystem, Path } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
 import { Console, Effect } from "effect";
 import { formatDiagnostic } from "../compiler/diagnostics.js";
-import type { Diagnostics } from "../compiler/diagnostics-service.js";
 import { CompilationFailed } from "../compiler/errors.js";
 import { compile } from "../compiler/pipeline.js";
 import type { Toolchain } from "../compiler/toolchain.js";
@@ -45,7 +44,7 @@ export const tscnCommand = Command.make(
   (config: CliConfig): Effect.Effect<
     void,
     CompilationFailed | PlatformError,
-    FileSystem.FileSystem | Path.Path | Toolchain | CommandExecutor.CommandExecutor | Diagnostics
+    FileSystem.FileSystem | Path.Path | Toolchain | CommandExecutor.CommandExecutor
   > =>
     Effect.gen(function* runHandler() {
       const result = yield* compile(config);

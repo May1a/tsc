@@ -4,3 +4,13 @@ build/
 coverage/
 .DS_Store
 plan.md
+.mimocode/
+
+# Root-level scratch file for manually probing the inline-C++ rewriter.
+# The equivalent surface lives in test/fixtures/inline-cpp-*.ts.
+test.ts
+
+# tsc-emitted CommonJS twins of the .ts config files. These are build output,
+# not sources: linting them reports errors in the tsc helper, not in the config.
+oxlint.config.js
+vitest.config.js

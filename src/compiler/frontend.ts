@@ -2,13 +2,20 @@ import { FileSystem, Path } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
 import { Effect } from "effect";
 import ts from "typescript";
-import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { inlineCppTag, rewriteInlineCppSyntax } from "./inline-cpp-rewriter.js";
 
 export interface FrontendResult {
   readonly program: ts.Program;
   readonly sourceFiles: readonly ts.SourceFile[];
+  /**
+   * Diagnostics accumulated while building the program.
+   *
+   * Returned rather than pushed into an ambient `Diagnostics` service: the service had one
+   * implementation and one consumer, three of its five methods were never called, and the
+   * caller had to drain it at a fixed point in the pipeline or it would observe an empty list.
+   */
+  readonly diagnostics: readonly CompilerDiagnostic[];
 }
 
 interface ParsedConfigResult {
@@ -232,31 +239,27 @@ const createCompilerHostWithCachedDeclarations = (options: ts.CompilerOptions): 
   return host;
 };
 
-const rejectPackageImports = (
-  sourceFiles: readonly ts.SourceFile[]
-): Effect.Effect<void, never, Diagnostics> =>
-  Effect.gen(function* rejectPackages() {
-    const diagnostics = yield* Diagnostics;
-    const packageImportDiagnostics: CompilerDiagnostic[] = [];
-    for (const sourceFile of sourceFiles) {
-      for (const statement of sourceFile.statements) {
-        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
-          continue;
-        }
-        const specifier = statement.moduleSpecifier.text;
-        if (specifier.startsWith(".") || specifier.startsWith("/")) {
-          continue;
-        }
-        packageImportDiagnostics.push({
-          code: "TSCN1001",
-          category: "error",
-          message: `NPM package imports are not supported yet: ${specifier}`,
-          span: sourceSpan(sourceFile, statement.moduleSpecifier.getStart(sourceFile))
-        });
+const rejectPackageImports = (sourceFiles: readonly ts.SourceFile[]): readonly CompilerDiagnostic[] => {
+  const packageImportDiagnostics: CompilerDiagnostic[] = [];
+  for (const sourceFile of sourceFiles) {
+    for (const statement of sourceFile.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
+        continue;
       }
+      const specifier = statement.moduleSpecifier.text;
+      if (specifier.startsWith(".") || specifier.startsWith("/")) {
+        continue;
+      }
+      packageImportDiagnostics.push({
+        code: "TSCN1001",
+        category: "error",
+        message: `NPM package imports are not supported yet: ${specifier}`,
+        span: sourceSpan(sourceFile, statement.moduleSpecifier.getStart(sourceFile))
+      });
     }
-    yield* Effect.forEach(packageImportDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
-  });
+  }
+  return packageImportDiagnostics;
+};
 
 const iterationStatementKeyword = (statement: ts.IterationStatement): string => {
   if (ts.isWhileStatement(statement)) {
@@ -351,23 +354,17 @@ const collectInvalidFunctionDeclarations = (sourceFile: ts.SourceFile): Compiler
 // or single-statement if/else bodies and lets a catch block redeclare its
 // parameter with a function declaration. All are ECMAScript early errors in
 // strict code, so reject them during the frontend phase (issue #43).
-const rejectInvalidFunctionDeclarations = (
-  sourceFiles: readonly ts.SourceFile[]
-): Effect.Effect<void, never, Diagnostics> =>
-  Effect.gen(function* rejectInvalidFunctions() {
-    const diagnostics = yield* Diagnostics;
-    const found = sourceFiles.flatMap(collectInvalidFunctionDeclarations);
-    yield* Effect.forEach(found, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
-  });
+const rejectInvalidFunctionDeclarations = (sourceFiles: readonly ts.SourceFile[]): readonly CompilerDiagnostic[] =>
+  sourceFiles.flatMap(collectInvalidFunctionDeclarations);
 
 export const loadProgram = (
   entry: string,
   options: { readonly suppressSemanticDiagnostics?: boolean } = {}
-): Effect.Effect<FrontendResult, PlatformError, FileSystem.FileSystem | Path.Path | Diagnostics> =>
+): Effect.Effect<FrontendResult, PlatformError, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* loadProgramEffect() {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const diagnostics = yield* Diagnostics;
+    const diagnostics: CompilerDiagnostic[] = [];
 
     const resolvedEntry = path.resolve(entry);
     const configFileName = yield* findAncestorTsConfig(path.dirname(resolvedEntry));
@@ -380,7 +377,7 @@ export const loadProgram = (
       if (content.length > 0) {
         const { parsed: parsedConfig, diagnostics: configDiagnostics } = parseConfigFromContent(configFileName, content, path);
         parsed = parsedConfig;
-        yield* Effect.forEach(configDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
+        diagnostics.push(...configDiagnostics);
       }
     }
 
@@ -404,10 +401,9 @@ export const loadProgram = (
       ...program.getSyntacticDiagnostics(),
       ...semanticDiagnostics
     ].filter((diagnostic) => !isSyntheticInlineCppDiagnostic(diagnostic) && diagnostic.code !== spreadArgumentDiagnosticCode));
-    yield* Effect.forEach(tsDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
+    diagnostics.push(...tsDiagnostics);
+    diagnostics.push(...rejectPackageImports(sourceFiles));
+    diagnostics.push(...rejectInvalidFunctionDeclarations(sourceFiles));
 
-    yield* rejectPackageImports(sourceFiles);
-    yield* rejectInvalidFunctionDeclarations(sourceFiles);
-
-    return { program, sourceFiles };
+    return { program, sourceFiles, diagnostics };
   });

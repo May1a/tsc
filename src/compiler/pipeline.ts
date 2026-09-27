@@ -1,8 +1,7 @@
 import { type CommandExecutor, FileSystem, Path } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
 import { Effect } from "effect";
-import { formatDiagnostic } from "./diagnostics.js";
-import { Diagnostics } from "./diagnostics-service.js";
+import { type CompilerDiagnostic, formatDiagnostic } from "./diagnostics.js";
 import { CompilationFailed } from "./errors.js";
 import { loadProgram } from "./frontend.js";
 import { lowerToJsIr } from "./ir.js";
@@ -17,29 +16,33 @@ export const compile = (
 ): Effect.Effect<
   CompileResult,
   CompilationFailed | PlatformError,
-  FileSystem.FileSystem | Path.Path | Toolchain | CommandExecutor.CommandExecutor | Diagnostics
+  FileSystem.FileSystem | Path.Path | Toolchain | CommandExecutor.CommandExecutor
 > =>
   // eslint-disable-next-line max-statements -- Compilation keeps artifact ordering and early diagnostic failure in one Effect transaction.
   Effect.gen(function* compileProgram() {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const diagnostics = yield* Diagnostics;
     const toolchain = yield* Toolchain;
+
+    // Diagnostics accumulate in a local list rather than an ambient service. The service had one
+    // implementation, one consumer and three dead methods, and required the caller to drain it at a
+    // fixed point in the pipeline — an ordering invariant that lived nowhere but in this function.
+    const diagnostics: CompilerDiagnostic[] = [];
 
     yield* fs.makeDirectory(options.outDir, { recursive: true });
     const diagnosticsPath = path.join(options.outDir, "diagnostics.txt");
     const hostDiagnostic = jsValueAbi.validateHost(toolchain.target);
     if (hostDiagnostic !== undefined) {
-      yield* diagnostics.add(hostDiagnostic);
-      const hostDiagnostics = yield* diagnostics.drain();
-      yield* fs.writeFileString(diagnosticsPath, hostDiagnostics.map(formatDiagnostic).join("\n"));
-      return yield* Effect.fail(new CompilationFailed({ diagnostics: hostDiagnostics }));
+      diagnostics.push(hostDiagnostic);
+      yield* fs.writeFileString(diagnosticsPath, diagnostics.map(formatDiagnostic).join("\n"));
+      return yield* Effect.fail(new CompilationFailed({ diagnostics }));
     }
 
     const frontend = yield* loadProgram(options.entry, {
       suppressSemanticDiagnostics: options.suppressSemanticDiagnostics
     });
-    const jsIr = yield* lowerToJsIr(path.resolve(options.entry), frontend.sourceFiles, frontend.program.getTypeChecker(), {
+    diagnostics.push(...frontend.diagnostics);
+    const jsIr = lowerToJsIr(path.resolve(options.entry), frontend.sourceFiles, frontend.program.getTypeChecker(), {
       fcpp: options.fcpp
     });
 
@@ -58,19 +61,17 @@ export const compile = (
       yield* fs.writeFileString(inlineCpp, emitInlineCppSource(jsIr.module.inlineCppBlocks));
     }
 
-    for (const diagnostic of emission.diagnostics) {
-      yield* diagnostics.add(diagnostic);
-    }
-    const frontendAndIrDiagnostics = yield* diagnostics.drain();
+    diagnostics.push(...jsIr.diagnostics);
+    diagnostics.push(...emission.diagnostics);
     let link: LinkResult = { diagnostics: [] };
-    if (options.link !== false && !frontendAndIrDiagnostics.some((diagnostic) => diagnostic.category === "error")) {
+    if (options.link !== false && !diagnostics.some((diagnostic) => diagnostic.category === "error")) {
       let linkEffect = linkWithClang(llvmIr, executable);
       if (inlineCpp !== undefined) {
         linkEffect = linkWithClangxx(llvmIr, inlineCpp, executable);
       }
       link = yield* linkEffect.pipe(Effect.catchAll((error) => Effect.succeed(linkerErrorToLinkResult(error))));
     }
-    const allDiagnostics = [...frontendAndIrDiagnostics, ...link.diagnostics];
+    const allDiagnostics = [...diagnostics, ...link.diagnostics];
 
     yield* fs.writeFileString(diagnosticsPath, allDiagnostics.map(formatDiagnostic).join("\n"));
 

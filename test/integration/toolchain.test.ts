@@ -1,11 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { NodeContext } from "@effect/platform-node";
 import { Cause, Effect, Exit, Layer, Option } from "effect";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DiagnosticsLive } from "../../src/compiler/diagnostics-service.js";
-import type { CompilationFailed } from "../../src/compiler/errors.js";
+import { CompilationFailed } from "../../src/compiler/errors.js";
+import { compilerLiveLayer } from "../../src/compiler/live-layer.js";
 import { compile } from "../../src/compiler/pipeline.js";
 import { Toolchain, type Toolchain as ToolchainService, normalizeHostTargetFacts } from "../../src/compiler/toolchain.js";
 
@@ -57,19 +56,22 @@ describe("toolchain target facts", () => {
         pointerAddressBits: undefined
       }
     };
-    const layer = Layer.provideMerge(
-      Layer.provideMerge(Layer.succeed(Toolchain, incompatible), NodeContext.layer),
-      DiagnosticsLive
-    );
+    const layer = Layer.merge(compilerLiveLayer, Layer.succeed(Toolchain, incompatible));
     try {
       const exit = await Effect.runPromiseExit(
         compile({ entry: "test/fixtures/hello.ts", outDir, link: false }).pipe(Effect.provide(layer))
       );
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) {
-        const failure = Option.getOrThrow(Cause.failureOption(exit.cause)) as CompilationFailed;
-        expect(failure.diagnostics).toHaveLength(1);
-        expect(failure.diagnostics[0]?.code).toBe("TSCN2005");
+        // Narrowed, not asserted: see the note in helpers.ts. Reading `.diagnostics` off an
+        // un-narrowed cause would pass vacuously if the failure were a PlatformError.
+        const failure = Cause.failureOption(exit.cause);
+        if (!Option.isSome(failure) || !(failure.value instanceof CompilationFailed)) {
+          throw new Error(`Expected CompilationFailed but the cause was: ${Cause.pretty(exit.cause)}`);
+        }
+        const { diagnostics } = failure.value;
+        expect(diagnostics).toHaveLength(1);
+        expect(diagnostics[0]?.code).toBe("TSCN2005");
       }
       expect(await readFile(path.join(outDir, "diagnostics.txt"), "utf8")).toContain("error TSCN2005");
       await expect(access(path.join(outDir, "main.ll"))).rejects.toThrow();

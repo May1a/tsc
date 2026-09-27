@@ -2086,6 +2086,13 @@ function emitRuntimeArrayLiteralOperation(
   let fixedIndex = 0;
   for (let i = 0; i < operation.elements.length; i++) {
     const element = operation.elements[i];
+    // The loop bound guarantees this index; the guard keeps the element non-optional so the
+    // `kind` narrowing below stays total. Without it a future bounds change would silently
+    // dereference undefined here.
+    // oxlint-disable-next-line typescript/no-unnecessary-condition -- live once noUncheckedIndexedAccess is enabled
+    if (element === undefined) {
+      throw new Error(`Runtime array literal element ${i} is missing`);
+    }
     if (element.kind === "hole") {
       if (operation.elements.some((candidate) => candidate.kind === "spread" || candidate.kind === "iterableSpread")) {
         const current = `%${operation.name}.hole.current.${i}`;
@@ -5099,7 +5106,11 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines: [...array.lines, `  ${value} = call i64 @valueBoxArray(ptr ${array.value})`], value };
   }
 
-  throw new Error("Unsupported value expression");
+  // Defensive: the lowering pass is the closed-world producer, and this tier handles the subset
+  // that reaches it. The residual is not `never` because the expression tiers partition the union
+  // across declining sub-dispatchers, so this cannot be a compile-time check. The enforced
+  // exhaustiveness points are jsIrOperationChildren (see ir.ts) and the operation dispatch table.
+  throw new Error(`Unhandled JsIrValueExpression variant: ${expression.kind}`);
 }
 
 function internedFunctionGlobal(target: string): string {
@@ -5167,6 +5178,12 @@ function emitValueCallExpression(
     ];
     for (let argumentIndex = 0; argumentIndex < expression.spreadArguments.length; argumentIndex += 1) {
       const argument = expression.spreadArguments[argumentIndex];
+      // The loop bound guarantees this index; the guard keeps the argument non-optional so the
+      // `kind` narrowing below stays total.
+      // oxlint-disable-next-line typescript/no-unnecessary-condition -- live once noUncheckedIndexedAccess is enabled
+      if (argument === undefined) {
+        throw new Error(`Call spread argument ${argumentIndex} is missing`);
+      }
       if (argument.kind === "value") {
         const value = emitValueExpression(argument.value, context);
         lines.push(...value.lines, `  call void @gcRootPush(i64 ${value.value})`, `  call i64 @arrayPush(ptr ${argumentArray}, i64 ${value.value})`);
@@ -6386,6 +6403,12 @@ function emitArrayDestructureProtocolOperation(
 
   for (let elementIndex = 0; elementIndex < operation.elements.length; elementIndex += 1) {
     const element = operation.elements[elementIndex];
+    // The loop bound guarantees this index; the guard keeps the element non-optional so the
+    // `kind` narrowing below stays total.
+    // oxlint-disable-next-line typescript/no-unnecessary-condition -- live once noUncheckedIndexedAccess is enabled
+    if (element === undefined) {
+      throw new Error(`Array destructure element ${elementIndex} is missing`);
+    }
     if (element.kind === "rest") {
       const restArray = `%destructure.proto.rest.${index}.${elementIndex}`;
       const restBoxed = `%destructure.proto.rest.boxed.${index}.${elementIndex}`;
@@ -6976,7 +6999,8 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
   }
 
   if (condition.kind !== "numberComparison") {
-    throw new Error("Unsupported condition");
+    // Defensive; see the note at the end of emitValueExpression.
+    throw new Error(`Unhandled JsIrCondition variant: ${condition.kind}`);
   }
 
   const index = context.cmpIndex;
@@ -7552,7 +7576,8 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
   }
 
   if (expression.kind !== "binary") {
-    throw new Error("Unsupported number expression");
+    // Defensive; see the note at the end of emitValueExpression.
+    throw new Error(`Unhandled JsIrNumberExpression variant: ${expression.kind}`);
   }
 
   const left = emitNumberExpression(expression.left, context);
@@ -8282,6 +8307,9 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     };
   }
 
+  // Exhaustiveness is already enforced here without an explicit check: the delegation below
+  // requires `kind: "ternary"`, so this function is only type-correct while the if-chain above
+  // covers every other JsIrStringExpression variant. Adding one makes the compiler complain.
   return emitTernaryStringExpression(expression, context);
 }
 

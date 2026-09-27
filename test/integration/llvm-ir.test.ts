@@ -198,6 +198,7 @@ entry:
         const flag = block.icmp("eq", value, block.int(llvm.i64, 0n), "flag");
         const pairValue = block.insertValue(withValue, flag, 1, "pair");
         const extractedFlag = block.extractValue(pairValue, 1, "extracted.flag");
+        // @ts-expect-error: TS2345 - extractValue returns LlvmStructElementType<T>, the element *union*, because llvm.struct() erases tuple positions, so the literal index 1 cannot narrow the result to i1 even though it is i1 at runtime. This test pins the emitted instruction text, and select's i1 constraint cannot see through the union. Widening struct() to a tuple type would fix it at the interface, but that is a larger change than this test warrants.
         const final = block.select(extractedFlag, pairValue, pairValue, "final");
         block.ret(final);
       });
@@ -271,6 +272,7 @@ entry:
     expect(() => module.defineFunction({ name: "nonStructAggregate", parameters: [{ name: "v", type: llvm.i64 }], returns: pair }, (fn) => {
       const v = fn.parameter(0, llvm.i64);
       fn.block("entry", (block) => {
+        // @ts-expect-error: TS2345 - deliberate: the aggregate is i64, not a struct, so the static type already rejects it. The test pins the runtime guard "expected LLVM struct type, found i64", which is defence in depth behind the compile-time check rather than a hole in it.
         block.insertValue(v, block.int(llvm.i64, 0n), 0, "bad");
         block.ret(block.undef(pair, "fallback"));
       });
@@ -290,6 +292,7 @@ entry:
         if (sibling === undefined) {
           throw new Error("test setup: sibling should be captured");
         }
+        // @ts-expect-error: TS2345 - deliberate: the value is owned by another block. Block ownership is a runtime property tracked in a WeakMap, so the static type still looks valid here. The test pins the runtime "incompatible LLVM value" guard that catches this cross-block use.
         block.insertValue(sibling, block.int(llvm.i64, 0n), 0, "bad");
         block.ret(block.int(llvm.i64, 0n));
       });
@@ -310,6 +313,7 @@ entry:
           if (external === undefined) {
             throw new Error("test setup: external should be captured");
           }
+          // @ts-expect-error: TS2345 - deliberate: the value belongs to another module. Module ownership is a runtime property tracked in a WeakMap, so the static type still looks valid here. The test pins the runtime "incompatible LLVM value" guard that catches this cross-module use.
           block.insertValue(external, block.int(llvm.i64, 0n), 0, "bad");
           block.ret();
         });
