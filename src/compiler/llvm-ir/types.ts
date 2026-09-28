@@ -39,14 +39,17 @@ export interface LlvmValue<T extends LlvmValueType = LlvmValueType> {
   readonly type: T;
 }
 
+// The integer constants use `satisfies`, not `as`. Widening them to
+// `LlvmIntegerType` would erase the literal bit width, so `LlvmValue<typeof llvm.i1>`
+// would mean "any integer" and `select`/`icmp`'s i1 constraint would stop binding.
 export const llvm = {
-  void: { kind: "void" } as LlvmVoidType,
-  i1: { kind: "integer", bits: booleanBitWidth } as LlvmIntegerType,
-  i8: { kind: "integer", bits: byteBitWidth } as LlvmIntegerType,
-  i32: { kind: "integer", bits: integerBitWidth } as LlvmIntegerType,
-  i64: { kind: "integer", bits: valueBitWidth } as LlvmIntegerType,
-  double: { kind: "double" } as LlvmDoubleType,
-  ptr: { kind: "pointer" } as LlvmPointerType,
+  void: { kind: "void" } satisfies LlvmVoidType,
+  i1: { kind: "integer", bits: booleanBitWidth } satisfies LlvmIntegerType,
+  i8: { kind: "integer", bits: byteBitWidth } satisfies LlvmIntegerType,
+  i32: { kind: "integer", bits: integerBitWidth } satisfies LlvmIntegerType,
+  i64: { kind: "integer", bits: valueBitWidth } satisfies LlvmIntegerType,
+  double: { kind: "double" } satisfies LlvmDoubleType,
+  ptr: { kind: "pointer" } satisfies LlvmPointerType,
   struct(elements: readonly LlvmValueType[]): LlvmStructType {
     if (elements.length === 0) {
       throw new Error("Internal compiler error: LLVM struct type requires at least one element");
@@ -54,6 +57,12 @@ export const llvm = {
     return Object.freeze({ kind: "struct", elements: Object.freeze([...elements]) });
   }
 } as const;
+
+/** The precise LLVM `i1` type. Aliases the literal shape so callers need not repeat it. */
+export interface LlvmBooleanType {
+  readonly kind: "integer";
+  readonly bits: 1;
+}
 
 export function renderLlvmType(type: LlvmType): string {
   if (type.kind === "integer") {

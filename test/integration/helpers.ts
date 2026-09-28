@@ -1,15 +1,16 @@
 import { expect } from "vitest";
 import { Command, type CommandExecutor } from "@effect/platform";
+import type { PlatformError } from "@effect/platform/Error";
 import { NodeContext } from "@effect/platform-node";
-import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect";
+import { Cause, Effect, Exit, Fiber, Option, Stream } from "effect";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { formatDiagnostic } from "../../src/compiler/diagnostics.js";
-import { DiagnosticsLive } from "../../src/compiler/diagnostics-service.js";
-import type { CompilationFailed } from "../../src/compiler/errors.js";
+import { CompilationFailed } from "../../src/compiler/errors.js";
 import { compile } from "../../src/compiler/pipeline.js";
-import { Toolchain, ToolchainLive } from "../../src/compiler/toolchain.js";
+import { compilerLiveLayer } from "../../src/compiler/live-layer.js";
+import { Toolchain } from "../../src/compiler/toolchain.js";
 
 export const repoRoot = path.resolve(import.meta.dirname, "../..");
 export const roadmapIntegrationTimeoutMs = 60_000;
@@ -56,10 +57,7 @@ export interface CapturedRun {
 
 const toolExecutableCache = new Map<ToolName, Promise<string | undefined>>();
 
-const testCompileLayer = Layer.provideMerge(
-  Layer.provideMerge(ToolchainLive, NodeContext.layer),
-  DiagnosticsLive
-);
+const testCompileLayer = compilerLiveLayer;
 export const commandExecutorLayer = NodeContext.layer;
 
 export const compileFixture = async (fixture: string, options: CompileFixtureOptions = {}): Promise<CompileResult> => {
@@ -94,8 +92,15 @@ export const compileFixture = async (fixture: string, options: CompileFixtureOpt
     };
   }
 
-  const failure = Option.getOrThrow(Cause.failureOption(exit.cause)) as CompilationFailed;
-  const stderr = failure.diagnostics.map(formatDiagnostic).join("\n");
+  // Narrowed rather than asserted: the declared error channel is
+  // `CompilationFailed | PlatformError`, so an `as CompilationFailed` would silently re-read a
+  // PlatformError (an unwritable outDir, say) as a compilation failure and then read
+  // `.diagnostics` off undefined. A test could pass for entirely the wrong reason.
+  const failure = Cause.failureOption(exit.cause);
+  if (!Option.isSome(failure) || !(failure.value instanceof CompilationFailed)) {
+    throw new Error(`Expected CompilationFailed but the cause was: ${Cause.pretty(exit.cause)}`);
+  }
+  const stderr = failure.value.diagnostics.map(formatDiagnostic).join("\n");
   return {
     outDir,
     status: 1,
@@ -138,11 +143,15 @@ export const expectUnsupportedMessage = async (fixture: string, message: string)
   }
 };
 
+// The error channel is `PlatformError`, not `never`: `Command.start` fails with a
+// `SystemError` when the executable is missing, and callers below narrow to that tag
+// in order to skip. Declaring `never` here made the ENOENT skip path dead code —
+// a missing binary failed the test instead of skipping it.
 export const captureCommand = (
   executable: string,
   args: readonly string[],
   options: { readonly cwd?: string; readonly env?: Record<string, string> } = {}
-): Effect.Effect<CapturedRun, never, CommandExecutor.CommandExecutor> => {
+): Effect.Effect<CapturedRun, PlatformError, CommandExecutor.CommandExecutor> => {
   const buildCommand = (): Command.Command => {
     let command = Command.make(executable, ...args);
     if (options.cwd !== undefined) {

@@ -13,6 +13,7 @@ export {
   llvm,
   renderLlvmType,
   sameLlvmType,
+  type LlvmBooleanType,
   type LlvmDoubleType,
   type LlvmIntegerType,
   type LlvmPointerType,

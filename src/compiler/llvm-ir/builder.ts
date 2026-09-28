@@ -1,5 +1,6 @@
 import type { LlvmLineRange } from "../trace.js";
 import {
+  type LlvmBooleanType,
   type LlvmIntegerType,
   type LlvmPointerType,
   type LlvmStructElementType,
@@ -99,8 +100,8 @@ export interface LlvmBlockBuilder {
   and<T extends LlvmIntegerType>(left: LlvmValue<T>, right: LlvmValue<T>, name: string): LlvmValue<T>;
   or<T extends LlvmIntegerType>(left: LlvmValue<T>, right: LlvmValue<T>, name: string): LlvmValue<T>;
   xor<T extends LlvmIntegerType>(left: LlvmValue<T>, right: LlvmValue<T>, name: string): LlvmValue<T>;
-  icmp<T extends LlvmIntegerType>(predicate: "eq" | "ne" | "ugt" | "uge" | "ult" | "ule" | "sgt" | "sge" | "slt" | "sle", left: LlvmValue<T>, right: LlvmValue<T>, name: string): LlvmValue<{ readonly kind: "integer"; readonly bits: 1 }>;
-  select<T extends LlvmValueType>(condition: LlvmValue<{ readonly kind: "integer"; readonly bits: 1 }>, whenTrue: LlvmValue<T>, whenFalse: LlvmValue<T>, name: string): LlvmValue<T>;
+  icmp<T extends LlvmIntegerType>(predicate: "eq" | "ne" | "ugt" | "uge" | "ult" | "ule" | "sgt" | "sge" | "slt" | "sle", left: LlvmValue<T>, right: LlvmValue<T>, name: string): LlvmValue<LlvmBooleanType>;
+  select<T extends LlvmValueType>(condition: LlvmValue<LlvmBooleanType>, whenTrue: LlvmValue<T>, whenFalse: LlvmValue<T>, name: string): LlvmValue<T>;
   insertValue<T extends LlvmStructType>(aggregate: LlvmValue<T>, element: LlvmValue, index: number, name: string): LlvmValue<T>;
   extractValue<T extends LlvmStructType>(aggregate: LlvmValue<T>, index: number, name: string): LlvmValue<LlvmStructElementType<T>>;
   call(spec: LlvmFunctionSpec, arguments_: readonly LlvmValue[], name?: string): LlvmValue | undefined;
@@ -108,7 +109,7 @@ export interface LlvmBlockBuilder {
   store(value: LlvmValue, pointer: LlvmValue<LlvmPointerType>): void;
   gepBytes(pointer: LlvmValue<LlvmPointerType>, offset: LlvmValue<LlvmIntegerType>, name: string): LlvmValue<LlvmPointerType>;
   br(target: string): void;
-  condBr(condition: LlvmValue<{ readonly kind: "integer"; readonly bits: 1 }>, whenTrue: string, whenFalse: string): void;
+  condBr(condition: LlvmValue<LlvmBooleanType>, whenTrue: string, whenFalse: string): void;
   ret(value?: LlvmValue): void;
   withTrace<A>(traceId: string, build: () => A): A;
 }
@@ -231,7 +232,7 @@ class BlockBuilder implements LlvmBlockBuilder {
     return this.#integerBinary("xor", left, right, name);
   }
 
-  public icmp<T extends LlvmIntegerType>(predicate: "eq" | "ne" | "ugt" | "uge" | "ult" | "ule" | "sgt" | "sge" | "slt" | "sle", left: LlvmValue<T>, right: LlvmValue<T>, name: string): LlvmValue<{ readonly kind: "integer"; readonly bits: 1 }> {
+  public icmp<T extends LlvmIntegerType>(predicate: "eq" | "ne" | "ugt" | "uge" | "ult" | "ule" | "sgt" | "sge" | "slt" | "sle", left: LlvmValue<T>, right: LlvmValue<T>, name: string): LlvmValue<LlvmBooleanType> {
     this.#assertValue(left, left.type);
     this.#assertValue(right, left.type);
     const type = { kind: "integer", bits: 1 } as const;
@@ -240,7 +241,7 @@ class BlockBuilder implements LlvmBlockBuilder {
     return result;
   }
 
-  public select<T extends LlvmValueType>(condition: LlvmValue<{ readonly kind: "integer"; readonly bits: 1 }>, whenTrue: LlvmValue<T>, whenFalse: LlvmValue<T>, name: string): LlvmValue<T> {
+  public select<T extends LlvmValueType>(condition: LlvmValue<LlvmBooleanType>, whenTrue: LlvmValue<T>, whenFalse: LlvmValue<T>, name: string): LlvmValue<T> {
     this.#assertValue(condition, { kind: "integer", bits: 1 });
     this.#assertValue(whenTrue, whenTrue.type);
     this.#assertValue(whenFalse, whenTrue.type);
@@ -345,7 +346,7 @@ class BlockBuilder implements LlvmBlockBuilder {
     this.#terminated = true;
   }
 
-  public condBr(condition: LlvmValue<{ readonly kind: "integer"; readonly bits: 1 }>, whenTrue: string, whenFalse: string): void {
+  public condBr(condition: LlvmValue<LlvmBooleanType>, whenTrue: string, whenFalse: string): void {
     this.#assertValue(condition, { kind: "integer", bits: 1 });
     this.#recordBranchTarget(whenTrue);
     this.#recordBranchTarget(whenFalse);
