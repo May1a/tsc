@@ -5108,8 +5108,10 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   // Defensive: the lowering pass is the closed-world producer, and this tier handles the subset
   // that reaches it. The residual is not `never` because the expression tiers partition the union
-  // across declining sub-dispatchers, so this cannot be a compile-time check. The enforced
-  // exhaustiveness points are jsIrOperationChildren (see ir.ts) and the operation dispatch table.
+  // across declining sub-dispatchers, so this cannot be a compile-time check. The one
+  // exhaustiveness point the type system does enforce over operations is jsIrOperationChildren
+  // (see ir.ts). emitOperation still ends in `return []`, so an unhandled kind emits nothing;
+  // that gap is written up in AGENTS.md under no-open-union-narrowing.
   throw new Error(`Unhandled JsIrValueExpression variant: ${expression.kind}`);
 }
 

@@ -207,16 +207,25 @@ export default defineConfig({
                 "no-restricted-imports": [
                     "error",
                     {
-                        paths: [
+                        patterns: [
                             {
-                                name: "effect",
+                                // `paths` and `group` both match the exact specifier, so `effect/Chunk`
+                                // and `@effect/platform/Error` would walk straight past a bare name.
+                                // The trailing `/**` is what closes the subpaths; keep it paired with
+                                // the bare name, which `/**` alone does not match.
+                                group: ["effect", "effect/**"],
                                 message:
                                     "The compiler core is pure. Effect is confined to the CLI and process boundaries (see the C-8 allowlist in oxlint.config.ts).",
                             },
-                        ],
-                        patterns: [
                             {
-                                group: ["@effect/platform", "@effect/platform-node", "@effect/platform/bun", "@effect/platform/browser"],
+                                group: [
+                                    "@effect/platform",
+                                    "@effect/platform/**",
+                                    "@effect/platform-node",
+                                    "@effect/platform-node/**",
+                                    "@effect/platform/bun",
+                                    "@effect/platform/browser",
+                                ],
                                 message:
                                     "The compiler core is pure. @effect/platform is confined to the process and filesystem boundaries.",
                             },

@@ -348,9 +348,10 @@ export function defineStructuredRuntimeHelpers(module: LlvmModuleBuilder, runtim
 // useRuntimeHelper is what decides which definitions reach the output. A helper whose row omits
 // an `@call` in its body emits a call to an undefined symbol.
 //
-// `valueBoxObject` has no raw-text definition: it is emitted through the typed builder by
-// defineStructuredRuntimeHelpers. `malloc`/`memcpy`/`memcmp`/`sprintf` are libc, declared not
-// defined by emitRuntimeDeclarations.
+// `valueBoxObject`, `valueBoxNumber` and `valueNumber` have no raw-text definition: they are
+// emitted through the typed builder by defineStructuredRuntimeHelpers. `malloc`/`memcpy`/
+// `memcmp`/`sprintf` are libc, declared not defined by emitRuntimeDeclarations, and only when
+// this table pulls them into `used`.
 const runtimeHelperDependencies: Readonly<Record<RuntimeHelper, readonly RuntimeHelper[]>> = {
   "strConcat": ["malloc", "memcpy"],
   "strEquals": ["memcmp"],
@@ -585,7 +586,7 @@ const runtimeHelperDependencies: Readonly<Record<RuntimeHelper, readonly Runtime
   "boxedValueOf": [],
   "boxedToString": ["valueToString"],
   "objectSet": ["malloc", "memcmp", "memcpy"],
-  "gcInit": ["malloc"],
+  "gcInit": ["malloc", "memcpy"],
   "gcRootPush": ["malloc", "memcpy"],
   "gcRootPop": [],
   "gcMarkValue": ["malloc", "memcpy"],

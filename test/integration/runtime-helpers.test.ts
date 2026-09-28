@@ -16,21 +16,32 @@ import {
  *
  *   1. a dependency row that omits an `@call` present in its own helper's body, and
  *   2. a helper emitted as part of a shared `if (used.has(...))` group without itself being
- *      registered, so only its siblings' dependencies were pulled in.
+ *      registered, so only its siblings' dependencies were pulled in, and
+ *   3. a libc extern called by a helper body whose row omits it, so `emitRuntimeDeclarations`
+ *      never emits the `declare` it needs.
  *
- * Both surface the same way — `llvm-as` reports "use of undefined value '@foo'" and the compile
- * fails — but neither is visible from the registry table alone. These tests emit the real output
- * and check it, so the table cannot drift from the implementation again.
+ * All three surface the same way: `llvm-as` reports "use of undefined value '@foo'" and the
+ * compile fails, and none of them is visible from the registry table alone. These tests emit the
+ * real output and check it, so the table cannot drift from the implementation again.
  */
-
-/** libc externs: `declare`d by emitRuntimeDeclarations, never defined in the module. */
-const libcExterns = new Set<string>(["malloc", "memcpy", "memcmp", "sprintf", "exit", "printf"]);
 
 /**
- * valueBoxObject is emitted through the typed builder by defineStructuredRuntimeHelpers rather
- * than as a `define` line, so it never appears in the emitted text.
+ * libc externs owned by emitRuntimeDeclarations. It emits a `declare` for each only when the
+ * symbol is in `used`, so a `@call` to one with no matching `declare` is an invalid module.
  */
-const builderEmitted = "valueBoxObject";
+const declaredLibc = new Set<string>(["malloc", "memcpy", "memcmp", "sprintf"]);
+
+/** Declared in the main prologue (see llvm.ts), so absent from the runtime module's own text. */
+const externallyDeclared = new Set<string>(["exit", "printf"]);
+
+/**
+ * Emitted through the typed builder by defineStructuredRuntimeHelpers rather than as a `define`
+ * line, so none of them appear in the emitted text.
+ */
+const builderEmitted = new Set<string>(["valueBoxObject", "valueBoxNumber", "valueNumber"]);
+
+/** The one builder-emitted helper gated on `used`; the other two are emitted unconditionally. */
+const gatedBuilderHelper = "valueBoxObject";
 
 /** Emits the runtime for one seed helper and returns the text plus the symbols it defines. */
 const emitFor = (seed: RuntimeHelper): { readonly text: string; readonly defined: ReadonlySet<string> } => {
@@ -48,11 +59,17 @@ const undefinedHelperReferences = (seed: RuntimeHelper): ReadonlySet<string> => 
   const { text, defined } = emitFor(seed);
   const runtime = createRuntimeHelperEmitter();
   useRuntimeHelper(runtime, seed);
-  const helpers = new Set<string>([...runtimeHelpers(), builderEmitted]);
+  const helpers = new Set<string>([...runtimeHelpers(), ...builderEmitted]);
   const missing = new Set<string>();
 
   for (const [, referenced] of text.matchAll(/@([A-Za-z_][A-Za-z0-9_]*)/g)) {
-    if (libcExterns.has(referenced)) {
+    if (externallyDeclared.has(referenced)) {
+      continue;
+    }
+    if (declaredLibc.has(referenced)) {
+      if (!defined.has(referenced)) {
+        missing.add(referenced);
+      }
       continue;
     }
     // Scoped to helper symbols: GC globals (`@.gc.arena.base`) and LLVM intrinsics
@@ -60,7 +77,7 @@ const undefinedHelperReferences = (seed: RuntimeHelper): ReadonlySet<string> => 
     if (!helpers.has(referenced) || defined.has(referenced)) {
       continue;
     }
-    if (referenced === builderEmitted && runtime.used.has(builderEmitted)) {
+    if (builderEmitted.has(referenced) && (referenced !== gatedBuilderHelper || runtime.used.has(referenced))) {
       continue;
     }
     missing.add(referenced);
@@ -103,7 +120,7 @@ describe("runtime helper registry", () => {
     for (const helper of runtimeHelpers()) {
       const { text } = emitFor(helper);
       for (const [, defined] of text.matchAll(/^define\b[^\n]*?@([A-Za-z_][A-Za-z0-9_]*)[(\s]/gm)) {
-        if (!helpers.has(defined) && defined !== builderEmitted) {
+        if (!helpers.has(defined) && !builderEmitted.has(defined)) {
           unaccounted.add(defined);
         }
       }
