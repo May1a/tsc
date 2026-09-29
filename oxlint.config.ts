@@ -103,11 +103,21 @@ export default defineConfig({
     env: {
         builtin: true,
     },
-    // C-4: removed stale entries (oxlint.config.js, third_party/**, docs/**, out/**).
+    // C-4: removed stale entries (third_party/**, docs/**, out/**).
     // Kept: dist/** (build output), oxlint.config.ts (self), examples/** (ignored intentionally —
     // reconsider linting it in Phase 1), test/fixtures/** (golden fixtures), typescript/** (vendored),
     // vitest.config.js (config file).
-    ignorePatterns: ["dist/**", "oxlint.config.ts", "examples/**", "test/fixtures/**", "typescript/**", "vitest.config.js"],
+    // oxlint.config.js is the tsc-emitted CommonJS twin of oxlint.config.ts. Linting it reports
+    // errors in tsc's __assign/__spreadArray helper, never in the config itself.
+    ignorePatterns: [
+        "dist/**",
+        "oxlint.config.ts",
+        "oxlint.config.js",
+        "examples/**",
+        "test/fixtures/**",
+        "typescript/**",
+        "vitest.config.js",
+    ],
     overrides: [
         {
             env: {
@@ -188,6 +198,55 @@ export default defineConfig({
             files: ["test/integration/oracle.ts", "test/integration/oracle.test.ts"],
             rules: {
                 "typescript/no-unsafe-type-assertion": "error",
+            },
+        },
+        {
+            // C-8: Effect is confined to the two boundaries where it does real work — CLI
+            // parsing/help (@effect/cli) and scoped process spawning with typed SystemError
+            // (@effect/platform Command). The compiler core is pure, synchronous and
+            // deterministic; letting `effect` in there is how Chunk round-trips and
+            // Effect<_, never, _> signatures over throwing code crept in.
+            //
+            // Allowed: the composition roots, the four modules that talk to fs/processes, and
+            // the errors module. Everything else in src/compiler — ir.ts, llvm.ts,
+            // runtime-helpers.ts, llvm-ir/**, js-value-abi/**, trace.ts, diagnostics.ts — is
+            // pure and must stay that way.
+            files: [
+                "src/compiler/{ir,llvm,runtime-helpers,types,trace,diagnostics,inline-cpp-rewriter}.ts",
+                "src/compiler/llvm-ir/**/*.ts",
+                "src/compiler/js-value-abi/**/*.ts",
+                "src/testing/**/*.ts",
+                "src/runtime/**/*.ts",
+            ],
+            rules: {
+                "no-restricted-imports": [
+                    "error",
+                    {
+                        patterns: [
+                            {
+                                // `paths` and `group` both match the exact specifier, so `effect/Chunk`
+                                // and `@effect/platform/Error` would walk straight past a bare name.
+                                // The trailing `/**` is what closes the subpaths; keep it paired with
+                                // the bare name, which `/**` alone does not match.
+                                group: ["effect", "effect/**"],
+                                message:
+                                    "The compiler core is pure. Effect is confined to the CLI and process boundaries (see the C-8 allowlist in oxlint.config.ts).",
+                            },
+                            {
+                                group: [
+                                    "@effect/platform",
+                                    "@effect/platform/**",
+                                    "@effect/platform-node",
+                                    "@effect/platform-node/**",
+                                    "@effect/platform/bun",
+                                    "@effect/platform/browser",
+                                ],
+                                message:
+                                    "The compiler core is pure. @effect/platform is confined to the process and filesystem boundaries.",
+                            },
+                        ],
+                    },
+                ],
             },
         },
     ],

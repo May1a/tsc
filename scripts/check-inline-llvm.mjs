@@ -1,9 +1,10 @@
 // C-8: static LLVM IR must live in src/compiler/runtime/*.ll, never in
-// TypeScript string literals. runtime-helpers.ts grew past 11k lines of
-// inline IR before this check existed; this script keeps it from creeping
-// back. It parses each src/**/*.ts file with the TypeScript compiler API,
-// inspects the text of every string literal and template part, and reports
-// matches for the shapes static IR takes:
+// TypeScript string literals. The runtime IR used to live in runtime-helpers.ts,
+// which grew past 11k lines of inline IR before the .ll extraction and before this
+// check existed; this script keeps it from creeping back. It parses each
+// src/**/*.ts file with the TypeScript compiler API, inspects the text of every
+// string literal and template part, and reports matches for the shapes static IR
+// takes:
 //
 //   1. define/declare lines naming a literal symbol   ("define ptr @f(...)")
 //   2. module-scope constant globals                  ("@g = private unnamed_addr constant ...")
@@ -134,7 +135,11 @@ export function scanRepository() {
   return findings;
 }
 
-const isMain = process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
+// `slice(1, 2).at(0)` rather than `process.argv[1]`: the entry point is absent when this
+// module is imported (that is the case the test exercises), and indexing argv directly types
+// as `string` without `noUncheckedIndexedAccess`, hiding the guard from the linter.
+const entryPoint = process.argv.slice(1, 2).at(0);
+const isMain = entryPoint !== undefined && pathToFileURL(entryPoint).href === import.meta.url;
 if (isMain) {
   const findings = scanRepository();
   if (findings.length > 0) {

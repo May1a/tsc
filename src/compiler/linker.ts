@@ -9,17 +9,18 @@ export interface LinkResult {
   readonly diagnostics: readonly CompilerDiagnostic[];
 }
 
-export class LinkerLaunchFailed extends Data.TaggedError("LinkerLaunchFailed")<{
-  readonly message: string;
-}> {}
-
+/**
+ * The linker has one typed failure. A spawn failure (`SystemError`, i.e. clang not installed) is
+ * not one: it is converted to the TSCN2001 warning at the call site, so modelling it as a failure
+ * variant gave `linkerErrorToLinkResult` an unreachable branch.
+ */
 export class LinkerExitFailed extends Data.TaggedError("LinkerExitFailed")<{
   readonly toolName: string;
   readonly exitCode: number;
   readonly stderr: string;
 }> {}
 
-export type LinkerError = LinkerLaunchFailed | LinkerExitFailed;
+export type LinkerError = LinkerExitFailed;
 
 const missingClangDiagnostic: CompilerDiagnostic = {
   code: "TSCN2001",
@@ -129,9 +130,6 @@ export const linkWithClangxx = (
     );
   });
 
-export const linkerErrorToLinkResult = (error: LinkerError): LinkResult => {
-  if (error instanceof LinkerExitFailed) {
-    return { diagnostics: [linkExitFailureDiagnostic(error.toolName, error.exitCode, error.stderr)] };
-  }
-  return { diagnostics: [linkFailureDiagnostic(error.message)] };
-};
+export const linkerErrorToLinkResult = (error: LinkerError): LinkResult => ({
+  diagnostics: [linkExitFailureDiagnostic(error.toolName, error.exitCode, error.stderr)]
+});

@@ -2038,6 +2038,13 @@ function emitRuntimeArrayLiteralOperation(
   let fixedIndex = 0;
   for (let i = 0; i < operation.elements.length; i++) {
     const element = operation.elements[i];
+    // The loop bound guarantees this index; the guard keeps the element non-optional so the
+    // `kind` narrowing below stays total. Without it a future bounds change would silently
+    // dereference undefined here.
+    // oxlint-disable-next-line typescript/no-unnecessary-condition -- live once noUncheckedIndexedAccess is enabled
+    if (element === undefined) {
+      throw new Error(`Runtime array literal element ${i} is missing`);
+    }
     if (element.kind === "hole") {
       if (operation.elements.some((candidate) => candidate.kind === "spread" || candidate.kind === "iterableSpread")) {
         const current = `%${operation.name}.hole.current.${i}`;
@@ -2335,7 +2342,7 @@ function emitRuntimeArrayMapCallbackOperation(
   const currentIndex = `%arr.map.i.${index}`;
   const nextIndex = `%arr.map.next.${index}`;
   const element = `%arr.map.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index, context);
   return [
     `  ${pointerName} = alloca ptr`,
@@ -2396,7 +2403,7 @@ function emitRuntimeArrayMapFunctionObjectOperation(
   const currentIndex = `%arr.map.i.${index}`;
   const nextIndex = `%arr.map.next.${index}`;
   const element = `%arr.map.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const functionObject = emitFunctionObjectValue(operation, context, index);
   const callbackReturn = emitFunctionObjectCallbackReturn(functionObject.value, callbackArgs.values, index, context);
   return [
@@ -2547,7 +2554,7 @@ function emitRuntimeArrayFlatMapCallbackOperationWithReturn(
   const currentIndex = `%arr.flatmap.i.${index}`;
   const nextIndex = `%arr.flatmap.next.${index}`;
   const element = `%arr.flatmap.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   const isArray = `%arr.flatmap.is.array.${index}`;
   const innerArray = `%arr.flatmap.inner.array.${index}`;
@@ -2586,7 +2593,7 @@ function emitRuntimeArrayFilterCallbackOperationWithReturn(
   const currentIndex = `%arr.filter.i.${index}`;
   const nextIndex = `%arr.filter.next.${index}`;
   const element = `%arr.filter.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   const keep = `%arr.filter.keep.value.${index}`;
   return [`  ${pointerName} = alloca ptr`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${output} = call ptr @arrayNew(i64 0)`, `  store ptr ${output}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.filter.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.filter.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  ${keep} = call i1 @valueTruthy(i64 ${callbackReturn.value})`, `  br i1 ${keep}, label %${keepLabel}, label %${advanceLabel}`, `${keepLabel}:`, `  call i64 @arrayPush(ptr ${output}, i64 ${element})`, `  br label %${advanceLabel}`, `${advanceLabel}:`, `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
@@ -2615,7 +2622,7 @@ function emitRuntimeArrayForEachCallbackOperationWithCall(
   const currentIndex = `%arr.each.i.${index}`;
   const nextIndex = `%arr.each.next.${index}`;
   const element = `%arr.each.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   return [...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${iPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.each.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.each.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...emitCallbackCall(callbackArgs.values, index), `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
 
@@ -2667,7 +2674,7 @@ function emitRuntimeArrayFindCallbackOperationWithReturn(
   const notFound = `%arr.find.notfound.${index}`;
   const canContinue = `%arr.find.continue.${index}`;
   const element = `%arr.find.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   const keep = `%arr.find.keep.${index}`;
   let initialStore = [`  ${pointerName} = alloca i64`, `  store i64 ${jsValueUndefined}, ptr ${pointerName}`];
@@ -2727,7 +2734,7 @@ function emitRuntimeArrayReduceCallbackOperationWithReturn(
     doneCheck = `%arr.reduce.done.${index} = icmp slt i64 ${currentIndex}, 0`;
     nextLine = `  ${nextIndex} = sub i64 ${currentIndex}, 1`;
   }
-  const callbackArgs = emitReduceCallbackArguments(operation.callbackParameters, source.value, currentIndex, pointerName, element, index, context);
+  const callbackArgs = emitReduceCallbackArguments(operation.callbackParameters, source.value, currentIndex, pointerName, element, index);
   const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   return [`  ${pointerName} = alloca i64`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, ...initialLines, `  store i64 %arr.reduce.initial.${index}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 ${startIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  ${doneCheck}`, `  br i1 %arr.reduce.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  store i64 ${callbackReturn.value}, ptr ${pointerName}`, nextLine, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
@@ -2737,15 +2744,14 @@ function emitArrayCallbackArguments(
   sourceArray: string,
   currentIndex: string,
   element: string,
-  loopIndex: number,
-  context: EmitContext
+  loopIndex: number
 ): { readonly lines: readonly string[]; readonly values: readonly string[] } {
   const lines: string[] = [];
   const values: string[] = [];
   for (let parameterIndex = 0; parameterIndex < parameters.length; parameterIndex += 1) {
     // Number and value callback parameters share the uniform i64 JSValue ABI; the
     // callee unboxes numbers in its prologue.
-    const value = emitArrayCallbackValueArgument(parameterIndex, sourceArray, currentIndex, element, loopIndex, context, lines);
+    const value = emitArrayCallbackValueArgument(parameterIndex, sourceArray, currentIndex, element, loopIndex, lines);
     values.push(`i64 ${value}`);
   }
   return { lines, values };
@@ -2757,8 +2763,7 @@ function emitReduceCallbackArguments(
   currentIndex: string,
   accumulatorPointer: string,
   element: string,
-  loopIndex: number,
-  context: EmitContext
+  loopIndex: number
 ): { readonly lines: readonly string[]; readonly values: readonly string[] } {
   const lines: string[] = [];
   const values: string[] = [];
@@ -2772,7 +2777,7 @@ function emitReduceCallbackArguments(
       values.push(`i64 ${valueArguments[parameterIndex]}`);
       continue;
     }
-    const value = emitArrayCallbackValueArgument(parameterIndex - 1, sourceArray, currentIndex, element, loopIndex, context, lines);
+    const value = emitArrayCallbackValueArgument(parameterIndex - 1, sourceArray, currentIndex, element, loopIndex, lines);
     values.push(`i64 ${value}`);
   }
   return { lines, values };
@@ -2784,7 +2789,6 @@ function emitArrayCallbackValueArgument(
   currentIndex: string,
   element: string,
   loopIndex: number,
-  context: EmitContext,
   lines: string[]
 ): string {
   if (parameterIndex === 0) {
@@ -4857,7 +4861,13 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     return { lines: [...array.lines, `  ${value} = call i64 @valueBoxArray(ptr ${array.value})`], value };
   }
 
-  throw new Error("Unsupported value expression");
+  // Defensive: the lowering pass is the closed-world producer, and this tier handles the subset
+  // that reaches it. The residual is not `never` because the expression tiers partition the union
+  // across declining sub-dispatchers, so this cannot be a compile-time check. The one
+  // exhaustiveness point the type system does enforce over operations is jsIrOperationChildren
+  // (see ir.ts). emitOperation still ends in `return []`, so an unhandled kind emits nothing;
+  // that gap is written up in AGENTS.md under no-open-union-narrowing.
+  throw new Error(`Unhandled JsIrValueExpression variant: ${expression.kind}`);
 }
 
 function internedFunctionGlobal(target: string): string {
@@ -4918,6 +4928,12 @@ function emitValueCallExpression(
     ];
     for (let argumentIndex = 0; argumentIndex < expression.spreadArguments.length; argumentIndex += 1) {
       const argument = expression.spreadArguments[argumentIndex];
+      // The loop bound guarantees this index; the guard keeps the argument non-optional so the
+      // `kind` narrowing below stays total.
+      // oxlint-disable-next-line typescript/no-unnecessary-condition -- live once noUncheckedIndexedAccess is enabled
+      if (argument === undefined) {
+        throw new Error(`Call spread argument ${argumentIndex} is missing`);
+      }
       if (argument.kind === "value") {
         const value = emitValueExpression(argument.value, context);
         lines.push(...value.lines, `  call void @gcRootPush(i64 ${value.value})`, `  call i64 @arrayPush(ptr ${argumentArray}, i64 ${value.value})`);
@@ -6100,6 +6116,12 @@ function emitArrayDestructureProtocolOperation(
 
   for (let elementIndex = 0; elementIndex < operation.elements.length; elementIndex += 1) {
     const element = operation.elements[elementIndex];
+    // The loop bound guarantees this index; the guard keeps the element non-optional so the
+    // `kind` narrowing below stays total.
+    // oxlint-disable-next-line typescript/no-unnecessary-condition -- live once noUncheckedIndexedAccess is enabled
+    if (element === undefined) {
+      throw new Error(`Array destructure element ${elementIndex} is missing`);
+    }
     if (element.kind === "rest") {
       const restArray = `%destructure.proto.rest.${index}.${elementIndex}`;
       const restBoxed = `%destructure.proto.rest.boxed.${index}.${elementIndex}`;
@@ -6678,7 +6700,8 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
   }
 
   if (condition.kind !== "numberComparison") {
-    throw new Error("Unsupported condition");
+    // Defensive; see the note at the end of emitValueExpression.
+    throw new Error(`Unhandled JsIrCondition variant: ${condition.kind}`);
   }
 
   const index = context.cmpIndex;
@@ -7224,7 +7247,8 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
   }
 
   if (expression.kind !== "binary") {
-    throw new Error("Unsupported number expression");
+    // Defensive; see the note at the end of emitValueExpression.
+    throw new Error(`Unhandled JsIrNumberExpression variant: ${expression.kind}`);
   }
 
   const left = emitNumberExpression(expression.left, context);
@@ -7929,6 +7953,9 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     };
   }
 
+  // Exhaustiveness is already enforced here without an explicit check: the delegation below
+  // requires `kind: "ternary"`, so this function is only type-correct while the if-chain above
+  // covers every other JsIrStringExpression variant. Adding one makes the compiler complain.
   return emitTernaryStringExpression(expression, context);
 }
 

@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false,
+    // test/unit/check-inline-llvm.test.ts imports the untyped lint script
+    // directly so the checker itself is under test. allowJs lets tsc infer the
+    // script's export types without asserting them: checkJs stays off, matching
+    // the untyped-scripts stance oxlint.config.ts already takes.
+    "allowJs": true,
+    "checkJs": false,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["test/fixtures/**", "test262/**", "node_modules", "dist"]
+}

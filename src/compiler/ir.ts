@@ -1,6 +1,4 @@
-import { Chunk, Effect } from "effect";
 import ts from "typescript";
-import { Diagnostics } from "./diagnostics-service.js";
 import type { CompilerDiagnostic, SourceSpan } from "./diagnostics.js";
 import { SYMBOL_ITERATOR_SENTINEL } from "./runtime-ir.js";
 
@@ -1614,7 +1612,68 @@ export type JsIrOperation = JsIrOperationNode & {
   readonly trace?: JsIrOperationTrace;
 };
 
-// eslint-disable-next-line complexity -- Exhaustive IR child walk covers every nested operation form.
+/**
+ * IR operations whose bodies contain nested operations.
+ *
+ * Every other operation is a leaf: it carries no child operations, so the child walk returns an
+ * empty list for it. The split is stated positively rather than inferred from a `default:`
+ * branch, because a default that returns `[]` silently asserts "this variant is a leaf" — and a
+ * new operation with a nested body would then be invisible to the trace map and to
+ * collectRuntimeShadowObjectNames without any compile error.
+ */
+type JsIrContainerOperationKind =
+  | "arrayDestructureProtocol"
+  | "runtimeArrayMapFunctionObject"
+  | "block"
+  | "bindingGroup"
+  | "tryCatch"
+  | "if"
+  | "switch"
+  | "while"
+  | "doWhile"
+  | "forOfArray"
+  | "forOfString"
+  | "forOfSet"
+  | "forOfMap"
+  | "forOfProtocol"
+  | "forInObject"
+  | "forInArray"
+  | "function"
+  | "returnClosure"
+  | "for";
+
+/** Every operation kind that is not a container, keyed so the set is checked for completeness. */
+const jsIrLeafOperationKinds: Readonly<Record<Exclude<JsIrOperation["kind"], JsIrContainerOperationKind>, true>> = {
+  "constNumber": true, "constString": true, "constStringExpression": true, "constBoolean": true, "constBooleanExpression": true,
+  "constValue": true, "letValue": true, "constClosure": true, "letNumber": true, "letString": true,
+  "letBoolean": true, "arrayLiteral": true, "runtimeArrayLiteral": true, "objectLiteral": true, "runtimeObjectLiteral": true,
+  "runtimeObjectCreate": true, "runtimeErrorLiteral": true, "runtimeObjectKeys": true, "runtimeObjectValues": true, "runtimeObjectEntries": true,
+  "runtimeObjectFromEntries": true, "runtimeObjectOwnPropertyDescriptor": true, "runtimeObjectOwnPropertyNames": true, "runtimeObjectOwnPropertyDescriptors": true, "runtimeArraySlice": true,
+  "runtimeArraySplice": true, "runtimeArraySpliceStatement": true, "runtimeArrayFlat": true, "runtimeStringSplit": true, "runtimeRegexSplit": true,
+  "runtimeArrayMapCallback": true, "runtimeArrayFlatMapCallback": true, "runtimeArraySort": true, "runtimeArrayFrom": true, "runtimeArrayFromValue": true,
+  "runtimeArrayFromCollection": true, "runtimeArrayFilterCallback": true, "runtimeArrayConcat": true, "runtimeArrayMutatorResult": true, "runtimeObjectGetPrototype": true,
+  "assignNumber": true, "assignString": true, "assignBoolean": true, "arrayStore": true, "runtimeArrayStore": true,
+  "runtimeArrayNamedStore": true, "runtimeArrayDelete": true, "runtimeArrayNamedDelete": true, "runtimeArraySetLength": true, "runtimeArrayPush": true,
+  "runtimeArrayUnshift": true, "runtimeArrayFill": true, "runtimeArrayReverse": true, "runtimeArrayForEachCallback": true, "runtimeArrayFindCallback": true,
+  "runtimeArrayFindIndexCallback": true, "runtimeArrayReduceCallback": true, "runtimeMapNew": true, "runtimeSetNew": true, "runtimeMapFromArray": true,
+  "runtimeSetFromArray": true, "runtimeMapFromIterable": true, "runtimeSetFromIterable": true, "runtimeMapFromCollection": true, "runtimeSetFromCollection": true,
+  "runtimeMapSet": true, "runtimeCollectionSetIterator": true, "runtimeSetAdd": true, "runtimeMapSetResult": true, "runtimeSetAddResult": true,
+  "runtimeIteratorNew": true, "runtimeArrayCopyWithin": true, "runtimeArrayPop": true, "runtimeArrayShift": true, "objectStore": true,
+  "runtimeObjectStore": true, "valueObjectStore": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
+  "runtimeObjectDelete": true, "valueObjectDelete": true, "valueArrayDelete": true, "runtimeObjectSetPrototype": true, "valueObjectSetPrototype": true,
+  "runtimeObjectPreventExtensions": true, "runtimeObjectSeal": true, "runtimeObjectFreeze": true, "runtimeObjectAssign": true, "runtimeObjectDefineDataProperty": true,
+  "runtimeObjectDefineDataProperties": true, "print": true, "throwValue": true, "break": true, "continue": true,
+  "call": true, "callValue": true, "inlineCpp": true, "returnNumber": true, "returnString": true,
+  "returnValue": true
+};
+
+/**
+ * The nested operations of `operation`, in evaluation order.
+ *
+ * Total over the IR union: a new operation kind is a compile error here until it is classified
+ * as a container or added to `jsIrLeafOperationKinds`.
+ */
+// eslint-disable-next-line complexity -- One case per container operation kind; the residual is the leaf set.
 export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOperation[] {
   switch (operation.kind) {
     case "arrayDestructureProtocol": {
@@ -1665,6 +1724,14 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
       return [operation.initializer, ...operation.body, operation.increment];
     }
     default: {
+      // The residual is exactly the leaf set. Indexing jsIrLeafOperationKinds is total by
+      // construction — its type is keyed by every non-container kind — so the test below always
+      // holds and the throw is unreachable. The lint warning it draws is the proof of that, so it
+      // is suppressed here rather than worked around.
+      // oxlint-disable-next-line typescript/no-unnecessary-condition -- totality of the Record is the invariant
+      if (!jsIrLeafOperationKinds[operation.kind]) {
+        throw new Error(`Unclassified JsIrOperation leaf: ${operation.kind}`);
+      }
       return [];
     }
   }
@@ -1687,6 +1754,7 @@ export function visitJsIrOperations(
 
 export interface JsIrResult {
   readonly module: JsIrModule;
+  readonly diagnostics: readonly CompilerDiagnostic[];
 }
 
 export interface JsIrLowerOptions {
@@ -1905,7 +1973,7 @@ class ClassLoweringUnsupportedError extends Error {
 
 interface LoweredStatements {
   readonly operations: readonly JsIrOperation[];
-  readonly diagnostics: Chunk.Chunk<CompilerDiagnostic>;
+  readonly diagnostics: readonly CompilerDiagnostic[];
   readonly loweringMode: JsIrLoweringMode;
 }
 
@@ -1939,7 +2007,7 @@ function lowerStatements(
   nextJsonStatementValueId = 0;
   const inlineCppDiagnostic = inlineCppDisabledDiagnostic(sourceFile);
   if (inlineCppDiagnostic !== undefined) {
-    return { operations: [], diagnostics: Chunk.of(inlineCppDiagnostic), loweringMode: "native" };
+    return { operations: [], diagnostics: [inlineCppDiagnostic], loweringMode: "native" };
   }
 
   // Class-using files are attempted through real codegen first. Any unsupported
@@ -1960,12 +2028,12 @@ function lowerStatements(
     }
     return {
       operations: [],
-      diagnostics: Chunk.of({
+      diagnostics: [{
         code: "TSCN1002",
         category: "error",
         message: error.message,
         span: sourceSpan(sourceFile, 0)
-      }),
+      }],
       loweringMode: "native"
     };
   }
@@ -2047,7 +2115,7 @@ function lowerTopLevelStatements(
       }
 
       if (strict) {
-        return { supported: false, result: { operations: [], diagnostics: Chunk.empty(), loweringMode: "native" } };
+        return { supported: false, result: { operations: [], diagnostics: [], loweringMode: "native" } };
       }
 
       diagnostics.push({
@@ -2063,7 +2131,7 @@ function lowerTopLevelStatements(
 
   return {
     supported: true,
-    result: { operations: markRuntimeObjectShadows(operations), diagnostics: Chunk.fromIterable(diagnostics), loweringMode: "native" }
+    result: { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" }
   };
 }
 
@@ -2086,7 +2154,7 @@ function tryLowerStatementsWithClasses(
   sourceFile: ts.SourceFile
 ): LoweredStatements | undefined {  try {
     const { supported, result } = lowerTopLevelStatements(sourceFile, true);
-    if (!supported || !Chunk.isEmpty(result.diagnostics)) {
+    if (!supported || result.diagnostics.length > 0) {
       return undefined;
     }
     return result;
@@ -12304,43 +12372,53 @@ function isFunctionObjectContainer(value: object): value is { readonly kind: "fu
   return "codeName" in value.definition && typeof value.definition.codeName === "string";
 }
 
-export const lowerToJsIr = (
+/**
+ * Lowers parsed TypeScript sources into the JS IR.
+ *
+ * Pure and synchronous. Diagnostics are *returned* rather than pushed into an ambient service:
+ * the previous signature was `Effect<JsIrResult, never, Diagnostics>` while the body threw from
+ * 49 sites and mutated 12 module-level bindings, so the `never` promised a totality the
+ * implementation did not have and the `Diagnostics` requirement bought nothing but a mutable log.
+ *
+ * Returns diagnostics for the sources it lowered. Not fiber-safe, by construction: the lowering
+ * state below is module-level, so concurrent calls would interleave. It is synchronous, so
+ * nothing currently does.
+ */
+export function lowerToJsIr(
   entry: string,
   sourceFiles: readonly ts.SourceFile[],
   checker?: ts.TypeChecker,
   options: JsIrLowerOptions = {}
-): Effect.Effect<JsIrResult, never, Diagnostics> =>
-  Effect.gen(function* lowerToJsIrEffect() {
-    const diagnostics = yield* Diagnostics;
-    const allDiagnostics: CompilerDiagnostic[] = [];
-    const inlineCppBlocks: JsIrInlineCppBlock[] = [];
-    activeTypeChecker = checker;
-    activeInlineCppEnabled = options.fcpp === true;
-    activeInlineCppBlocks = inlineCppBlocks;
-    let modules;
-    try {
-      modules = sourceFiles.map((sourceFile, moduleIndex) => {
-        const lowered = lowerStatements(sourceFile);
-        allDiagnostics.push(...lowered.diagnostics);
-        return {
-          fileName: sourceFile.fileName,
-          statementCount: sourceFile.statements.length,
-          loweringMode: lowered.loweringMode,
-          operations: finalizeOperationTraces(lowered.operations, moduleIndex),
-          functionObjects: collectFunctionObjectDefinitions(lowered.operations)
-        };
-      });
-    } finally {
-      activeTypeChecker = undefined;
-      activeInlineCppEnabled = false;
-      activeInlineCppBlocks = undefined;
-    }
-    yield* Effect.forEach(allDiagnostics, (diagnostic) => diagnostics.add(diagnostic), { discard: true });
-    return {
-      module: {
-        entry,
-        modules,
-        inlineCppBlocks
-      }
-    };
-  });
+): JsIrResult {
+  const allDiagnostics: CompilerDiagnostic[] = [];
+  const inlineCppBlocks: JsIrInlineCppBlock[] = [];
+  activeTypeChecker = checker;
+  activeInlineCppEnabled = options.fcpp === true;
+  activeInlineCppBlocks = inlineCppBlocks;
+  let modules;
+  try {
+    modules = sourceFiles.map((sourceFile, moduleIndex) => {
+      const lowered = lowerStatements(sourceFile);
+      allDiagnostics.push(...lowered.diagnostics);
+      return {
+        fileName: sourceFile.fileName,
+        statementCount: sourceFile.statements.length,
+        loweringMode: lowered.loweringMode,
+        operations: finalizeOperationTraces(lowered.operations, moduleIndex),
+        functionObjects: collectFunctionObjectDefinitions(lowered.operations)
+      };
+    });
+  } finally {
+    activeTypeChecker = undefined;
+    activeInlineCppEnabled = false;
+    activeInlineCppBlocks = undefined;
+  }
+  return {
+    module: {
+      entry,
+      modules,
+      inlineCppBlocks
+    },
+    diagnostics: allDiagnostics
+  };
+}

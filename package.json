@@ -7,8 +7,9 @@
     "tscn": "./dist/cli/main.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-runtime-ll.mjs",
-    "check": "tsc --noEmit -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json && node scripts/copy-runtime-ll.mjs",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "check:src": "tsc --noEmit -p tsconfig.json",
     "test": "vitest --run",
     "test:watch": "vitest --watch",
     "test262:fetch": "npm run build && node dist/test262/fetch.js",

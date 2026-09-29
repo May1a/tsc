@@ -1,25 +1,18 @@
-import { NodeContext } from "@effect/platform-node";
-import { Cause, Effect, Exit, Layer, Option } from "effect";
+import { Cause, Effect, Exit, Option } from "effect";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { formatDiagnostic } from "../compiler/diagnostics.js";
-import { DiagnosticsLive } from "../compiler/diagnostics-service.js";
+import { compilerLiveLayer } from "../compiler/live-layer.js";
 import { CompilationFailed } from "../compiler/errors.js";
 import { compile } from "../compiler/pipeline.js";
-import { ToolchainLive } from "../compiler/toolchain.js";
 import { type ObservedBehavior, nativeBehavior, nodeBehavior, nodeModuleWrapperSource } from "../testing/process-behavior.js";
 import { behaviorsEqual, nodeScriptWrapperSource } from "./behavior.js";
 import { repoRoot } from "./paths.js";
 import { assembleEntry, assembledTsConfig, missingThrowMarker, unexpectedThrowMarker } from "./prelude.js";
 import { type CapturedProcess, captureProcessWithTimeout } from "./process.js";
 import type { Classification, SelectedTest, TestCaseResult } from "./types.js";
-
-const compileLayer = Layer.provideMerge(
-  Layer.provideMerge(ToolchainLive, NodeContext.layer),
-  DiagnosticsLive
-);
 
 const unsupportedFeatureCode = "TSCN1002";
 const missingClangMarker = "clang was not found";
@@ -36,7 +29,7 @@ type CompileOutcome =
 
 const runCompile = async (entry: string, outDir: string, suppressSemanticDiagnostics: boolean): Promise<CompileOutcome> => {
   const exit = await Effect.runPromiseExit(
-    compile({ entry, outDir, link: true, suppressSemanticDiagnostics }).pipe(Effect.provide(compileLayer))
+    compile({ entry, outDir, link: true, suppressSemanticDiagnostics }).pipe(Effect.provide(compilerLiveLayer))
   );
   if (Exit.isSuccess(exit)) {
     return {
