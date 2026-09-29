@@ -8,6 +8,8 @@ export default defineConfig({
     hookTimeout: 30_000,
     include: ['test/integration/**/*.test.ts'],
     pool: 'forks',
+    // Keep compiler and TypeScript declaration caches warm across files in each worker.
+    isolate: false,
     fileParallelism: true,
     maxWorkers: 4,
     coverage: {
