@@ -1453,12 +1453,12 @@ describe("tscn expanded runtime roadmap", () => {
     await expectNativeFixtures(cases, { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
-  test("emits nested runtime helper dependencies once", async () => {
+  test("emits each runtime helper exactly once", async () => {
     const result = await expectSuccessfulCompile("value-string-conversion-array.ts");
     try {
       const llvmIr = await result.readArtifact("main.ll");
       expect(countOccurrences(llvmIr, "define ptr @arrayJoin")).toBe(1);
-      expect(countOccurrences(llvmIr, "define ptr @objectEntries")).toBe(0);
+      expect(countOccurrences(llvmIr, "define ptr @objectEntries")).toBe(1);
       expect(countOccurrences(llvmIr, "define { ptr, i64 } @valueToString")).toBe(1);
       expect(countOccurrences(llvmIr, "declare ptr @malloc(i64)")).toBe(1);
     } finally {

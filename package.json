@@ -7,7 +7,7 @@
     "tscn": "./dist/cli/main.js"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json && node scripts/copy-runtime-ll.mjs",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "check:src": "tsc --noEmit -p tsconfig.json",
     "test": "vitest --run",
@@ -15,7 +15,7 @@
     "test262:fetch": "npm run build && node dist/test262/fetch.js",
     "test262:run": "npm run build && node dist/test262/run.js",
     "test262:baseline": "npm run build && node dist/test262/run.js --classification fail --baseline test262/baseline.json",
-    "lint": "npx oxlint --type-aware"
+    "lint": "npx oxlint --type-aware && node scripts/check-inline-llvm.mjs"
   },
   "dependencies": {
     "@effect/cli": "^0.75.2",

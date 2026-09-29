@@ -51,12 +51,16 @@ them anywhere.
 **Emission** (`emitLlvmModule`) — JsIrModule → LLVM IR text. Pure. Dispatch is by `if (kind === …)`
 chains, not `switch`, which is why `switch-exhaustiveness-check` does not apply to it.
 
-**Runtime Helper** (`RuntimeHelper`) — one function in the generated JS runtime, emitted into the
-LLVM module on demand. A closed union of 281 names. `runtimeHelperDependencies` maps each helper to
-the helpers it calls; `useRuntimeHelper` walks that to compute the transitive closure, and only
-those definitions are emitted. The map is a total `Record`, so a missing row is a compile error,
-and `test/integration/runtime-helpers.test.ts` emits the real output and checks that nothing calls
-an undefined symbol.
+**Static Runtime IR** (`src/compiler/runtime/*.ll`) — the fixed body of the generated JS runtime, held
+as LLVM IR text in one file per domain (`gc`, `values`, `numbers`, `strings`, `regex`, `arrays`,
+`objects`, `collections`, `functions`, `json`, `errors`, `iterators`, plus `declares.ll` for the
+external `declare`s and `globals.ll` for module-scope constants). `runtime-ir.ts` reads them
+through a cached, module-relative loader and `emitLlvmModule` appends the whole blob to every
+module. There is **no helper registry and no tree-shaking**: an unused `define` is inert in a
+single-module IR file, so paying for all of it costs emitted text and nothing else. Static IR
+belongs in these files, never inline in TypeScript — `scripts/check-inline-llvm.mjs` (second stage
+of `npm run lint`) enforces that, and `scripts/copy-runtime-ll.mjs` is what puts the files into
+`dist/`, so the build is `tsc` *and then* the copy.
 
 **JsValue ABI** (`jsValueAbi`) — how a JavaScript value is represented in native code. An `i64`
 whose bit pattern encodes a tag plus a payload. The representation differs per host
@@ -81,7 +85,7 @@ rewritten to a companion `.cpp` file linked alongside the LLVM module.
   exists to enforce.
 - **Effect is confined to two boundaries**: CLI parsing/help (`src/cli/**`, `@effect/cli`) and
   scoped process spawning (`toolchain.ts`, `linker.ts`, `test262/process.ts`, `@effect/platform`).
-  The compiler core — `ir.ts`, `llvm.ts`, `runtime-helpers.ts`, `llvm-ir/**`, `js-value-abi/**` —
+  The compiler core — `ir.ts`, `llvm.ts`, `runtime-ir.ts`, `llvm-ir/**`, `js-value-abi/**` —
   is pure and synchronous. This is enforced by the `no-restricted-imports` override in
   `oxlint.config.ts`, not by convention.
 - The correctness oracle (`test/integration/oracle.ts`) compiles a fixture with `tscn`, runs the

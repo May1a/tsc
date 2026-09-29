@@ -4,7 +4,7 @@ Use the `unslop` skill always.
 
 This is a typescript compiler, it is supposed to compile typescript to native code by generating LLVM IR.
 
-Read [CONTEXT.md](./CONTEXT.md) for the domain model: the IR unions, the Runtime Helper registry,
+Read [CONTEXT.md](./CONTEXT.md) for the domain model: the IR unions, the static runtime IR files,
 and which modules are pure. Use those names in code and reviews.
 
 Code Quality must be of a very high priority. Shortcuts must be avoided.

@@ -18,7 +18,6 @@ describe("tscn objects", () => {
       expect(llvmIr).toContain("%obj.0 = type { double, double }");
       expect(llvmIr).toContain("%obj.addr = alloca %obj.0");
       expect(llvmIr).toContain("load double, ptr %obj.gep.");
-      expect(llvmIr).not.toContain("define ptr @objectNew(i64 %capacity)");
     } finally {
       await result.cleanup();
     }

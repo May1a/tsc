@@ -22,15 +22,7 @@ import {
 } from "./ir.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { type TraceMapV1, buildTraceMap, traceOperationId } from "./trace.js";
-import {
-  type RuntimeHelper,
-  type RuntimeHelperEmitter,
-  createRuntimeHelperEmitter,
-  defineStructuredRuntimeHelpers,
-  emitRuntimeDeclarations,
-  emitRuntimeDefinitions,
-  useRuntimeHelper
-} from "./runtime-helpers.js";
+import { defineStructuredRuntimeHelpers, runtimeIrText } from "./runtime-ir.js";
 import { jsValueAbi } from "./js-value-abi/index.js";
 import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
 
@@ -72,7 +64,6 @@ interface EmitContext {
   readonly objectTypes: string[];
   readonly objectLayouts: Map<string, ObjectLayout>;
   readonly valueGlobals: Set<string>;
-  readonly runtime: RuntimeHelperEmitter;
   readonly loopLabels: LoopLabels[];
   /** Innermost-to-outermost cleanup regions (finally / IteratorClose). */
   readonly cleanupStack: CleanupFrame[];
@@ -198,7 +189,6 @@ function createMainEmitContext(): EmitContext {
     objectTypes: [],
     objectLayouts: new Map(),
     valueGlobals: new Set(),
-    runtime: createRuntimeHelperEmitter(),
     loopLabels: [],
     cleanupStack: [],
     activeCleanupBodies: [],
@@ -241,7 +231,6 @@ function createFunctionEmitContext(fn: FunctionDef, parent: EmitContext): EmitCo
     objectTypes: parent.objectTypes,
     objectLayouts: new Map(parent.objectLayouts),
     valueGlobals: parent.valueGlobals,
-    runtime: parent.runtime,
     loopLabels: [],
     cleanupStack: [],
     activeCleanupBodies: [],
@@ -415,22 +404,11 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
   const functionObjectGlobals = [...internedFunctions].map(([target]) => `@${internedFunctionGlobal(target)} = internal global i64 ${jsValueUndefined}`);
   const valueGlobals = [...context.valueGlobals].map((name) => `@${name}.value = internal global i64 ${jsValueUndefined}`);
   const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals, ...functionObjectGlobals, ...valueGlobals].join("\n");
-  let numberFormat = "";
-  if (context.hasNumberPrint) {
-    numberFormat = String.raw`@.fmt.number = private unnamed_addr constant [4 x i8] c"%g\0A\00"
-@.fmt.number.nan = private unnamed_addr constant [4 x i8] c"NaN\00"
-@.fmt.number.infinity = private unnamed_addr constant [9 x i8] c"Infinity\00"
-@.fmt.number.negative-infinity = private unnamed_addr constant [10 x i8] c"-Infinity\00"`;
-  }
 
   // Phase A: invoke the GC initializer before any user statement so that the
   // call to gcInit lands at the start of @main's entry block. Immediately record
   // the root-stack baseline so top-level roots are released before @main returns
   // (otherwise straight-line top-level temporaries stay pinned until process exit).
-  if (internedFunctions.size > 0) {
-    useRuntimeHelper(context.runtime, "functionObjectNew");
-    useRuntimeHelper(context.runtime, "valueBoxString");
-  }
   const mainInit = [
     "  call void @gcInit()",
     "  %gc.main.frame = call i64 @gcRootSave()",
@@ -451,9 +429,7 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
     })
   ];
 
-  useRuntimeHelper(context.runtime, "valuePrint");
-  const runtimeDeclarations = emitRuntimeDeclarations(context.runtime);
-  const runtimeDefinitions = emitRuntimeDefinitions(context.runtime);
+  const runtimeIr = runtimeIrText();
   const inlineCppDeclarations = emitInlineCppDeclarations(module.inlineCppBlocks);
   const traceMarkers: LegacyLlvmTraceMarker[] = [];
   const legacyLines: string[] = [];
@@ -480,12 +456,10 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
   appendText(moduleComments);
   appendLines(["", "declare i32 @puts(ptr)", "declare i32 @printf(ptr, ...)", "declare void @exit(i32)"]);
   appendLines(inlineCppDeclarations);
-  appendLines(runtimeDeclarations);
   appendLines([""]);
-  appendText(numberFormat);
   appendText(stringConstants);
   appendText(aggregateGlobals);
-  appendLines(runtimeDefinitions.flatMap(splitLegacyDefinition));
+  appendText(runtimeIr);
   appendLines(fnLines);
   appendLines([
     "define i32 @main() {",
@@ -522,7 +496,7 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
   const legacyText = `${legacyLines.join("\n")}\n`;
   const llvmModule = createLlvmModule();
   llvmModule.addLegacyModuleText({ origin: "legacy LLVM backend", text: legacyText, traceMarkers });
-  defineStructuredRuntimeHelpers(llvmModule, context.runtime);
+  defineStructuredRuntimeHelpers(llvmModule);
   return { rendered: llvmModule.render(), diagnostics };
 }
 
@@ -533,13 +507,6 @@ function functionDefinitionDiagnostic(message: string, operation: JsIrOperation 
     return diagnostic;
   }
   return { ...diagnostic, span };
-}
-
-function splitLegacyDefinition(definition: string): readonly string[] {
-  if (definition.endsWith("\n")) {
-    return definition.slice(0, -1).split("\n");
-  }
-  return definition.split("\n");
 }
 
 export interface LlvmEmission {
@@ -918,7 +885,6 @@ function emitThrowEntryBlock(context: EmitContext, frame: CleanupFrame): string[
 }
 
 function emitIteratorCloseBody(context: EmitContext, frame: CleanupFrame): string[] {
-  useRuntimeHelper(context.runtime, "iteratorClose");
   const seq = context.cleanupSeq;
   context.cleanupSeq += 1;
   const iterator = `%iter.close.iter.${seq}`;
@@ -1077,7 +1043,6 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     if (capture === undefined) {
       continue;
     }
-    useRuntimeHelper(context.runtime, "environmentGet");
     const value = `%fnobj.capture.${i}`;
     bodyLines.push(`  ${value} = call i64 @environmentGet(ptr %env, i64 ${i})`, `  call void @gcRootPush(i64 ${value})`);
     if (capture.valueKind === "number") {
@@ -1089,8 +1054,6 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     if (capture.valueKind === "string") {
       const pointer = `%fnobj.capture.${i}.ptr`;
       const length = `%fnobj.capture.${i}.len`;
-      useRuntimeHelper(context.runtime, "valueStringPtr");
-      useRuntimeHelper(context.runtime, "valueStringLength");
       bodyLines.push(
         `  ${pointer} = call ptr @valueStringPtr(i64 ${value})`,
         `  ${length} = call i64 @valueStringLength(i64 ${value})`,
@@ -1118,8 +1081,6 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     if (parameter.valueKind === "string") {
       const pointer = `%fnobj.arg.${i}.ptr`;
       const length = `%fnobj.arg.${i}.len`;
-      useRuntimeHelper(context.runtime, "valueStringPtr");
-      useRuntimeHelper(context.runtime, "valueStringLength");
       bodyLines.push(
         `  ${pointer} = call ptr @valueStringPtr(i64 ${value})`,
         `  ${length} = call i64 @valueStringLength(i64 ${value})`,
@@ -1231,7 +1192,7 @@ function emitNumberParameterUnbox(parameters: readonly JsIrFunctionParameter[]):
   return lines;
 }
 
-function emitStringParameterStores(parameters: readonly JsIrFunctionParameter[], context: EmitContext): string[] {
+function emitStringParameterStores(parameters: readonly JsIrFunctionParameter[], _context: EmitContext): string[] {
   const lines: string[] = [];
   for (let index = 0; index < parameters.length; index++) {
     const parameter = parameters[index];
@@ -1240,8 +1201,6 @@ function emitStringParameterStores(parameters: readonly JsIrFunctionParameter[],
     }
     // String parameters arrive as a single i64 NaN-boxed reference. Unbox it back
     // into the backend-local (ptr, length) working form held in twin allocas.
-    useRuntimeHelper(context.runtime, "valueStringPtr");
-    useRuntimeHelper(context.runtime, "valueStringLength");
     lines.push(
       `  %p${index}.ptr = call ptr @valueStringPtr(i64 %p${index})`,
       `  %p${index}.len = call i64 @valueStringLength(i64 %p${index})`,
@@ -1623,13 +1582,11 @@ function emitRuntimeCollectionMutationOperation(operation: JsIrOperation, contex
     const collection = emitRuntimeCollectionPointer(operation.mapName, context);
     const key = emitValueExpression(operation.key, context);
     const value = emitValueExpression(operation.value, context);
-    useRuntimeHelper(context.runtime, "collectionSet");
     return [...collection.lines, ...key.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${key.value}, i64 ${value.value})`];
   }
   if (operation.kind === "runtimeSetAdd") {
     const collection = emitRuntimeCollectionPointer(operation.setName, context);
     const value = emitValueExpression(operation.value, context);
-    useRuntimeHelper(context.runtime, "collectionSet");
     return [...collection.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${value.value}, i64 ${jsValueTrue})`];
   }
   return undefined;
@@ -2070,11 +2027,6 @@ function emitRuntimeArrayLiteralOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayLiteral" }>,
   context: EmitContext
 ): string[] {
-  useRuntimeHelper(context.runtime, "arrayNew");
-  useRuntimeHelper(context.runtime, "arraySet");
-  useRuntimeHelper(context.runtime, "arrayPush");
-  useRuntimeHelper(context.runtime, "arrayConcat");
-  useRuntimeHelper(context.runtime, "valueBoxArray");
   const pointerName = variablePointerName(operation.name);
   const arrayValue: RuntimeArrayValue = { pointerName };
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
@@ -2166,12 +2118,6 @@ function emitIterableAppend(
 ): string[] {
   const index = context.arrayIndex;
   context.arrayIndex += 1;
-  useRuntimeHelper(context.runtime, "getIteratorValue");
-  useRuntimeHelper(context.runtime, "callIteratorNext");
-  useRuntimeHelper(context.runtime, "valueObjectGet");
-  useRuntimeHelper(context.runtime, "valueTruthy");
-  useRuntimeHelper(context.runtime, "valueBoxString");
-  useRuntimeHelper(context.runtime, "arrayPush");
   const source = emitValueExpression(sourceExpression, context);
   const messageConstant = addStringConstant(notIterableMessageText, context);
   const message = `%spread.message.${index}`;
@@ -2189,7 +2135,6 @@ function emitIterableAppend(
   const doneValue = `%spread.done.value.${index}`;
   const done = `%spread.done.${index}`;
   const value = `%spread.item.${index}`;
-  useRuntimeHelper(context.runtime, "valueBoxArray");
   const destinationValue = `%spread.destination.${index}`;
   return [
     ...source.lines,
@@ -2233,7 +2178,6 @@ function emitRuntimeCollectionNewOperation(
     bindingKind = "runtimeMap";
   }
   context.bindings.set(operation.name, { kind: bindingKind, name: operation.name });
-  useRuntimeHelper(context.runtime, "collectionNew");
   return [`  ${pointerName} = alloca ptr`, `  %${operation.name}.collection = call ptr @collectionNew()`, `  store ptr %${operation.name}.collection, ptr ${pointerName}`];
 }
 
@@ -2263,10 +2207,6 @@ function emitRuntimeCollectionFromArrayOperation(
     bindingKind = "runtimeMap";
   }
   context.bindings.set(operation.name, { kind: bindingKind, name: operation.name });
-  useRuntimeHelper(context.runtime, "collectionNew");
-  useRuntimeHelper(context.runtime, "collectionSet");
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
   const lines = [
     `  ${pointerName} = alloca ptr`,
     ...source.lines,
@@ -2288,7 +2228,6 @@ function emitRuntimeCollectionFromArrayOperation(
     const valueConstant = addStringConstant("1", context);
     const key = `%${operation.name}.source.entry.key.${index}`;
     const value = `%${operation.name}.source.entry.value.${index}`;
-    useRuntimeHelper(context.runtime, "valueArrayGet");
     lines.push(
       `  ${key} = call i64 @valueArrayGet(i64 ${element}, i64 0, i64 1, ptr ${keyConstant})`,
       `  ${value} = call i64 @valueArrayGet(i64 ${element}, i64 1, i64 1, ptr ${valueConstant})`,
@@ -2319,7 +2258,6 @@ function emitRuntimeCollectionResultOperation(
   const collection = emitRuntimeCollectionPointer(sourceName, context);
   const pointerName = variablePointerName(operation.name);
   const lines = [`  ${pointerName} = alloca ptr`, ...collection.lines];
-  useRuntimeHelper(context.runtime, "collectionSet");
   if (operation.kind === "runtimeMapSetResult") {
     const key = emitValueExpression(operation.key, context);
     const value = emitValueExpression(operation.value, context);
@@ -2350,9 +2288,7 @@ function emitRuntimeIteratorNewOperation(
   }
   const iteratorValue = `%${operation.name}.iterator.value`;
   context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
-  useRuntimeHelper(context.runtime, "createCollectionIterator");
   if (operation.observeOverride === true) {
-    useRuntimeHelper(context.runtime, "getCollectionIterator");
     const acquired = emitGeneratedJsCall("getCollectionIterator", [`ptr ${collection.value}`, `i64 ${sourceCode}`, `i64 ${modeCode}`], context);
     return [
       `  ${pointerName} = alloca i64`,
@@ -2392,10 +2328,6 @@ function emitRuntimeArrayMapCallbackOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapCallback" }>,
   context: EmitContext
 ): string[] {
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
-  useRuntimeHelper(context.runtime, "arrayNew");
-  useRuntimeHelper(context.runtime, "arraySet");
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   const source = emitRuntimeArrayPointer(operation.arrayName, context);
@@ -2410,7 +2342,7 @@ function emitRuntimeArrayMapCallbackOperation(
   const currentIndex = `%arr.map.i.${index}`;
   const nextIndex = `%arr.map.next.${index}`;
   const element = `%arr.map.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const callbackReturn = emitArrayCallbackReturn(operation.callbackReturnKind, operation.callbackName, callbackArgs.values, index, context);
   return [
     `  ${pointerName} = alloca ptr`,
@@ -2457,12 +2389,6 @@ function emitRuntimeArrayMapFunctionObjectOperation(
   if (operation.method === "forEach") {
     return emitRuntimeArrayForEachFunctionObjectOperation(operation, context);
   }
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
-  useRuntimeHelper(context.runtime, "arrayNew");
-  useRuntimeHelper(context.runtime, "arraySet");
-  useRuntimeHelper(context.runtime, "functionObjectNew");
-  useRuntimeHelper(context.runtime, "jsCall");
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   const source = emitRuntimeArrayPointer(operation.arrayName, context);
@@ -2477,7 +2403,7 @@ function emitRuntimeArrayMapFunctionObjectOperation(
   const currentIndex = `%arr.map.i.${index}`;
   const nextIndex = `%arr.map.next.${index}`;
   const element = `%arr.map.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const functionObject = emitFunctionObjectValue(operation, context, index);
   const callbackReturn = emitFunctionObjectCallbackReturn(functionObject.value, callbackArgs.values, index, context);
   return [
@@ -2507,15 +2433,11 @@ function emitRuntimeArrayMapFunctionObjectOperation(
 }
 
 function emitFunctionObjectValue(operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>, context: EmitContext, index: number): { readonly lines: readonly string[]; readonly value: string } {
-  useRuntimeHelper(context.runtime, "functionObjectNew");
-  useRuntimeHelper(context.runtime, "jsCall");
   const functionValue = `%arr.fnobj.${index}`;
   const captures = operation.captures ?? [];
   const captureLines: string[] = [];
   let environment = "null";
   if (captures.length > 0) {
-    useRuntimeHelper(context.runtime, "environmentNew");
-    useRuntimeHelper(context.runtime, "environmentSet");
     const emittedCaptures = captures.map((capture) => emitValueExpression(capture.value, context));
     for (const capture of emittedCaptures) {
       captureLines.push(...capture.lines, `  call void @gcRootPush(i64 ${capture.value})`);
@@ -2612,12 +2534,6 @@ function emitRuntimeArrayFlatMapCallbackOperationWithReturn(
   context: EmitContext,
   emitCallbackReturn: (args: readonly string[], loopIndex: number) => { readonly lines: readonly string[]; readonly value: string }
 ): string[] {
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
-  useRuntimeHelper(context.runtime, "arrayNew");
-  useRuntimeHelper(context.runtime, "arrayPush");
-  useRuntimeHelper(context.runtime, "valueIsArray");
-  useRuntimeHelper(context.runtime, "valueArrayPtr");
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   const source = emitRuntimeArrayPointer(operation.arrayName, context);
@@ -2638,7 +2554,7 @@ function emitRuntimeArrayFlatMapCallbackOperationWithReturn(
   const currentIndex = `%arr.flatmap.i.${index}`;
   const nextIndex = `%arr.flatmap.next.${index}`;
   const element = `%arr.flatmap.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   const isArray = `%arr.flatmap.is.array.${index}`;
   const innerArray = `%arr.flatmap.inner.array.${index}`;
@@ -2661,11 +2577,6 @@ function emitRuntimeArrayFilterCallbackOperationWithReturn(
   context: EmitContext,
   emitCallbackReturn: (args: readonly string[], loopIndex: number) => { readonly lines: readonly string[]; readonly value: string }
 ): string[] {
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
-  useRuntimeHelper(context.runtime, "arrayNew");
-  useRuntimeHelper(context.runtime, "arrayPush");
-  useRuntimeHelper(context.runtime, "valueTruthy");
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   const source = emitRuntimeArrayPointer(operation.arrayName, context);
@@ -2682,7 +2593,7 @@ function emitRuntimeArrayFilterCallbackOperationWithReturn(
   const currentIndex = `%arr.filter.i.${index}`;
   const nextIndex = `%arr.filter.next.${index}`;
   const element = `%arr.filter.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   const keep = `%arr.filter.keep.value.${index}`;
   return [`  ${pointerName} = alloca ptr`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${output} = call ptr @arrayNew(i64 0)`, `  store ptr ${output}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.filter.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.filter.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  ${keep} = call i1 @valueTruthy(i64 ${callbackReturn.value})`, `  br i1 ${keep}, label %${keepLabel}, label %${advanceLabel}`, `${keepLabel}:`, `  call i64 @arrayPush(ptr ${output}, i64 ${element})`, `  br label %${advanceLabel}`, `${advanceLabel}:`, `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
@@ -2700,8 +2611,6 @@ function emitRuntimeArrayForEachCallbackOperationWithCall(
   context: EmitContext,
   emitCallbackCall: (args: readonly string[], loopIndex: number) => readonly string[]
 ): string[] {
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
   const source = emitRuntimeArrayPointer(operation.arrayName, context);
   const index = context.arrayIndex;
   context.arrayIndex += 1;
@@ -2713,7 +2622,7 @@ function emitRuntimeArrayForEachCallbackOperationWithCall(
   const currentIndex = `%arr.each.i.${index}`;
   const nextIndex = `%arr.each.next.${index}`;
   const element = `%arr.each.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   return [...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, `  ${iPointer} = alloca i64`, `  store i64 0, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  %arr.each.done.${index} = icmp eq i64 ${currentIndex}, ${length}`, `  br i1 %arr.each.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...emitCallbackCall(callbackArgs.values, index), `  ${nextIndex} = add i64 ${currentIndex}, 1`, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
 
@@ -2741,9 +2650,6 @@ function emitRuntimeArrayFindCallbackOperationWithReturn(
   context: EmitContext,
   emitCallbackReturn: (args: readonly string[], loopIndex: number) => { readonly lines: readonly string[]; readonly value: string }
 ): string[] {
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
-  useRuntimeHelper(context.runtime, "valueTruthy");
   const isIndex = operation.kind === "runtimeArrayFindIndexCallback";
   const pointerName = variablePointerName(operation.name);
   if (isIndex) {
@@ -2768,7 +2674,7 @@ function emitRuntimeArrayFindCallbackOperationWithReturn(
   const notFound = `%arr.find.notfound.${index}`;
   const canContinue = `%arr.find.continue.${index}`;
   const element = `%arr.find.value.${index}`;
-  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index, context);
+  const callbackArgs = emitArrayCallbackArguments(operation.callbackParameters, source.value, currentIndex, element, index);
   const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   const keep = `%arr.find.keep.${index}`;
   let initialStore = [`  ${pointerName} = alloca i64`, `  store i64 ${jsValueUndefined}, ptr ${pointerName}`];
@@ -2794,8 +2700,6 @@ function emitRuntimeArrayReduceCallbackOperationWithReturn(
   context: EmitContext,
   emitCallbackReturn: (args: readonly string[], loopIndex: number) => { readonly lines: readonly string[]; readonly value: string }
 ): string[] {
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
   const source = emitRuntimeArrayPointer(operation.arrayName, context);
@@ -2830,7 +2734,7 @@ function emitRuntimeArrayReduceCallbackOperationWithReturn(
     doneCheck = `%arr.reduce.done.${index} = icmp slt i64 ${currentIndex}, 0`;
     nextLine = `  ${nextIndex} = sub i64 ${currentIndex}, 1`;
   }
-  const callbackArgs = emitReduceCallbackArguments(operation.callbackParameters, source.value, currentIndex, pointerName, element, index, context);
+  const callbackArgs = emitReduceCallbackArguments(operation.callbackParameters, source.value, currentIndex, pointerName, element, index);
   const callbackReturn = emitCallbackReturn(callbackArgs.values, index);
   return [`  ${pointerName} = alloca i64`, ...source.lines, `  ${length} = call i64 @arrayLength(ptr ${source.value})`, ...initialLines, `  store i64 %arr.reduce.initial.${index}, ptr ${pointerName}`, `  ${iPointer} = alloca i64`, `  store i64 ${startIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${condLabel}:`, `  ${currentIndex} = load i64, ptr ${iPointer}`, `  ${doneCheck}`, `  br i1 %arr.reduce.done.${index}, label %${endLabel}, label %${bodyLabel}`, `${bodyLabel}:`, `  ${element} = call i64 @arrayGet(ptr ${source.value}, i64 ${currentIndex})`, ...callbackArgs.lines, ...callbackReturn.lines, `  store i64 ${callbackReturn.value}, ptr ${pointerName}`, nextLine, `  store i64 ${nextIndex}, ptr ${iPointer}`, `  br label %${condLabel}`, `${endLabel}:`];
 }
@@ -2840,15 +2744,14 @@ function emitArrayCallbackArguments(
   sourceArray: string,
   currentIndex: string,
   element: string,
-  loopIndex: number,
-  context: EmitContext
+  loopIndex: number
 ): { readonly lines: readonly string[]; readonly values: readonly string[] } {
   const lines: string[] = [];
   const values: string[] = [];
   for (let parameterIndex = 0; parameterIndex < parameters.length; parameterIndex += 1) {
     // Number and value callback parameters share the uniform i64 JSValue ABI; the
     // callee unboxes numbers in its prologue.
-    const value = emitArrayCallbackValueArgument(parameterIndex, sourceArray, currentIndex, element, loopIndex, context, lines);
+    const value = emitArrayCallbackValueArgument(parameterIndex, sourceArray, currentIndex, element, loopIndex, lines);
     values.push(`i64 ${value}`);
   }
   return { lines, values };
@@ -2860,8 +2763,7 @@ function emitReduceCallbackArguments(
   currentIndex: string,
   accumulatorPointer: string,
   element: string,
-  loopIndex: number,
-  context: EmitContext
+  loopIndex: number
 ): { readonly lines: readonly string[]; readonly values: readonly string[] } {
   const lines: string[] = [];
   const values: string[] = [];
@@ -2875,7 +2777,7 @@ function emitReduceCallbackArguments(
       values.push(`i64 ${valueArguments[parameterIndex]}`);
       continue;
     }
-    const value = emitArrayCallbackValueArgument(parameterIndex - 1, sourceArray, currentIndex, element, loopIndex, context, lines);
+    const value = emitArrayCallbackValueArgument(parameterIndex - 1, sourceArray, currentIndex, element, loopIndex, lines);
     values.push(`i64 ${value}`);
   }
   return { lines, values };
@@ -2887,7 +2789,6 @@ function emitArrayCallbackValueArgument(
   currentIndex: string,
   element: string,
   loopIndex: number,
-  context: EmitContext,
   lines: string[]
 ): string {
   if (parameterIndex === 0) {
@@ -2900,7 +2801,6 @@ function emitArrayCallbackValueArgument(
     return value;
   }
   const value = `%arr.map.arg.${loopIndex}.array`;
-  useRuntimeHelper(context.runtime, "valueBoxArray");
   lines.push(`  ${value} = call i64 @valueBoxArray(ptr ${sourceArray})`);
   return value;
 }
@@ -2985,7 +2885,6 @@ function emitRuntimeObjectCreateOperation(
 ): string[] {
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeObject", name: operation.name });
-  useRuntimeHelper(context.runtime, "objectCreate");
   const prototypeLines: string[] = [];
   let prototype = "null";
   if (operation.prototypeName !== undefined) {
@@ -3018,7 +2917,6 @@ function emitRuntimeErrorLiteralOperation(
   const message = emitValueExpression(operation.message, context);
   const objectName = `%obj.rt.${context.objectIndex}`;
   context.objectIndex += 1;
-  useRuntimeHelper(context.runtime, "errorNew");
   return [
     `  ${pointerName} = alloca ptr`,
     ...message.lines,
@@ -3038,7 +2936,6 @@ function emitRuntimeObjectKeysOperation(
   context.arrayIndex += 1;
   const helper = runtimeKeysHelper(operation.targetKind);
   const argumentType = runtimeAggregateArgumentType(operation.targetKind);
-  useRuntimeHelper(context.runtime, helper);
   return [
     `  ${pointerName} = alloca ptr`,
     ...object.lines,
@@ -3063,7 +2960,6 @@ function emitRuntimeObjectValuesOperation(
     helper = "valueObjectValues";
   }
   const argumentType = runtimeAggregateArgumentType(operation.targetKind);
-  useRuntimeHelper(context.runtime, helper);
   return [`  ${pointerName} = alloca ptr`, ...target.lines, `  ${result} = call ptr @${helper}(${argumentType} ${target.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
@@ -3088,7 +2984,6 @@ function emitRuntimeObjectEntriesOperation(
     helper = "valueObjectEntries";
   }
   const argumentType = runtimeAggregateArgumentType(operation.targetKind);
-  useRuntimeHelper(context.runtime, helper);
   return [`  ${pointerName} = alloca ptr`, ...target.lines, `  ${result} = call ptr @${helper}(${argumentType} ${target.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
@@ -3101,7 +2996,6 @@ function emitRuntimeObjectFromEntriesOperation(
   const entries = emitRuntimeArrayPointer(operation.entriesName, context);
   const result = `%obj.rt.${context.objectIndex}`;
   context.objectIndex += 1;
-  useRuntimeHelper(context.runtime, "objectFromEntries");
   return [`  ${pointerName} = alloca ptr`, ...entries.lines, `  ${result} = call ptr @objectFromEntries(ptr ${entries.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
@@ -3116,12 +3010,10 @@ function emitRuntimeObjectOwnPropertyDescriptorOperation(
   if (operation.targetKind === "array") {
     const array = emitRuntimeArrayPointer(operation.targetName, context);
     if (operation.index === undefined) {
-      useRuntimeHelper(context.runtime, "arrayLengthPropertyDescriptor");
       return [`  ${pointerName} = alloca i64`, ...array.lines, `  ${result} = call i64 @arrayLengthPropertyDescriptor(ptr ${array.value})`, `  store i64 ${result}, ptr ${pointerName}`];
     }
     const key = emitStringExpression(operation.key, context);
     const index = emitArrayIndex(operation.index ?? { kind: "literal", value: 0 }, context);
-    useRuntimeHelper(context.runtime, "arrayOwnPropertyDescriptor");
     return [`  ${pointerName} = alloca i64`, ...array.lines, ...key.lines, ...index.lines, `  ${result} = call i64 @arrayOwnPropertyDescriptor(ptr ${array.value}, i64 ${key.length}, ptr ${key.value}, i64 ${index.value})`, `  store i64 ${result}, ptr ${pointerName}`];
   }
   if (operation.targetKind === "value") {
@@ -3135,12 +3027,10 @@ function emitRuntimeObjectOwnPropertyDescriptorOperation(
     if (operation.isLength === true) {
       isLength = "true";
     }
-    useRuntimeHelper(context.runtime, "valueObjectOwnPropertyDescriptor");
     return [`  ${pointerName} = alloca i64`, ...value.lines, ...key.lines, ...index.lines, `  ${result} = call i64 @valueObjectOwnPropertyDescriptor(i64 ${value.value}, i64 ${key.length}, ptr ${key.value}, i64 ${index.value}, i1 ${isLength})`, `  store i64 ${result}, ptr ${pointerName}`];
   }
   const object = emitRuntimeObjectPointer(operation.targetName, context);
   const key = emitStringExpression(operation.key, context);
-  useRuntimeHelper(context.runtime, "objectOwnPropertyDescriptor");
   return [`  ${pointerName} = alloca i64`, ...object.lines, ...key.lines, `  ${result} = call i64 @objectOwnPropertyDescriptor(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`, `  store i64 ${result}, ptr ${pointerName}`];
 }
 
@@ -3154,16 +3044,13 @@ function emitRuntimeObjectOwnPropertyNamesOperation(
   context.arrayIndex += 1;
   if (operation.targetKind === "array") {
     const array = emitRuntimeArrayPointer(operation.targetName, context);
-    useRuntimeHelper(context.runtime, "arrayOwnPropertyNames");
     return [`  ${pointerName} = alloca ptr`, ...array.lines, `  ${result} = call ptr @arrayOwnPropertyNames(ptr ${array.value})`, `  store ptr ${result}, ptr ${pointerName}`];
   }
   if (operation.targetKind === "value") {
     const value = emitNamedValueBinding(operation.targetName, context);
-    useRuntimeHelper(context.runtime, "valueObjectOwnPropertyNames");
     return [`  ${pointerName} = alloca ptr`, ...value.lines, `  ${result} = call ptr @valueObjectOwnPropertyNames(i64 ${value.value})`, `  store ptr ${result}, ptr ${pointerName}`];
   }
   const object = emitRuntimeObjectPointer(operation.targetName, context);
-  useRuntimeHelper(context.runtime, "objectOwnPropertyNames");
   return [`  ${pointerName} = alloca ptr`, ...object.lines, `  ${result} = call ptr @objectOwnPropertyNames(ptr ${object.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
@@ -3177,16 +3064,13 @@ function emitRuntimeObjectOwnPropertyDescriptorsOperation(
   context.objectIndex += 1;
   if (operation.targetKind === "value") {
     const value = emitNamedValueBinding(operation.targetName, context);
-    useRuntimeHelper(context.runtime, "valueObjectOwnPropertyDescriptors");
     return [`  ${pointerName} = alloca ptr`, ...value.lines, `  ${result} = call ptr @valueObjectOwnPropertyDescriptors(i64 ${value.value})`, `  store ptr ${result}, ptr ${pointerName}`];
   }
   if (operation.targetKind === "array") {
     const array = emitRuntimeArrayPointer(operation.targetName, context);
-    useRuntimeHelper(context.runtime, "arrayOwnPropertyDescriptors");
     return [`  ${pointerName} = alloca ptr`, ...array.lines, `  ${result} = call ptr @arrayOwnPropertyDescriptors(ptr ${array.value})`, `  store ptr ${result}, ptr ${pointerName}`];
   }
   const object = emitRuntimeObjectPointer(operation.targetName, context);
-  useRuntimeHelper(context.runtime, "objectOwnPropertyDescriptors");
   return [`  ${pointerName} = alloca ptr`, ...object.lines, `  ${result} = call ptr @objectOwnPropertyDescriptors(ptr ${object.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
@@ -3202,14 +3086,12 @@ function emitRuntimeArraySliceOperation(
   if (operation.end === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayLength");
     end = { lines: [`  ${length} = call i64 @arrayLength(ptr ${array.value})`], value: length };
   } else {
     end = emitArrayIndex(operation.end, context);
   }
   const result = `%arr.rt.${context.arrayIndex}`;
   context.arrayIndex += 1;
-  useRuntimeHelper(context.runtime, "arraySlice");
   return [`  ${pointerName} = alloca ptr`, ...array.lines, ...start.lines, ...end.lines, `  ${result} = call ptr @arraySlice(ptr ${array.value}, i64 ${start.value}, i64 ${end.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
@@ -3226,7 +3108,6 @@ function emitRuntimeArraySpliceOperation(
   if (operation.deleteCount === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayLength");
     lines.push(`  ${length} = call i64 @arrayLength(ptr ${array.value})`);
     deleteCountArg = length;
   } else {
@@ -3244,7 +3125,6 @@ function emitRuntimeArraySpliceOperation(
   }
   const result = `%arr.rt.${context.arrayIndex}`;
   context.arrayIndex += 1;
-  useRuntimeHelper(context.runtime, "arraySplice");
   return [
     ...lines,
     `  ${result} = call ptr @arraySplice(ptr ${array.value}, i64 ${start.value}, i64 ${deleteCountArg}, i64 ${items.length}, ptr ${itemsName})`,
@@ -3263,7 +3143,6 @@ function emitRuntimeArraySpliceStatementOperation(
   if (operation.deleteCount === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayLength");
     lines.push(`  ${length} = call i64 @arrayLength(ptr ${array.value})`);
     deleteCountArg = length;
   } else {
@@ -3279,7 +3158,6 @@ function emitRuntimeArraySpliceStatementOperation(
     const value = items[index];
     lines.push(...value.lines, `  call void @arraySet(ptr ${itemsName}, i64 ${index}, i64 ${value.value})`);
   }
-  useRuntimeHelper(context.runtime, "arraySplice");
   return [...lines, `  call ptr @arraySplice(ptr ${array.value}, i64 ${start.value}, i64 ${deleteCountArg}, i64 ${items.length}, ptr ${itemsName})`];
 }
 
@@ -3293,7 +3171,6 @@ function emitRuntimeArrayFlatOperation(
   const depth = emitArrayIndex(operation.depth, context);
   const result = `%arr.rt.${context.arrayIndex}`;
   context.arrayIndex += 1;
-  useRuntimeHelper(context.runtime, "arrayFlat");
   return [
     `  ${pointerName} = alloca ptr`,
     ...array.lines,
@@ -3320,7 +3197,6 @@ function emitRuntimeStringSplitOperation(
     limitLines = limit.lines;
     limitValue = limit.value;
   }
-  useRuntimeHelper(context.runtime, "stringSplit");
   return [
     `  ${pointerName} = alloca ptr`,
     ...receiver.lines,
@@ -3349,8 +3225,6 @@ function emitRuntimeRegexSplitOperation(
     limitLines = limit.lines;
     limitValue = limit.value;
   }
-  useRuntimeHelper(context.runtime, "valueBoxString");
-  useRuntimeHelper(context.runtime, "regexSplit");
   return [
     `  ${pointerName} = alloca ptr`,
     ...regex.lines,
@@ -3389,7 +3263,6 @@ function emitRuntimeArrayConcatOperation(
     const value = values[index];
     lines.push(...value.lines, `  call void @arraySet(ptr ${argsName}, i64 ${index}, i64 ${value.value})`);
   }
-  useRuntimeHelper(context.runtime, "arrayConcat");
   return [...lines, `  ${result} = call ptr @arrayConcat(ptr ${left.value}, ptr ${argsName})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
@@ -3415,7 +3288,6 @@ function emitRuntimeArrayMutatorResultOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const lines = [`  ${pointerName} = alloca ptr`, ...array.lines];
   if (operation.mutation.kind === "reverse") {
-    useRuntimeHelper(context.runtime, "arrayReverse");
     lines.push(`  call void @arrayReverse(ptr ${array.value})`);
   } else if (operation.mutation.kind === "fill") {
     const mutationLines = emitRuntimeArrayFillOperation({ kind: "runtimeArrayFill", arrayName: operation.arrayName, value: operation.mutation.value, start: operation.mutation.start, end: operation.mutation.end }, context);
@@ -3435,14 +3307,13 @@ function emitRuntimeArrayFromOperation(
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   let source = emitRuntimeArrayPointer(operation.targetName, context);
-  let helper: RuntimeHelper = "arrayFromArray";
+  let helper: "arrayFromArray" | "arrayFromObject" = "arrayFromArray";
   if (operation.targetKind === "object") {
     source = emitRuntimeObjectPointer(operation.targetName, context);
     helper = "arrayFromObject";
   }
   const result = `%arr.from.${context.arrayIndex}`;
   context.arrayIndex += 1;
-  useRuntimeHelper(context.runtime, helper);
   return [`  ${pointerName} = alloca ptr`, ...source.lines, `  ${result} = call ptr @${helper}(ptr ${source.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
@@ -3461,8 +3332,6 @@ function emitRuntimeArrayFromValueOperation(
   if (operation.thisArg !== undefined) {
     thisArg = emitValueExpression(operation.thisArg, context);
   }
-  useRuntimeHelper(context.runtime, "arrayFromValue");
-  useRuntimeHelper(context.runtime, "valueArrayPtr");
   const generated = emitGeneratedJsCall("arrayFromValue", [`i64 ${source.value}`, `i64 ${mapper.value}`, `i64 ${thisArg.value}`], context);
   const arrayPtr = `%arr.from.value.${context.arrayIndex}`;
   context.arrayIndex += 1;
@@ -3508,12 +3377,6 @@ function emitRuntimeArrayFromCollectionOperation(
   const out = `%arr.from.col.out.${index}`;
   const outRoot = `%arr.from.col.out.root.${index}`;
   const loopFrame = `%arr.from.col.loop.frame.${index}`;
-  useRuntimeHelper(context.runtime, "getCollectionIterator");
-  useRuntimeHelper(context.runtime, "callIteratorNext");
-  useRuntimeHelper(context.runtime, "valueObjectGet");
-  useRuntimeHelper(context.runtime, "valueTruthy");
-  useRuntimeHelper(context.runtime, "arrayNew");
-  useRuntimeHelper(context.runtime, "arrayPush");
   const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iterator}`], context);
   const doneKey = addStringConstant("done", context);
   const valueKey = addStringConstant("value", context);
@@ -3530,7 +3393,6 @@ function emitRuntimeArrayFromCollectionOperation(
   let pushedValue = item;
   const mappingLines: string[] = [];
   if (operation.mapper !== undefined) {
-    useRuntimeHelper(context.runtime, "jsCall");
     const indexNumber = `%arr.from.col.index.number.${index}`;
     const indexValue = `%arr.from.col.index.value.${index}`;
     const argv = `%arr.from.col.map.argv.${index}`;
@@ -3593,7 +3455,7 @@ function emitRuntimeCollectionFromIterableOperation(
 ): string[] {
   const pointerName = variablePointerName(operation.name);
   let bindingKind: "runtimeMap" | "runtimeSet" = "runtimeSet";
-  let helper: RuntimeHelper = "setFromIterable";
+  let helper: "mapFromIterable" | "setFromIterable" = "setFromIterable";
   if (operation.kind === "runtimeMapFromIterable") {
     bindingKind = "runtimeMap";
     helper = "mapFromIterable";
@@ -3602,8 +3464,6 @@ function emitRuntimeCollectionFromIterableOperation(
   const iterable = emitValueExpression(operation.iterable, context);
   const messageConstant = addStringConstant(operation.notIterableMessage, context);
   const message = `%${operation.name}.not.iterable`;
-  useRuntimeHelper(context.runtime, helper);
-  useRuntimeHelper(context.runtime, "valueBoxString");
   const generated = emitGeneratedJsCall(helper, [`i64 ${iterable.value}`, `i64 ${message}`], context);
   const collection = `%${operation.name}.collection`;
   return [
@@ -3644,12 +3504,6 @@ function emitRuntimeCollectionFromCollectionOperation(
   const collection = `%${operation.name}.collection`;
   const collectionRoot = `%${operation.name}.collection.root`;
   const loopFrame = `%col.from.col.loop.frame.${index}`;
-  useRuntimeHelper(context.runtime, "getCollectionIterator");
-  useRuntimeHelper(context.runtime, "callIteratorNext");
-  useRuntimeHelper(context.runtime, "valueObjectGet");
-  useRuntimeHelper(context.runtime, "valueTruthy");
-  useRuntimeHelper(context.runtime, "collectionNew");
-  useRuntimeHelper(context.runtime, "collectionSet");
   const nextCall = emitGeneratedJsCall("callIteratorNext", [`i64 ${iterator}`], context);
   const doneKey = addStringConstant("done", context);
   const valueKey = addStringConstant("value", context);
@@ -3686,10 +3540,6 @@ function emitRuntimeCollectionFromCollectionOperation(
     const valueConstant = addStringConstant("1", context);
     const key = `%col.from.col.key.${index}`;
     const value = `%col.from.col.value.${index}`;
-    useRuntimeHelper(context.runtime, "valueArrayGet");
-    useRuntimeHelper(context.runtime, "valueIsArray");
-    useRuntimeHelper(context.runtime, "valueIsObject");
-    useRuntimeHelper(context.runtime, "valueObjectGet");
     // Entry objects and arrays both support property keys "0"/"1".
     lines.push(
       `  ${key} = call i64 @valueArrayGet(i64 ${item}, i64 0, i64 1, ptr ${keyConstant})`,
@@ -3711,7 +3561,6 @@ function emitRuntimeArraySortOperation(
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   if (operation.callbackName === undefined || operation.callbackParameters === undefined || operation.callbackReturnKind === undefined) {
-    useRuntimeHelper(context.runtime, "arraySortDefault");
     return [`  ${pointerName} = alloca ptr`, ...array.lines, `  call void @arraySortDefault(ptr ${array.value})`, `  store ptr ${array.value}, ptr ${pointerName}`];
   }
   const sortLines = emitRuntimeArrayComparatorSort(array.value, operation.callbackName, operation.callbackParameters, operation.callbackReturnKind, context);
@@ -3726,10 +3575,6 @@ function emitRuntimeArrayComparatorSort(
   callbackReturnKind: JsIrValueKind,
   context: EmitContext
 ): string[] {
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
-  useRuntimeHelper(context.runtime, "arraySet");
-  useRuntimeHelper(context.runtime, "valueToNumber");
   const index = context.arrayIndex;
   context.arrayIndex += 1;
   const length = `%arr.sort.len.${index}`;
@@ -3784,7 +3629,6 @@ function emitRuntimeObjectGetPrototypeOperation(
   const helper = runtimeGetPrototypeHelper(operation.targetKind);
   const result = `%obj.rt.${context.objectIndex}`;
   context.objectIndex += 1;
-  useRuntimeHelper(context.runtime, helper);
   return [`  ${pointerName} = alloca ptr`, ...target.lines, `  ${result} = call ptr @${helper}(ptr ${target.value})`, `  store ptr ${result}, ptr ${pointerName}`];
 }
 
@@ -3883,8 +3727,6 @@ function emitRuntimeObjectLiteralStorage(
   value: JsIrRuntimeObjectValue,
   context: EmitContext
 ): string[] {
-  useRuntimeHelper(context.runtime, "objectNew");
-  useRuntimeHelper(context.runtime, "objectSet");
   const objectName = `%obj.rt.${context.objectIndex}`;
   context.objectIndex += 1;
   const ownFieldCount = value.fields.filter((field) => field.kind === "field").length;
@@ -3892,7 +3734,6 @@ function emitRuntimeObjectLiteralStorage(
   for (const field of value.fields) {
     if (field.kind === "spread") {
       const source = emitRuntimeObjectPointer(field.sourceName, context);
-      useRuntimeHelper(context.runtime, "objectAssign");
       lines.push(...source.lines, `  call void @objectAssign(ptr ${objectName}, ptr ${source.value})`);
       continue;
     }
@@ -3962,7 +3803,6 @@ function emitRuntimeArrayStoreOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const index = emitArrayIndex(operation.index, context);
   const value = emitValueExpression(operation.value, context);
-  useRuntimeHelper(context.runtime, "arraySet");
   return [...array.lines, ...index.lines, ...value.lines, `  call void @arraySet(ptr ${array.value}, i64 ${index.value}, i64 ${value.value})`];
 }
 
@@ -3973,7 +3813,6 @@ function emitRuntimeArrayNamedStoreOperation(
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const key = emitStringExpression(operation.key, context);
   const value = emitValueExpression(operation.value, context);
-  useRuntimeHelper(context.runtime, "arraySetNamed");
   return [...array.lines, ...key.lines, ...value.lines, `  call void @arraySetNamed(ptr ${array.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
@@ -3983,7 +3822,6 @@ function emitRuntimeArrayDeleteOperation(
 ): string[] {
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const index = emitArrayIndex(operation.index, context);
-  useRuntimeHelper(context.runtime, "arrayDelete");
   return [...array.lines, ...index.lines, `  call void @arrayDelete(ptr ${array.value}, i64 ${index.value})`];
 }
 
@@ -3993,7 +3831,6 @@ function emitRuntimeArrayNamedDeleteOperation(
 ): string[] {
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const key = emitStringExpression(operation.key, context);
-  useRuntimeHelper(context.runtime, "arrayDeleteNamed");
   return [...array.lines, ...key.lines, `  call void @arrayDeleteNamed(ptr ${array.value}, i64 ${key.length}, ptr ${key.value})`];
 }
 
@@ -4003,7 +3840,6 @@ function emitRuntimeArraySetLengthOperation(
 ): string[] {
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const length = emitArrayIndex(operation.length, context);
-  useRuntimeHelper(context.runtime, "arraySetLength");
   return [...array.lines, ...length.lines, `  call void @arraySetLength(ptr ${array.value}, i64 ${length.value})`];
 }
 
@@ -4015,7 +3851,6 @@ function emitRuntimeArrayAppendOperation(
   const values = operation.values.map((value) => emitValueExpression(value, context));
   const lines = [...array.lines];
   const helper = runtimeArrayAppendHelper(operation.kind);
-  useRuntimeHelper(context.runtime, helper);
   for (const value of values) {
     lines.push(...value.lines, `  call i64 @${helper}(ptr ${array.value}, i64 ${value.value})`);
   }
@@ -4028,7 +3863,6 @@ function emitRuntimeArrayRemoveOperation(
 ): string[] {
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const helper = runtimeArrayRemoveHelper(operation.kind);
-  useRuntimeHelper(context.runtime, helper);
   return [...array.lines, `  call i64 @${helper}(ptr ${array.value})`];
 }
 
@@ -4046,12 +3880,10 @@ function emitRuntimeArrayFillOperation(
   if (operation.end === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayLength");
     end = { lines: [`  ${length} = call i64 @arrayLength(ptr ${array.value})`], value: length };
   } else {
     end = emitArrayIndex(operation.end, context);
   }
-  useRuntimeHelper(context.runtime, "arrayFill");
   return [...array.lines, ...value.lines, ...start.lines, ...end.lines, `  call void @arrayFill(ptr ${array.value}, i64 ${value.value}, i64 ${start.value}, i64 ${end.value})`];
 }
 
@@ -4060,7 +3892,6 @@ function emitRuntimeArrayReverseOperation(
   context: EmitContext
 ): string[] {
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  useRuntimeHelper(context.runtime, "arrayReverse");
   return [...array.lines, `  call void @arrayReverse(ptr ${array.value})`];
 }
 
@@ -4075,12 +3906,10 @@ function emitRuntimeArrayCopyWithinOperation(
   if (operation.end === undefined) {
     const length = `%arr.len.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayLength");
     end = { lines: [`  ${length} = call i64 @arrayLength(ptr ${array.value})`], value: length };
   } else {
     end = emitArrayIndex(operation.end, context);
   }
-  useRuntimeHelper(context.runtime, "arrayCopyWithin");
   return [...array.lines, ...target.lines, ...start.lines, ...end.lines, `  call void @arrayCopyWithin(ptr ${array.value}, i64 ${target.value}, i64 ${start.value}, i64 ${end.value})`];
 }
 
@@ -4113,7 +3942,6 @@ function emitObjectStoreOperation(
     const key = emitStringExpression({ kind: "literal", value: operation.path[0] }, context);
     const jsValue = emitNumberValueExpression({ kind: "number", value: operation.value }, context);
     const object = emitRuntimeObjectPointer(operation.objectName, context);
-    useRuntimeHelper(context.runtime, "objectSet");
     lines.push(...key.lines, ...jsValue.lines, ...object.lines, `  call void @objectSet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${jsValue.value})`);
   }
   return lines;
@@ -4126,7 +3954,6 @@ function emitRuntimeObjectStoreOperation(
   const object = emitRuntimeObjectPointer(operation.objectName, context);
   const key = emitStringExpression(operation.key, context);
   const value = emitValueExpression(operation.value, context);
-  useRuntimeHelper(context.runtime, "objectSet");
   return [...object.lines, ...key.lines, ...value.lines, `  call void @objectSet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
@@ -4136,7 +3963,6 @@ function emitRuntimeObjectDeleteOperation(
 ): string[] {
   const object = emitRuntimeObjectPointer(operation.objectName, context);
   const key = emitStringExpression(operation.key, context);
-  useRuntimeHelper(context.runtime, "objectDelete");
   return [...object.lines, ...key.lines, `  call void @objectDelete(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`];
 }
 
@@ -4147,18 +3973,15 @@ function emitValueAggregateStoreOperation(
   const receiver = emitNamedValueBinding(operation.targetName, context);
   if (operation.kind === "valueArraySetLength") {
     const length = emitArrayIndex(operation.length, context);
-    useRuntimeHelper(context.runtime, "valueArraySetLength");
     return [...receiver.lines, ...length.lines, `  call void @valueArraySetLength(i64 ${receiver.value}, i64 ${length.value})`];
   }
   if (operation.kind === "valueArrayStore") {
     const index = emitArrayIndex(operation.index, context);
     const value = emitValueExpression(operation.value, context);
-    useRuntimeHelper(context.runtime, "valueArraySet");
     return [...receiver.lines, ...index.lines, ...value.lines, `  call void @valueArraySet(i64 ${receiver.value}, i64 ${index.value}, i64 ${value.value})`];
   }
   const key = emitStringExpression(operation.key, context);
   const value = emitValueExpression(operation.value, context);
-  useRuntimeHelper(context.runtime, "valueObjectSet");
   return [...receiver.lines, ...key.lines, ...value.lines, `  call void @valueObjectSet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
@@ -4171,9 +3994,6 @@ function emitPrivateFieldBrandThrow(message: string, labelPrefix: string, contex
   const messageValue = `%${labelPrefix}.msg`;
   const errorObject = `%${labelPrefix}.err`;
   const errorBoxed = `%${labelPrefix}.boxed`;
-  useRuntimeHelper(context.runtime, "valueBoxString");
-  useRuntimeHelper(context.runtime, "errorNew");
-  useRuntimeHelper(context.runtime, "valueBoxObject");
   return [
     `  ${messageValue} = call i64 @valueBoxString(ptr ${messageConstant}, i64 ${utf8ByteLength(message)})`,
     `  ${errorObject} = call ptr @errorNew(i64 ${errorClassIds.get("TypeError") ?? 0}, i64 9, ptr ${nameConstant}, i64 ${messageValue})`,
@@ -4199,8 +4019,6 @@ function emitPrivateFieldStoreOperation(
   const has = `%priv.has.${index}`;
   const okLabel = `priv.ok.${index}`;
   const throwLabel = `priv.throw.${index}`;
-  useRuntimeHelper(context.runtime, "valueObjectHasOwn");
-  useRuntimeHelper(context.runtime, "valueObjectSet");
   return [
     ...receiver.lines,
     ...value.lines,
@@ -4220,11 +4038,9 @@ function emitValueAggregateDeleteOperation(
   const receiver = emitNamedValueBinding(operation.targetName, context);
   if (operation.kind === "valueArrayDelete") {
     const index = emitArrayIndex(operation.index, context);
-    useRuntimeHelper(context.runtime, "valueArrayDelete");
     return [...receiver.lines, ...index.lines, `  call void @valueArrayDelete(i64 ${receiver.value}, i64 ${index.value})`];
   }
   const key = emitStringExpression(operation.key, context);
-  useRuntimeHelper(context.runtime, "valueObjectDelete");
   return [...receiver.lines, ...key.lines, `  call void @valueObjectDelete(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value})`];
 }
 
@@ -4247,7 +4063,6 @@ function emitRuntimeObjectSetPrototypeOperation(
   if (operation.targetKind === "array") {
     helper = "arraySetPrototype";
   }
-  useRuntimeHelper(context.runtime, helper);
   lines.push(`  call void @${helper}(ptr ${target.value}, ptr ${prototype})`);
   return lines;
 }
@@ -4261,8 +4076,6 @@ function emitValueObjectSetPrototypeOperation(
   const targetPointer = `%class.prototype.target.${context.objectIndex}`;
   const prototypePointer = `%class.prototype.base.${context.objectIndex}`;
   context.objectIndex += 1;
-  useRuntimeHelper(context.runtime, "valueObjectPtr");
-  useRuntimeHelper(context.runtime, "objectSetPrototype");
   return [
     ...target.lines,
     ...prototype.lines,
@@ -4280,7 +4093,6 @@ function emitRuntimeObjectDefineDataPropertyOperation(
   const key = emitStringExpression(operation.descriptor.key, context);
   const value = emitValueExpression(operation.descriptor.value, context);
   const flags = descriptorFlags(operation.descriptor);
-  useRuntimeHelper(context.runtime, "objectDefineDataProperty");
   return [
     ...object.lines,
     ...key.lines,
@@ -4300,7 +4112,6 @@ function emitRuntimeObjectStateMutationOperation(
     runtimeObjectFreeze: "objectFreeze"
   } as const;
   const helper = helperByKind[operation.kind];
-  useRuntimeHelper(context.runtime, helper);
   return [...object.lines, `  call void @${helper}(ptr ${object.value})`];
 }
 
@@ -4314,13 +4125,11 @@ function emitRuntimeObjectAssignOperation(
   for (const source of operation.sources) {
     if (source.kind === "runtimeObject") {
       const sourceObject = emitRuntimeObjectPointer(source.name, context);
-      useRuntimeHelper(context.runtime, "objectAssign");
       lines.push(...sourceObject.lines, `  call void @objectAssign(ptr ${target.value}, ptr ${sourceObject.value})`);
       continue;
     }
     if (source.kind === "runtimeArray") {
       const sourceArray = emitRuntimeArrayPointer(source.name, context);
-      useRuntimeHelper(context.runtime, "objectAssignArray");
       lines.push(...sourceArray.lines, `  call void @objectAssignArray(ptr ${target.value}, ptr ${sourceArray.value})`);
       continue;
     }
@@ -4329,13 +4138,10 @@ function emitRuntimeObjectAssignOperation(
       const loadedName = `%obj.assign.ptr.${context.objectIndex}`;
       context.objectIndex += 1;
       lines.push(...emitRuntimeObjectLiteralStorage(pointerName, knownShapeObjectToRuntimeValue(source.value), context));
-      useRuntimeHelper(context.runtime, "objectAssign");
       lines.push(`  ${loadedName} = load ptr, ptr ${pointerName}`, `  call void @objectAssign(ptr ${target.value}, ptr ${loadedName})`);
       continue;
     }
     if (source.kind === "fixedArray") {
-      useRuntimeHelper(context.runtime, "objectSet");
-      useRuntimeHelper(context.runtime, "indexToString");
       for (let index = 0; index < source.length; index += 1) {
         const keyName = `%assign.key.${context.numIndex}`;
         const value = emitNumberValueExpression({ kind: "number", value: { kind: "arrayAccess", arrayName: source.name, index: { kind: "literal", value: index } } }, context);
@@ -4345,7 +4151,6 @@ function emitRuntimeObjectAssignOperation(
       continue;
     }
     const value = emitValueExpression(source.value, context);
-    useRuntimeHelper(context.runtime, "valueObjectAssign");
     lines.push(...value.lines, `  call void @valueObjectAssign(ptr ${target.value}, i64 ${value.value})`);
   }
   return lines;
@@ -4405,8 +4210,6 @@ function emitStringCallExpressionResult(expression: { readonly kind: "call"; rea
   const value = `%call.${context.stringIndex}.ptr`;
   const length = `%call.${context.stringIndex}.len`;
   context.stringIndex += 1;
-  useRuntimeHelper(context.runtime, "valueStringPtr");
-  useRuntimeHelper(context.runtime, "valueStringLength");
   return {
     lines: [
       ...args.lines,
@@ -4428,13 +4231,9 @@ function emitNewInstanceValueExpression(
   context.objectIndex += 1;
   const object = `%instance.obj.${index}`;
   const instance = `%instance.${index}`;
-  useRuntimeHelper(context.runtime, "objectNew");
-  useRuntimeHelper(context.runtime, "valueBoxObject");
   const prototypePointer = `%instance.prototype.${index}`;
   const prototypeLines: string[] = [];
   if (context.bindings.has(expression.prototypeName)) {
-    useRuntimeHelper(context.runtime, "valueObjectPtr");
-    useRuntimeHelper(context.runtime, "objectSetPrototype");
     const prototype = emitNamedValueBinding(expression.prototypeName, context);
     prototypeLines.push(
       ...prototype.lines,
@@ -4469,7 +4268,6 @@ function emitCallArguments(args: readonly JsIrCallArgument[], context: EmitConte
       const index = context.stringIndex;
       context.stringIndex += 1;
       const boxed = `%arg.str.${index}`;
-      useRuntimeHelper(context.runtime, "valueBoxString");
       lines.push(...result.lines, `  ${boxed} = call i64 @valueBoxString(ptr ${result.value}, i64 ${result.length})`);
       values.push(`i64 ${boxed}`);
       continue;
@@ -4503,7 +4301,6 @@ function emitStringReturnOperation(operation: { readonly kind: "returnString"; r
   const index = context.stringIndex;
   context.stringIndex += 1;
   const boxed = `%ret.str.${index}`;
-  useRuntimeHelper(context.runtime, "valueBoxString");
   // Box, then restore this frame and return the raw i64. No safepoint runs between the
   // box and the ret, and the caller re-roots the result at the handoff (see the value
   // "call" emitter), so the freshly-boxed string is never collected in the gap.
@@ -4569,8 +4366,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const flags = emitStringExpression(expression.flags, context);
     const patternValue = `%regex.pattern.${context.callIndex}`;
     const flagsValue = `%regex.flags.${context.callIndex}`;
-    useRuntimeHelper(context.runtime, "valueBoxString");
-    useRuntimeHelper(context.runtime, "regexCompile");
     const call = emitGeneratedJsCall("regexCompile", [`i64 ${patternValue}`, `i64 ${flagsValue}`], context);
     return {
       lines: [
@@ -4590,12 +4385,10 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const regex = emitValueExpression(expression.regex, context);
     const input = emitStringExpression(expression.input, context);
     const inputValue = `%regex.input.${context.callIndex}`;
-    useRuntimeHelper(context.runtime, "valueBoxString");
     let helper: "regexExec" | "regexMatch" = "regexExec";
     if (expression.kind === "regexMatch") {
       helper = "regexMatch";
     }
-    useRuntimeHelper(context.runtime, helper);
     const call = emitGeneratedJsCall(helper, [`i64 ${regex.value}`, `i64 ${inputValue}`], context);
     return {
       lines: [
@@ -4620,14 +4413,12 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
         value
       };
     }
-    useRuntimeHelper(context.runtime, "functionObjectNew");
     const captures = expression.definition.captures ?? [];
     const lines: string[] = [];
     let functionName = jsValueUndefined;
     if (expression.definition.inferredName !== undefined) {
       const name = emitStringExpression({ kind: "literal", value: expression.definition.inferredName }, context);
       functionName = `%fnobj.name.${index}`;
-      useRuntimeHelper(context.runtime, "valueBoxString");
       lines.push(
         ...name.lines,
         `  ${functionName} = call i64 @valueBoxString(ptr ${name.value}, i64 ${name.length})`,
@@ -4636,8 +4427,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     }
     let environment = "null";
     if (captures.length > 0) {
-      useRuntimeHelper(context.runtime, "environmentNew");
-      useRuntimeHelper(context.runtime, "environmentSet");
       const emittedCaptures = captures.map((capture) => emitValueExpression(capture.value, context));
       for (const capture of emittedCaptures) {
         lines.push(...capture.lines, `  call void @gcRootPush(i64 ${capture.value})`);
@@ -4711,7 +4500,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const atIndex = emitArrayIndex(expression.index, context);
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayAt");
     return { lines: [...array.lines, ...atIndex.lines, `  ${value} = call i64 @arrayAt(ptr ${array.value}, i64 ${atIndex.value})`], value };
   }
 
@@ -4720,7 +4508,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const right = emitValueExpression(expression.right, context);
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "valuePlus");
     return {
       lines: [
         ...left.lines,
@@ -4746,7 +4533,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     if (expression.reviver !== undefined) {
       reviver = emitValueExpression(expression.reviver, context);
     }
-    useRuntimeHelper(context.runtime, "jsonParse");
     const call = emitGeneratedJsCall("jsonParse", [`i64 ${text.value}`, `i64 ${reviver.value}`], context);
     return {
       lines: [
@@ -4769,7 +4555,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
       lines.push(...filterArray.lines);
       filter = filterArray.value;
     }
-    useRuntimeHelper(context.runtime, "jsonStringify");
     const call = emitGeneratedJsCall("jsonStringify", [`i64 ${source.value}`, `ptr ${filter}`, `i64 ${expression.indent}`], context);
     lines.push(...call.lines);
     return { lines, value: call.value };
@@ -4780,7 +4565,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const key = emitValueExpression(expression.key, context);
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "collectionGet");
     return { lines: [...collection.lines, ...key.lines, `  ${value} = call i64 @collectionGet(ptr ${collection.value}, i64 ${key.value})`], value };
   }
 
@@ -4817,7 +4601,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     if (expression.position !== undefined && expression.kind === "stringStartsWith") {
       helper = "stringStartsWithAt";
     }
-    useRuntimeHelper(context.runtime, helper);
     const cmp = context.cmpIndex;
     context.cmpIndex += 1;
     const name = `%cmp.${cmp}`;
@@ -4841,7 +4624,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const index = emitArrayIndex(expression.index, context);
     const doubleValue = `%num.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "stringCharCodeAt");
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
     const lines: string[] = [
@@ -4861,7 +4643,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
     if (expression.kind === "stringLastIndexOf") {
-      useRuntimeHelper(context.runtime, "stringLastIndexOf");
       return {
         lines: [
           ...receiver.lines,
@@ -4873,7 +4654,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
       };
     }
     const position = emitStringIndexArgument(expression.position ?? { kind: "literal", value: 0 }, context);
-    useRuntimeHelper(context.runtime, "stringIndexOf");
     return {
       lines: [
         ...receiver.lines,
@@ -4896,8 +4676,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     context.arrayIndex += 1;
     const arrayName = `%rest.array.${arrayIndex}`;
     const lengthValue = expression.elements.length;
-    useRuntimeHelper(context.runtime, "arrayNew");
-    useRuntimeHelper(context.runtime, "arraySet");
     lines.push(`  ${arrayName} = call ptr @arrayNew(i64 ${lengthValue})`);
     for (let i = 0; i < values.length; i++) {
       lines.push(`  call void @arraySet(ptr ${arrayName}, i64 ${i}, i64 ${values[i].value})`);
@@ -4905,19 +4683,12 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const boxIndex = context.numIndex;
     context.numIndex += 1;
     const boxName = `%value.${boxIndex}`;
-    useRuntimeHelper(context.runtime, "valueBoxArray");
     lines.push(`  ${boxName} = call i64 @valueBoxArray(ptr ${arrayName})`);
     return { lines, value: boxName };
   }
 
   if (expression.kind === "boxedPrimitive") {
     const lines: string[] = [];
-    useRuntimeHelper(context.runtime, "objectNew");
-    useRuntimeHelper(context.runtime, "objectSet");
-    useRuntimeHelper(context.runtime, "valueBoxObject");
-    if (expression.storeLength === true) {
-      useRuntimeHelper(context.runtime, "valueStringLength");
-    }
     const inner = emitValueExpression(expression.inner, context);
     lines.push(...inner.lines);
     const { objectIndex } = context;
@@ -4956,22 +4727,14 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const { objectIndex } = context;
     context.objectIndex += 1;
     const objectPtr = `%boxed.object.ptr.${objectIndex}`;
-    useRuntimeHelper(context.runtime, "valueObjectPtr");
     lines.push(`  ${objectPtr} = call ptr @valueObjectPtr(i64 ${receiver.value})`);
     if (expression.method === "valueOf") {
-      useRuntimeHelper(context.runtime, "boxedValueOf");
       const valueIndex = context.numIndex;
       context.numIndex += 1;
       const value = `%value.${valueIndex}`;
       lines.push(`  ${value} = call i64 @boxedValueOf(ptr ${objectPtr})`);
       return { lines, value };
     }
-    useRuntimeHelper(context.runtime, "boxedToString");
-    useRuntimeHelper(context.runtime, "valueToString");
-    useRuntimeHelper(context.runtime, "valueBoxString");
-    useRuntimeHelper(context.runtime, "strConcat");
-    useRuntimeHelper(context.runtime, "malloc");
-    useRuntimeHelper(context.runtime, "memcpy");
     const { stringIndex } = context;
     context.stringIndex += 1;
     const raw = `%str.result.${stringIndex}`;
@@ -5004,10 +4767,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   if (expression.kind === "taggedTemplateValue") {
     const lines: string[] = [];
-    useRuntimeHelper(context.runtime, "arrayNew");
-    useRuntimeHelper(context.runtime, "arraySet");
-    useRuntimeHelper(context.runtime, "valueBoxString");
-    useRuntimeHelper(context.runtime, "valueBoxArray");
     const { arrayIndex } = context;
     context.arrayIndex += 1;
     const stringsArray = `%strings.array.${arrayIndex}`;
@@ -5072,7 +4831,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const array = emitRuntimeArrayPointer(expression.arrayName, context);
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayFind");
     return { lines: [...array.lines, `  ${value} = call i64 @arrayFind(ptr ${array.value})`], value };
   }
 
@@ -5084,7 +4842,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const object = emitRuntimeObjectPointer(expression.name, context);
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "valueBoxObject");
     return { lines: [...object.lines, `  ${value} = call i64 @valueBoxObject(ptr ${object.value})`], value };
   }
 
@@ -5094,7 +4851,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const object = `%obj.value.${context.objectIndex}.ptr`;
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "valueBoxObject");
     return { lines: [...lines, `  ${object} = load ptr, ptr ${pointerName}`, `  ${value} = call i64 @valueBoxObject(ptr ${object})`], value };
   }
 
@@ -5102,7 +4858,6 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const array = emitRuntimeArrayPointer(expression.name, context);
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "valueBoxArray");
     return { lines: [...array.lines, `  ${value} = call i64 @valueBoxArray(ptr ${array.value})`], value };
   }
 
@@ -5137,7 +4892,6 @@ function emitValueCallExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "callValue" }>,
   context: EmitContext
 ): JsValue {
-  useRuntimeHelper(context.runtime, "jsCall");
   let callee = emitValueExpression(expression.callee, context);
   const args = emitCallArguments(expression.arguments, context);
   let thisValue: JsValue = { lines: [], value: jsValueUndefined };
@@ -5145,7 +4899,6 @@ function emitValueCallExpression(
     const receiver = emitValueExpression(expression.methodReceiver, context);
     const key = emitStringExpression(expression.methodKey, context);
     const value = `%call.method.${context.callIndex}`;
-    useRuntimeHelper(context.runtime, "valuePropertyGet");
     callee = {
       lines: [
         ...receiver.lines,
@@ -5160,11 +4913,6 @@ function emitValueCallExpression(
     thisValue = emitValueExpression(expression.thisValue, context);
   }
   if (expression.spreadArguments !== undefined) {
-    useRuntimeHelper(context.runtime, "arrayNew");
-    useRuntimeHelper(context.runtime, "arrayPush");
-    useRuntimeHelper(context.runtime, "arrayLength");
-    useRuntimeHelper(context.runtime, "arrayGet");
-    useRuntimeHelper(context.runtime, "valueBoxArray");
     const index = context.callIndex;
     context.callIndex += 1;
     const argumentArray = `%call.spread.array.${index}`;
@@ -5282,7 +5030,6 @@ function emitRuntimeArrayRemoveValueExpression(
   context.numIndex += 1;
   const value = `%value.${valueIndex}`;
   const helper = arrayValueRemoveHelper(expression.kind);
-  useRuntimeHelper(context.runtime, helper);
   return { lines: [...array.lines, `  ${value} = call i64 @${helper}(ptr ${array.value})`], value };
 }
 
@@ -5309,8 +5056,6 @@ function emitRuntimeArrayValueExpression(
     const isNonIndexKey = expression.index.kind === "literal" && expression.index.value < 0;
     if (isNonIndexKey) {
       const boxed = `%value.arr.box.${valueIndex}`;
-      useRuntimeHelper(context.runtime, "valueBoxArray");
-      useRuntimeHelper(context.runtime, "valuePropertyGet");
       return {
         lines: [
           ...array.lines,
@@ -5322,13 +5067,11 @@ function emitRuntimeArrayValueExpression(
         value
       };
     }
-    useRuntimeHelper(context.runtime, "arrayGetWithKey");
     return {
       lines: [...array.lines, ...index.lines, ...key.lines, `  ${value} = call i64 @arrayGetWithKey(ptr ${array.value}, i64 ${index.value}, i64 ${key.length}, ptr ${key.value})`],
       value
     };
   }
-  useRuntimeHelper(context.runtime, "arrayGet");
   return { lines: [...array.lines, ...index.lines, `  ${value} = call i64 @arrayGet(ptr ${array.value}, i64 ${index.value})`], value };
 }
 
@@ -5341,7 +5084,6 @@ function emitRuntimeObjectValueExpression(
   const valueIndex = context.numIndex;
   context.numIndex += 1;
   const value = `%value.${valueIndex}`;
-  useRuntimeHelper(context.runtime, "objectGet");
   return {
     lines: [...object.lines, ...key.lines, `  ${value} = call i64 @objectGet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`],
     value
@@ -5357,7 +5099,6 @@ function emitValueObjectValueExpression(
   const valueIndex = context.numIndex;
   context.numIndex += 1;
   const value = `%value.${valueIndex}`;
-  useRuntimeHelper(context.runtime, "valueObjectGet");
   return {
     lines: [...receiver.lines, ...key.lines, `  ${value} = call i64 @valueObjectGet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value})`],
     value
@@ -5379,8 +5120,6 @@ function emitPrivateFieldAccessExpression(
   const value = `%value.${index}`;
   const okLabel = `priv.ok.${index}`;
   const throwLabel = `priv.throw.${index}`;
-  useRuntimeHelper(context.runtime, "valueObjectHasOwn");
-  useRuntimeHelper(context.runtime, "valueObjectGet");
   return {
     lines: [
       ...receiver.lines,
@@ -5408,13 +5147,11 @@ function emitValueArrayValueExpression(
   // Prefer valuePropertyGet for named keys so built-in iterator methods resolve.
   // Numeric index access still uses valueArrayGet for correct hole/index semantics.
   if (expression.index.kind === "literal" && expression.index.value < 0) {
-    useRuntimeHelper(context.runtime, "valuePropertyGet");
     return {
       lines: [...receiver.lines, ...index.lines, ...key.lines, `  ${value} = call i64 @valuePropertyGet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value})`],
       value
     };
   }
-  useRuntimeHelper(context.runtime, "valueArrayGet");
   return {
     lines: [...receiver.lines, ...index.lines, ...key.lines, `  ${value} = call i64 @valueArrayGet(i64 ${receiver.value}, i64 ${index.value}, i64 ${key.length}, ptr ${key.value})`],
     value
@@ -5466,7 +5203,6 @@ function emitStringValueExpression(expression: Extract<JsIrValueExpression, { re
   const index = context.numIndex;
   context.numIndex += 1;
   const value = `%value.${index}`;
-  useRuntimeHelper(context.runtime, "valueBoxString");
   return {
     lines: [
       ...string.lines,
@@ -5574,7 +5310,6 @@ function emitLogicalValueExpression(
     leftTrueLabel = rhsLabel;
     leftFalseLabel = endLabel;
   }
-  useRuntimeHelper(context.runtime, "valueTruthy");
   return {
     lines: [
       `  br label %${leftLabel}`,
@@ -5710,7 +5445,6 @@ function emitExpressionPrint(expression: JsIrExpression, context: EmitContext): 
 
   if (expression.kind === "value") {
     const result = emitValueExpression(expression.value, context);
-    useRuntimeHelper(context.runtime, "valuePrint");
     return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
   }
 
@@ -5759,25 +5493,21 @@ function emitBindingPrint(binding: JsIrBindingValue, context: EmitContext): stri
 
   if (binding.kind === "value") {
     const result = emitValueExpression(binding.value, context);
-    useRuntimeHelper(context.runtime, "valuePrint");
     return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
   }
 
   if (binding.kind === "valueVariable") {
-    useRuntimeHelper(context.runtime, "valuePrint");
     const value = emitValueExpression({ kind: "variable", name: binding.name }, context);
     return [...value.lines, `  call void @valuePrint(i64 ${value.value})`];
   }
 
   if (binding.kind === "runtimeObject") {
     const result = emitValueExpression({ kind: "objectRef", name: binding.name }, context);
-    useRuntimeHelper(context.runtime, "valuePrint");
     return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
   }
 
   if (binding.kind === "runtimeArray") {
     const result = emitValueExpression({ kind: "arrayRef", name: binding.name }, context);
-    useRuntimeHelper(context.runtime, "valuePrint");
     return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
   }
 
@@ -5846,7 +5576,6 @@ function emitSwitchOperation(operation: Extract<JsIrOperation, { readonly kind: 
   }
   const lines = [...discriminant.lines, `  br label %${firstDispatchLabel}`];
 
-  useRuntimeHelper(context.runtime, "valueStrictEquals");
   for (let index = 0; index < caseIndexes.length; index++) {
     const clauseIndex = caseIndexes[index];
     const clause = operation.clauses[clauseIndex];
@@ -6140,8 +5869,6 @@ function emitForOfStringOperation(operation: Extract<JsIrOperation, { readonly k
   const charString = `%for.of.char.string.${loopIndex}`;
   const charStringNul = `%for.of.char.string.nul.${loopIndex}`;
   const nextIndex = `%for.of.next.${loopIndex}`;
-  useRuntimeHelper(context.runtime, "malloc");
-  useRuntimeHelper(context.runtime, "memcpy");
 
   return [
     ...source.lines,
@@ -6231,12 +5958,6 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
   const itemPointer = variablePointerName(operation.itemName);
   const iteratorSlot = `%for.of.proto.iter.${loopIndex}.addr`;
 
-  useRuntimeHelper(context.runtime, "getIteratorValue");
-  useRuntimeHelper(context.runtime, "callIteratorNext");
-  useRuntimeHelper(context.runtime, "iteratorClose");
-  useRuntimeHelper(context.runtime, "valueObjectGet");
-  useRuntimeHelper(context.runtime, "valueTruthy");
-  useRuntimeHelper(context.runtime, "valueBoxString");
 
   const iterable = emitValueExpression(operation.iterable, context);
   const notIterableMessageConstant = addStringConstant(operation.notIterableMessage, context);
@@ -6337,20 +6058,10 @@ function emitArrayDestructureProtocolOperation(
   const endLabel = `destructure.proto.end.${index}`;
   const iteratorSlot = `%destructure.proto.iter.${index}.addr`;
   const doneSlot = `%destructure.proto.done.${index}.addr`;
-  useRuntimeHelper(context.runtime, "getIteratorValue");
-  useRuntimeHelper(context.runtime, "callIteratorNext");
-  useRuntimeHelper(context.runtime, "iteratorClose");
-  useRuntimeHelper(context.runtime, "valueObjectGet");
-  useRuntimeHelper(context.runtime, "valueTruthy");
-  useRuntimeHelper(context.runtime, "valueBoxString");
-  useRuntimeHelper(context.runtime, "arrayNew");
-  useRuntimeHelper(context.runtime, "arrayPush");
-  useRuntimeHelper(context.runtime, "valueBoxArray");
 
   let iteratorCall: JsValue;
   let setupLines: string[];
   if (operation.source.kind === "collection") {
-    useRuntimeHelper(context.runtime, "getCollectionIterator");
     const collection = emitRuntimeCollectionPointer(operation.source.name, context);
     let sourceKind = 3;
     let iterationKind = 1;
@@ -6554,8 +6265,6 @@ function emitForOfMapOperation(operation: Extract<JsIrOperation, { readonly kind
     const valueSlot = `%for.of.map.value.slot.${index}`;
     const value = `%for.of.map.value.${index}`;
     const pair = `%for.of.map.pair.${index}`;
-    useRuntimeHelper(context.runtime, "arrayNew");
-    useRuntimeHelper(context.runtime, "arraySet");
     return {
       lines: [
         `  ${keySlot} = getelementptr i8, ptr ${entryPointer}, i64 8`,
@@ -6623,11 +6332,6 @@ function emitForInKeyIteration(
   const keyPtr = `%for.in.key.ptr.${loopIndex}`;
   const keyLen = `%for.in.key.len.${loopIndex}`;
   const nextIndex = `%for.in.next.${loopIndex}`;
-  useRuntimeHelper(context.runtime, helper);
-  useRuntimeHelper(context.runtime, "arrayLength");
-  useRuntimeHelper(context.runtime, "arrayGet");
-  useRuntimeHelper(context.runtime, "valueStringPtr");
-  useRuntimeHelper(context.runtime, "valueStringLength");
 
   return [
     ...source.lines,
@@ -6900,8 +6604,6 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
     const regex = emitValueExpression(condition.regex, context);
     const input = emitStringExpression(condition.input, context);
     const inputValue = `%regex.test.input.${context.callIndex}`;
-    useRuntimeHelper(context.runtime, "valueBoxString");
-    useRuntimeHelper(context.runtime, "regexTest");
     const call = emitGeneratedJsCall("regexTest", [`i64 ${regex.value}`, `i64 ${inputValue}`], context);
     const result = `%regex.test.${context.cmpIndex}`;
     context.cmpIndex += 1;
@@ -6924,8 +6626,6 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
     const result = `%cmp.${context.cmpIndex}`;
     context.objectIndex += 1;
     context.cmpIndex += 1;
-    useRuntimeHelper(context.runtime, "valueObjectPtr");
-    useRuntimeHelper(context.runtime, "jsInstanceOf");
     return {
       lines: [
         ...value.lines,
@@ -6956,7 +6656,6 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
     if (classId === 1) {
       comparison = `  ${result} = icmp ne i64 ${classValue}, 0`;
     }
-    useRuntimeHelper(context.runtime, "valueObjectPtr");
     return {
       lines: [
         ...value.lines,
@@ -7044,11 +6743,6 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     const index = context.cmpIndex;
     const name = `%cmp.${index}`;
     context.cmpIndex += 1;
-    let helper: RuntimeHelper = "valueRelationalCompare";
-    if (condition.kind === "valueLooseComparison") {
-      helper = "valueLooseEquals";
-    }
-    useRuntimeHelper(context.runtime, helper);
     if (condition.kind === "valueLooseComparison") {
       const equals = `%value.eq.${index}`;
       let predicate = "eq";
@@ -7093,7 +6787,6 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     const key = emitStringExpression(condition.key, context);
     const name = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
-    useRuntimeHelper(context.runtime, "objectPropertyIsEnumerable");
     return { lines: [...object.lines, ...key.lines, `  ${name} = call i1 @objectPropertyIsEnumerable(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`], value: name };
   }
 
@@ -7104,7 +6797,6 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     const value = emitValueExpression(condition.value, context);
     const name = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
-    useRuntimeHelper(context.runtime, "valueIsArray");
     return { lines: [...value.lines, `  ${name} = call i1 @valueIsArray(i64 ${value.value})`], value: name };
   }
 
@@ -7112,7 +6804,6 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     const value = emitValueExpression(condition.value, context);
     const name = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
-    useRuntimeHelper(context.runtime, "valueTruthy");
     return { lines: [...value.lines, `  ${name} = call i1 @valueTruthy(i64 ${value.value})`], value: name };
   }
 
@@ -7128,7 +6819,6 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
       numberIsSafeInteger: "numberIsSafeInteger"
     } as const;
     const helper = helperByPredicate[condition.predicate];
-    useRuntimeHelper(context.runtime, helper);
     return { lines: [...value.lines, `  ${name} = call i1 @${helper}(i64 ${value.value})`], value: name };
   }
 
@@ -7137,13 +6827,12 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     const search = emitStringExpression(condition.search, context);
     const name = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
-    const helperByMethod: Record<typeof condition.method, RuntimeHelper> = {
+    const helperByMethod: Record<typeof condition.method, "stringEndsWith" | "stringIncludes" | "stringStartsWith"> = {
       includes: "stringIncludes",
       startsWith: "stringStartsWith",
       endsWith: "stringEndsWith"
     };
     const helper = helperByMethod[condition.method];
-    useRuntimeHelper(context.runtime, helper);
     return { lines: [...receiver.lines, ...search.lines, `  ${name} = call i1 @${helper}(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value})`], value: name };
   }
 
@@ -7153,7 +6842,6 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     context.numIndex += 1;
     const isEmpty = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayLength");
     const lines = [...array.lines, `  ${length} = call i64 @arrayLength(ptr ${array.value})`, `  ${isEmpty} = icmp eq i64 ${length}, 0`];
     if (condition.kind === "runtimeArrayEvery") {
       return { lines, value: isEmpty };
@@ -7166,7 +6854,6 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     const right = emitValueExpression(condition.right, context);
     const name = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
-    useRuntimeHelper(context.runtime, "objectIs");
     return { lines: [...left.lines, ...right.lines, `  ${name} = call i1 @objectIs(i64 ${left.value}, i64 ${right.value})`], value: name };
   }
 
@@ -7181,11 +6868,10 @@ function emitRuntimeCollectionCondition(
   const key = emitValueExpression(condition.key, context);
   const name = `%cmp.${context.cmpIndex}`;
   context.cmpIndex += 1;
-  let helper: RuntimeHelper = "collectionDelete";
+  let helper: "collectionDelete" | "collectionHas" = "collectionDelete";
   if (condition.kind === "runtimeCollectionHas") {
     helper = "collectionHas";
   }
-  useRuntimeHelper(context.runtime, helper);
   return { lines: [...collection.lines, ...key.lines, `  ${name} = call i1 @${helper}(ptr ${collection.value}, i64 ${key.value})`], value: name };
 }
 
@@ -7235,14 +6921,12 @@ function emitRuntimeObjectHasCondition(
   context.cmpIndex += 1;
   const name = `%cmp.${index}`;
   if (condition.receiverKind === "value") {
-    useRuntimeHelper(context.runtime, "valueObjectHasOwn");
     return { lines: [...object.lines, ...key.lines, `  ${name} = call i1 @valueObjectHasOwn(i64 ${object.value}, i64 ${key.length}, ptr ${key.value})`], value: name };
   }
   let helper: "objectHasOwn" | "objectHas" = "objectHas";
   if (condition.ownOnly) {
     helper = "objectHasOwn";
   }
-  useRuntimeHelper(context.runtime, helper);
   return { lines: [...object.lines, ...key.lines, `  ${name} = call i1 @${helper}(ptr ${object.value}, i64 ${key.length}, ptr ${key.value})`], value: name };
 }
 
@@ -7256,11 +6940,9 @@ function emitRuntimeArrayHasCondition(
   context.cmpIndex += 1;
   const name = `%cmp.${cmpIndex}`;
   if (condition.ownOnly && condition.key === undefined) {
-    useRuntimeHelper(context.runtime, "arrayHasOwnIndex");
     return { lines: [...array.lines, ...index.lines, `  ${name} = call i1 @arrayHasOwnIndex(ptr ${array.value}, i64 ${index.value})`], value: name };
   }
   if (condition.key === undefined) {
-    useRuntimeHelper(context.runtime, "arrayHasOwnIndex");
     return { lines: [...array.lines, ...index.lines, `  ${name} = call i1 @arrayHasOwnIndex(ptr ${array.value}, i64 ${index.value})`], value: name };
   }
   const key = emitStringExpression(condition.key, context);
@@ -7268,7 +6950,6 @@ function emitRuntimeArrayHasCondition(
     const propertiesSlot = `%arr.props.slot.${context.objectIndex}`;
     const properties = `%arr.props.${context.objectIndex}`;
     context.objectIndex += 1;
-    useRuntimeHelper(context.runtime, "objectHasOwn");
     return {
       lines: [
         ...array.lines,
@@ -7280,7 +6961,6 @@ function emitRuntimeArrayHasCondition(
       value: name
     };
   }
-  useRuntimeHelper(context.runtime, "arrayHas");
   return { lines: [...array.lines, ...index.lines, ...key.lines, `  ${name} = call i1 @arrayHas(ptr ${array.value}, i64 ${index.value}, i64 ${key.length}, ptr ${key.value})`], value: name };
 }
 
@@ -7292,7 +6972,6 @@ function emitRuntimeArrayIncludesCondition(
   const value = emitValueExpression(expression.value, context);
   const name = `%cmp.${context.cmpIndex}`;
   context.cmpIndex += 1;
-  useRuntimeHelper(context.runtime, "arrayIncludes");
   return { lines: [...array.lines, ...value.lines, `  ${name} = call i1 @arrayIncludes(ptr ${array.value}, i64 ${value.value})`], value: name };
 }
 
@@ -7310,7 +6989,6 @@ function emitRuntimeObjectStateCondition(
   const index = context.cmpIndex;
   context.cmpIndex += 1;
   const name = `%cmp.${index}`;
-  useRuntimeHelper(context.runtime, helper);
   return { lines: [...object.lines, `  ${name} = call i1 @${helper}(ptr ${object.value})`], value: name };
 }
 
@@ -7323,7 +7001,6 @@ function emitStringComparisonCondition(
   const name = `%cmp.${index}`;
   const left = emitStringExpression(condition.left, context);
   const right = emitStringExpression(condition.right, context);
-  useRuntimeHelper(context.runtime, "strEquals");
   const equals = `%str.eq.${index}`;
   let resultLine = `  ${name} = icmp eq i1 ${equals}, true`;
   if (condition.operator === "!==") {
@@ -7364,7 +7041,6 @@ function emitValueComparisonCondition(
   context.cmpIndex += 1;
   const left = emitValueExpression(condition.left, context);
   const right = emitValueExpression(condition.right, context);
-  useRuntimeHelper(context.runtime, "valueStrictEquals");
   const equals = `%value.eq.${index}`;
   const name = `%cmp.${index}`;
   let predicate = "eq";
@@ -7452,8 +7128,6 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     const regex = emitValueExpression(expression.regex, context);
     const input = emitStringExpression(expression.input, context);
     const inputValue = `%regex.search.input.${context.callIndex}`;
-    useRuntimeHelper(context.runtime, "valueBoxString");
-    useRuntimeHelper(context.runtime, "regexSearch");
     const call = emitGeneratedJsCall("regexSearch", [`i64 ${regex.value}`, `i64 ${inputValue}`], context);
     const number = `%regex.search.number.${context.numIndex}`;
     context.numIndex += 1;
@@ -7500,7 +7174,6 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     if (expression.fromEnd === true) {
       helper = "arrayLastIndexOf";
     }
-    useRuntimeHelper(context.runtime, helper);
     return { lines: [...array.lines, ...needle.lines, ...fromIndex.lines, `  ${raw} = call i64 @${helper}(ptr ${array.value}, i64 ${needle.value}, i64 ${fromIndex.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
   }
 
@@ -7510,7 +7183,6 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     context.arrayIndex += 1;
     const number = `%num.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayFindIndex");
     return { lines: [...array.lines, `  ${raw} = call i64 @arrayFindIndex(ptr ${array.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
   }
 
@@ -7520,7 +7192,6 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     context.arrayIndex += 1;
     const number = `%num.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "collectionSize");
     return { lines: [...collection.lines, `  ${raw} = call i64 @collectionSize(ptr ${collection.value})`, `  ${number} = sitofp i64 ${raw} to double`], value: number };
   }
 
@@ -7528,7 +7199,6 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     const value = emitValueExpression(expression.value, context);
     const number = `%num.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, "valueToNumber");
     return { lines: [...value.lines, `  ${number} = call double @valueToNumber(i64 ${value.value})`], value: number };
   }
 
@@ -7540,7 +7210,6 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     const source = emitStringExpression(expression.value, context);
     const number = `%num.${context.numIndex}`;
     context.numIndex += 1;
-    useRuntimeHelper(context.runtime, expression.kind);
     return { lines: [...source.lines, `  ${number} = call double @${expression.kind}(i64 ${source.length}, ptr ${source.value})`], value: number };
   }
 
@@ -7591,7 +7260,6 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
     return emitBitwiseNumberExpression(expression, left, right, name, index);
   }
   if (expression.operator === "power") {
-    useRuntimeHelper(context.runtime, "mathPow");
     return { lines: [...left.lines, ...right.lines, `  ${name} = call double @mathPow(double ${left.value}, double ${right.value})`], value: name };
   }
 
@@ -7676,7 +7344,6 @@ function emitRuntimeArrayAppendNumberExpression(
   const values = expression.values.map((value) => emitValueExpression(value, context));
   const lines = [...array.lines];
   const helper = arrayNumberAppendHelper(expression.kind);
-  useRuntimeHelper(context.runtime, helper);
   let result = "0";
   for (const value of values) {
     const index = context.arrayIndex;
@@ -7707,11 +7374,10 @@ function emitMathCallNumberExpression(
       }
       return { lines, value: "0xFFF0000000000000" };
     }
-    let helper: RuntimeHelper = "mathMax2";
+    let helper: "mathMax2" | "mathMin2" = "mathMax2";
     if (expression.method === "min") {
       helper = "mathMin2";
     }
-    useRuntimeHelper(context.runtime, helper);
     let current = args[0].value;
     for (let i = 1; i < args.length; i++) {
       const next = `%num.${context.numIndex}`;
@@ -7722,25 +7388,21 @@ function emitMathCallNumberExpression(
     return { lines, value: current };
   }
   if (expression.method === "pow") {
-    useRuntimeHelper(context.runtime, "mathPow");
     const base = args[0]?.value ?? "0.0";
     const exponent = args[1]?.value ?? "0.0";
     return { lines: [...lines, `  ${number} = call double @mathPow(double ${base}, double ${exponent})`], value: number };
   }
   if (expression.method === "hypot") {
-    useRuntimeHelper(context.runtime, "mathHypot2");
     const left = args[0]?.value ?? "0.0";
     const right = args[1]?.value ?? "0.0";
     return { lines: [...lines, `  ${number} = call double @mathHypot2(double ${left}, double ${right})`], value: number };
   }
   if (expression.method === "imul") {
-    useRuntimeHelper(context.runtime, "mathImul");
     const left = args[0]?.value ?? "0.0";
     const right = args[1]?.value ?? "0.0";
     return { lines: [...lines, `  ${number} = call double @mathImul(double ${left}, double ${right})`], value: number };
   }
   if (expression.method === "random") {
-    useRuntimeHelper(context.runtime, "mathRandom");
     return { lines: [...lines, `  ${number} = call double @mathRandom()`], value: number };
   }
   const helperByMethod = {
@@ -7763,13 +7425,8 @@ function emitMathCallNumberExpression(
     sign: "mathSign"
   } as const;
   const helper = helperByMethod[expression.method];
-  useRuntimeHelper(context.runtime, helper);
   const argument = args[0]?.value ?? "0.0";
-  return { lines: [...lines, `  ${number} = call double @${runtimeMathFunctionName(helper)}(double ${argument})`], value: number };
-}
-
-function runtimeMathFunctionName(helper: RuntimeHelper): string {
-  return helper;
+  return { lines: [...lines, `  ${number} = call double @${helper}(double ${argument})`], value: number };
 }
 
 function arrayNumberAppendHelper(kind: "arrayPush" | "arrayUnshift"): "arrayPush" | "arrayUnshift" {
@@ -7803,7 +7460,6 @@ function emitAggregateNumberExpression(
       context.numIndex += 1;
       const length = `%arr.len.${index}`;
       const value = `%num.${index}`;
-      useRuntimeHelper(context.runtime, "arrayLength");
       return { lines: [...array.lines, `  ${length} = call i64 @arrayLength(ptr ${array.value})`, `  ${value} = uitofp i64 ${length} to double`], value };
     }
   }
@@ -7814,7 +7470,6 @@ function emitAggregateNumberExpression(
     context.numIndex += 1;
     const length = `%arr.len.${index}`;
     const value = `%num.${index}`;
-    useRuntimeHelper(context.runtime, "valueArrayLength");
     return { lines: [...receiver.lines, `  ${length} = call i64 @valueArrayLength(i64 ${receiver.value})`, `  ${value} = uitofp i64 ${length} to double`], value };
   }
 
@@ -7824,7 +7479,6 @@ function emitAggregateNumberExpression(
     context.numIndex += 1;
     const length = `%value.len.${index}`;
     const value = `%num.${index}`;
-    useRuntimeHelper(context.runtime, "valueLength");
     return { lines: [...receiver.lines, `  ${length} = call i64 @valueLength(i64 ${receiver.value})`, `  ${value} = uitofp i64 ${length} to double`], value };
   }
 
@@ -7834,7 +7488,6 @@ function emitAggregateNumberExpression(
     context.numIndex += 1;
     const raw = `%obj.len.${index}`;
     const value = `%num.${index}`;
-    useRuntimeHelper(context.runtime, "valueObjectGet");
     const lengthKey = addStringConstant("length", context);
     return {
       lines: [...receiver.lines, `  ${raw} = call i64 @valueObjectGet(i64 ${receiver.value}, i64 6, ptr ${lengthKey})`, `  ${value} = sitofp i64 ${raw} to double`],
@@ -8057,7 +7710,6 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     const separator = emitStringExpression(expression.separator, context);
     const name = `%str.${context.stringIndex}`;
     context.stringIndex += 1;
-    useRuntimeHelper(context.runtime, "arrayJoin");
     return { lines: [...array.lines, ...separator.lines, `  ${name} = call ptr @arrayJoin(ptr ${array.value}, i64 ${separator.length}, ptr ${separator.value})`], value: name, length: "0" };
   }
 
@@ -8076,7 +7728,6 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     const raw = `%str.result.${index}`;
     const value = `%str.${index}`;
     const length = `%str.len.${index}`;
-    useRuntimeHelper(context.runtime, "errorToString");
     return {
       lines: [
         ...object.lines,
@@ -8095,10 +7746,6 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     const replacement = emitStringExpression(expression.replacement, context);
     const receiverValue = `%regex.replace.receiver.${context.callIndex}`;
     const replacementValue = `%regex.replace.replacement.${context.callIndex}`;
-    useRuntimeHelper(context.runtime, "valueBoxString");
-    useRuntimeHelper(context.runtime, "valueStringPtr");
-    useRuntimeHelper(context.runtime, "valueStringLength");
-    useRuntimeHelper(context.runtime, "regexReplace");
     const call = emitGeneratedJsCall("regexReplace", [`i64 ${regex.value}`, `i64 ${receiverValue}`, `i64 ${replacementValue}`], context);
     const value = `%regex.replace.ptr.${context.stringIndex}`;
     const length = `%regex.replace.len.${context.stringIndex}`;
@@ -8145,7 +7792,6 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
       normalize: "stringNormalize"
     } as const;
     const helper = helperByMethod[expression.method];
-    useRuntimeHelper(context.runtime, helper);
     if (expression.method === "repeat") {
       const count = emitArrayIndex(expression.count ?? { kind: "literal", value: 0 }, context);
       return {
@@ -8249,7 +7895,6 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
   }
 
   if (expression.kind === "stringFromCharCode") {
-    useRuntimeHelper(context.runtime, "stringFromCharCode");
     const index = context.stringIndex;
     context.stringIndex += 1;
     const raw = `%str.result.${index}`;
@@ -8295,7 +7940,6 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
       toString: "numberToStringRadix"
     } as const;
     const helper = helperByMethod[expression.method];
-    useRuntimeHelper(context.runtime, helper);
     return {
       lines: [
         ...receiver.lines,
@@ -8324,9 +7968,6 @@ function emitTaggedTemplateCall(
   context: EmitContext
 ): StringValue {
   const lines: string[] = [];
-  useRuntimeHelper(context.runtime, "arrayNew");
-  useRuntimeHelper(context.runtime, "arraySet");
-  useRuntimeHelper(context.runtime, "valueBoxString");
   const { arrayIndex } = context;
   context.arrayIndex += 1;
   const stringsArray = `%strings.array.${arrayIndex}`;
@@ -8354,7 +7995,6 @@ function emitTaggedTemplateCall(
   const stringsBoxIndex = context.numIndex;
   context.numIndex += 1;
   const stringsBox = `%value.${stringsBoxIndex}`;
-  useRuntimeHelper(context.runtime, "valueBoxArray");
   lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
   lines.push(emitRootStackPush(stringsBox, context));
   const expressionValues = expressions.map((expr) => emitValueExpression(expr, context));
@@ -8367,8 +8007,6 @@ function emitTaggedTemplateCall(
   context.stringIndex += 1;
   const value = `%str.${valueIndex}`;
   const length = `%str.len.${valueIndex}`;
-  useRuntimeHelper(context.runtime, "valueStringPtr");
-  useRuntimeHelper(context.runtime, "valueStringLength");
   lines.push(...generated.lines);
   lines.push(`  ${value} = call ptr @valueStringPtr(i64 ${generated.value})`);
   lines.push(`  ${length} = call i64 @valueStringLength(i64 ${generated.value})`);
@@ -8395,7 +8033,6 @@ function emitStringConversionExpression(
   const raw = `%str.result.${index}`;
   const value = `%str.${index}`;
   const length = `%str.len.${index}`;
-  useRuntimeHelper(context.runtime, "valueToString");
   return {
     lines: [
       ...source.lines,
@@ -8416,7 +8053,6 @@ function emitConcatStringExpression(
   const right = emitStringExpression(expression.right, context);
   const index = context.stringIndex;
   context.stringIndex += 1;
-  useRuntimeHelper(context.runtime, "strConcat");
   const name = `%str.${index}`;
   const length = `%str.len.${index}`;
   return {

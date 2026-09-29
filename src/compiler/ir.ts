@@ -1,6 +1,6 @@
 import ts from "typescript";
 import type { CompilerDiagnostic, SourceSpan } from "./diagnostics.js";
-import { SYMBOL_ITERATOR_SENTINEL } from "./symbols.js";
+import { SYMBOL_ITERATOR_SENTINEL } from "./runtime-ir.js";
 
 // The TypeScript checker for the program currently being lowered. Set by
 // `lowerToJsIr` and read by the class-lowering path for static method dispatch.
