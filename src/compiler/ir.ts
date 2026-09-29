@@ -2042,22 +2042,6 @@ interface LoweredStatements {
   readonly loweringMode: JsIrLoweringMode;
 }
 
-function sourceFileContainsClass(sourceFile: ts.SourceFile): boolean {
-  let found = false;
-  const visit = (node: ts.Node): void => {
-    if (found) {
-      return;
-    }
-    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return found;
-}
-
 function classOperationTraceOrigin(index: number): JsIrTraceOrigin {
   if (index === 0) {
     return "source";
@@ -2075,18 +2059,8 @@ function lowerStatements(
     return { operations: [], diagnostics: [inlineCppDiagnostic], loweringMode: "native" };
   }
 
-  // Class-using files are attempted through real codegen first. Any unsupported
-  // class feature aborts the strict pass and is reported as a diagnostic by the
-  // diagnostic-emitting pass below.
-  if (sourceFileContainsClass(sourceFile)) {
-    const real = tryLowerStatementsWithClasses(sourceFile);
-    if (real !== undefined) {
-      return real;
-    }
-  }
-
   try {
-    return lowerTopLevelStatements(sourceFile, false).result;
+    return lowerTopLevelStatements(sourceFile);
   } catch (error) {
     if (!(error instanceof ClassLoweringUnsupportedError)) {
       throw error;
@@ -2140,13 +2114,13 @@ function inlineCppDisabledDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnos
   };
 }
 
-// Runs the real lowering loop. In strict mode any unsupported statement or class
-// feature aborts (returns supported: false) so the caller can re-run in
-// non-strict mode, where unsupported statements become TSCN1002 diagnostics.
-function lowerTopLevelStatements(
-  sourceFile: ts.SourceFile,
-  strict: boolean
-): { readonly supported: boolean; readonly result: LoweredStatements } {
+/**
+ * Lowers a source file's top-level statements, collecting a TSCN1002 for each one nothing
+ * recognizes. There is no second attempt: a statement that does not lower is reported where it
+ * failed, and a class feature that does not lower aborts the file through
+ * `ClassLoweringUnsupportedError`, which `lowerStatements` turns into one diagnostic.
+ */
+function lowerTopLevelStatements(sourceFile: ts.SourceFile): LoweredStatements {
   const operations: JsIrOperation[] = [];
   const bindings = new Map<string, JsIrBindingValue>();
   const diagnostics: CompilerDiagnostic[] = [];
@@ -2178,19 +2152,13 @@ function lowerTopLevelStatements(
         updateBindings(result.operation, bindings);
         continue;
       }
-      if (strict) {
-        return { supported: false, result: { operations: [], diagnostics: [], loweringMode: "native" } };
-      }
       diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result));
     }
   } finally {
     activeClassRegistry = previousClassRegistry;
   }
 
-  return {
-    supported: true,
-    result: { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" }
-  };
+  return { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" };
 }
 
 /**
@@ -2227,23 +2195,6 @@ function appendClassOperations(
     const traced = traceOperationFromNode(classOperations[index], statement, classOperationTraceOrigin(index));
     operations.push(traced);
     updateBindings(traced, bindings);
-  }
-}
-
-function tryLowerStatementsWithClasses(
-  sourceFile: ts.SourceFile
-): LoweredStatements | undefined {
-  try {
-    const { supported, result } = lowerTopLevelStatements(sourceFile, true);
-    if (!supported || result.diagnostics.length > 0) {
-      return undefined;
-    }
-    return result;
-  } catch (error) {
-    if (error instanceof ClassLoweringUnsupportedError) {
-      return undefined;
-    }
-    throw error;
   }
 }
 
