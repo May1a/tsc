@@ -1971,9 +1971,67 @@ function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): 
 // real backend cannot compile yet. `lowerStatements` catches it and turns it into
 // a hard TSCN1002 diagnostic: the compiler never evaluates user programs at
 // compile time, so unsupported class features are compile errors.
+/**
+ * The outcome of trying to recognize one AST shape.
+ *
+ * `notApplicable` continues the recognizer chain. `unsupported` stops it and carries the reason
+ * straight to the diagnostic. A recognizer that returned `undefined` for both meant that a shape
+ * it matched and could not handle looked exactly like a shape nothing recognized, which is why
+ * lowering had to traverse the file twice: once to find out, once to report.
+ *
+ * Sub-recognizers *inside* an already-matched form still use `| undefined` for "not this
+ * variant" — at that point there is no chain to continue, so the ambiguity is gone.
+ */
+export type Lowered =
+  | { readonly kind: "lowered"; readonly operation: JsIrOperation }
+  | { readonly kind: "notApplicable" }
+  | { readonly kind: "unsupported"; readonly reason: string };
+
+/** A statement list, or the reason one of its statements could not be lowered. */
+type LoweredStatementList =
+  | { readonly kind: "lowered"; readonly operations: readonly JsIrOperation[] }
+  | { readonly kind: "unsupported"; readonly reason: string };
+
+const notApplicable: Lowered = { kind: "notApplicable" };
+
+const loweredOperation = (operation: JsIrOperation): Lowered => ({ kind: "lowered", operation });
+
+const unsupported = (reason: string): Lowered => ({ kind: "unsupported", reason });
+
+const loweredOperationList = (operations: readonly JsIrOperation[]): LoweredStatementList => ({ kind: "lowered", operations });
+
+/**
+ * Adapts a recognizer that still returns `JsIrOperation | undefined`, which is the ambiguous
+ * pair `Lowered` exists to separate. At the statement tier the two are diagnosed identically, so
+ * the reason stays the reconstructed one; converting a recognizer to return `Lowered` replaces
+ * this with the reason the recognizer itself knows.
+ */
+function statementResult(operation: JsIrOperation | undefined, statement: ts.Statement): Lowered {
+  if (operation !== undefined) {
+    return loweredOperation(operation);
+  }
+  return unsupported(unsupportedStatementMessage(statement));
+}
+
+/**
+ * Aborts the class lowering pass.
+ *
+ * The class recognizers still unwind by exception rather than returning `unsupported`; this is
+ * the one place the distinction is not yet expressed as a value, and it is the reason lowering
+ * has to run the file twice. The optional `reason` is the diagnostic text when the abort already
+ * knows what the limitation is.
+ */
+/** The diagnostic text a failed class lowering already knows, or `undefined` when it does not. */
+function classAbortReason(result: Lowered): string | undefined {
+  if (result.kind === "unsupported") {
+    return result.reason;
+  }
+  return undefined;
+}
+
 class ClassLoweringUnsupportedError extends Error {
-  public constructor() {
-    super("class lowering unsupported");
+  public constructor(reason?: string) {
+    super(reason ?? "class lowering unsupported");
     this.name = "ClassLoweringUnsupportedError";
   }
 }
@@ -2114,23 +2172,16 @@ function lowerTopLevelStatements(
         continue;
       }
 
-      const operation = lowerStatement(statement, bindings, promotedAggregates);
-      if (operation) {
-        operations.push(operation);
-        updateBindings(operation, bindings);
+      const result = lowerStatement(statement, bindings, promotedAggregates);
+      if (result.kind === "lowered") {
+        operations.push(result.operation);
+        updateBindings(result.operation, bindings);
         continue;
       }
-
       if (strict) {
         return { supported: false, result: { operations: [], diagnostics: [], loweringMode: "native" } };
       }
-
-      diagnostics.push({
-        code: "TSCN1002",
-        category: "error",
-        message: unsupportedStatementMessage(statement),
-        span: sourceSpan(sourceFile, statement.getStart(sourceFile))
-      });
+      diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result));
     }
   } finally {
     activeClassRegistry = previousClassRegistry;
@@ -2139,6 +2190,28 @@ function lowerTopLevelStatements(
   return {
     supported: true,
     result: { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" }
+  };
+}
+
+/**
+ * The TSCN1002 for a statement nothing lowered. A recognizer that reported `unsupported` names the
+ * reason it gave up; `notApplicable` means no recognizer claimed the shape at all, so the
+ * diagnostic falls back to describing the syntax.
+ */
+function unsupportedStatementDiagnostic(
+  sourceFile: ts.SourceFile,
+  statement: ts.Statement,
+  result: Lowered
+): CompilerDiagnostic {
+  let message = unsupportedStatementMessage(statement);
+  if (result.kind === "unsupported") {
+    message = result.reason;
+  }
+  return {
+    code: "TSCN1002",
+    category: "error",
+    message,
+    span: sourceSpan(sourceFile, statement.getStart(sourceFile))
   };
 }
 
@@ -2159,7 +2232,8 @@ function appendClassOperations(
 
 function tryLowerStatementsWithClasses(
   sourceFile: ts.SourceFile
-): LoweredStatements | undefined {  try {
+): LoweredStatements | undefined {
+  try {
     const { supported, result } = lowerTopLevelStatements(sourceFile, true);
     if (!supported || result.diagnostics.length > 0) {
       return undefined;
@@ -2793,12 +2867,12 @@ function lowerClassMethodBody(
       operations.push({ kind: "returnValue", expression: value });
       continue;
     }
-    const operation = lowerStatement(statement, bodyBindings);
-    if (operation === undefined) {
-      throw new ClassLoweringUnsupportedError();
+    const result = lowerStatement(statement, bodyBindings);
+    if (result.kind !== "lowered") {
+      throw new ClassLoweringUnsupportedError(classAbortReason(result));
     }
-    operations.push(operation);
-    updateBindings(operation, bodyBindings);
+    operations.push(result.operation);
+    updateBindings(result.operation, bodyBindings);
   }
   return operations;
 }
@@ -2872,12 +2946,12 @@ function lowerClassConstructor(
         if (isNonExecutableDeclaration(statement)) {
           continue;
         }
-        const operation = lowerStatement(statement, fnBindings);
-        if (operation === undefined) {
-          throw new ClassLoweringUnsupportedError();
+        const result = lowerStatement(statement, fnBindings);
+        if (result.kind !== "lowered") {
+          throw new ClassLoweringUnsupportedError(classAbortReason(result));
         }
-        body.push(operation);
-        updateBindings(operation, fnBindings);
+        body.push(result.operation);
+        updateBindings(result.operation, fnBindings);
       }
     }
     return { kind: "function", name: classConstructorName(info.name), parameters, body };
@@ -3775,12 +3849,12 @@ function lowerStatement(
   statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   promotedAggregates: ReadonlySet<string> = new Set()
-): JsIrOperation | undefined {
-  const operation = lowerStatementCore(statement, bindings, promotedAggregates);
-  if (operation === undefined) {
-    return undefined;
+): Lowered {
+  const result = lowerStatementCore(statement, bindings, promotedAggregates);
+  if (result.kind !== "lowered") {
+    return result;
   }
-  return traceOperationFromNode(operation, statement);
+  return loweredOperation(traceOperationFromNode(result.operation, statement));
 }
 
 // eslint-disable-next-line max-statements -- Statement dispatch covers all supported top-level node kinds in one place.
@@ -3788,13 +3862,13 @@ function lowerStatementCore(
   statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   promotedAggregates: ReadonlySet<string> = new Set()
-): JsIrOperation | undefined {
+): Lowered {
   if (ts.isVariableStatement(statement)) {
-    return lowerVariableBinding(statement, bindings, promotedAggregates);
+    return statementResult(lowerVariableBinding(statement, bindings, promotedAggregates), statement);
   }
 
   if (ts.isIfStatement(statement)) {
-    return lowerIfStatement(statement, bindings);
+    return statementResult(lowerIfStatement(statement, bindings), statement);
   }
 
   if (ts.isSwitchStatement(statement)) {
@@ -3802,31 +3876,31 @@ function lowerStatementCore(
   }
 
   if (ts.isWhileStatement(statement)) {
-    return lowerWhileStatement(statement, bindings);
+    return statementResult(lowerWhileStatement(statement, bindings), statement);
   }
 
   if (ts.isForStatement(statement)) {
-    return lowerForStatement(statement, bindings);
+    return statementResult(lowerForStatement(statement, bindings), statement);
   }
 
   if (ts.isForOfStatement(statement)) {
-    return lowerForOfStatement(statement, bindings);
+    return statementResult(lowerForOfStatement(statement, bindings), statement);
   }
 
   if (ts.isForInStatement(statement)) {
-    return lowerForInStatement(statement, bindings);
+    return statementResult(lowerForInStatement(statement, bindings), statement);
   }
 
   if (ts.isDoStatement(statement)) {
-    return lowerDoWhileStatement(statement, bindings);
+    return statementResult(lowerDoWhileStatement(statement, bindings), statement);
   }
 
   if (ts.isBreakStatement(statement)) {
-    return { kind: "break" };
+    return loweredOperation({ kind: "break" });
   }
 
   if (ts.isContinueStatement(statement)) {
-    return { kind: "continue" };
+    return loweredOperation({ kind: "continue" });
   }
 
   if (ts.isFunctionDeclaration(statement)) {
@@ -3834,11 +3908,11 @@ function lowerStatementCore(
   }
 
   if (ts.isReturnStatement(statement)) {
-    return lowerReturnStatement(statement, bindings);
+    return statementResult(lowerReturnStatement(statement, bindings), statement);
   }
 
   if (ts.isThrowStatement(statement)) {
-    return lowerThrowStatement(statement, bindings);
+    return statementResult(lowerThrowStatement(statement, bindings), statement);
   }
 
   if (ts.isTryStatement(statement)) {
@@ -3846,10 +3920,10 @@ function lowerStatementCore(
   }
 
   if (ts.isExpressionStatement(statement)) {
-    return lowerExpressionStatement(statement.expression, bindings);
+    return statementResult(lowerExpressionStatement(statement.expression, bindings), statement);
   }
 
-  return undefined;
+  return notApplicable;
 }
 
 // Lowering-time nesting counters for the one finally-routing shape the
@@ -3878,7 +3952,7 @@ function lowerThrowStatement(
 function lowerTryRegionOperations(
   statement: ts.TryStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   const tracksTryRegion = statement.catchClause !== undefined && statement.finallyBlock !== undefined;
   if (tracksTryRegion) {
     tryRegionOfCatchFinallyDepth += 1;
@@ -3895,7 +3969,7 @@ function lowerTryRegionOperations(
 function lowerFinallyBlockOperations(
   block: ts.Block,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   finallyBlockDepth += 1;
   try {
     return lowerBlockStatements(block, bindings);
@@ -3907,7 +3981,7 @@ function lowerFinallyBlockOperations(
 function lowerTryCatchStatement(
   statement: ts.TryStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   // Semantically-equivalent compile-time shortcut for the direct
   // `try { throw expr; } catch (e) { ... }` shape without finally. It avoids real
   // exception machinery for the common cases (error construction and plain value
@@ -3915,7 +3989,7 @@ function lowerTryCatchStatement(
   if (statement.finallyBlock === undefined) {
     const shortcut = lowerDirectThrowTryCatchShortcut(statement, bindings);
     if (shortcut !== undefined) {
-      return shortcut;
+      return loweredOperation(shortcut);
     }
   }
 
@@ -3925,8 +3999,8 @@ function lowerTryCatchStatement(
   // without leaking outwards). Cleanup/completion routing for finally is owned by
   // the LLVM backend's shared cleanup stack.
   const tryOperations = lowerTryRegionOperations(statement, bindings);
-  if (tryOperations === undefined) {
-    return undefined;
+  if (tryOperations.kind === "unsupported") {
+    return tryOperations;
   }
 
   const { catchClause } = statement;
@@ -3935,8 +4009,8 @@ function lowerTryCatchStatement(
   const hasCatch = catchClause !== undefined;
   if (catchClause !== undefined) {
     const loweredCatch = lowerCatchClause(statement, catchClause, bindings);
-    if (loweredCatch === undefined) {
-      return undefined;
+    if (loweredCatch.kind === "unsupported") {
+      return loweredCatch;
     }
     catchVariable = loweredCatch.variable;
     catchOperations = loweredCatch.operations;
@@ -3945,33 +4019,37 @@ function lowerTryCatchStatement(
   let finallyOperations: readonly JsIrOperation[] | undefined;
   if (statement.finallyBlock !== undefined) {
     const loweredFinally = lowerFinallyBlockOperations(statement.finallyBlock, bindings);
-    if (loweredFinally === undefined) {
-      return undefined;
+    if (loweredFinally.kind === "unsupported") {
+      return loweredFinally;
     }
-    finallyOperations = loweredFinally;
+    finallyOperations = loweredFinally.operations;
   }
 
   if (!hasCatch && finallyOperations === undefined) {
     // `try { ... }` with neither catch nor finally is not valid TypeScript;
     // defensively run the try body as a plain block.
-    return { kind: "block", operations: tryOperations };
+    return loweredOperation({ kind: "block", operations: tryOperations.operations });
   }
 
-  return {
+  return loweredOperation({
     kind: "tryCatch",
-    tryOperations,
+    tryOperations: tryOperations.operations,
     catchVariable,
     catchOperations,
     hasCatch,
     finallyOperations
-  };
+  });
 }
+
+type LoweredCatchClause =
+  | { readonly kind: "lowered"; readonly variable: string; readonly operations: readonly JsIrOperation[] }
+  | { readonly kind: "unsupported"; readonly reason: string };
 
 function lowerCatchClause(
   statement: ts.TryStatement,
   catchClause: ts.CatchClause,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): { readonly variable: string; readonly operations: readonly JsIrOperation[] } | undefined {
+): LoweredCatchClause {
   const catchBindings = new Map(bindings);
   const catchBinding = catchClause.variableDeclaration?.name;
   const destructuringOperations: JsIrOperation[] = [];
@@ -3987,16 +4065,16 @@ function lowerCatchClause(
       lowered = lowerObjectDestructuringElements(catchBinding, source, catchBindings, destructuringOperations, true);
     }
     if (!lowered) {
-      return undefined;
+      return { kind: "unsupported", reason: "Destructuring a catch binding is not supported" };
     }
   } else if (variable !== "") {
     catchBindings.set(variable, { kind: "valueVariable", name: variable });
   }
   const blockOperations = lowerBlockStatements(catchClause.block, catchBindings);
-  if (blockOperations === undefined) {
-    return undefined;
+  if (blockOperations.kind === "unsupported") {
+    return blockOperations;
   }
-  return { variable, operations: [...destructuringOperations, ...blockOperations] };
+  return { kind: "lowered", variable, operations: [...destructuringOperations, ...blockOperations.operations] };
 }
 
 function catchBindingName(catchClause: ts.CatchClause): string {
@@ -4033,7 +4111,7 @@ function lowerDirectThrowTryCatchShortcut(
   }
   const shortcutBindings = new Map(bindings);
   shortcutBindings.set(catchVariable, { kind: "value", value: thrown });
-  const operations = lowerBlockStatements(catchClause.block, shortcutBindings);
+  const operations = bodyOperations(lowerBlockStatements(catchClause.block, shortcutBindings));
   if (operations === undefined) {
     return undefined;
   }
@@ -4054,7 +4132,7 @@ function lowerErrorTryCatchStatement(
   if (errorOperation !== undefined) {
     const catchBindings = new Map(bindings);
     catchBindings.set(variableName, { kind: "runtimeObject", name: errorOperation.name, errorName: errorOperation.errorName });
-    const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
+    const operations = bodyOperations(lowerBlockStatements(statement.catchClause.block, catchBindings));
     if (operations === undefined) {
       return undefined;
     }
@@ -4069,7 +4147,7 @@ function lowerErrorTryCatchStatement(
   }
   const catchBindings = new Map(bindings);
   catchBindings.set(variableName, thrownBinding);
-  const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
+  const operations = bodyOperations(lowerBlockStatements(statement.catchClause.block, catchBindings));
   if (operations === undefined) {
     return undefined;
   }
@@ -4326,7 +4404,7 @@ function lowerForStatement(
     return undefined;
   }
 
-  const body = lowerStatementBody(statement.statement, forBindings);
+  const body = bodyOperations(lowerStatementBody(statement.statement, forBindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4365,7 +4443,7 @@ function lowerForOfStatement(
   }
   const bodyBindings = new Map(bindings);
   bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-  const body = lowerStatementBody(bodyStatement, bodyBindings);
+  const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4389,7 +4467,7 @@ function lowerSpecializedForOf(
   if (sourceString !== undefined) {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
-    const body = lowerStatementBody(bodyStatement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4403,7 +4481,7 @@ function lowerSpecializedForOf(
   if (sourceBinding?.kind === "runtimeSet") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-    const body = lowerStatementBody(bodyStatement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4412,7 +4490,7 @@ function lowerSpecializedForOf(
   if (sourceBinding?.kind === "runtimeMap") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "runtimeArray", name: itemName });
-    const body = lowerStatementBody(bodyStatement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4423,7 +4501,7 @@ function lowerSpecializedForOf(
   }
   const bodyBindings = new Map(bindings);
   bodyBindings.set(itemName, { kind: "number", value: { kind: "variable", name: itemName } });
-  const body = lowerStatementBody(bodyStatement, bodyBindings);
+  const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4461,7 +4539,7 @@ function lowerForInStatement(
   if (sourceBinding?.kind === "runtimeObject") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const body = lowerStatementBody(statement.statement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(statement.statement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4470,7 +4548,7 @@ function lowerForInStatement(
   if (sourceBinding?.kind === "runtimeArray") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const body = lowerStatementBody(statement.statement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(statement.statement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4513,7 +4591,7 @@ function lowerWhileStatement(
     return undefined;
   }
 
-  const body = lowerStatementBody(statement.statement, bindings);
+  const body = bodyOperations(lowerStatementBody(statement.statement, bindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4534,7 +4612,7 @@ function lowerDoWhileStatement(
     return undefined;
   }
 
-  const body = lowerStatementBody(statement.statement, bindings);
+  const body = bodyOperations(lowerStatementBody(statement.statement, bindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4549,10 +4627,22 @@ function lowerDoWhileStatement(
 // Lowers a statement body that may be a block or a single unbraced statement
 // (e.g. `if (x) foo();` or `while (x) y--;`), normalizing the latter through
 // the same statement-list channel blocks use.
+/**
+ * The operations of a lowered body, or `undefined` when it could not be lowered. A recognizer
+ * that still returns `JsIrOperation | undefined` has nowhere to put the reason, so the statement
+ * tier reports its own; converting that recognizer to return `Lowered` forwards the real one.
+ */
+function bodyOperations(body: LoweredStatementList): readonly JsIrOperation[] | undefined {
+  if (body.kind === "lowered") {
+    return body.operations;
+  }
+  return undefined;
+}
+
 function lowerStatementBody(
   statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   if (ts.isBlock(statement)) {
     return lowerBlockStatements(statement, bindings);
   }
@@ -4657,7 +4747,7 @@ function lowerIfStatement(
     return undefined;
   }
 
-  const thenOperations = lowerStatementBody(statement.thenStatement, bindings);
+  const thenOperations = bodyOperations(lowerStatementBody(statement.thenStatement, bindings));
   if (thenOperations === undefined) {
     return undefined;
   }
@@ -4671,7 +4761,7 @@ function lowerIfStatement(
     };
   }
 
-  const elseOperations = lowerStatementBody(statement.elseStatement, bindings);
+  const elseOperations = bodyOperations(lowerStatementBody(statement.elseStatement, bindings));
   if (elseOperations === undefined) {
     return undefined;
   }
@@ -4687,14 +4777,14 @@ function lowerIfStatement(
 function lowerBlockStatements(
   block: ts.Block,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   return lowerStatementList(block.statements, bindings);
 }
 
 function lowerStatementList(
   statements: readonly ts.Statement[],
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   const operations: JsIrOperation[] = [];
   const blockBindings = new Map(bindings);
 
@@ -4703,25 +4793,29 @@ function lowerStatementList(
       continue;
     }
 
-    const operation = lowerStatement(statement, blockBindings);
-    if (!operation) {
-      return undefined;
+    const result = lowerStatement(statement, blockBindings);
+    if (result.kind === "unsupported") {
+      return result;
+    }
+    if (result.kind === "notApplicable") {
+      return { kind: "unsupported", reason: unsupportedStatementMessage(statement) };
     }
 
-    operations.push(operation);
-    updateBindings(operation, blockBindings);
+    operations.push(result.operation);
+    updateBindings(result.operation, blockBindings);
   }
 
-  return operations;
+  return loweredOperationList(operations);
 }
 
 function lowerSwitchStatement(
   statement: ts.SwitchStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
+  const reason = unsupportedStatementMessage(statement);
   const expression = lowerValueExpression(statement.expression, bindings);
   if (expression === undefined) {
-    return undefined;
+    return unsupported(reason);
   }
   const clauses: JsIrSwitchClause[] = [];
   const switchBindings = new Map(bindings);
@@ -4730,28 +4824,29 @@ function lowerSwitchStatement(
     if (ts.isCaseClause(clause)) {
       test = lowerValueExpression(clause.expression, switchBindings);
       if (test === undefined) {
-        return undefined;
+        return unsupported(reason);
       }
     }
-    const operations = lowerStatementList(clause.statements, switchBindings);
-    if (operations === undefined) {
-      return undefined;
+    const clauseOperations = lowerStatementList(clause.statements, switchBindings);
+    if (clauseOperations.kind === "unsupported") {
+      return clauseOperations;
     }
-    for (const operation of operations) {
+    for (const operation of clauseOperations.operations) {
       updateBindings(operation, switchBindings);
     }
-    clauses.push({ test, operations });
+    clauses.push({ test, operations: clauseOperations.operations });
   }
-  return { kind: "switch", expression, clauses };
+  return loweredOperation({ kind: "switch", expression, clauses });
 }
 
 // eslint-disable-next-line complexity, max-statements -- Function declaration lowering covers default initializers, rest parameters, and per-kind binding setup in one place.
 function lowerFunctionDeclaration(
   statement: ts.FunctionDeclaration,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
+  const reason = unsupportedStatementMessage(statement);
   if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
-    return undefined;
+    return unsupported(reason);
   }
 
   const parameters: JsIrFunctionParameter[] = [];
@@ -4762,11 +4857,11 @@ function lowerFunctionDeclaration(
     const param = declaredParameters[i];
     const isRest = param.dotDotDotToken !== undefined;
     if (isRest && i !== declaredParameters.length - 1) {
-      return undefined;
+      return unsupported(reason);
     }
     const isDestructuring = ts.isObjectBindingPattern(param.name) || ts.isArrayBindingPattern(param.name);
     if (isRest && isDestructuring) {
-      return undefined;
+      return unsupported(reason);
     }
     let valueKind: JsIrValueKind;
     if (isRest || isDestructuring) {
@@ -4774,7 +4869,7 @@ function lowerFunctionDeclaration(
     } else if (ts.isIdentifier(param.name)) {
       valueKind = parameterValueKind(param);
     } else {
-      return undefined;
+      return unsupported(reason);
     }
     let defaultValue: JsIrNumberExpression | undefined;
     if (!isRest && !isDestructuring) {
@@ -4824,7 +4919,7 @@ function lowerFunctionDeclaration(
         loweredDestructuring = lowerObjectDestructuringElements(pattern, destructuringSource, destructuringBindings, destructuringOperations);
       }
       if (!loweredDestructuring) {
-        return undefined;
+        return unsupported(reason);
       }
       for (const op of destructuringOperations) {
         prelude.push(op);
@@ -4842,10 +4937,11 @@ function lowerFunctionDeclaration(
     returnKind: declaredFunctionReturnKind(statement.type)
   });
 
-  const bodyStatements = lowerBlockStatements(statement.body, fnBindings);
-  if (bodyStatements === undefined) {
-    return undefined;
+  const loweredBody = lowerBlockStatements(statement.body, fnBindings);
+  if (loweredBody.kind === "unsupported") {
+    return loweredBody;
   }
+  const bodyStatements = loweredBody.operations;
 
   let body: readonly JsIrOperation[];
   if (prelude.length === 0) {
@@ -4854,14 +4950,14 @@ function lowerFunctionDeclaration(
     body = [{ kind: "bindingGroup", operations: [...prelude, ...bodyStatements] }];
   }
 
-  return {
+  return loweredOperation({
     kind: "function",
     name: statement.name.text,
     parameters,
     body,
     enclosingCaptureNames: collectFunctionDeclarationEnclosingCaptureNames(statement, bindings),
     constructibleByObjectReturn: isPlainObjectReturningConstructor(statement)
-  };
+  });
 }
 
 function declaredFunctionReturnKind(type: ts.TypeNode | undefined): JsIrValueKind | "void" {
@@ -5484,7 +5580,7 @@ function lowerObjectMethodFunctionValue(
     parameters.push({ name: parameter.name.text, valueKind });
     bindFunctionParameter(parameter.name.text, valueKind, false, methodBindings);
   }
-  const body = lowerBlockStatements(method.body, methodBindings);
+  const body = bodyOperations(lowerBlockStatements(method.body, methodBindings));
   if (body === undefined) {
     return undefined;
   }
@@ -7383,7 +7479,7 @@ function lowerInlineFunctionBody(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly JsIrOperation[] | undefined {
   if (ts.isBlock(body)) {
-    return lowerBlockStatements(body, bindings);
+    return bodyOperations(lowerBlockStatements(body, bindings));
   }
   const expression = lowerValueExpression(body, bindings);
   if (expression === undefined) {
