@@ -1248,71 +1248,248 @@ function emitOperations(operations: readonly JsIrOperation[], context: EmitConte
   return lines;
 }
 
-// eslint-disable-next-line max-statements -- Operation dispatch is intentionally centralized.
+/** The IR operation of one kind, narrowed from the whole union. */
+type OperationOf<K extends JsIrOperation["kind"]> = Extract<JsIrOperation, { readonly kind: K }>;
+
+/**
+ * Emits one operation kind. The narrowed parameter means a handler cannot read a field its
+ * kind does not have, which is what lets a single handler serve several kinds.
+ */
+type OperationEmitter<T extends JsIrOperation["kind"]> = (operation: OperationOf<T>, context: EmitContext) => string[];
+
+/**
+ * Builds the emitter table, proving at compile time that it routes every kind it is given.
+ * A new operation kind is a compile error here until something emits it, which is the
+ * closed-world property the `if` chain could not state: a kind that matched no branch used
+ * to emit nothing and say so nowhere.
+ */
+function operationEmitters<T extends JsIrOperation["kind"]>(handlers: {
+  readonly [K in T]: OperationEmitter<K>;
+}): { readonly [K in T]: OperationEmitter<K> } {
+  return handlers;
+}
+
+const operationEmittersByKind = operationEmitters({
+  // Bindings. A `const` has no runtime effect; it only records how later operations read the name.
+  constNumber: (operation, context) => {
+    context.bindings.set(operation.name, { kind: "number", value: operation.value });
+    return [];
+  },
+  constBoolean: (operation, context) => {
+    context.bindings.set(operation.name, { kind: "boolean", value: operation.value });
+    return [];
+  },
+  constBooleanExpression: (operation, context) => {
+    context.bindings.set(operation.name, { kind: "booleanExpression", value: operation.value });
+    return [];
+  },
+  constValue: (operation, context) => {
+    context.bindings.set(operation.name, { kind: "value", value: operation.value });
+    return [];
+  },
+  letValue: emitLetValueOperation,
+  constClosure: (operation, context) => {
+    context.bindings.set(operation.name, { kind: "closure", value: operation.value });
+    return [];
+  },
+  constString: (operation, context) => {
+    context.bindings.set(operation.name, { kind: "string", value: operation.value });
+    return [];
+  },
+  constStringExpression: (operation, context) => {
+    context.bindings.set(operation.name, { kind: "stringExpression", value: operation.value });
+    return [];
+  },
+  letNumber: emitLetNumberOperation,
+  letString: emitLetStringOperation,
+  letBoolean: emitLetBooleanOperation,
+
+  // Aggregate literals and the runtime shapes they build.
+  arrayLiteral: emitArrayLiteralOperation,
+  runtimeArrayLiteral: emitRuntimeArrayLiteralOperation,
+  objectLiteral: emitObjectLiteralOperation,
+  runtimeObjectLiteral: emitRuntimeObjectLiteralOperation,
+  runtimeObjectCreate: emitRuntimeObjectCreateOperation,
+  runtimeErrorLiteral: emitRuntimeErrorLiteralOperation,
+  runtimeMapNew: emitRuntimeCollectionNewOperation,
+  runtimeSetNew: emitRuntimeCollectionNewOperation,
+  runtimeMapFromArray: emitRuntimeCollectionFromArrayOperation,
+  runtimeSetFromArray: emitRuntimeCollectionFromArrayOperation,
+  runtimeMapFromIterable: emitRuntimeCollectionFromIterableOperation,
+  runtimeSetFromIterable: emitRuntimeCollectionFromIterableOperation,
+  runtimeMapFromCollection: emitRuntimeCollectionFromCollectionOperation,
+  runtimeSetFromCollection: emitRuntimeCollectionFromCollectionOperation,
+  runtimeObjectKeys: emitRuntimeObjectKeysOperation,
+  runtimeObjectValues: emitRuntimeObjectValuesOperation,
+  runtimeObjectEntries: emitRuntimeObjectEntriesOperation,
+  runtimeObjectFromEntries: emitRuntimeObjectFromEntriesOperation,
+  runtimeObjectOwnPropertyDescriptor: emitRuntimeObjectOwnPropertyDescriptorOperation,
+  runtimeObjectOwnPropertyNames: emitRuntimeObjectOwnPropertyNamesOperation,
+  runtimeObjectOwnPropertyDescriptors: emitRuntimeObjectOwnPropertyDescriptorsOperation,
+  runtimeIteratorNew: emitRuntimeIteratorNewOperation,
+
+  // Array- and string-producing operations.
+  runtimeArraySlice: emitRuntimeArraySliceOperation,
+  runtimeArraySplice: emitRuntimeArraySpliceOperation,
+  runtimeArraySpliceStatement: emitRuntimeArraySpliceStatementOperation,
+  runtimeArrayFlat: emitRuntimeArrayFlatOperation,
+  runtimeStringSplit: emitRuntimeStringSplitOperation,
+  runtimeRegexSplit: emitRuntimeRegexSplitOperation,
+  runtimeArrayMapCallback: emitRuntimeArrayMapCallbackOperation,
+  runtimeArrayMapFunctionObject: emitRuntimeArrayMapFunctionObjectOperation,
+  runtimeArrayFlatMapCallback: emitRuntimeArrayFlatMapCallbackOperation,
+  runtimeArrayFilterCallback: emitRuntimeArrayFilterCallbackOperation,
+  runtimeArrayConcat: emitRuntimeArrayConcatOperation,
+  runtimeArrayMutatorResult: emitRuntimeArrayMutatorResultOperation,
+  runtimeArraySort: emitRuntimeArraySortOperation,
+  runtimeArrayFrom: emitRuntimeArrayFromFamilyOperation,
+  runtimeArrayFromValue: emitRuntimeArrayFromFamilyOperation,
+  runtimeArrayFromCollection: emitRuntimeArrayFromFamilyOperation,
+  runtimeArrayFindCallback: emitRuntimeArrayScalarCallbackOperation,
+  runtimeArrayFindIndexCallback: emitRuntimeArrayScalarCallbackOperation,
+  runtimeArrayReduceCallback: emitRuntimeArrayScalarCallbackOperation,
+  runtimeObjectGetPrototype: emitRuntimeObjectGetPrototypeOperation,
+
+  // Assignments and stores.
+  assignNumber: emitAssignNumberOperation,
+  assignString: emitAssignStringOperation,
+  assignBoolean: emitAssignBooleanOperation,
+  arrayStore: emitArrayStoreOperation,
+  runtimeArrayStore: emitRuntimeArrayStoreOperation,
+  runtimeArrayNamedStore: emitRuntimeArrayNamedStoreOperation,
+  runtimeArrayDelete: emitRuntimeArrayDeleteOperation,
+  runtimeArrayNamedDelete: emitRuntimeArrayNamedDeleteOperation,
+  runtimeArraySetLength: emitRuntimeArraySetLengthOperation,
+  runtimeArrayPush: emitRuntimeArrayAppendOperation,
+  runtimeArrayUnshift: emitRuntimeArrayAppendOperation,
+  runtimeArrayPop: emitRuntimeArrayRemoveOperation,
+  runtimeArrayShift: emitRuntimeArrayRemoveOperation,
+  runtimeArrayFill: emitRuntimeArrayFillOperation,
+  runtimeArrayReverse: emitRuntimeArrayReverseOperation,
+  runtimeArrayForEachCallback: emitRuntimeArrayForEachCallbackOperation,
+  runtimeArrayCopyWithin: emitRuntimeArrayCopyWithinOperation,
+  objectStore: emitObjectStoreOperation,
+  runtimeObjectStore: emitRuntimeObjectStoreOperation,
+  runtimeObjectDelete: emitRuntimeObjectDeleteOperation,
+  valueObjectStore: emitValueAggregateStoreOperation,
+  valueArrayStore: emitValueAggregateStoreOperation,
+  valueArraySetLength: emitValueAggregateStoreOperation,
+  privateFieldStore: emitPrivateFieldStoreOperation,
+  valueObjectDelete: emitValueAggregateDeleteOperation,
+  valueArrayDelete: emitValueAggregateDeleteOperation,
+  runtimeObjectSetPrototype: emitRuntimeObjectSetPrototypeOperation,
+  valueObjectSetPrototype: emitValueObjectSetPrototypeOperation,
+  runtimeObjectPreventExtensions: emitRuntimeObjectStateMutationOperation,
+  runtimeObjectSeal: emitRuntimeObjectStateMutationOperation,
+  runtimeObjectFreeze: emitRuntimeObjectStateMutationOperation,
+  runtimeObjectAssign: emitRuntimeObjectAssignOperation,
+  runtimeObjectDefineDataProperty: emitRuntimeObjectDefineDataPropertyOperation,
+  runtimeObjectDefineDataProperties: (operation, context) =>
+    operation.descriptors.flatMap((descriptor) =>
+      emitRuntimeObjectDefineDataPropertyOperation(
+        { kind: "runtimeObjectDefineDataProperty", objectName: operation.objectName, descriptor },
+        context
+      )
+    ),
+
+  // Collection mutation.
+  runtimeCollectionSetIterator: emitRuntimeCollectionMutationOperation,
+  runtimeMapSet: emitRuntimeCollectionMutationOperation,
+  runtimeSetAdd: emitRuntimeCollectionMutationOperation,
+  runtimeMapSetResult: emitRuntimeCollectionResultOperation,
+  runtimeSetAddResult: emitRuntimeCollectionResultOperation,
+
+  // Control flow and loop control.
+  switch: emitSwitchOperation,
+  while: emitWhileOperation,
+  doWhile: emitDoWhileOperation,
+  for: emitForOperation,
+  forOfArray: emitForOfArrayOperation,
+  forOfString: emitForOfStringOperation,
+  forOfSet: emitForOfSetOperation,
+  forOfMap: emitForOfMapOperation,
+  forOfProtocol: emitForOfProtocolOperation,
+  arrayDestructureProtocol: emitArrayDestructureProtocolOperation,
+  forInObject: emitForInObjectOperation,
+  forInArray: emitForInArrayOperation,
+  break: (_operation, context) => emitBreakOperation(context),
+  continue: (_operation, context) => emitContinueOperation(context),
+  block: emitScopedBlockOperation,
+  bindingGroup: emitBindingGroupOperation,
+  if: emitIfOperation,
+  tryCatch: emitTryCatchOperation,
+
+  /**
+   * A function body is emitted as its own `define`, hoisted out of the statement list by
+   * `emitLlvmModule`, so the statement itself contributes no lines.
+   */
+  function: emitHoistedFunctionOperation,
+
+  // Calls, effects and returns.
+  print: emitPrintOperation,
+  throwValue: emitThrowValueOperation,
+  call: emitCallOperation,
+  callValue: (operation, context) => [...emitValueCallExpression(operation, context).lines],
+  inlineCpp: (operation) => [`  call i64 @${operation.symbol}()`],
+  returnNumber: emitNumberReturnOperation,
+  returnString: emitStringReturnOperation,
+  returnValue: emitValueReturnOperation,
+  returnClosure: (_operation, context) => emitNormalGeneratedReturn(jsValueUndefined, context)
+});
+
+/**
+ * The handler for an operation's kind.
+ *
+ * This is the one assertion in the emitter, and the reason is a limitation in the correlation
+ * between a union-typed discriminant and the per-variant handler it selects: indexing a `Record`
+ * by a union key yields a union of function types, and the parameters of that union intersect to
+ * `never`, so the compiler will not accept the operation it just indexed with. What makes the
+ * lookup safe is upstream of the cast — the table is checked for totality at its declaration and
+ * every entry is checked against its own kind — so the (kind, handler) pair is sound by
+ * construction and the assertion only re-associates the two. Widening each handler's parameter
+ * to the whole union to avoid it would cost every handler the narrowed operation type, which is
+ * the property that stops a handler reading a field its kind does not have.
+ */
+function operationEmitterFor(operation: JsIrOperation): OperationEmitter<JsIrOperation["kind"]> {
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- totality of the table and per-kind handler types are both checked above
+  return operationEmittersByKind[operation.kind] as OperationEmitter<JsIrOperation["kind"]>;
+}
+
 function emitOperation(operation: JsIrOperation, context: EmitContext): string[] {
-  const bindingLines = emitBindingOperation(operation, context);
-  if (bindingLines !== undefined) {
-    return bindingLines;
-  }
+  return operationEmitterFor(operation)(operation, context);
+}
 
-  const loopLines = emitLoopControlOperation(operation, context);
-  if (loopLines !== undefined) {
-    return loopLines;
-  }
+function emitScopedBlockOperation(
+  operation: OperationOf<"block">,
+  context: EmitContext
+): string[] {
+  return emitOperationsWithScopedBindings(operation.operations, context);
+}
 
-  if (operation.kind === "print") {
-    return emitExpressionPrint(operation.expression, context);
-  }
+function emitBindingGroupOperation(
+  operation: OperationOf<"bindingGroup">,
+  context: EmitContext
+): string[] {
+  return emitOperations(operation.operations, context);
+}
 
-  if (operation.kind === "throwValue") {
-    const value = emitValueExpression(operation.value, context);
-    // exceptionTarget is already the nearest catch or cleanup throw-entry.
-    return [
-      ...value.lines,
-      emitRootStackPush(value.value, context),
-      `  store i64 ${value.value}, ptr ${context.exceptionSlot}`,
-      `  br label %${context.exceptionTarget}`
-    ];
-  }
-
-  if (operation.kind === "tryCatch") {
-    return emitTryCatchOperation(operation, context);
-  }
-
-  if (operation.kind === "block") {
-    return emitOperationsWithScopedBindings(operation.operations, context);
-  }
-
-  if (operation.kind === "bindingGroup") {
-    return emitOperations(operation.operations, context);
-  }
-
-  if (operation.kind === "if") {
-    return emitIfOperation(operation, context);
-  }
-
-  const callLines = emitCallLikeOperation(operation, context);
-  if (callLines !== undefined) {
-    return callLines;
-  }
-
-  if (operation.kind === "returnNumber") {
-    return emitNumberReturnOperation(operation, context);
-  }
-
-  if (operation.kind === "returnString") {
-    return emitStringReturnOperation(operation, context);
-  }
-
-  if (operation.kind === "returnValue") {
-    return emitValueReturnOperation(operation, context);
-  }
-
-  if (operation.kind === "returnClosure") {
-    return emitNormalGeneratedReturn(jsValueUndefined, context);
-  }
-
+function emitHoistedFunctionOperation(_operation: OperationOf<"function">, _context: EmitContext): string[] {
   return [];
+}
+
+function emitPrintOperation(operation: OperationOf<"print">, context: EmitContext): string[] {
+  return emitExpressionPrint(operation.expression, context);
+}
+
+function emitThrowValueOperation(operation: OperationOf<"throwValue">, context: EmitContext): string[] {
+  const value = emitValueExpression(operation.value, context);
+  // exceptionTarget is already the nearest catch or cleanup throw-entry.
+  return [
+    ...value.lines,
+    emitRootStackPush(value.value, context),
+    `  store i64 ${value.value}, ptr ${context.exceptionSlot}`,
+    `  br label %${context.exceptionTarget}`
+  ];
 }
 
 function emitTryCatchOperation(
@@ -1510,84 +1687,11 @@ function emitTryFinallyOperation(
   return lines;
 }
 
-function emitCallLikeOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  if (operation.kind === "call") {
-    return emitCallOperation(operation, context);
-  }
-  if (operation.kind === "callValue") {
-    return [...emitValueCallExpression(operation, context).lines];
-  }
-  if (operation.kind === "inlineCpp") {
-    return [`  call i64 @${operation.symbol}()`];
-  }
-  return undefined;
-}
-
-function emitBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  const constLines = emitConstBindingOperation(operation, context);
-  if (constLines !== undefined) {
-    return constLines;
-  }
-
-  if (operation.kind === "letNumber") {
-    return emitLetNumberOperation(operation, context);
-  }
-
-  if (operation.kind === "letString") {
-    return emitLetStringOperation(operation, context);
-  }
-
-  if (operation.kind === "letBoolean") {
-    return emitLetBooleanOperation(operation, context);
-  }
-
-  const aggregateLines = emitAggregateBindingOperation(operation, context);
-  if (aggregateLines !== undefined) {
-    return aggregateLines;
-  }
-
-  if (operation.kind === "runtimeArrayFindCallback" || operation.kind === "runtimeArrayFindIndexCallback" || operation.kind === "runtimeArrayReduceCallback") {
-    return emitRuntimeArrayScalarCallbackOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeMapSetResult" || operation.kind === "runtimeSetAddResult") {
-    return emitRuntimeCollectionResultOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeIteratorNew") {
-    return emitRuntimeIteratorNewOperation(operation, context);
-  }
-
-  return emitMutationOperation(operation, context);
-}
-
-function emitMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  if (operation.kind === "assignNumber") {
-    return emitAssignNumberOperation(operation, context);
-  }
-
-  if (operation.kind === "assignString") {
-    return emitAssignStringOperation(operation, context);
-  }
-
-  if (operation.kind === "assignBoolean") {
-    return emitAssignBooleanOperation(operation, context);
-  }
-
-  const arrayMutation = emitArrayMutationOperation(operation, context);
-  if (arrayMutation !== undefined) {
-    return arrayMutation;
-  }
-
-  const collectionMutation = emitRuntimeCollectionMutationOperation(operation, context);
-  if (collectionMutation !== undefined) {
-    return collectionMutation;
-  }
-
-  return emitObjectMutationOperation(operation, context);
-}
-
-function emitRuntimeCollectionMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
+/** Stores into a collection's fixed slots. One shape for all three: a `getelementptr` plus a `store`. */
+function emitRuntimeCollectionMutationOperation(
+  operation: OperationOf<"runtimeCollectionSetIterator" | "runtimeMapSet" | "runtimeSetAdd">,
+  context: EmitContext
+): string[] {
   if (operation.kind === "runtimeCollectionSetIterator") {
     const collection = emitRuntimeCollectionPointer(operation.collectionName, context);
     const value = emitValueExpression(operation.value, context);
@@ -1601,266 +1705,14 @@ function emitRuntimeCollectionMutationOperation(operation: JsIrOperation, contex
     const value = emitValueExpression(operation.value, context);
     return [...collection.lines, ...key.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${key.value}, i64 ${value.value})`];
   }
-  if (operation.kind === "runtimeSetAdd") {
-    const collection = emitRuntimeCollectionPointer(operation.setName, context);
-    const value = emitValueExpression(operation.value, context);
-    return [...collection.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${value.value}, i64 ${jsValueTrue})`];
-  }
-  return undefined;
+  const collection = emitRuntimeCollectionPointer(operation.setName, context);
+  const value = emitValueExpression(operation.value, context);
+  return [...collection.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${value.value}, i64 ${jsValueTrue})`];
 }
 
-function emitArrayMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  if (operation.kind === "arrayStore") {
-    return emitArrayStoreOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayStore") {
-    return emitRuntimeArrayStoreOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayNamedStore") {
-    return emitRuntimeArrayNamedStoreOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayDelete") {
-    return emitRuntimeArrayDeleteOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayNamedDelete") {
-    return emitRuntimeArrayNamedDeleteOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArraySetLength") {
-    return emitRuntimeArraySetLengthOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayPush" || operation.kind === "runtimeArrayUnshift") {
-    return emitRuntimeArrayAppendOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayPop" || operation.kind === "runtimeArrayShift") {
-    return emitRuntimeArrayRemoveOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayFill") {
-    return emitRuntimeArrayFillOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayReverse") {
-    return emitRuntimeArrayReverseOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayForEachCallback") {
-    return emitRuntimeArrayForEachCallbackOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayCopyWithin") {
-    return emitRuntimeArrayCopyWithinOperation(operation, context);
-  }
-
-  return undefined;
-}
-
-function emitObjectMutationOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  if (operation.kind === "objectStore") {
-    return emitObjectStoreOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectStore") {
-    return emitRuntimeObjectStoreOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectDelete") {
-    return emitRuntimeObjectDeleteOperation(operation, context);
-  }
-
-  if (operation.kind === "valueObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueArraySetLength") {
-    return emitValueAggregateStoreOperation(operation, context);
-  }
-
-  if (operation.kind === "privateFieldStore") {
-    return emitPrivateFieldStoreOperation(operation, context);
-  }
-
-  if (operation.kind === "valueObjectDelete" || operation.kind === "valueArrayDelete") {
-    return emitValueAggregateDeleteOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectSetPrototype") {
-    return emitRuntimeObjectSetPrototypeOperation(operation, context);
-  }
-  if (operation.kind === "valueObjectSetPrototype") {
-    return emitValueObjectSetPrototypeOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectPreventExtensions" || operation.kind === "runtimeObjectSeal" || operation.kind === "runtimeObjectFreeze") {
-    return emitRuntimeObjectStateMutationOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectAssign") {
-    return emitRuntimeObjectAssignOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectDefineDataProperty") {
-    return emitRuntimeObjectDefineDataPropertyOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectDefineDataProperties") {
-    return operation.descriptors.flatMap((descriptor) => emitRuntimeObjectDefineDataPropertyOperation({ kind: "runtimeObjectDefineDataProperty", objectName: operation.objectName, descriptor }, context));
-  }
-
-  return undefined;
-}
-
-// eslint-disable-next-line max-statements -- Aggregate built-in emission stays centralized during runtime-shape transition.
-function emitAggregateLiteralBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  if (operation.kind === "arrayLiteral") {
-    return emitArrayLiteralOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayLiteral") {
-    return emitRuntimeArrayLiteralOperation(operation, context);
-  }
-
-  if (operation.kind === "objectLiteral") {
-    return emitObjectLiteralOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectLiteral") {
-    return emitRuntimeObjectLiteralOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectCreate") {
-    return emitRuntimeObjectCreateOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeErrorLiteral") {
-    return emitRuntimeErrorLiteralOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeMapNew" || operation.kind === "runtimeSetNew") {
-    return emitRuntimeCollectionNewOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeMapFromArray" || operation.kind === "runtimeSetFromArray") {
-    return emitRuntimeCollectionFromArrayOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeMapFromIterable" || operation.kind === "runtimeSetFromIterable") {
-    return emitRuntimeCollectionFromIterableOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeMapFromCollection" || operation.kind === "runtimeSetFromCollection") {
-    return emitRuntimeCollectionFromCollectionOperation(operation, context);
-  }
-
-  return undefined;
-}
-
-function emitAggregateBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  const literalLines = emitAggregateLiteralBindingOperation(operation, context);
-  if (literalLines !== undefined) {
-    return literalLines;
-  }
-
-  if (operation.kind === "runtimeObjectKeys") {
-    return emitRuntimeObjectKeysOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectValues") {
-    return emitRuntimeObjectValuesOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectEntries") {
-    return emitRuntimeObjectEntriesOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectFromEntries") {
-    return emitRuntimeObjectFromEntriesOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectOwnPropertyDescriptor") {
-    return emitRuntimeObjectOwnPropertyDescriptorOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectOwnPropertyNames") {
-    return emitRuntimeObjectOwnPropertyNamesOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectOwnPropertyDescriptors") {
-    return emitRuntimeObjectOwnPropertyDescriptorsOperation(operation, context);
-  }
-
-  return emitRuntimeArrayExpansionBindingOperation(operation, context);
-}
-
-// eslint-disable-next-line max-statements -- Aggregate binding dispatch keeps each runtime array-producing operation explicit.
-function emitRuntimeArrayExpansionBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  if (operation.kind === "runtimeArraySlice") {
-    return emitRuntimeArraySliceOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArraySplice") {
-    return emitRuntimeArraySpliceOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArraySpliceStatement") {
-    return emitRuntimeArraySpliceStatementOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayFlat") {
-    return emitRuntimeArrayFlatOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeStringSplit") {
-    return emitRuntimeStringSplitOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeRegexSplit") {
-    return emitRuntimeRegexSplitOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayMapCallback") {
-    return emitRuntimeArrayMapCallbackOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayMapFunctionObject") {
-    return emitRuntimeArrayMapFunctionObjectOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayFlatMapCallback") {
-    return emitRuntimeArrayFlatMapCallbackOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayFilterCallback") {
-    return emitRuntimeArrayFilterCallbackOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayConcat") {
-    return emitRuntimeArrayConcatOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayMutatorResult") {
-    return emitRuntimeArrayMutatorResultOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArraySort") {
-    return emitRuntimeArraySortOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeArrayFrom" || operation.kind === "runtimeArrayFromValue" || operation.kind === "runtimeArrayFromCollection") {
-    return emitRuntimeArrayFromFamilyOperation(operation, context);
-  }
-
-  if (operation.kind === "runtimeObjectGetPrototype") {
-    return emitRuntimeObjectGetPrototypeOperation(operation, context);
-  }
-
-  return undefined;
-}
-
+/** `Array.from` over an array, a mapper, or another collection. */
 function emitRuntimeArrayFromFamilyOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFrom" | "runtimeArrayFromValue" | "runtimeArrayFromCollection" }>,
+  operation: OperationOf<"runtimeArrayFrom" | "runtimeArrayFromValue" | "runtimeArrayFromCollection">,
   context: EmitContext
 ): string[] {
   if (operation.kind === "runtimeArrayFromValue") {
@@ -1870,101 +1722,6 @@ function emitRuntimeArrayFromFamilyOperation(
     return emitRuntimeArrayFromCollectionOperation(operation, context);
   }
   return emitRuntimeArrayFromOperation(operation, context);
-}
-
-function emitConstBindingOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  if (operation.kind === "constNumber") {
-    context.bindings.set(operation.name, { kind: "number", value: operation.value });
-    return [];
-  }
-  if (operation.kind === "constBoolean") {
-    context.bindings.set(operation.name, { kind: "boolean", value: operation.value });
-    return [];
-  }
-  if (operation.kind === "constBooleanExpression") {
-    context.bindings.set(operation.name, { kind: "booleanExpression", value: operation.value });
-    return [];
-  }
-  if (operation.kind === "constValue") {
-    context.bindings.set(operation.name, { kind: "value", value: operation.value });
-    return [];
-  }
-  if (operation.kind === "letValue") {
-    return emitLetValueOperation(operation, context);
-  }
-  if (operation.kind === "constClosure") {
-    context.bindings.set(operation.name, { kind: "closure", value: operation.value });
-    return [];
-  }
-  if (operation.kind === "constString") {
-    context.bindings.set(operation.name, { kind: "string", value: operation.value });
-    return [];
-  }
-  if (operation.kind === "constStringExpression") {
-    context.bindings.set(operation.name, { kind: "stringExpression", value: operation.value });
-    return [];
-  }
-  return undefined;
-}
-
-function emitLoopControlOperation(operation: JsIrOperation, context: EmitContext): string[] | undefined {
-  if (operation.kind === "switch") {
-    return emitSwitchOperation(operation, context);
-  }
-
-  if (operation.kind === "while") {
-    return emitWhileOperation(operation, context);
-  }
-
-  if (operation.kind === "doWhile") {
-    return emitDoWhileOperation(operation, context);
-  }
-
-  if (operation.kind === "for") {
-    return emitForOperation(operation, context);
-  }
-
-  if (operation.kind === "forOfArray") {
-    return emitForOfArrayOperation(operation, context);
-  }
-
-  if (operation.kind === "forOfString") {
-    return emitForOfStringOperation(operation, context);
-  }
-
-  if (operation.kind === "forOfSet") {
-    return emitForOfSetOperation(operation, context);
-  }
-
-  if (operation.kind === "forOfMap") {
-    return emitForOfMapOperation(operation, context);
-  }
-
-  if (operation.kind === "forOfProtocol") {
-    return emitForOfProtocolOperation(operation, context);
-  }
-
-  if (operation.kind === "arrayDestructureProtocol") {
-    return emitArrayDestructureProtocolOperation(operation, context);
-  }
-
-  if (operation.kind === "forInObject") {
-    return emitForInObjectOperation(operation, context);
-  }
-
-  if (operation.kind === "forInArray") {
-    return emitForInArrayOperation(operation, context);
-  }
-
-  if (operation.kind === "break") {
-    return emitBreakOperation(context);
-  }
-
-  if (operation.kind === "continue") {
-    return emitContinueOperation(context);
-  }
-
-  return undefined;
 }
 
 function variablePointerName(name: string): string {
