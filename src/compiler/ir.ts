@@ -12117,7 +12117,31 @@ function unsupportedStatementMessage(statement: ts.Statement): string {
     }
   }
 
-  return `Unsupported statement in the current lowering slice: ${ts.SyntaxKind[statement.kind]}`;
+  return `Unsupported statement in the current lowering slice: ${syntaxKindName(statement.kind)}`;
+}
+
+/**
+ * The canonical name of a `ts.SyntaxKind`.
+ *
+ * The enum declares 28 range aliases after the values they alias — `FirstStatement` is declared
+ * just after `VariableStatement` and holds the same number — so the reverse lookup
+ * `ts.SyntaxKind[kind]`, which walks the enum object in insertion order and takes the last match,
+ * resolves to the alias. A user whose `const` declaration was rejected was being told their
+ * variable declaration was a `FirstStatement`. Insertion order is declaration order, so the first
+ * name for a value is the canonical one.
+ */
+const syntaxKindNames: ReadonlyMap<ts.SyntaxKind, string> = (() => {
+  const names = new Map<ts.SyntaxKind, string>();
+  for (const [name, value] of Object.entries(ts.SyntaxKind)) {
+    if (typeof value === "number" && !names.has(value)) {
+      names.set(value, name);
+    }
+  }
+  return names;
+})();
+
+function syntaxKindName(kind: ts.SyntaxKind): string {
+  return syntaxKindNames.get(kind) ?? String(kind);
 }
 
 function unsupportedExpressionMessage(expression: ts.Expression): string | undefined {
@@ -12233,7 +12257,19 @@ function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | 
       return "Array.prototype.every and Array.prototype.some are only supported without a callback argument in the current runtime lowering slice";
     }
   }
-  return undefined;
+  return unrecognizedCallTargetMessage(callee);
+}
+
+/**
+ * A call whose target nothing recognized. This is a different failure from a builtin the compiler
+ * knows about and has not written, which reports the builtin; here the shape itself is unknown, so
+ * the name of the target is the only thing worth saying.
+ */
+function unrecognizedCallTargetMessage(callee: ts.LeftHandSideExpression): string | undefined {
+  if (!ts.isPropertyAccessExpression(callee) || ts.isPrivateIdentifier(callee.name)) {
+    return undefined;
+  }
+  return `Unrecognized call target: ${callee.getText()}()`;
 }
 
 function unsupportedJsonMessage(callee: ts.PropertyAccessExpression): string | undefined {
