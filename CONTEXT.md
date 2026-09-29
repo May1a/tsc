@@ -25,11 +25,18 @@ Linking               clang / clang++ → native executable
 
 ## Terms
 
-**IR Operation** (`JsIrOperation`) — one statement-level form in the IR. A closed union of 120
+**IR Operation** (`JsIrOperation`) — one statement-level form in the IR. A closed union of 110
 kinds. 19 of them are *containers*: they hold nested operations. The rest are leaves. The
 container/leaf split is enumerated in `jsIrLeafOperationKinds` (`src/compiler/ir.ts`) and is
 checked for completeness by the compiler, so a new operation must be classified before it can be
 emitted.
+
+**Operation Emitter Table** (`operationEmittersByKind`, `src/compiler/llvm.ts`) — the one place
+an operation is turned into LLVM IR text. It is a `Record` keyed by the operation union, so the
+compiler rejects a new kind until something emits it, and `Extract` gives each handler its own
+narrowed operation so it cannot read a field its kind does not have. Dispatch is a table lookup,
+not an `if` chain; the `Record`'s totality is what replaces the exhaustiveness check the chain
+could not express.
 
 **IR Value Expression** (`JsIrValueExpression`) — an expression producing a JSValue. Emitted by
 `emitValueExpression`.
@@ -46,10 +53,19 @@ decide between direct registers and boxed runtime cells.
 
 **Lowering** (`lowerToJsIr`) — TypeScript AST → JsIrModule. Pure and synchronous, but **not
 fiber-safe**: it keeps module-level lowering state. It *returns* diagnostics rather than pushing
-them anywhere.
+them anywhere. Each source file is traversed once: a statement no recognizer claims becomes a
+TSCN1002 where it failed, and there is no strict re-run to tell "unrecognized" from "recognized and
+gave up".
 
-**Emission** (`emitLlvmModule`) — JsIrModule → LLVM IR text. Pure. Dispatch is by `if (kind === …)`
-chains, not `switch`, which is why `switch-exhaustiveness-check` does not apply to it.
+**Lowered** (`Lowered`, `src/compiler/ir.ts`) — the result of trying to recognize one AST shape:
+`lowered` carries the operation, `notApplicable` continues the recognizer chain, and `unsupported`
+stops it with the reason the diagnostic will quote. A recognizer that returns `undefined` for both
+of the latter two cannot say which happened; the support tables are what make a recognizer's
+choice explicit.
+
+**Emission** (`emitLlvmModule`) — JsIrModule → LLVM IR text. Pure. Operations dispatch through the
+Operation Emitter Table; the value, condition and number/string tiers are still `if` chains, which
+is why `switch-exhaustiveness-check` does not apply to them.
 
 **Static Runtime IR** (`src/compiler/runtime/*.ll`) — the fixed body of the generated JS runtime, held
 as LLVM IR text in one file per domain (`gc`, `values`, `numbers`, `strings`, `regex`, `arrays`,
