@@ -981,3 +981,19 @@ describe("tscn runtime strings", () => {
     }
   });
 });
+
+describe("tscn call targets", () => {
+  test("throws a TypeError instead of dereferencing a non-function property", async () => {
+    const result = await expectSuccessfulCompile("call-non-function-property-throws.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, {
+        status: 1,
+        stdout: "TypeError: value is not a function\n",
+        stderr: ""
+      });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});

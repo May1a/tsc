@@ -31,8 +31,27 @@ entry:
   %value = call i64 @valueBoxFunction(ptr %payload)
   ret i64 %value
 }
+@.call.not.function.msg = private unnamed_addr constant [24 x i8] c"value is not a function\00"
+@.call.err.name = private unnamed_addr constant [10 x i8] c"TypeError\00"
 define { i64, i1 } @jsCall(i64 %fn.value, i64 %argc, ptr %argv, i64 %callThis) {
 entry:
+  ; `jsCall` is the boundary where a JSValue becomes a function pointer. A non-function value
+  ; has a null payload, so dispatching on it dereferenced null and killed the process; the
+  ; language says it throws, and a throw is the answer a user can act on.
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %fn.value)
+  call void @gcRootPush(i64 %callThis)
+  %is.function = call i1 @valueIsFunction(i64 %fn.value)
+  br i1 %is.function, label %dispatch, label %not.callable
+not.callable:
+  %message = call i64 @valueBoxString(ptr @.call.not.function.msg, i64 23)
+  %error = call ptr @errorNew(i64 2, i64 9, ptr @.call.err.name, i64 %message)
+  %error.value = call i64 @valueBoxObject(ptr %error)
+  %thrown.0 = insertvalue { i64, i1 } undef, i64 %error.value, 0
+  %thrown = insertvalue { i64, i1 } %thrown.0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %thrown
+dispatch:
   %function = call ptr @valueFunctionPtr(i64 %fn.value)
   %code = load ptr, ptr %function
   %env.slot = getelementptr i8, ptr %function, i64 8
@@ -42,6 +61,7 @@ entry:
   %has.bound.this = icmp ne i64 %boundThis, 9222246136947933184
   %this.value = select i1 %has.bound.this, i64 %boundThis, i64 %callThis
   %result = call { i64, i1 } %code(i64 %argc, ptr %argv, ptr %env, i64 %this.value)
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %result
 }
 @.function.name.key = private unnamed_addr constant [5 x i8] c"name\00"

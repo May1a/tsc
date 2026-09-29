@@ -168,6 +168,11 @@ export type JsIrValueExpression =
       readonly methodReceiver?: JsIrValueExpression;
       readonly methodKey?: JsIrStringExpression;
       readonly spreadArguments?: readonly JsIrRuntimeArrayElement[];
+      /**
+       * An ECMAScript optional call, `callee?.(...)`. The callee is still evaluated, but a
+       * nullish one skips the call and yields `undefined` instead of dispatching on it.
+       */
+      readonly optionalCallee?: true;
     }
   | {
       readonly kind: "functionObject";
@@ -1583,6 +1588,8 @@ export type JsIrOperationNode =
       readonly callee: JsIrValueExpression;
       readonly arguments: readonly JsIrCallArgument[];
       readonly thisValue?: JsIrValueExpression;
+      /** An ECMAScript optional call, `callee?.(...)`. See the value-expression form. */
+      readonly optionalCallee?: true;
     }
   | {
       readonly kind: "inlineCpp";
@@ -2705,7 +2712,7 @@ function classCallableParameters(
   declaration: ts.ConstructorDeclaration | ts.MethodDeclaration | ts.AccessorDeclaration
 ): readonly JsIrFunctionParameter[] {
   const parameters: JsIrFunctionParameter[] = [];
-  for (const param of declaration.parameters) {
+  for (const param of runtimeParameters(declaration.parameters)) {
     if (
       !ts.isIdentifier(param.name) ||
       param.dotDotDotToken !== undefined ||
@@ -3102,7 +3109,7 @@ function lowerClassMethodCall(
   call: ts.CallExpression,
   callee: ts.PropertyAccessExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrValueExpression | undefined {
+): Extract<JsIrValueExpression, { readonly kind: "call" }> | undefined {
   if (activeClassRegistry === undefined) {
     return undefined;
   }
@@ -4750,10 +4757,11 @@ function lowerFunctionDeclaration(
   const parameters: JsIrFunctionParameter[] = [];
   const fnBindings = functionFrameBindings(bindings);
   const prelude: JsIrOperation[] = [];
-  for (let i = 0; i < statement.parameters.length; i++) {
-    const param = statement.parameters[i];
+  const declaredParameters = runtimeParameters(statement.parameters);
+  for (let i = 0; i < declaredParameters.length; i++) {
+    const param = declaredParameters[i];
     const isRest = param.dotDotDotToken !== undefined;
-    if (isRest && i !== statement.parameters.length - 1) {
+    if (isRest && i !== declaredParameters.length - 1) {
       return undefined;
     }
     const isDestructuring = ts.isObjectBindingPattern(param.name) || ts.isArrayBindingPattern(param.name);
@@ -5086,6 +5094,18 @@ function lowerCallStatement(
     return undefined;
   }
 
+  // A discarded `<instance>.<method>(...)` is still a class method call, and the value path
+  // cannot see that: it reads the method off the receiver, and class methods are never
+  // installed on the prototype, so `jsCall` dispatched on `undefined` and the program
+  // segfaulted. Resolve it to the generated method function here, exactly as the value path
+  // does, so both positions agree.
+  if (ts.isPropertyAccessExpression(expression.expression)) {
+    const methodCall = lowerClassMethodCall(expression, expression.expression, bindings);
+    if (methodCall !== undefined) {
+      return methodCall;
+    }
+  }
+
   const jsonStatement = lowerJsonStatementCall(expression, bindings);
   if (jsonStatement !== undefined) {
     return jsonStatement;
@@ -5106,7 +5126,7 @@ function lowerCallStatement(
     if (callee === undefined || args === undefined) {
       return undefined;
     }
-    return { kind: "callValue", callee, arguments: args, thisValue: lowerCallThisValue(expression.expression, bindings) };
+    return { kind: "callValue", callee, arguments: args, thisValue: lowerCallThisValue(expression.expression, bindings), optionalCallee: optionalStatementCallee(expression) };
   }
 
   const args = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
@@ -5119,6 +5139,15 @@ function lowerCallStatement(
     name: expression.expression.text,
     arguments: args
   };
+}
+
+// A call is conditional on its callee exactly when the source wrote `callee?.(...)`. ECMAScript
+// still evaluates the callee; it just skips the dispatch when the result is nullish.
+function optionalStatementCallee(expression: ts.CallExpression): true | undefined {
+  if (expression.questionDotToken === undefined) {
+    return undefined;
+  }
+  return true;
 }
 
 function lowerRuntimeObjectCallStatement(
@@ -10336,7 +10365,13 @@ function lowerValueCallExpression(
   if (calleeValue === undefined || args === undefined) {
     return undefined;
   }
-  return { kind: "callValue", callee: calleeValue, arguments: args, thisValue: lowerCallThisValue(expression.expression, bindings) };
+  return {
+    kind: "callValue",
+    callee: calleeValue,
+    arguments: args,
+    thisValue: lowerCallThisValue(expression.expression, bindings),
+    optionalCallee: optionalStatementCallee(expression)
+  };
 }
 
 function lowerCallThisValue(

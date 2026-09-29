@@ -1127,6 +1127,23 @@ function emitFunctionObjectThunk(definition: JsIrFunctionObjectDefinition, conte
     "  call void @gcRootPush(i64 %this.value)"
   ];
   for (let index = 0; index < definition.parameters.length; index += 1) {
+    const parameter = definition.parameters[index];
+    if (parameter.isRest === true) {
+      // A direct call passes a rest parameter as an already-built array, so the thunk has to
+      // materialize one out of the shared argument buffer. Reading argv slot by slot instead
+      // handed the target a single element no matter how many arguments the caller passed.
+      const array = `%fnobj.thunk.rest.array.${index}`;
+      const boxIndex = context.numIndex;
+      context.numIndex += 1;
+      const box = `%value.${boxIndex}`;
+      lines.push(
+        `  ${array} = call ptr @arrayFromArgv(i64 %argc, ptr %argv, i64 ${index})`,
+        `  ${box} = call i64 @valueBoxArray(ptr ${array})`,
+        emitRootStackPush(box, context)
+      );
+      callArguments.push(`i64 ${box}`);
+      continue;
+    }
     const slot = `%fnobj.thunk.arg.${index}.slot`;
     const value = `%fnobj.thunk.arg.${index}`;
     lines.push(`  ${slot} = getelementptr i64, ptr %argv, i64 ${index}`, `  ${value} = load i64, ptr ${slot}`, `  call void @gcRootPush(i64 ${value})`);
@@ -4917,8 +4934,7 @@ function emitValueCallExpression(
     context.callIndex += 1;
     const argumentArray = `%call.spread.array.${index}`;
     const boxedArguments = `%call.spread.boxed.${index}`;
-    const lines = [
-      ...callee.lines,
+    const body = [
       `  call void @gcRootPush(i64 ${callee.value})`,
       ...thisValue.lines,
       `  call void @gcRootPush(i64 ${thisValue.value})`,
@@ -4926,6 +4942,7 @@ function emitValueCallExpression(
       `  ${boxedArguments} = call i64 @valueBoxArray(ptr ${argumentArray})`,
       `  call void @gcRootPush(i64 ${boxedArguments})`
     ];
+    const lines = body;
     for (let argumentIndex = 0; argumentIndex < expression.spreadArguments.length; argumentIndex += 1) {
       const argument = expression.spreadArguments[argumentIndex];
       // The loop bound guarantees this index; the guard keeps the argument non-optional so the
@@ -5001,12 +5018,12 @@ function emitValueCallExpression(
       context
     );
     lines.push(...generated.lines);
-    return { lines, value: generated.value };
+    return emitDispatchedCall(callee.lines, callee.value, lines, generated.value, expression, context);
   }
   const index = context.callIndex;
   context.callIndex += 1;
   const argv = `%call.value.argv.${index}`;
-  const lines = [...callee.lines, `  call void @gcRootPush(i64 ${callee.value})`, ...thisValue.lines, `  call void @gcRootPush(i64 ${thisValue.value})`, ...args.lines, `  ${argv} = alloca i64, i64 ${args.values.length}`];
+  const lines = [`  call void @gcRootPush(i64 ${callee.value})`, ...thisValue.lines, `  call void @gcRootPush(i64 ${thisValue.value})`, ...args.lines, `  ${argv} = alloca i64, i64 ${args.values.length}`];
   for (let argumentIndex = 0; argumentIndex < args.values.length; argumentIndex += 1) {
     const value = args.values[argumentIndex].replace(/^i64 /, "");
     const slot = `%call.value.argv.${index}.${argumentIndex}`;
@@ -5018,7 +5035,53 @@ function emitValueCallExpression(
     context
   );
   lines.push(...generated.lines);
-  return { lines, value: generated.value };
+  return emitDispatchedCall(callee.lines, callee.value, lines, generated.value, expression, context);
+}
+
+// Joins the unconditional callee prologue to the argv-building dispatch. ECMAScript's optional
+// call `callee?.(...)` still evaluates the callee, so the nullish test sits between the two: a
+// nullish callee yields `undefined` without building an argv or reaching `jsCall`, which
+// otherwise dereferenced the null pointer behind a non-function value.
+function emitDispatchedCall(
+  prologue: readonly string[],
+  callee: string,
+  body: readonly string[],
+  result: string,
+  expression: { readonly optionalCallee?: true },
+  context: EmitContext
+): JsValue {
+  if (expression.optionalCallee !== true) {
+    return { lines: [...prologue, ...body], value: result };
+  }
+  const index = context.logicIndex;
+  context.logicIndex += 1;
+  const testLabel = `optional.call.test.${index}`;
+  const bodyLabel = `optional.call.body.${index}`;
+  const skipLabel = `optional.call.skip.${index}`;
+  const joinLabel = `optional.call.join.${index}`;
+  const endLabel = `optional.call.end.${index}`;
+  const nullish = emitNullishTest(callee, context);
+  const value = `%value.${context.numIndex}`;
+  context.numIndex += 1;
+  return {
+    lines: [
+      ...prologue,
+      `  br label %${testLabel}`,
+      `${testLabel}:`,
+      ...nullish.lines,
+      `  br i1 ${nullish.value}, label %${skipLabel}, label %${bodyLabel}`,
+      `${bodyLabel}:`,
+      ...body,
+      `  br label %${joinLabel}`,
+      `${joinLabel}:`,
+      `  br label %${endLabel}`,
+      `${skipLabel}:`,
+      `  br label %${endLabel}`,
+      `${endLabel}:`,
+      `  ${value} = phi i64 [ ${jsValueUndefined}, %${skipLabel} ], [ ${result}, %${joinLabel} ]`
+    ],
+    value
+  };
 }
 
 function emitRuntimeArrayRemoveValueExpression(
