@@ -1,5 +1,12 @@
 import { arrayBuiltinSupport } from "./array.js";
-import { type BuiltinEntry, type SupportManifest, builtinEntries } from "./support.js";
+import { objectBuiltinSupport } from "./object.js";
+import {
+  type BuiltinDeclaration,
+  type BuiltinEntry,
+  type BuiltinOwner,
+  type SupportManifest,
+  builtinEntries
+} from "./support.js";
 
 /**
  * Every builtin the compiler knows about, derived from the support tables.
@@ -9,8 +16,22 @@ import { type BuiltinEntry, type SupportManifest, builtinEntries } from "./suppo
  * because it looks authoritative. Here a builtin cannot be in a table and missing from the
  * manifest, or in the manifest and missing from a table.
  */
+interface OwnerTable {
+  readonly owner: BuiltinOwner;
+  readonly support: Readonly<Record<string, BuiltinDeclaration<BuiltinOwner>>>;
+}
+
+/**
+ * Every owner's table, in the order the manifest lists them. Adding an owner is one line here and
+ * the manifest picks it up; the manifest test asserts the count so a table cannot be left out.
+ */
+const ownerTables: readonly OwnerTable[] = [
+  { owner: "array", support: arrayBuiltinSupport },
+  { owner: "object", support: objectBuiltinSupport }
+];
+
 export function supportManifest(): SupportManifest {
-  return { builtins: [...builtinEntries(arrayBuiltinSupport, "array")] };
+  return { builtins: ownerTables.flatMap((table) => builtinEntries(table.support, table.owner)) };
 }
 
 /** The manifest ids of every builtin this build has not written, for the tests to cross-check. */

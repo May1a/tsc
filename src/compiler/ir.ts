@@ -37,7 +37,7 @@ import type {
   JsIrResult,
   JsIrTraceOrigin
 } from "./ir/module.js";
-import { type BuiltinOwner, plannedArrayBuiltinMessage } from "./ir/builtins/index.js";
+import { type BuiltinOwner, plannedArrayBuiltinMessage, plannedObjectBuiltinMessage } from "./ir/builtins/index.js";
 import { type JsIrOperation, jsIrOperationChildren, visitJsIrOperations } from "./ir/types.js";
 export type * from "./ir/bindings.js";
 export type * from "./ir/expressions.js";
@@ -3510,6 +3510,9 @@ function lowerCallStatement(
     identifierBinding = bindings.get(expression.expression.text);
   }
   if (!ts.isIdentifier(expression.expression) || identifierBinding?.kind === "value" || identifierBinding?.kind === "valueVariable") {
+    if (isPlannedBuiltinCall(expression.expression, bindings)) {
+      return undefined;
+    }
     const callee = lowerValueExpression(expression.expression, bindings);
     const args = lowerValueCallArguments(expression.arguments, bindings);
     if (callee === undefined || args === undefined) {
@@ -7535,6 +7538,25 @@ function lowerObjectMethodSugarConditionExpression(
   return undefined;
 }
 
+/**
+ * The receiver of a `valueOf`/`toString` call when it is a boxed primitive, or `undefined` when it
+ * is not. The binding is read rather than the lowered value so the decision is made once, from the
+ * shape the lowering already recorded.
+ */
+function lowerBoxedPrimitiveReceiver(
+  receiver: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): JsIrValueExpression | undefined {
+  if (!ts.isIdentifier(receiver)) {
+    return undefined;
+  }
+  const binding = bindings.get(receiver.text);
+  if (binding?.kind !== "value" || binding.value.kind !== "boxedPrimitive") {
+    return undefined;
+  }
+  return binding.value;
+}
+
 // eslint-disable-next-line complexity -- Array.isArray classification mirrors supported receiver shapes explicitly.
 function lowerArrayIsArrayConditionExpression(
   expression: ts.Expression,
@@ -8146,6 +8168,15 @@ function lowerDirectValueExpression(
     if (expression.arguments.length === 0) {
       const method = expression.expression.name.text;
       if (method === "valueOf" || method === "toString") {
+        // Only a boxed primitive. `boxedValueOf` and `boxedToString` read the receiver's single
+        // stored value, which is the primitive for a boxed Number/Boolean/String and *not* what
+        // `Object.prototype` promises: on a plain runtime object `o.toString()` returned the first
+        // own property's value and `o.valueOf()` returned it too, where JavaScript returns
+        // "[object Object]" and the object. A plain object now declines and is reported, rather
+        // than compiled to the wrong answer.
+        if (lowerBoxedPrimitiveReceiver(expression.expression.expression, bindings) === undefined) {
+          return undefined;
+        }
         const receiver = lowerValueExpression(expression.expression.expression, bindings);
         if (receiver === undefined) {
           return undefined;
@@ -8749,6 +8780,9 @@ function lowerValueCallExpression(
     }
   }
 
+  if (isPlannedBuiltinCall(expression.expression, bindings)) {
+    return undefined;
+  }
   const calleeValue = lowerValueExpression(expression.expression, bindings);
   const args = lowerValueCallArguments(expression.arguments, bindings);
   if (calleeValue === undefined || args === undefined) {
@@ -8761,6 +8795,23 @@ function lowerValueCallExpression(
     thisValue: lowerCallThisValue(expression.expression, bindings),
     optionalCallee: optionalStatementCallee(expression)
   };
+}
+
+/**
+ * True when the call target is a builtin the compiler knows about and has not written.
+ *
+ * The generic `callValue` path would dispatch it at run time and fail there with a `TypeError`
+ * about a function that does not exist, which says nothing about which builtin is missing. Declining
+ * here sends the statement to the diagnostic instead, where the owner's support table can name it.
+ */
+function isPlannedBuiltinCall(
+  callee: ts.LeftHandSideExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): boolean {
+  if (!ts.isPropertyAccessExpression(callee) || ts.isPrivateIdentifier(callee.name)) {
+    return false;
+  }
+  return plannedBuiltinMessageFor(callee.expression, callee.name.text, bindings) !== undefined;
 }
 
 function lowerCallThisValue(
@@ -10624,14 +10675,31 @@ function unrecognizedCallTargetMessage(
   // target it does not know at all, and the support table is what tells the two apart. The owner
   // comes from the receiver's binding rather than its spelling, so `Array.with()` and `arr.with()`
   // are told apart from a `with` on some other object.
-  const owner = builtinOwnerOfReceiver(callee.expression, bindings);
-  if (owner === "array") {
-    const planned = plannedArrayBuiltinMessage(callee.name.text);
-    if (planned !== undefined) {
-      return planned;
-    }
+  const planned = plannedBuiltinMessageFor(callee.expression, callee.name.text, bindings);
+  if (planned !== undefined) {
+    return planned;
   }
   return `Unrecognized call target: ${callee.getText()}()`;
+}
+
+/**
+ * The refusal for a call whose target is a builtin the compiler knows about and has not written, or
+ * `undefined` when the target is not one of those. Each owner's table is consulted in turn, so
+ * adding a table is what makes its refusals name the builtin.
+ */
+function plannedBuiltinMessageFor(
+  receiver: ts.Expression,
+  name: string,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
+  const owner = builtinOwnerOfReceiver(receiver, bindings);
+  if (owner === "array") {
+    return plannedArrayBuiltinMessage(name);
+  }
+  if (owner === "object") {
+    return plannedObjectBuiltinMessage(name);
+  }
+  return undefined;
 }
 
 /** The support-table owner a call target belongs to, from the receiver rather than its spelling. */
@@ -10643,14 +10711,25 @@ function builtinOwnerOfReceiver(
     if (receiver.text === "Array") {
       return "array";
     }
+    if (receiver.text === "Object") {
+      return "object";
+    }
     const binding = bindings.get(receiver.text);
     if (binding?.kind === "runtimeArray" || binding?.kind === "array") {
       return "array";
     }
+    if (binding?.kind === "runtimeObject" || binding?.kind === "object") {
+      return "object";
+    }
     return undefined;
   }
-  if (ts.isCallExpression(receiver) && ts.isIdentifier(receiver.expression) && receiver.expression.text === "Array") {
-    return "array";
+  if (ts.isCallExpression(receiver) && ts.isIdentifier(receiver.expression)) {
+    if (receiver.expression.text === "Array") {
+      return "array";
+    }
+    if (receiver.expression.text === "Object") {
+      return "object";
+    }
   }
   return undefined;
 }

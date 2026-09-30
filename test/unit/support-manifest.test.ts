@@ -1,7 +1,7 @@
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { arrayBuiltinSupport, builtinDisplay, supportManifest } from "../../src/compiler/ir/builtins/index.js";
+import { arrayBuiltinSupport, builtinDisplay, objectBuiltinSupport, supportManifest } from "../../src/compiler/ir/builtins/index.js";
 import { expectUnsupportedMessage } from "../integration/helpers.js";
 
 /**
@@ -35,9 +35,14 @@ const { builtins } = supportManifest();
 
 describe("support manifest", () => {
   test("derives one entry per declared builtin, keyed by its id", () => {
-    const declared = Object.keys(arrayBuiltinSupport).length;
+    const declared = Object.keys(arrayBuiltinSupport).length + Object.keys(objectBuiltinSupport).length;
     expect(builtins.length).toBe(declared);
     expect(new Set(builtins.map((entry) => entry.id)).size).toBe(builtins.length);
+  });
+
+  test("lists every owner the tables cover", () => {
+    const owners = [...new Set(builtins.map((entry) => entry.owner))].toSorted();
+    expect(owners).toEqual(["array", "object"]);
   });
 
   test("names every entry with the owner and name it sits under", () => {
