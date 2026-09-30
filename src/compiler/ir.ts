@@ -1,6 +1,49 @@
 import ts from "typescript";
-import type { CompilerDiagnostic, SourceSpan } from "./diagnostics.js";
+import type { CompilerDiagnostic } from "./diagnostics.js";
 import { SYMBOL_ITERATOR_SENTINEL } from "./runtime-ir.js";
+// The IR's four type modules, re-exported so `llvm.ts`, `trace.ts` and `pipeline.ts` keep one
+// import site for the IR.
+import type {
+  JsIrBindingValue,
+  JsIrCallArgument,
+  JsIrFunctionObjectDefinition,
+  JsIrFunctionParameter,
+  JsIrValueKind
+} from "./ir/bindings.js";
+import type {
+  JsIrArrayDestructureElement,
+  JsIrClosureValue,
+  JsIrCondition,
+  JsIrExpression,
+  JsIrNumberExpression,
+  JsIrNumberOperator,
+  JsIrObjectAssignSource,
+  JsIrObjectField,
+  JsIrObjectValue,
+  JsIrRuntimeArrayConcatElement,
+  JsIrRuntimeArrayElement,
+  JsIrRuntimeDataDescriptor,
+  JsIrRuntimeObjectField,
+  JsIrRuntimeObjectValue,
+  JsIrStringExpression,
+  JsIrSwitchClause,
+  JsIrValueExpression
+} from "./ir/expressions.js";
+import type {
+  JsIrInlineCppBlock,
+  JsIrLowerOptions,
+  JsIrLoweringMode,
+  JsIrOperationTrace,
+  JsIrResult,
+  JsIrTraceOrigin
+} from "./ir/module.js";
+import { type BuiltinOwner, plannedArrayBuiltinMessage } from "./ir/builtins/index.js";
+import { type JsIrOperation, jsIrOperationChildren, visitJsIrOperations } from "./ir/types.js";
+export type * from "./ir/bindings.js";
+export type * from "./ir/expressions.js";
+export type * from "./ir/module.js";
+export * from "./ir/types.js";
+export * from "./ir/types.js";
 
 // The TypeScript checker for the program currently being lowered. Set by
 // `lowerToJsIr` and read by the class-lowering path for static method dispatch.
@@ -61,1705 +104,6 @@ let activeInlineCppEnabled = false;
 let activeInlineCppBlocks: JsIrInlineCppBlock[] | undefined;
 let nextFunctionObjectId = 0;
 let nextJsonStatementValueId = 0;
-
-export interface JsIrInlineCppBlock {
-  readonly symbol: string;
-  readonly code: string;
-}
-
-export interface JsIrModule {
-  readonly entry: string;
-  readonly modules: readonly JsIrSourceModule[];
-  readonly inlineCppBlocks: readonly JsIrInlineCppBlock[];
-}
-
-export type JsIrLoweringMode = "native";
-
-export type JsIrTraceOrigin = "source" | "synthesized";
-
-export interface JsIrOperationTrace {
-  readonly id: string;
-  readonly source?: SourceSpan;
-  readonly origin: JsIrTraceOrigin;
-}
-
-export interface JsIrSourceModule {
-  readonly fileName: string;
-  readonly statementCount: number;
-  readonly loweringMode: JsIrLoweringMode;
-  readonly operations: readonly JsIrOperation[];
-  readonly functionObjects: readonly JsIrFunctionObjectDefinition[];
-}
-
-export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide" | "remainder" | "bitAnd" | "bitOr" | "bitXor" | "shiftLeft" | "shiftRight" | "shiftRightUnsigned" | "power";
-export type JsIrValueComparisonOperator = "==" | "!=" | "<" | "<=" | ">" | ">=";
-
-export type JsIrValueKind = "number" | "string" | "value";
-
-export interface JsIrFunctionParameter {
-  readonly name: string;
-  readonly valueKind: JsIrValueKind;
-  readonly defaultValue?: JsIrNumberExpression;
-  readonly isRest?: boolean;
-}
-
-export interface JsIrFunctionObjectDefinition {
-  readonly codeName: string;
-  readonly parameters: readonly JsIrFunctionParameter[];
-  readonly functionKind: "arrow" | "ordinary";
-  readonly returnKind: JsIrValueKind | "void";
-  readonly body?: readonly JsIrOperation[];
-  readonly directTarget?: string;
-  readonly inferredName?: string;
-  readonly captures?: readonly {
-    readonly name: string;
-    readonly valueKind: JsIrValueKind;
-    readonly value: JsIrValueExpression;
-  }[];
-}
-
-export type JsIrCallArgument =
-  | {
-      readonly valueKind: "number";
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly valueKind: "string";
-      readonly value: JsIrStringExpression;
-    }
-  | {
-      readonly valueKind: "value";
-      readonly value: JsIrValueExpression;
-    };
-
-export type JsIrValueExpression =
-  | {
-      readonly kind: "number";
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "boolean";
-      readonly value: JsIrCondition;
-    }
-  | {
-      readonly kind: "undefined";
-    }
-  | {
-      readonly kind: "null";
-    }
-  | {
-      readonly kind: "string";
-      readonly value: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "variable";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "call";
-      readonly name: string;
-      readonly arguments: readonly JsIrCallArgument[];
-    }
-  | {
-      readonly kind: "callValue";
-      readonly callee: JsIrValueExpression;
-      readonly arguments: readonly JsIrCallArgument[];
-      readonly thisValue?: JsIrValueExpression;
-      readonly methodReceiver?: JsIrValueExpression;
-      readonly methodKey?: JsIrStringExpression;
-      readonly spreadArguments?: readonly JsIrRuntimeArrayElement[];
-    }
-  | {
-      readonly kind: "functionObject";
-      readonly definition: JsIrFunctionObjectDefinition;
-    }
-  | {
-      readonly kind: "regexCompile";
-      readonly pattern: JsIrStringExpression;
-      readonly flags: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "regexExec";
-      readonly regex: JsIrValueExpression;
-      readonly input: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "regexMatch";
-      readonly regex: JsIrValueExpression;
-      readonly input: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "inlineCppValue";
-      readonly symbol: string;
-    }
-  | {
-      readonly kind: "ternary";
-      readonly condition: JsIrCondition;
-      readonly consequent: JsIrValueExpression;
-      readonly alternate: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "lazyDefault";
-      readonly value: JsIrValueExpression;
-      readonly defaultValue: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "arrayAccess";
-      readonly arrayName: string;
-      readonly index: JsIrNumberExpression;
-      readonly key?: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "arrayPop" | "arrayShift";
-      readonly arrayName: string;
-    }
-  | {
-      readonly kind: "arrayIncludes";
-      readonly arrayName: string;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "arrayAt";
-      readonly arrayName: string;
-      readonly index: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "valuePlus";
-      readonly left: JsIrValueExpression;
-      readonly right: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "logicalValue";
-      readonly operator: "&&" | "||";
-      readonly left: JsIrValueExpression;
-      readonly right: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "arrayFind" | "arrayForEach";
-      readonly arrayName: string;
-    }
-  | {
-      readonly kind: "objectRef" | "arrayRef";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "objectLiteralValue";
-      readonly value: JsIrRuntimeObjectValue;
-    }
-  | {
-      readonly kind: "objectDynamicAccess";
-      readonly objectName: string;
-      readonly key: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "valueObjectDynamicAccess";
-      readonly value: JsIrValueExpression;
-      readonly key: JsIrStringExpression;
-    }
-  | {
-      // Read of a private class field (`recv.#x`): brand-checks the receiver's
-      // own properties for the class-mangled storage key and throws the given
-      // TypeError message when the brand is absent.
-      readonly kind: "privateFieldAccess";
-      readonly receiver: JsIrValueExpression;
-      readonly key: string;
-      readonly message: string;
-    }
-  | {
-      readonly kind: "valueArrayAccess";
-      readonly value: JsIrValueExpression;
-      readonly index: JsIrNumberExpression;
-      readonly key: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "nullishCoalesce";
-      readonly left: JsIrValueExpression;
-      readonly right: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "jsonStringify";
-      readonly value: JsIrValueExpression;
-      readonly replacerName?: string;
-      readonly indent: number;
-    }
-  | {
-      readonly kind: "jsonParse";
-      readonly text: JsIrValueExpression;
-      readonly reviver?: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeMapGet";
-      readonly mapName: string;
-      readonly key: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "optionalChain";
-      readonly guard: JsIrValueExpression;
-      readonly access: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "optionalTarget";
-    }
-  | {
-      readonly kind: "void";
-      readonly expression: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "sequence";
-      readonly left: JsIrValueExpression;
-      readonly right: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "stringStartsWith" | "stringEndsWith";
-      readonly receiver: JsIrStringExpression;
-      readonly search: JsIrStringExpression;
-      readonly position?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "stringCharCodeAt" | "stringCodePointAt" | "stringLocaleCompare";
-      readonly receiver: JsIrStringExpression;
-      readonly index: JsIrNumberExpression;
-      readonly other?: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "stringIndexOf" | "stringLastIndexOf";
-      readonly receiver: JsIrStringExpression;
-      readonly search: JsIrStringExpression;
-      readonly position?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayValue";
-      readonly elements: readonly JsIrValueExpression[];
-    }
-  | {
-      readonly kind: "taggedTemplateValue";
-      readonly tag: string;
-      readonly head: string;
-      readonly middleTexts: readonly string[];
-      readonly expressions: readonly JsIrValueExpression[];
-      readonly wrapValuesInRest?: boolean;
-    }
-  | {
-      readonly kind: "boxedPrimitive";
-      readonly inner: JsIrValueExpression;
-      readonly storeLength?: boolean;
-    }
-  | {
-      readonly kind: "boxedMethodCall";
-      readonly receiver: JsIrValueExpression;
-      readonly method: "valueOf" | "toString";
-    }
-  | {
-      readonly kind: "newInstance";
-      readonly className: string;
-      readonly fieldCount: number;
-      readonly prototypeName: string;
-      readonly constructorName: string;
-      readonly arguments: readonly JsIrCallArgument[];
-    };
-
-export type JsIrRuntimeArrayElement =
-  | {
-      readonly kind: "hole";
-    }
-  | {
-      readonly kind: "value";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "spread";
-      readonly arrayName: string;
-      readonly sourceKind?: "runtime" | "fixed";
-    }
-  | {
-      readonly kind: "iterableSpread";
-      readonly source: JsIrValueExpression;
-      readonly notIterableMessage: string;
-    };
-
-export type JsIrArrayDestructureElement =
-  | { readonly kind: "elision" }
-  | { readonly kind: "binding"; readonly name: string; readonly defaultValue?: JsIrValueExpression }
-  | { readonly kind: "nested"; readonly temporaryName: string; readonly operations: readonly JsIrOperation[] }
-  | { readonly kind: "rest"; readonly name: string };
-
-export type JsIrNumberExpression =
-  | {
-      readonly kind: "regexSearch";
-      readonly regex: JsIrValueExpression;
-      readonly input: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "literal";
-      readonly value: number;
-    }
-  | {
-      readonly kind: "nan";
-    }
-  | {
-      readonly kind: "negatedZero";
-    }
-  | {
-      readonly kind: "unary";
-      readonly operator: "negate" | "bitNot";
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "update";
-      readonly name: string;
-      readonly operator: "increment" | "decrement";
-      readonly prefix: boolean;
-    }
-  | {
-      readonly kind: "binary";
-      readonly operator: JsIrNumberOperator;
-      readonly left: JsIrNumberExpression;
-      readonly right: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "parameter";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "variable";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "call";
-      readonly name: string;
-      readonly arguments: readonly JsIrNumberExpression[];
-    }
-  | {
-      readonly kind: "ternary";
-      readonly condition: JsIrCondition;
-      readonly consequent: JsIrNumberExpression;
-      readonly alternate: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "arrayAccess";
-      readonly arrayName: string;
-      readonly index: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "arrayLength";
-      readonly arrayName: string;
-    }
-  | {
-      readonly kind: "valueArrayLength";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "valueLength";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "valueObjectLength";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "arrayPush" | "arrayUnshift";
-      readonly arrayName: string;
-      readonly values: readonly JsIrValueExpression[];
-    }
-  | {
-      readonly kind: "arrayIndexOf";
-      readonly arrayName: string;
-      readonly value: JsIrValueExpression;
-      readonly fromEnd?: boolean;
-      readonly fromIndex?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "arrayFindIndex";
-      readonly arrayName: string;
-    }
-  | {
-      readonly kind: "runtimeCollectionSize";
-      readonly collectionName: string;
-    }
-  | {
-      readonly kind: "objectAccess";
-      readonly objectName: string;
-      readonly path: readonly string[];
-    }
-  | {
-      readonly kind: "valueToNumber";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "mathCall";
-      readonly method:
-        | "abs"
-        | "floor"
-        | "ceil"
-        | "trunc"
-        | "round"
-        | "sqrt"
-        | "cbrt"
-        | "pow"
-        | "exp"
-        | "log"
-        | "log2"
-        | "log10"
-        | "hypot"
-        | "min"
-        | "max"
-        | "random"
-        | "fround"
-        | "clz32"
-        | "imul"
-        | "sin"
-        | "cos"
-        | "tan"
-        | "sign";
-      readonly arguments: readonly JsIrNumberExpression[];
-    }
-  | {
-      readonly kind: "parseInt" | "parseFloat";
-      readonly value: JsIrStringExpression;
-    };
-
-export type JsIrStringExpression =
-  | {
-      readonly kind: "literal";
-      readonly value: string;
-    }
-  | {
-      readonly kind: "variable";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "ternary";
-      readonly condition: JsIrCondition;
-      readonly consequent: JsIrStringExpression;
-      readonly alternate: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "concat";
-      readonly left: JsIrStringExpression;
-      readonly right: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "call";
-      readonly name: string;
-      readonly arguments: readonly JsIrCallArgument[];
-    }
-  | {
-      readonly kind: "arrayJoin";
-      readonly arrayName: string;
-      readonly separator: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "typeof";
-      readonly value: string;
-    }
-  | {
-      readonly kind: "stringConversion";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "stringMethod";
-      readonly method: "trim" | "trimStart" | "trimEnd" | "toUpperCase" | "toLowerCase" | "repeat" | "replace" | "replaceAll" | "padStart" | "padEnd" | "at" | "charAt" | "slice" | "substring" | "substr" | "normalize";
-      readonly receiver: JsIrStringExpression;
-      readonly count?: JsIrNumberExpression;
-      readonly search?: JsIrStringExpression;
-      readonly replacement?: JsIrStringExpression;
-      readonly targetLength?: JsIrNumberExpression;
-      readonly padString?: JsIrStringExpression;
-      readonly position?: JsIrNumberExpression;
-      readonly start?: JsIrNumberExpression;
-      readonly end?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "stringFromCharCode";
-      readonly codes: readonly JsIrNumberExpression[];
-    }
-  | {
-      readonly kind: "taggedTemplate";
-      readonly tag: string;
-      readonly head: string;
-      readonly middleTexts: readonly string[];
-      readonly expressions: readonly JsIrValueExpression[];
-    }
-  | {
-      readonly kind: "numberFormat";
-      readonly method: "toFixed" | "toPrecision" | "toExponential" | "toString";
-      readonly receiver: JsIrNumberExpression;
-      readonly argument?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "errorToString";
-      readonly objectName: string;
-    }
-  | {
-      readonly kind: "regexReplace";
-      readonly receiver: JsIrStringExpression;
-      readonly regex: JsIrValueExpression;
-      readonly replacement: JsIrStringExpression;
-    };
-
-export type JsIrObjectFieldValue =
-  | {
-      readonly kind: "number";
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "object";
-      readonly value: JsIrObjectValue;
-    };
-
-export interface JsIrObjectField {
-  readonly name: string;
-  readonly value: JsIrObjectFieldValue;
-}
-
-export interface JsIrObjectValue {
-  readonly fields: readonly JsIrObjectField[];
-}
-
-export type JsIrRuntimeObjectField =
-  | {
-      readonly kind: "field";
-      readonly key: JsIrStringExpression;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "spread";
-      readonly sourceName: string;
-    };
-
-export interface JsIrRuntimeObjectValue {
-  readonly fields: readonly JsIrRuntimeObjectField[];
-}
-
-export interface JsIrSwitchClause {
-  readonly test?: JsIrValueExpression;
-  readonly operations: readonly JsIrOperation[];
-}
-
-export interface JsIrClosureValue {
-  readonly functionName: string;
-  readonly captures: readonly JsIrNumberExpression[];
-}
-
-export type JsIrBindingValue =
-  | {
-      readonly kind: "string";
-      readonly value: string;
-    }
-  | {
-      readonly kind: "stringExpression";
-      readonly value: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "stringVariable";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "value";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "valueVariable";
-      readonly name: string;
-      readonly valueType?: "function" | "regex";
-      // Set when the variable was initialized with `new C(...)`, so method-call
-      // receivers resolve their class even when the checker cannot name the
-      // class type (anonymous class expressions).
-      readonly className?: string;
-    }
-  | {
-      readonly kind: "number";
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "boolean";
-      readonly value: boolean;
-    }
-  | {
-      readonly kind: "booleanExpression";
-      readonly value: JsIrCondition;
-    }
-  | {
-      readonly kind: "booleanVariable";
-      readonly name: string;
-      readonly initialValue?: boolean;
-    }
-  | {
-      readonly kind: "array";
-      readonly name: string;
-      readonly length: number;
-    }
-  | {
-      readonly kind: "runtimeArray";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "runtimeMap" | "runtimeSet";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "runtimeIterator";
-      readonly name: string;
-      readonly sourceKind: "map" | "set";
-      readonly iterationKind: "keys" | "values" | "entries";
-    }
-  | {
-      readonly kind: "object";
-      readonly value: JsIrObjectValue;
-    }
-  | {
-      readonly kind: "runtimeObject";
-      readonly name: string;
-      readonly value?: JsIrRuntimeObjectValue;
-      readonly errorName?: string;
-    }
-  | {
-      readonly kind: "closure";
-      readonly value: JsIrClosureValue;
-    }
-  | {
-      readonly kind: "closureFactory";
-      readonly functionName: string;
-      readonly factoryParameters: readonly string[];
-      readonly captureNames: readonly string[];
-    }
-  | {
-      readonly kind: "function";
-      readonly parameters: readonly JsIrFunctionParameter[];
-      readonly returnKind: JsIrValueKind | "void";
-      readonly body: readonly JsIrOperation[];
-      readonly constructibleByObjectReturn?: boolean;
-    }
-  | {
-      readonly kind: "functionReference";
-      readonly parameters: readonly JsIrFunctionParameter[];
-      readonly returnKind: JsIrValueKind | "void";
-    };
-
-export type JsIrCondition =
-  | {
-      readonly kind: "boolean";
-      readonly value: boolean;
-    }
-  | {
-      readonly kind: "classInstanceOf";
-      readonly value: JsIrValueExpression;
-      readonly prototypeName: string;
-    }
-  | {
-      readonly kind: "errorInstanceOf";
-      readonly value: JsIrValueExpression;
-      readonly errorName: string;
-    }
-  | {
-      readonly kind: "regexTest";
-      readonly regex: JsIrValueExpression;
-      readonly input: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "numberComparison";
-      readonly operator: "===" | "!==" | "<" | "<=" | ">" | ">=";
-      readonly left: JsIrNumberExpression;
-      readonly right: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "negate";
-      readonly condition: JsIrCondition;
-    }
-  | {
-      readonly kind: "and";
-      readonly left: JsIrCondition;
-      readonly right: JsIrCondition;
-    }
-  | {
-      readonly kind: "or";
-      readonly left: JsIrCondition;
-      readonly right: JsIrCondition;
-    }
-  | {
-      readonly kind: "booleanVariable";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "stringComparison";
-      readonly operator: "===" | "!==";
-      readonly left: JsIrStringExpression;
-      readonly right: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "booleanComparison";
-      readonly operator: "===" | "!==";
-      readonly left: JsIrCondition;
-      readonly right: JsIrCondition;
-    }
-  | {
-      readonly kind: "valueComparison";
-      readonly operator: "===" | "!==";
-      readonly left: JsIrValueExpression;
-      readonly right: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeObjectHas";
-      readonly objectName: string;
-      readonly key: JsIrStringExpression;
-      readonly ownOnly: boolean;
-      readonly receiverKind?: "object" | "value";
-    }
-  | {
-      readonly kind: "runtimeArrayHas";
-      readonly arrayName: string;
-      readonly index: JsIrNumberExpression;
-      readonly key?: JsIrStringExpression;
-      readonly ownOnly: boolean;
-    }
-  | {
-      readonly kind: "runtimeObjectPropertyIsEnumerable";
-      readonly objectName: string;
-      readonly key: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayIsArray";
-      readonly value: boolean | JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayEvery" | "runtimeArraySome";
-      readonly arrayName: string;
-    }
-  | {
-      readonly kind: "objectIs";
-      readonly left: JsIrValueExpression;
-      readonly right: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeCollectionHas" | "runtimeCollectionDelete";
-      readonly collectionName: string;
-      readonly key: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeCollectionIdentity";
-      readonly operator: "===" | "!==";
-      readonly leftName: string;
-      readonly rightName: string;
-    }
-  | {
-      readonly kind: "valueTruthy";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "valueLooseComparison" | "valueRelationalComparison";
-      readonly operator: JsIrValueComparisonOperator;
-      readonly left: JsIrValueExpression;
-      readonly right: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "numberPredicate";
-      readonly predicate: "globalIsNaN" | "numberIsNaN" | "numberIsFinite" | "numberIsInteger" | "numberIsSafeInteger";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "stringSearch";
-      readonly method: "includes" | "startsWith" | "endsWith";
-      readonly receiver: JsIrStringExpression;
-      readonly search: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "runtimeObjectState";
-      readonly objectName: string;
-      readonly state: "isExtensible" | "isSealed" | "isFrozen";
-    };
-
-export interface JsIrRuntimeDataDescriptor {
-  readonly key: JsIrStringExpression;
-  readonly value: JsIrValueExpression;
-  readonly writable: boolean;
-  readonly enumerable: boolean;
-  readonly configurable: boolean;
-}
-
-export type JsIrRuntimeArrayConcatElement =
-  | {
-      readonly kind: "value";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "fixedArraySpread";
-      readonly arrayName: string;
-      readonly length: number;
-    };
-
-export type JsIrObjectAssignSource =
-  | {
-      readonly kind: "runtimeObject";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "runtimeArray";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "fixedObject";
-      readonly value: JsIrObjectValue;
-    }
-  | {
-      readonly kind: "fixedArray";
-      readonly name: string;
-      readonly length: number;
-    }
-  | {
-      readonly kind: "value";
-      readonly value: JsIrValueExpression;
-    };
-
-export type JsIrExpression =
-  | {
-      readonly kind: "string";
-      readonly value: string;
-    }
-  | {
-      readonly kind: "stringExpression";
-      readonly value: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "number";
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "boolean";
-      readonly value: boolean;
-    }
-  | {
-      readonly kind: "identifier";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "call";
-      readonly name: string;
-      readonly arguments: readonly JsIrCallArgument[];
-    }
-  | {
-      readonly kind: "value";
-      readonly value: JsIrValueExpression;
-    };
-
-export type JsIrOperationNode =
-  | {
-      readonly kind: "constNumber";
-      readonly name: string;
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "constString";
-      readonly name: string;
-      readonly value: string;
-    }
-  | {
-      readonly kind: "constStringExpression";
-      readonly name: string;
-      readonly value: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "constBoolean";
-      readonly name: string;
-      readonly value: boolean;
-    }
-  | {
-      readonly kind: "constBooleanExpression";
-      readonly name: string;
-      readonly value: JsIrCondition;
-    }
-  | {
-      readonly kind: "constValue";
-      readonly name: string;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "letValue";
-      readonly name: string;
-      readonly value: JsIrValueExpression;
-      readonly moduleGlobal?: boolean;
-    }
-  | {
-      readonly kind: "constClosure";
-      readonly name: string;
-      readonly value: JsIrClosureValue;
-    }
-  | {
-      readonly kind: "letNumber";
-      readonly name: string;
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "letString";
-      readonly name: string;
-      readonly value: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "letBoolean";
-      readonly name: string;
-      readonly value: JsIrCondition;
-    }
-  | {
-      readonly kind: "arrayLiteral";
-      readonly name: string;
-      readonly elements: readonly JsIrNumberExpression[];
-    }
-  | {
-      readonly kind: "runtimeArrayLiteral";
-      readonly name: string;
-      readonly elements: readonly JsIrRuntimeArrayElement[];
-    }
-  | {
-      readonly kind: "objectLiteral";
-      readonly name: string;
-      readonly value: JsIrObjectValue;
-      readonly needsRuntimeShadow: boolean;
-    }
-  | {
-      readonly kind: "runtimeObjectLiteral";
-      readonly name: string;
-      readonly value: JsIrRuntimeObjectValue;
-    }
-  | {
-      readonly kind: "runtimeObjectCreate";
-      readonly name: string;
-      readonly prototypeName?: string;
-    }
-  | {
-      readonly kind: "runtimeErrorLiteral";
-      readonly name: string;
-      readonly errorName: string;
-      readonly message: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeObjectKeys";
-      readonly name: string;
-      readonly targetName: string;
-      readonly targetKind: "object" | "array" | "value";
-    }
-  | {
-      readonly kind: "runtimeObjectValues";
-      readonly name: string;
-      readonly targetName: string;
-      readonly targetKind: "object" | "array" | "value";
-    }
-  | {
-      readonly kind: "runtimeObjectEntries";
-      readonly name: string;
-      readonly targetName: string;
-      readonly targetKind: "object" | "array" | "value";
-    }
-  | {
-      readonly kind: "runtimeObjectFromEntries";
-      readonly name: string;
-      readonly entriesName: string;
-    }
-  | {
-      readonly kind: "runtimeObjectOwnPropertyDescriptor";
-      readonly name: string;
-      readonly targetName: string;
-      readonly targetKind: "object" | "array" | "value";
-      readonly key: JsIrStringExpression;
-      readonly index?: JsIrNumberExpression;
-      readonly isLength?: boolean;
-    }
-  | {
-      readonly kind: "runtimeObjectOwnPropertyNames";
-      readonly name: string;
-      readonly targetName: string;
-      readonly targetKind: "object" | "array" | "value";
-    }
-  | {
-      readonly kind: "runtimeObjectOwnPropertyDescriptors";
-      readonly name: string;
-      readonly targetName: string;
-      readonly targetKind: "object" | "array" | "value";
-    }
-  | {
-      readonly kind: "runtimeArraySlice";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly start: JsIrNumberExpression;
-      readonly end?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeArraySplice";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly start: JsIrNumberExpression;
-      readonly deleteCount?: JsIrNumberExpression;
-      readonly items: readonly JsIrValueExpression[];
-    }
-  | {
-      readonly kind: "runtimeArraySpliceStatement";
-      readonly arrayName: string;
-      readonly start: JsIrNumberExpression;
-      readonly deleteCount?: JsIrNumberExpression;
-      readonly items: readonly JsIrValueExpression[];
-    }
-  | {
-      readonly kind: "runtimeArrayFlat";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly depth: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeStringSplit";
-      readonly name: string;
-      readonly receiver: JsIrStringExpression;
-      readonly separator: JsIrStringExpression;
-      readonly limit?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeRegexSplit";
-      readonly name: string;
-      readonly receiver: JsIrStringExpression;
-      readonly regex: JsIrValueExpression;
-      readonly limit?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayMapCallback";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly callbackName: string;
-      readonly callbackParameters: readonly JsIrFunctionParameter[];
-      readonly callbackReturnKind: JsIrValueKind;
-    }
-  | {
-      readonly kind: "runtimeArrayMapFunctionObject";
-      readonly method: "map" | "flatMap" | "filter" | "find" | "findIndex" | "reduce" | "reduceRight" | "forEach";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly callbackName: string;
-      readonly callbackParameters: readonly JsIrFunctionParameter[];
-      readonly callbackReturnKind: JsIrValueKind | "void";
-      readonly callbackBody: readonly JsIrOperation[];
-      readonly callbackKind: "arrow" | "ordinary";
-      readonly captures?: JsIrFunctionObjectDefinition["captures"];
-      readonly initialValue?: JsIrValueExpression;
-      readonly direction?: "left" | "right";
-      readonly thisArg?: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayFlatMapCallback";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly callbackName: string;
-      readonly callbackParameters: readonly JsIrFunctionParameter[];
-      readonly callbackReturnKind: JsIrValueKind;
-    }
-  | {
-      readonly kind: "runtimeArraySort";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly callbackName?: string;
-      readonly callbackParameters?: readonly JsIrFunctionParameter[];
-      readonly callbackReturnKind?: JsIrValueKind;
-    }
-  | {
-      readonly kind: "runtimeArrayFrom";
-      readonly name: string;
-      readonly targetName: string;
-      readonly targetKind: "array" | "object";
-    }
-  | {
-      readonly kind: "runtimeArrayFromValue";
-      readonly name: string;
-      readonly source: JsIrValueExpression;
-      readonly mapper?: JsIrValueExpression;
-      readonly thisArg?: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayFromCollection";
-      readonly name: string;
-      readonly collectionName: string;
-      readonly sourceKind: "map" | "set";
-      readonly iterationKind: "keys" | "values" | "entries";
-      readonly mapper?: JsIrValueExpression;
-      readonly thisArg?: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayFilterCallback";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly callbackName: string;
-      readonly callbackParameters: readonly JsIrFunctionParameter[];
-      readonly callbackReturnKind: JsIrValueKind;
-    }
-  | {
-      readonly kind: "runtimeArrayConcat";
-      readonly name: string;
-      readonly leftName: string;
-      readonly values: readonly JsIrRuntimeArrayConcatElement[];
-    }
-  | {
-      readonly kind: "runtimeArrayMutatorResult";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly mutation:
-        | { readonly kind: "reverse" }
-        | { readonly kind: "fill"; readonly value: JsIrValueExpression; readonly start?: JsIrNumberExpression; readonly end?: JsIrNumberExpression }
-        | { readonly kind: "copyWithin"; readonly target: JsIrNumberExpression; readonly start: JsIrNumberExpression; readonly end?: JsIrNumberExpression };
-    }
-  | {
-      readonly kind: "runtimeObjectGetPrototype";
-      readonly name: string;
-      readonly targetName: string;
-      readonly targetKind: "object" | "array";
-    }
-  | {
-      readonly kind: "assignNumber";
-      readonly name: string;
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "assignString";
-      readonly name: string;
-      readonly value: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "assignBoolean";
-      readonly name: string;
-      readonly value: JsIrCondition;
-    }
-  | {
-      readonly kind: "arrayStore";
-      readonly arrayName: string;
-      readonly index: JsIrNumberExpression;
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayStore";
-      readonly arrayName: string;
-      readonly index: JsIrNumberExpression;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayNamedStore";
-      readonly arrayName: string;
-      readonly key: JsIrStringExpression;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayDelete";
-      readonly arrayName: string;
-      readonly index: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayNamedDelete";
-      readonly arrayName: string;
-      readonly key: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "runtimeArraySetLength";
-      readonly arrayName: string;
-      readonly length: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayPush" | "runtimeArrayUnshift";
-      readonly arrayName: string;
-      readonly values: readonly JsIrValueExpression[];
-    }
-  | {
-      readonly kind: "runtimeArrayFill";
-      readonly arrayName: string;
-      readonly value: JsIrValueExpression;
-      readonly start?: JsIrNumberExpression;
-      readonly end?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayReverse";
-      readonly arrayName: string;
-    }
-  | {
-      readonly kind: "runtimeArrayForEachCallback";
-      readonly arrayName: string;
-      readonly callbackName: string;
-      readonly callbackParameters: readonly JsIrFunctionParameter[];
-      readonly callbackReturnKind: JsIrValueKind | "void";
-    }
-  | {
-      readonly kind: "runtimeArrayFindCallback";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly callbackName: string;
-      readonly callbackParameters: readonly JsIrFunctionParameter[];
-      readonly callbackReturnKind: JsIrValueKind;
-    }
-  | {
-      readonly kind: "runtimeArrayFindIndexCallback";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly callbackName: string;
-      readonly callbackParameters: readonly JsIrFunctionParameter[];
-      readonly callbackReturnKind: JsIrValueKind;
-    }
-  | {
-      readonly kind: "runtimeArrayReduceCallback";
-      readonly name: string;
-      readonly arrayName: string;
-      readonly callbackName: string;
-      readonly callbackParameters: readonly JsIrFunctionParameter[];
-      readonly callbackReturnKind: JsIrValueKind;
-      readonly initialValue?: JsIrValueExpression;
-      readonly direction: "left" | "right";
-    }
-  | {
-      readonly kind: "runtimeMapNew" | "runtimeSetNew";
-      readonly name: string;
-    }
-  | {
-      readonly kind: "runtimeMapFromArray" | "runtimeSetFromArray";
-      readonly name: string;
-      readonly sourceName: string;
-    }
-  | {
-      readonly kind: "runtimeMapFromIterable" | "runtimeSetFromIterable";
-      readonly name: string;
-      readonly iterable: JsIrValueExpression;
-      readonly notIterableMessage: string;
-    }
-  | {
-      readonly kind: "runtimeMapFromCollection" | "runtimeSetFromCollection";
-      readonly name: string;
-      readonly sourceName: string;
-      readonly sourceKind: "map" | "set";
-    }
-  | {
-      readonly kind: "runtimeMapSet";
-      readonly mapName: string;
-      readonly key: JsIrValueExpression;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeCollectionSetIterator";
-      readonly collectionName: string;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeSetAdd";
-      readonly setName: string;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeMapSetResult";
-      readonly name: string;
-      readonly mapName: string;
-      readonly key: JsIrValueExpression;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeSetAddResult";
-      readonly name: string;
-      readonly setName: string;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "runtimeIteratorNew";
-      readonly name: string;
-      readonly collectionName: string;
-      readonly sourceKind: "map" | "set";
-      readonly iterationKind: "keys" | "values" | "entries";
-      readonly observeOverride?: boolean;
-    }
-  | {
-      readonly kind: "runtimeArrayCopyWithin";
-      readonly arrayName: string;
-      readonly target: JsIrNumberExpression;
-      readonly start: JsIrNumberExpression;
-      readonly end?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeArrayPop" | "runtimeArrayShift";
-      readonly arrayName: string;
-    }
-  | {
-      readonly kind: "objectStore";
-      readonly objectName: string;
-      readonly path: readonly string[];
-      readonly value: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeObjectStore";
-      readonly objectName: string;
-      readonly key: JsIrStringExpression;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "valueObjectStore";
-      readonly targetName: string;
-      readonly key: JsIrStringExpression;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      // Write to a private class field (`recv.#x = v`): brand-checks the
-      // receiver's own properties for the class-mangled storage key and throws
-      // the given TypeError message when the brand is absent.
-      readonly kind: "privateFieldStore";
-      readonly targetName: string;
-      readonly key: string;
-      readonly value: JsIrValueExpression;
-      readonly message: string;
-    }
-  | {
-      readonly kind: "valueArrayStore";
-      readonly targetName: string;
-      readonly index: JsIrNumberExpression;
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "valueArraySetLength";
-      readonly targetName: string;
-      readonly length: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeObjectDelete";
-      readonly objectName: string;
-      readonly key: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "valueObjectDelete";
-      readonly targetName: string;
-      readonly key: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "valueArrayDelete";
-      readonly targetName: string;
-      readonly index: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "runtimeObjectSetPrototype";
-      readonly targetName: string;
-      readonly targetKind: "object" | "array";
-      readonly prototypeName?: string;
-    }
-  | {
-      readonly kind: "valueObjectSetPrototype";
-      readonly targetName: string;
-      readonly prototypeName: string;
-    }
-  | {
-      readonly kind: "runtimeObjectPreventExtensions" | "runtimeObjectSeal" | "runtimeObjectFreeze";
-      readonly objectName: string;
-    }
-  | {
-      readonly kind: "runtimeObjectAssign";
-      readonly targetName: string;
-      readonly sources: readonly JsIrObjectAssignSource[];
-    }
-  | {
-      readonly kind: "runtimeObjectDefineDataProperty";
-      readonly objectName: string;
-      readonly descriptor: JsIrRuntimeDataDescriptor;
-    }
-  | {
-      readonly kind: "runtimeObjectDefineDataProperties";
-      readonly objectName: string;
-      readonly descriptors: readonly JsIrRuntimeDataDescriptor[];
-    }
-  | {
-      readonly kind: "print";
-      readonly expression: JsIrExpression;
-    }
-  | {
-      readonly kind: "throwValue";
-      readonly value: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "block";
-      readonly operations: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "tryCatch";
-      readonly tryOperations: readonly JsIrOperation[];
-      readonly catchVariable: string;
-      readonly catchOperations: readonly JsIrOperation[];
-      readonly hasCatch: boolean;
-      readonly finallyOperations?: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "bindingGroup";
-      readonly operations: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "if";
-      readonly condition: JsIrCondition;
-      readonly thenOperations: readonly JsIrOperation[];
-      readonly elseOperations: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "switch";
-      readonly expression: JsIrValueExpression;
-      readonly clauses: readonly JsIrSwitchClause[];
-    }
-  | {
-      readonly kind: "while";
-      readonly condition: JsIrCondition;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "doWhile";
-      readonly condition: JsIrCondition;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "for";
-      readonly initializer: JsIrOperation;
-      readonly condition: JsIrCondition;
-      readonly increment: JsIrOperation;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "forOfArray";
-      readonly itemName: string;
-      readonly arrayName: string;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "forOfString";
-      readonly itemName: string;
-      readonly source: JsIrStringExpression;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "forOfSet";
-      readonly itemName: string;
-      readonly setName: string;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "forOfMap";
-      readonly itemName: string;
-      readonly mapName: string;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "forOfProtocol";
-      readonly itemName: string;
-      readonly iterable: JsIrValueExpression;
-      readonly notIterableMessage: string;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "arrayDestructureProtocol";
-      readonly source:
-        | { readonly kind: "value"; readonly value: JsIrValueExpression }
-        | { readonly kind: "collection"; readonly name: string; readonly sourceKind: "map" | "set" };
-      readonly elements: readonly JsIrArrayDestructureElement[];
-      readonly notIterableMessage: string;
-    }
-  | {
-      readonly kind: "forInObject";
-      readonly itemName: string;
-      readonly objectName: string;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "forInArray";
-      readonly itemName: string;
-      readonly arrayName: string;
-      readonly body: readonly JsIrOperation[];
-    }
-  | {
-      readonly kind: "break";
-    }
-  | {
-      readonly kind: "continue";
-    }
-  | {
-      readonly kind: "function";
-      readonly name: string;
-      readonly parameters: readonly JsIrFunctionParameter[];
-      readonly body: readonly JsIrOperation[];
-      readonly enclosingCaptureNames?: readonly string[];
-      readonly constructibleByObjectReturn?: boolean;
-    }
-  | {
-      readonly kind: "call";
-      readonly name: string;
-      readonly arguments: readonly JsIrCallArgument[];
-    }
-  | {
-      readonly kind: "callValue";
-      readonly callee: JsIrValueExpression;
-      readonly arguments: readonly JsIrCallArgument[];
-      readonly thisValue?: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "inlineCpp";
-      readonly symbol: string;
-    }
-  | {
-      readonly kind: "returnNumber";
-      readonly expression: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "returnString";
-      readonly expression: JsIrStringExpression;
-    }
-  | {
-      readonly kind: "returnValue";
-      readonly expression: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "returnClosure";
-      readonly functionName: string;
-      readonly parameters: readonly string[];
-      readonly captures: readonly string[];
-      readonly body: readonly JsIrOperation[];
-    };
-
-export type JsIrOperation = JsIrOperationNode & {
-  readonly trace?: JsIrOperationTrace;
-};
-
-/**
- * IR operations whose bodies contain nested operations.
- *
- * Every other operation is a leaf: it carries no child operations, so the child walk returns an
- * empty list for it. The split is stated positively rather than inferred from a `default:`
- * branch, because a default that returns `[]` silently asserts "this variant is a leaf" — and a
- * new operation with a nested body would then be invisible to the trace map and to
- * collectRuntimeShadowObjectNames without any compile error.
- */
-type JsIrContainerOperationKind =
-  | "arrayDestructureProtocol"
-  | "runtimeArrayMapFunctionObject"
-  | "block"
-  | "bindingGroup"
-  | "tryCatch"
-  | "if"
-  | "switch"
-  | "while"
-  | "doWhile"
-  | "forOfArray"
-  | "forOfString"
-  | "forOfSet"
-  | "forOfMap"
-  | "forOfProtocol"
-  | "forInObject"
-  | "forInArray"
-  | "function"
-  | "returnClosure"
-  | "for";
-
-/** Every operation kind that is not a container, keyed so the set is checked for completeness. */
-const jsIrLeafOperationKinds: Readonly<Record<Exclude<JsIrOperation["kind"], JsIrContainerOperationKind>, true>> = {
-  "constNumber": true, "constString": true, "constStringExpression": true, "constBoolean": true, "constBooleanExpression": true,
-  "constValue": true, "letValue": true, "constClosure": true, "letNumber": true, "letString": true,
-  "letBoolean": true, "arrayLiteral": true, "runtimeArrayLiteral": true, "objectLiteral": true, "runtimeObjectLiteral": true,
-  "runtimeObjectCreate": true, "runtimeErrorLiteral": true, "runtimeObjectKeys": true, "runtimeObjectValues": true, "runtimeObjectEntries": true,
-  "runtimeObjectFromEntries": true, "runtimeObjectOwnPropertyDescriptor": true, "runtimeObjectOwnPropertyNames": true, "runtimeObjectOwnPropertyDescriptors": true, "runtimeArraySlice": true,
-  "runtimeArraySplice": true, "runtimeArraySpliceStatement": true, "runtimeArrayFlat": true, "runtimeStringSplit": true, "runtimeRegexSplit": true,
-  "runtimeArrayMapCallback": true, "runtimeArrayFlatMapCallback": true, "runtimeArraySort": true, "runtimeArrayFrom": true, "runtimeArrayFromValue": true,
-  "runtimeArrayFromCollection": true, "runtimeArrayFilterCallback": true, "runtimeArrayConcat": true, "runtimeArrayMutatorResult": true, "runtimeObjectGetPrototype": true,
-  "assignNumber": true, "assignString": true, "assignBoolean": true, "arrayStore": true, "runtimeArrayStore": true,
-  "runtimeArrayNamedStore": true, "runtimeArrayDelete": true, "runtimeArrayNamedDelete": true, "runtimeArraySetLength": true, "runtimeArrayPush": true,
-  "runtimeArrayUnshift": true, "runtimeArrayFill": true, "runtimeArrayReverse": true, "runtimeArrayForEachCallback": true, "runtimeArrayFindCallback": true,
-  "runtimeArrayFindIndexCallback": true, "runtimeArrayReduceCallback": true, "runtimeMapNew": true, "runtimeSetNew": true, "runtimeMapFromArray": true,
-  "runtimeSetFromArray": true, "runtimeMapFromIterable": true, "runtimeSetFromIterable": true, "runtimeMapFromCollection": true, "runtimeSetFromCollection": true,
-  "runtimeMapSet": true, "runtimeCollectionSetIterator": true, "runtimeSetAdd": true, "runtimeMapSetResult": true, "runtimeSetAddResult": true,
-  "runtimeIteratorNew": true, "runtimeArrayCopyWithin": true, "runtimeArrayPop": true, "runtimeArrayShift": true, "objectStore": true,
-  "runtimeObjectStore": true, "valueObjectStore": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
-  "runtimeObjectDelete": true, "valueObjectDelete": true, "valueArrayDelete": true, "runtimeObjectSetPrototype": true, "valueObjectSetPrototype": true,
-  "runtimeObjectPreventExtensions": true, "runtimeObjectSeal": true, "runtimeObjectFreeze": true, "runtimeObjectAssign": true, "runtimeObjectDefineDataProperty": true,
-  "runtimeObjectDefineDataProperties": true, "print": true, "throwValue": true, "break": true, "continue": true,
-  "call": true, "callValue": true, "inlineCpp": true, "returnNumber": true, "returnString": true,
-  "returnValue": true
-};
-
-/**
- * The nested operations of `operation`, in evaluation order.
- *
- * Total over the IR union: a new operation kind is a compile error here until it is classified
- * as a container or added to `jsIrLeafOperationKinds`.
- */
-// eslint-disable-next-line complexity -- One case per container operation kind; the residual is the leaf set.
-export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOperation[] {
-  switch (operation.kind) {
-    case "arrayDestructureProtocol": {
-      return operation.elements.flatMap((element) => {
-        if (element.kind === "nested") {
-          return element.operations;
-        }
-        return [];
-      });
-    }
-    case "runtimeArrayMapFunctionObject": {
-      return operation.callbackBody;
-    }
-    case "block":
-    case "bindingGroup": {
-      return operation.operations;
-    }
-    case "tryCatch": {
-      const children = [...operation.tryOperations];
-      if (operation.hasCatch) {
-        children.push(...operation.catchOperations);
-      }
-      if (operation.finallyOperations !== undefined) {
-        children.push(...operation.finallyOperations);
-      }
-      return children;
-    }
-    case "if": {
-      return [...operation.thenOperations, ...operation.elseOperations];
-    }
-    case "switch": {
-      return operation.clauses.flatMap((clause) => clause.operations);
-    }
-    case "while":
-    case "doWhile":
-    case "forOfArray":
-    case "forOfString":
-    case "forOfSet":
-    case "forOfMap":
-    case "forOfProtocol":
-    case "forInObject":
-    case "forInArray":
-    case "function":
-    case "returnClosure": {
-      return operation.body;
-    }
-    case "for": {
-      return [operation.initializer, ...operation.body, operation.increment];
-    }
-    default: {
-      // The residual is exactly the leaf set. Indexing jsIrLeafOperationKinds is total by
-      // construction — its type is keyed by every non-container kind — so the test below always
-      // holds and the throw is unreachable. The lint warning it draws is the proof of that, so it
-      // is suppressed here rather than worked around.
-      // oxlint-disable-next-line typescript/no-unnecessary-condition -- totality of the Record is the invariant
-      if (!jsIrLeafOperationKinds[operation.kind]) {
-        throw new Error(`Unclassified JsIrOperation leaf: ${operation.kind}`);
-      }
-      return [];
-    }
-  }
-}
-
-export function visitJsIrOperations(
-  operations: readonly JsIrOperation[],
-  visitor: (operation: JsIrOperation, parent: JsIrOperation | undefined) => void
-): void {
-  const visit = (operation: JsIrOperation, parent: JsIrOperation | undefined): void => {
-    visitor(operation, parent);
-    for (const child of jsIrOperationChildren(operation)) {
-      visit(child, operation);
-    }
-  };
-  for (const operation of operations) {
-    visit(operation, undefined);
-  }
-}
-
-export interface JsIrResult {
-  readonly module: JsIrModule;
-  readonly diagnostics: readonly CompilerDiagnostic[];
-}
-
-export interface JsIrLowerOptions {
-  readonly fcpp?: boolean;
-}
 
 type ArrayLiteralClassification =
   | {
@@ -1964,9 +308,71 @@ function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): 
 // real backend cannot compile yet. `lowerStatements` catches it and turns it into
 // a hard TSCN1002 diagnostic: the compiler never evaluates user programs at
 // compile time, so unsupported class features are compile errors.
+/**
+ * The outcome of trying to recognize one AST shape.
+ *
+ * `notApplicable` continues the recognizer chain. `unsupported` stops it and carries the reason
+ * straight to the diagnostic. A recognizer that returned `undefined` for both meant that a shape
+ * it matched and could not handle looked exactly like a shape nothing recognized, which is why
+ * lowering had to traverse the file twice: once to find out, once to report.
+ *
+ * Sub-recognizers *inside* an already-matched form still use `| undefined` for "not this
+ * variant" — at that point there is no chain to continue, so the ambiguity is gone.
+ */
+export type Lowered =
+  | { readonly kind: "lowered"; readonly operation: JsIrOperation }
+  | { readonly kind: "notApplicable" }
+  | { readonly kind: "unsupported"; readonly reason: string };
+
+/** A statement list, or the reason one of its statements could not be lowered. */
+type LoweredStatementList =
+  | { readonly kind: "lowered"; readonly operations: readonly JsIrOperation[] }
+  | { readonly kind: "unsupported"; readonly reason: string };
+
+const notApplicable: Lowered = { kind: "notApplicable" };
+
+const loweredOperation = (operation: JsIrOperation): Lowered => ({ kind: "lowered", operation });
+
+const unsupported = (reason: string): Lowered => ({ kind: "unsupported", reason });
+
+const loweredOperationList = (operations: readonly JsIrOperation[]): LoweredStatementList => ({ kind: "lowered", operations });
+
+/**
+ * Adapts a recognizer that still returns `JsIrOperation | undefined`, which is the ambiguous
+ * pair `Lowered` exists to separate. At the statement tier the two are diagnosed identically, so
+ * the reason stays the reconstructed one; converting a recognizer to return `Lowered` replaces
+ * this with the reason the recognizer itself knows.
+ */
+function statementResult(
+  operation: JsIrOperation | undefined,
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (operation !== undefined) {
+    return loweredOperation(operation);
+  }
+  return unsupported(unsupportedStatementMessage(statement, bindings));
+}
+
+/**
+ * Aborts the class lowering pass.
+ *
+ * The class recognizers still unwind by exception rather than returning `unsupported`; this is
+ * the one place the distinction is not yet expressed as a value, and it is the reason lowering
+ * has to run the file twice. The optional `reason` is the diagnostic text when the abort already
+ * knows what the limitation is.
+ */
+/** The diagnostic text a failed class lowering already knows, or `undefined` when it does not. */
+function classAbortReason(result: Lowered): string | undefined {
+  if (result.kind === "unsupported") {
+    return result.reason;
+  }
+  return undefined;
+}
+
 class ClassLoweringUnsupportedError extends Error {
-  public constructor() {
-    super("class lowering unsupported");
+  public constructor(reason?: string) {
+    super(reason ?? "class lowering unsupported");
     this.name = "ClassLoweringUnsupportedError";
   }
 }
@@ -1975,22 +381,6 @@ interface LoweredStatements {
   readonly operations: readonly JsIrOperation[];
   readonly diagnostics: readonly CompilerDiagnostic[];
   readonly loweringMode: JsIrLoweringMode;
-}
-
-function sourceFileContainsClass(sourceFile: ts.SourceFile): boolean {
-  let found = false;
-  const visit = (node: ts.Node): void => {
-    if (found) {
-      return;
-    }
-    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return found;
 }
 
 function classOperationTraceOrigin(index: number): JsIrTraceOrigin {
@@ -2010,18 +400,8 @@ function lowerStatements(
     return { operations: [], diagnostics: [inlineCppDiagnostic], loweringMode: "native" };
   }
 
-  // Class-using files are attempted through real codegen first. Any unsupported
-  // class feature aborts the strict pass and is reported as a diagnostic by the
-  // diagnostic-emitting pass below.
-  if (sourceFileContainsClass(sourceFile)) {
-    const real = tryLowerStatementsWithClasses(sourceFile);
-    if (real !== undefined) {
-      return real;
-    }
-  }
-
   try {
-    return lowerTopLevelStatements(sourceFile, false).result;
+    return lowerTopLevelStatements(sourceFile);
   } catch (error) {
     if (!(error instanceof ClassLoweringUnsupportedError)) {
       throw error;
@@ -2075,13 +455,13 @@ function inlineCppDisabledDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnos
   };
 }
 
-// Runs the real lowering loop. In strict mode any unsupported statement or class
-// feature aborts (returns supported: false) so the caller can re-run in
-// non-strict mode, where unsupported statements become TSCN1002 diagnostics.
-function lowerTopLevelStatements(
-  sourceFile: ts.SourceFile,
-  strict: boolean
-): { readonly supported: boolean; readonly result: LoweredStatements } {
+/**
+ * Lowers a source file's top-level statements, collecting a TSCN1002 for each one nothing
+ * recognizes. There is no second attempt: a statement that does not lower is reported where it
+ * failed, and a class feature that does not lower aborts the file through
+ * `ClassLoweringUnsupportedError`, which `lowerStatements` turns into one diagnostic.
+ */
+function lowerTopLevelStatements(sourceFile: ts.SourceFile): LoweredStatements {
   const operations: JsIrOperation[] = [];
   const bindings = new Map<string, JsIrBindingValue>();
   const diagnostics: CompilerDiagnostic[] = [];
@@ -2107,31 +487,41 @@ function lowerTopLevelStatements(
         continue;
       }
 
-      const operation = lowerStatement(statement, bindings, promotedAggregates);
-      if (operation) {
-        operations.push(operation);
-        updateBindings(operation, bindings);
+      const result = lowerStatement(statement, bindings, promotedAggregates);
+      if (result.kind === "lowered") {
+        operations.push(result.operation);
+        updateBindings(result.operation, bindings);
         continue;
       }
-
-      if (strict) {
-        return { supported: false, result: { operations: [], diagnostics: [], loweringMode: "native" } };
-      }
-
-      diagnostics.push({
-        code: "TSCN1002",
-        category: "error",
-        message: unsupportedStatementMessage(statement),
-        span: sourceSpan(sourceFile, statement.getStart(sourceFile))
-      });
+      diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result, bindings));
     }
   } finally {
     activeClassRegistry = previousClassRegistry;
   }
 
+  return { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" };
+}
+
+/**
+ * The TSCN1002 for a statement nothing lowered. A recognizer that reported `unsupported` names the
+ * reason it gave up; `notApplicable` means no recognizer claimed the shape at all, so the
+ * diagnostic falls back to describing the syntax.
+ */
+function unsupportedStatementDiagnostic(
+  sourceFile: ts.SourceFile,
+  statement: ts.Statement,
+  result: Lowered,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): CompilerDiagnostic {
+  let message = unsupportedStatementMessage(statement, bindings);
+  if (result.kind === "unsupported") {
+    message = result.reason;
+  }
   return {
-    supported: true,
-    result: { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" }
+    code: "TSCN1002",
+    category: "error",
+    message,
+    span: sourceSpan(sourceFile, statement.getStart(sourceFile))
   };
 }
 
@@ -2147,22 +537,6 @@ function appendClassOperations(
     const traced = traceOperationFromNode(classOperations[index], statement, classOperationTraceOrigin(index));
     operations.push(traced);
     updateBindings(traced, bindings);
-  }
-}
-
-function tryLowerStatementsWithClasses(
-  sourceFile: ts.SourceFile
-): LoweredStatements | undefined {  try {
-    const { supported, result } = lowerTopLevelStatements(sourceFile, true);
-    if (!supported || result.diagnostics.length > 0) {
-      return undefined;
-    }
-    return result;
-  } catch (error) {
-    if (error instanceof ClassLoweringUnsupportedError) {
-      return undefined;
-    }
-    throw error;
   }
 }
 
@@ -2705,7 +1079,7 @@ function classCallableParameters(
   declaration: ts.ConstructorDeclaration | ts.MethodDeclaration | ts.AccessorDeclaration
 ): readonly JsIrFunctionParameter[] {
   const parameters: JsIrFunctionParameter[] = [];
-  for (const param of declaration.parameters) {
+  for (const param of runtimeParameters(declaration.parameters)) {
     if (
       !ts.isIdentifier(param.name) ||
       param.dotDotDotToken !== undefined ||
@@ -2786,12 +1160,12 @@ function lowerClassMethodBody(
       operations.push({ kind: "returnValue", expression: value });
       continue;
     }
-    const operation = lowerStatement(statement, bodyBindings);
-    if (operation === undefined) {
-      throw new ClassLoweringUnsupportedError();
+    const result = lowerStatement(statement, bodyBindings);
+    if (result.kind !== "lowered") {
+      throw new ClassLoweringUnsupportedError(classAbortReason(result));
     }
-    operations.push(operation);
-    updateBindings(operation, bodyBindings);
+    operations.push(result.operation);
+    updateBindings(result.operation, bodyBindings);
   }
   return operations;
 }
@@ -2865,12 +1239,12 @@ function lowerClassConstructor(
         if (isNonExecutableDeclaration(statement)) {
           continue;
         }
-        const operation = lowerStatement(statement, fnBindings);
-        if (operation === undefined) {
-          throw new ClassLoweringUnsupportedError();
+        const result = lowerStatement(statement, fnBindings);
+        if (result.kind !== "lowered") {
+          throw new ClassLoweringUnsupportedError(classAbortReason(result));
         }
-        body.push(operation);
-        updateBindings(operation, fnBindings);
+        body.push(result.operation);
+        updateBindings(result.operation, fnBindings);
       }
     }
     return { kind: "function", name: classConstructorName(info.name), parameters, body };
@@ -3102,7 +1476,7 @@ function lowerClassMethodCall(
   call: ts.CallExpression,
   callee: ts.PropertyAccessExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrValueExpression | undefined {
+): Extract<JsIrValueExpression, { readonly kind: "call" }> | undefined {
   if (activeClassRegistry === undefined) {
     return undefined;
   }
@@ -3768,12 +2142,12 @@ function lowerStatement(
   statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   promotedAggregates: ReadonlySet<string> = new Set()
-): JsIrOperation | undefined {
-  const operation = lowerStatementCore(statement, bindings, promotedAggregates);
-  if (operation === undefined) {
-    return undefined;
+): Lowered {
+  const result = lowerStatementCore(statement, bindings, promotedAggregates);
+  if (result.kind !== "lowered") {
+    return result;
   }
-  return traceOperationFromNode(operation, statement);
+  return loweredOperation(traceOperationFromNode(result.operation, statement));
 }
 
 // eslint-disable-next-line max-statements -- Statement dispatch covers all supported top-level node kinds in one place.
@@ -3781,13 +2155,13 @@ function lowerStatementCore(
   statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   promotedAggregates: ReadonlySet<string> = new Set()
-): JsIrOperation | undefined {
+): Lowered {
   if (ts.isVariableStatement(statement)) {
-    return lowerVariableBinding(statement, bindings, promotedAggregates);
+    return statementResult(lowerVariableBinding(statement, bindings, promotedAggregates), statement, bindings);
   }
 
   if (ts.isIfStatement(statement)) {
-    return lowerIfStatement(statement, bindings);
+    return statementResult(lowerIfStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isSwitchStatement(statement)) {
@@ -3795,31 +2169,31 @@ function lowerStatementCore(
   }
 
   if (ts.isWhileStatement(statement)) {
-    return lowerWhileStatement(statement, bindings);
+    return statementResult(lowerWhileStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isForStatement(statement)) {
-    return lowerForStatement(statement, bindings);
+    return statementResult(lowerForStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isForOfStatement(statement)) {
-    return lowerForOfStatement(statement, bindings);
+    return statementResult(lowerForOfStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isForInStatement(statement)) {
-    return lowerForInStatement(statement, bindings);
+    return statementResult(lowerForInStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isDoStatement(statement)) {
-    return lowerDoWhileStatement(statement, bindings);
+    return statementResult(lowerDoWhileStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isBreakStatement(statement)) {
-    return { kind: "break" };
+    return loweredOperation({ kind: "break" });
   }
 
   if (ts.isContinueStatement(statement)) {
-    return { kind: "continue" };
+    return loweredOperation({ kind: "continue" });
   }
 
   if (ts.isFunctionDeclaration(statement)) {
@@ -3827,11 +2201,11 @@ function lowerStatementCore(
   }
 
   if (ts.isReturnStatement(statement)) {
-    return lowerReturnStatement(statement, bindings);
+    return statementResult(lowerReturnStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isThrowStatement(statement)) {
-    return lowerThrowStatement(statement, bindings);
+    return statementResult(lowerThrowStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isTryStatement(statement)) {
@@ -3839,10 +2213,10 @@ function lowerStatementCore(
   }
 
   if (ts.isExpressionStatement(statement)) {
-    return lowerExpressionStatement(statement.expression, bindings);
+    return statementResult(lowerExpressionStatement(statement.expression, bindings), statement, bindings);
   }
 
-  return undefined;
+  return notApplicable;
 }
 
 // Lowering-time nesting counters for the one finally-routing shape the
@@ -3871,7 +2245,7 @@ function lowerThrowStatement(
 function lowerTryRegionOperations(
   statement: ts.TryStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   const tracksTryRegion = statement.catchClause !== undefined && statement.finallyBlock !== undefined;
   if (tracksTryRegion) {
     tryRegionOfCatchFinallyDepth += 1;
@@ -3888,7 +2262,7 @@ function lowerTryRegionOperations(
 function lowerFinallyBlockOperations(
   block: ts.Block,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   finallyBlockDepth += 1;
   try {
     return lowerBlockStatements(block, bindings);
@@ -3900,7 +2274,7 @@ function lowerFinallyBlockOperations(
 function lowerTryCatchStatement(
   statement: ts.TryStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   // Semantically-equivalent compile-time shortcut for the direct
   // `try { throw expr; } catch (e) { ... }` shape without finally. It avoids real
   // exception machinery for the common cases (error construction and plain value
@@ -3908,7 +2282,7 @@ function lowerTryCatchStatement(
   if (statement.finallyBlock === undefined) {
     const shortcut = lowerDirectThrowTryCatchShortcut(statement, bindings);
     if (shortcut !== undefined) {
-      return shortcut;
+      return loweredOperation(shortcut);
     }
   }
 
@@ -3918,8 +2292,8 @@ function lowerTryCatchStatement(
   // without leaking outwards). Cleanup/completion routing for finally is owned by
   // the LLVM backend's shared cleanup stack.
   const tryOperations = lowerTryRegionOperations(statement, bindings);
-  if (tryOperations === undefined) {
-    return undefined;
+  if (tryOperations.kind === "unsupported") {
+    return tryOperations;
   }
 
   const { catchClause } = statement;
@@ -3928,8 +2302,8 @@ function lowerTryCatchStatement(
   const hasCatch = catchClause !== undefined;
   if (catchClause !== undefined) {
     const loweredCatch = lowerCatchClause(statement, catchClause, bindings);
-    if (loweredCatch === undefined) {
-      return undefined;
+    if (loweredCatch.kind === "unsupported") {
+      return loweredCatch;
     }
     catchVariable = loweredCatch.variable;
     catchOperations = loweredCatch.operations;
@@ -3938,33 +2312,37 @@ function lowerTryCatchStatement(
   let finallyOperations: readonly JsIrOperation[] | undefined;
   if (statement.finallyBlock !== undefined) {
     const loweredFinally = lowerFinallyBlockOperations(statement.finallyBlock, bindings);
-    if (loweredFinally === undefined) {
-      return undefined;
+    if (loweredFinally.kind === "unsupported") {
+      return loweredFinally;
     }
-    finallyOperations = loweredFinally;
+    finallyOperations = loweredFinally.operations;
   }
 
   if (!hasCatch && finallyOperations === undefined) {
     // `try { ... }` with neither catch nor finally is not valid TypeScript;
     // defensively run the try body as a plain block.
-    return { kind: "block", operations: tryOperations };
+    return loweredOperation({ kind: "block", operations: tryOperations.operations });
   }
 
-  return {
+  return loweredOperation({
     kind: "tryCatch",
-    tryOperations,
+    tryOperations: tryOperations.operations,
     catchVariable,
     catchOperations,
     hasCatch,
     finallyOperations
-  };
+  });
 }
+
+type LoweredCatchClause =
+  | { readonly kind: "lowered"; readonly variable: string; readonly operations: readonly JsIrOperation[] }
+  | { readonly kind: "unsupported"; readonly reason: string };
 
 function lowerCatchClause(
   statement: ts.TryStatement,
   catchClause: ts.CatchClause,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): { readonly variable: string; readonly operations: readonly JsIrOperation[] } | undefined {
+): LoweredCatchClause {
   const catchBindings = new Map(bindings);
   const catchBinding = catchClause.variableDeclaration?.name;
   const destructuringOperations: JsIrOperation[] = [];
@@ -3980,16 +2358,16 @@ function lowerCatchClause(
       lowered = lowerObjectDestructuringElements(catchBinding, source, catchBindings, destructuringOperations, true);
     }
     if (!lowered) {
-      return undefined;
+      return { kind: "unsupported", reason: "Destructuring a catch binding is not supported" };
     }
   } else if (variable !== "") {
     catchBindings.set(variable, { kind: "valueVariable", name: variable });
   }
   const blockOperations = lowerBlockStatements(catchClause.block, catchBindings);
-  if (blockOperations === undefined) {
-    return undefined;
+  if (blockOperations.kind === "unsupported") {
+    return blockOperations;
   }
-  return { variable, operations: [...destructuringOperations, ...blockOperations] };
+  return { kind: "lowered", variable, operations: [...destructuringOperations, ...blockOperations.operations] };
 }
 
 function catchBindingName(catchClause: ts.CatchClause): string {
@@ -4026,7 +2404,7 @@ function lowerDirectThrowTryCatchShortcut(
   }
   const shortcutBindings = new Map(bindings);
   shortcutBindings.set(catchVariable, { kind: "value", value: thrown });
-  const operations = lowerBlockStatements(catchClause.block, shortcutBindings);
+  const operations = bodyOperations(lowerBlockStatements(catchClause.block, shortcutBindings));
   if (operations === undefined) {
     return undefined;
   }
@@ -4047,7 +2425,7 @@ function lowerErrorTryCatchStatement(
   if (errorOperation !== undefined) {
     const catchBindings = new Map(bindings);
     catchBindings.set(variableName, { kind: "runtimeObject", name: errorOperation.name, errorName: errorOperation.errorName });
-    const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
+    const operations = bodyOperations(lowerBlockStatements(statement.catchClause.block, catchBindings));
     if (operations === undefined) {
       return undefined;
     }
@@ -4062,7 +2440,7 @@ function lowerErrorTryCatchStatement(
   }
   const catchBindings = new Map(bindings);
   catchBindings.set(variableName, thrownBinding);
-  const operations = lowerBlockStatements(statement.catchClause.block, catchBindings);
+  const operations = bodyOperations(lowerBlockStatements(statement.catchClause.block, catchBindings));
   if (operations === undefined) {
     return undefined;
   }
@@ -4319,7 +2697,7 @@ function lowerForStatement(
     return undefined;
   }
 
-  const body = lowerStatementBody(statement.statement, forBindings);
+  const body = bodyOperations(lowerStatementBody(statement.statement, forBindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4358,7 +2736,7 @@ function lowerForOfStatement(
   }
   const bodyBindings = new Map(bindings);
   bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-  const body = lowerStatementBody(bodyStatement, bodyBindings);
+  const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4382,7 +2760,7 @@ function lowerSpecializedForOf(
   if (sourceString !== undefined) {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
-    const body = lowerStatementBody(bodyStatement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4396,7 +2774,7 @@ function lowerSpecializedForOf(
   if (sourceBinding?.kind === "runtimeSet") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-    const body = lowerStatementBody(bodyStatement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4405,7 +2783,7 @@ function lowerSpecializedForOf(
   if (sourceBinding?.kind === "runtimeMap") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "runtimeArray", name: itemName });
-    const body = lowerStatementBody(bodyStatement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4416,7 +2794,7 @@ function lowerSpecializedForOf(
   }
   const bodyBindings = new Map(bindings);
   bodyBindings.set(itemName, { kind: "number", value: { kind: "variable", name: itemName } });
-  const body = lowerStatementBody(bodyStatement, bodyBindings);
+  const body = bodyOperations(lowerStatementBody(bodyStatement, bodyBindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4454,7 +2832,7 @@ function lowerForInStatement(
   if (sourceBinding?.kind === "runtimeObject") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const body = lowerStatementBody(statement.statement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(statement.statement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4463,7 +2841,7 @@ function lowerForInStatement(
   if (sourceBinding?.kind === "runtimeArray") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const body = lowerStatementBody(statement.statement, bodyBindings);
+    const body = bodyOperations(lowerStatementBody(statement.statement, bodyBindings));
     if (body === undefined) {
       return undefined;
     }
@@ -4506,7 +2884,7 @@ function lowerWhileStatement(
     return undefined;
   }
 
-  const body = lowerStatementBody(statement.statement, bindings);
+  const body = bodyOperations(lowerStatementBody(statement.statement, bindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4527,7 +2905,7 @@ function lowerDoWhileStatement(
     return undefined;
   }
 
-  const body = lowerStatementBody(statement.statement, bindings);
+  const body = bodyOperations(lowerStatementBody(statement.statement, bindings));
   if (body === undefined) {
     return undefined;
   }
@@ -4542,10 +2920,22 @@ function lowerDoWhileStatement(
 // Lowers a statement body that may be a block or a single unbraced statement
 // (e.g. `if (x) foo();` or `while (x) y--;`), normalizing the latter through
 // the same statement-list channel blocks use.
+/**
+ * The operations of a lowered body, or `undefined` when it could not be lowered. A recognizer
+ * that still returns `JsIrOperation | undefined` has nowhere to put the reason, so the statement
+ * tier reports its own; converting that recognizer to return `Lowered` forwards the real one.
+ */
+function bodyOperations(body: LoweredStatementList): readonly JsIrOperation[] | undefined {
+  if (body.kind === "lowered") {
+    return body.operations;
+  }
+  return undefined;
+}
+
 function lowerStatementBody(
   statement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   if (ts.isBlock(statement)) {
     return lowerBlockStatements(statement, bindings);
   }
@@ -4650,7 +3040,7 @@ function lowerIfStatement(
     return undefined;
   }
 
-  const thenOperations = lowerStatementBody(statement.thenStatement, bindings);
+  const thenOperations = bodyOperations(lowerStatementBody(statement.thenStatement, bindings));
   if (thenOperations === undefined) {
     return undefined;
   }
@@ -4664,7 +3054,7 @@ function lowerIfStatement(
     };
   }
 
-  const elseOperations = lowerStatementBody(statement.elseStatement, bindings);
+  const elseOperations = bodyOperations(lowerStatementBody(statement.elseStatement, bindings));
   if (elseOperations === undefined) {
     return undefined;
   }
@@ -4680,14 +3070,14 @@ function lowerIfStatement(
 function lowerBlockStatements(
   block: ts.Block,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   return lowerStatementList(block.statements, bindings);
 }
 
 function lowerStatementList(
   statements: readonly ts.Statement[],
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrOperation[] | undefined {
+): LoweredStatementList {
   const operations: JsIrOperation[] = [];
   const blockBindings = new Map(bindings);
 
@@ -4696,25 +3086,29 @@ function lowerStatementList(
       continue;
     }
 
-    const operation = lowerStatement(statement, blockBindings);
-    if (!operation) {
-      return undefined;
+    const result = lowerStatement(statement, blockBindings);
+    if (result.kind === "unsupported") {
+      return result;
+    }
+    if (result.kind === "notApplicable") {
+      return { kind: "unsupported", reason: unsupportedStatementMessage(statement, blockBindings) };
     }
 
-    operations.push(operation);
-    updateBindings(operation, blockBindings);
+    operations.push(result.operation);
+    updateBindings(result.operation, blockBindings);
   }
 
-  return operations;
+  return loweredOperationList(operations);
 }
 
 function lowerSwitchStatement(
   statement: ts.SwitchStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
+  const reason = unsupportedStatementMessage(statement, bindings);
   const expression = lowerValueExpression(statement.expression, bindings);
   if (expression === undefined) {
-    return undefined;
+    return unsupported(reason);
   }
   const clauses: JsIrSwitchClause[] = [];
   const switchBindings = new Map(bindings);
@@ -4723,42 +3117,44 @@ function lowerSwitchStatement(
     if (ts.isCaseClause(clause)) {
       test = lowerValueExpression(clause.expression, switchBindings);
       if (test === undefined) {
-        return undefined;
+        return unsupported(reason);
       }
     }
-    const operations = lowerStatementList(clause.statements, switchBindings);
-    if (operations === undefined) {
-      return undefined;
+    const clauseOperations = lowerStatementList(clause.statements, switchBindings);
+    if (clauseOperations.kind === "unsupported") {
+      return clauseOperations;
     }
-    for (const operation of operations) {
+    for (const operation of clauseOperations.operations) {
       updateBindings(operation, switchBindings);
     }
-    clauses.push({ test, operations });
+    clauses.push({ test, operations: clauseOperations.operations });
   }
-  return { kind: "switch", expression, clauses };
+  return loweredOperation({ kind: "switch", expression, clauses });
 }
 
 // eslint-disable-next-line complexity, max-statements -- Function declaration lowering covers default initializers, rest parameters, and per-kind binding setup in one place.
 function lowerFunctionDeclaration(
   statement: ts.FunctionDeclaration,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
+  const reason = unsupportedStatementMessage(statement, bindings);
   if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
-    return undefined;
+    return unsupported(reason);
   }
 
   const parameters: JsIrFunctionParameter[] = [];
   const fnBindings = functionFrameBindings(bindings);
   const prelude: JsIrOperation[] = [];
-  for (let i = 0; i < statement.parameters.length; i++) {
-    const param = statement.parameters[i];
+  const declaredParameters = runtimeParameters(statement.parameters);
+  for (let i = 0; i < declaredParameters.length; i++) {
+    const param = declaredParameters[i];
     const isRest = param.dotDotDotToken !== undefined;
-    if (isRest && i !== statement.parameters.length - 1) {
-      return undefined;
+    if (isRest && i !== declaredParameters.length - 1) {
+      return unsupported(reason);
     }
     const isDestructuring = ts.isObjectBindingPattern(param.name) || ts.isArrayBindingPattern(param.name);
     if (isRest && isDestructuring) {
-      return undefined;
+      return unsupported(reason);
     }
     let valueKind: JsIrValueKind;
     if (isRest || isDestructuring) {
@@ -4766,7 +3162,7 @@ function lowerFunctionDeclaration(
     } else if (ts.isIdentifier(param.name)) {
       valueKind = parameterValueKind(param);
     } else {
-      return undefined;
+      return unsupported(reason);
     }
     let defaultValue: JsIrNumberExpression | undefined;
     if (!isRest && !isDestructuring) {
@@ -4816,7 +3212,7 @@ function lowerFunctionDeclaration(
         loweredDestructuring = lowerObjectDestructuringElements(pattern, destructuringSource, destructuringBindings, destructuringOperations);
       }
       if (!loweredDestructuring) {
-        return undefined;
+        return unsupported(reason);
       }
       for (const op of destructuringOperations) {
         prelude.push(op);
@@ -4834,10 +3230,11 @@ function lowerFunctionDeclaration(
     returnKind: declaredFunctionReturnKind(statement.type)
   });
 
-  const bodyStatements = lowerBlockStatements(statement.body, fnBindings);
-  if (bodyStatements === undefined) {
-    return undefined;
+  const loweredBody = lowerBlockStatements(statement.body, fnBindings);
+  if (loweredBody.kind === "unsupported") {
+    return loweredBody;
   }
+  const bodyStatements = loweredBody.operations;
 
   let body: readonly JsIrOperation[];
   if (prelude.length === 0) {
@@ -4846,14 +3243,14 @@ function lowerFunctionDeclaration(
     body = [{ kind: "bindingGroup", operations: [...prelude, ...bodyStatements] }];
   }
 
-  return {
+  return loweredOperation({
     kind: "function",
     name: statement.name.text,
     parameters,
     body,
     enclosingCaptureNames: collectFunctionDeclarationEnclosingCaptureNames(statement, bindings),
     constructibleByObjectReturn: isPlainObjectReturningConstructor(statement)
-  };
+  });
 }
 
 function declaredFunctionReturnKind(type: ts.TypeNode | undefined): JsIrValueKind | "void" {
@@ -5086,6 +3483,18 @@ function lowerCallStatement(
     return undefined;
   }
 
+  // A discarded `<instance>.<method>(...)` is still a class method call, and the value path
+  // cannot see that: it reads the method off the receiver, and class methods are never
+  // installed on the prototype, so `jsCall` dispatched on `undefined` and the program
+  // segfaulted. Resolve it to the generated method function here, exactly as the value path
+  // does, so both positions agree.
+  if (ts.isPropertyAccessExpression(expression.expression)) {
+    const methodCall = lowerClassMethodCall(expression, expression.expression, bindings);
+    if (methodCall !== undefined) {
+      return methodCall;
+    }
+  }
+
   const jsonStatement = lowerJsonStatementCall(expression, bindings);
   if (jsonStatement !== undefined) {
     return jsonStatement;
@@ -5106,7 +3515,7 @@ function lowerCallStatement(
     if (callee === undefined || args === undefined) {
       return undefined;
     }
-    return { kind: "callValue", callee, arguments: args, thisValue: lowerCallThisValue(expression.expression, bindings) };
+    return { kind: "callValue", callee, arguments: args, thisValue: lowerCallThisValue(expression.expression, bindings), optionalCallee: optionalStatementCallee(expression) };
   }
 
   const args = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
@@ -5119,6 +3528,15 @@ function lowerCallStatement(
     name: expression.expression.text,
     arguments: args
   };
+}
+
+// A call is conditional on its callee exactly when the source wrote `callee?.(...)`. ECMAScript
+// still evaluates the callee; it just skips the dispatch when the result is nullish.
+function optionalStatementCallee(expression: ts.CallExpression): true | undefined {
+  if (expression.questionDotToken === undefined) {
+    return undefined;
+  }
+  return true;
 }
 
 function lowerRuntimeObjectCallStatement(
@@ -5455,7 +3873,7 @@ function lowerObjectMethodFunctionValue(
     parameters.push({ name: parameter.name.text, valueKind });
     bindFunctionParameter(parameter.name.text, valueKind, false, methodBindings);
   }
-  const body = lowerBlockStatements(method.body, methodBindings);
+  const body = bodyOperations(lowerBlockStatements(method.body, methodBindings));
   if (body === undefined) {
     return undefined;
   }
@@ -7354,7 +5772,7 @@ function lowerInlineFunctionBody(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly JsIrOperation[] | undefined {
   if (ts.isBlock(body)) {
-    return lowerBlockStatements(body, bindings);
+    return bodyOperations(lowerBlockStatements(body, bindings));
   }
   const expression = lowerValueExpression(body, bindings);
   if (expression === undefined) {
@@ -10336,7 +8754,13 @@ function lowerValueCallExpression(
   if (calleeValue === undefined || args === undefined) {
     return undefined;
   }
-  return { kind: "callValue", callee: calleeValue, arguments: args, thisValue: lowerCallThisValue(expression.expression, bindings) };
+  return {
+    kind: "callValue",
+    callee: calleeValue,
+    arguments: args,
+    thisValue: lowerCallThisValue(expression.expression, bindings),
+    optionalCallee: optionalStatementCallee(expression)
+  };
 }
 
 function lowerCallThisValue(
@@ -12011,11 +10435,11 @@ function lowerObjectFieldName(name: ts.PropertyName): string | undefined {
   return undefined;
 }
 
-function unsupportedStatementMessage(statement: ts.Statement): string {
+function unsupportedStatementMessage(statement: ts.Statement, bindings: ReadonlyMap<string, JsIrBindingValue>): string {
   if (ts.isVariableStatement(statement)) {
     const [declaration] = statement.declarationList.declarations;
     if (declaration.initializer !== undefined) {
-      const message = unsupportedExpressionMessage(declaration.initializer);
+      const message = unsupportedExpressionMessage(declaration.initializer, bindings);
       if (message !== undefined) {
         return message;
       }
@@ -12029,16 +10453,43 @@ function unsupportedStatementMessage(statement: ts.Statement): string {
   }
 
   if (ts.isExpressionStatement(statement)) {
-    const message = unsupportedExpressionMessage(statement.expression);
+    const message = unsupportedExpressionMessage(statement.expression, bindings);
     if (message !== undefined) {
       return message;
     }
   }
 
-  return `Unsupported statement in the current lowering slice: ${ts.SyntaxKind[statement.kind]}`;
+  return `Unsupported statement in the current lowering slice: ${syntaxKindName(statement.kind)}`;
 }
 
-function unsupportedExpressionMessage(expression: ts.Expression): string | undefined {
+/**
+ * The canonical name of a `ts.SyntaxKind`.
+ *
+ * The enum declares 28 range aliases after the values they alias — `FirstStatement` is declared
+ * just after `VariableStatement` and holds the same number — so the reverse lookup
+ * `ts.SyntaxKind[kind]`, which walks the enum object in insertion order and takes the last match,
+ * resolves to the alias. A user whose `const` declaration was rejected was being told their
+ * variable declaration was a `FirstStatement`. Insertion order is declaration order, so the first
+ * name for a value is the canonical one.
+ */
+const syntaxKindNames: ReadonlyMap<ts.SyntaxKind, string> = (() => {
+  const names = new Map<ts.SyntaxKind, string>();
+  for (const [name, value] of Object.entries(ts.SyntaxKind)) {
+    if (typeof value === "number" && !names.has(value)) {
+      names.set(value, name);
+    }
+  }
+  return names;
+})();
+
+function syntaxKindName(kind: ts.SyntaxKind): string {
+  return syntaxKindNames.get(kind) ?? String(kind);
+}
+
+function unsupportedExpressionMessage(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
   if (isUnsupportedSymbolExpression(expression, new Map())) {
     return "General Symbol values are not supported; only the well-known Symbol.iterator key is available";
   }
@@ -12046,7 +10497,7 @@ function unsupportedExpressionMessage(expression: ts.Expression): string | undef
   if (inlineCppMessage !== undefined) {
     return inlineCppMessage;
   }
-  const runtimeBoundary = unsupportedRuntimeBoundaryMessage(expression);
+  const runtimeBoundary = unsupportedRuntimeBoundaryMessage(expression, bindings);
   if (runtimeBoundary !== undefined) {
     return runtimeBoundary;
   }
@@ -12063,7 +10514,7 @@ function unsupportedExpressionMessage(expression: ts.Expression): string | undef
   if (unsupportedStringExpression(expression)) {
     return "Unsupported string expression in the current runtime string lowering slice";
   }
-  const nestedMessage = unsupportedNestedExpressionMessage(expression);
+  const nestedMessage = unsupportedNestedExpressionMessage(expression, bindings);
   if (nestedMessage !== undefined) {
     return nestedMessage;
   }
@@ -12089,15 +10540,18 @@ function unsupportedBinaryExpressionMessage(expression: ts.Expression): string |
   return undefined;
 }
 
-function unsupportedNestedExpressionMessage(expression: ts.Expression): string | undefined {
+function unsupportedNestedExpressionMessage(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
   if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-    return unsupportedExpressionMessage(expression.right);
+    return unsupportedExpressionMessage(expression.right, bindings);
   }
   if (!ts.isCallExpression(expression)) {
     return undefined;
   }
   for (const argument of expression.arguments) {
-    const message = unsupportedExpressionMessage(argument);
+    const message = unsupportedExpressionMessage(argument, bindings);
     if (message !== undefined) {
       return message;
     }
@@ -12115,7 +10569,10 @@ function unsupportedInlineCppExpressionMessage(expression: ts.Expression): strin
   return undefined;
 }
 
-function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | undefined {
+function unsupportedRuntimeBoundaryMessage(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
   if (ts.isElementAccessExpression(expression) && isLiteralElementAccessArgument(expression)) {
     if (ts.isStringLiteral(expression.argumentExpression)) {
       const key = expression.argumentExpression.text;
@@ -12147,9 +10604,53 @@ function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | 
     if (callee.name.text === "push" || callee.name.text === "pop" || callee.name.text === "shift" || callee.name.text === "unshift") {
       return "Array method calls are only supported on runtime arrays";
     }
-    if (callee.name.text === "every" || callee.name.text === "some") {
-      return "Array.prototype.every and Array.prototype.some are only supported without a callback argument in the current runtime lowering slice";
+  }
+  return unrecognizedCallTargetMessage(callee, bindings);
+}
+
+/**
+ * A call whose target nothing recognized. This is a different failure from a builtin the compiler
+ * knows about and has not written, which reports the builtin; here the shape itself is unknown, so
+ * the name of the target is the only thing worth saying.
+ */
+function unrecognizedCallTargetMessage(
+  callee: ts.LeftHandSideExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
+  if (!ts.isPropertyAccessExpression(callee) || ts.isPrivateIdentifier(callee.name)) {
+    return undefined;
+  }
+  // A builtin the compiler knows about and has not written is a different failure from a call
+  // target it does not know at all, and the support table is what tells the two apart. The owner
+  // comes from the receiver's binding rather than its spelling, so `Array.with()` and `arr.with()`
+  // are told apart from a `with` on some other object.
+  const owner = builtinOwnerOfReceiver(callee.expression, bindings);
+  if (owner === "array") {
+    const planned = plannedArrayBuiltinMessage(callee.name.text);
+    if (planned !== undefined) {
+      return planned;
     }
+  }
+  return `Unrecognized call target: ${callee.getText()}()`;
+}
+
+/** The support-table owner a call target belongs to, from the receiver rather than its spelling. */
+function builtinOwnerOfReceiver(
+  receiver: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): BuiltinOwner | undefined {
+  if (ts.isIdentifier(receiver)) {
+    if (receiver.text === "Array") {
+      return "array";
+    }
+    const binding = bindings.get(receiver.text);
+    if (binding?.kind === "runtimeArray" || binding?.kind === "array") {
+      return "array";
+    }
+    return undefined;
+  }
+  if (ts.isCallExpression(receiver) && ts.isIdentifier(receiver.expression) && receiver.expression.text === "Array") {
+    return "array";
   }
   return undefined;
 }

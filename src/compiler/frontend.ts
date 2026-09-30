@@ -63,7 +63,11 @@ const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
 const defaultCompilerOptions = (): ts.ParsedCommandLine => ({
   options: {
     module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    // `NodeNext` resolution is only legal alongside a `NodeNext`-family module kind, so pairing
+    // it with `ESNext` made TypeScript reject the compiler's own default options (TS5110) on
+    // every compile that did not supply a tsconfig. `Bundler` is the resolution mode that
+    // documents `ESNext` output, and it still maps an explicit `./x.js` specifier onto `x.ts`.
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
     target: ts.ScriptTarget.ES2022,
     strict: true
   },

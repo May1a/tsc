@@ -1317,6 +1317,36 @@ body:
 exit:
   ret ptr %out
 }
+; Materializes the call arguments from `offset` onward into a fresh array. A direct call passes a
+; rest parameter as an already-built array, so a function reached through the shared
+; argc/argv calling convention has to build one out of the argument buffer.
+define ptr @arrayFromArgv(i64 %argc, ptr %argv, i64 %offset) {
+entry:
+  %has.remaining = icmp uge i64 %argc, %offset
+  br i1 %has.remaining, label %measure, label %none.remaining
+none.remaining:
+  br label %allocate
+measure:
+  %remaining = sub i64 %argc, %offset
+  br label %allocate
+allocate:
+  %count = phi i64 [ 0, %none.remaining ], [ %remaining, %measure ]
+  %out = call ptr @arrayNew(i64 %count)
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %allocate ], [ %next, %body ]
+  %done = icmp uge i64 %i, %count
+  br i1 %done, label %exit, label %body
+body:
+  %source.index = add i64 %offset, %i
+  %source.slot = getelementptr i64, ptr %argv, i64 %source.index
+  %value = load i64, ptr %source.slot
+  call void @arraySet(ptr %out, i64 %i, i64 %value)
+  %next = add i64 %i, 1
+  br label %loop
+exit:
+  ret ptr %out
+}
 @.array.from.length = private unnamed_addr constant [7 x i8] c"length\00"
 
 define ptr @arrayFromObject(ptr %source) {
