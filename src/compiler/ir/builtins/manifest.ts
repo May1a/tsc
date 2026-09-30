@@ -1,5 +1,6 @@
 import { arrayBuiltinSupport } from "./array.js";
 import { objectBuiltinSupport } from "./object.js";
+import { stringBuiltinSupport } from "./string.js";
 import {
   type BuiltinDeclaration,
   type BuiltinEntry,
@@ -27,7 +28,8 @@ interface OwnerTable {
  */
 const ownerTables: readonly OwnerTable[] = [
   { owner: "array", support: arrayBuiltinSupport },
-  { owner: "object", support: objectBuiltinSupport }
+  { owner: "object", support: objectBuiltinSupport },
+  { owner: "string", support: stringBuiltinSupport }
 ];
 
 export function supportManifest(): SupportManifest {
@@ -37,6 +39,11 @@ export function supportManifest(): SupportManifest {
 /** The manifest ids of every builtin this build has not written, for the tests to cross-check. */
 export function plannedBuiltinIds(): readonly string[] {
   return supportManifest().builtins.filter((entry) => entry.state === "planned").map((entry) => entry.id);
+}
+
+/** The manifest ids of every builtin this build lowers to something JavaScript does not compute. */
+export function stubbedBuiltinIds(): readonly string[] {
+  return supportManifest().builtins.filter((entry) => entry.state === "stubbed").map((entry) => entry.id);
 }
 
 /** The manifest entry with this id, or `undefined` if no table declares one. */

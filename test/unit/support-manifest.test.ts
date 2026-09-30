@@ -1,7 +1,13 @@
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { arrayBuiltinSupport, builtinDisplay, objectBuiltinSupport, supportManifest } from "../../src/compiler/ir/builtins/index.js";
+import {
+  arrayBuiltinSupport,
+  builtinDisplay,
+  objectBuiltinSupport,
+  stringBuiltinSupport,
+  supportManifest
+} from "../../src/compiler/ir/builtins/index.js";
 import { expectUnsupportedMessage } from "../integration/helpers.js";
 
 /**
@@ -35,14 +41,15 @@ const { builtins } = supportManifest();
 
 describe("support manifest", () => {
   test("derives one entry per declared builtin, keyed by its id", () => {
-    const declared = Object.keys(arrayBuiltinSupport).length + Object.keys(objectBuiltinSupport).length;
+    const declared =
+      Object.keys(arrayBuiltinSupport).length + Object.keys(objectBuiltinSupport).length + Object.keys(stringBuiltinSupport).length;
     expect(builtins.length).toBe(declared);
     expect(new Set(builtins.map((entry) => entry.id)).size).toBe(builtins.length);
   });
 
   test("lists every owner the tables cover", () => {
     const owners = [...new Set(builtins.map((entry) => entry.owner))].toSorted();
-    expect(owners).toEqual(["array", "object"]);
+    expect(owners).toEqual(["array", "object", "string"]);
   });
 
   test("names every entry with the owner and name it sits under", () => {
@@ -64,6 +71,19 @@ describe("support manifest", () => {
   });
 });
 
+describe("stubbed builtins", () => {
+  const stubbed = builtins.filter((entry) => entry.state === "stubbed");
+
+  test("every one names what it returns instead", () => {
+    // A stub lowers, so no diagnostic fires for it. The reason is the only place the user or the
+    // next reader finds out what it actually returns, so a stub without one is an undocumented
+    // wrong answer.
+    for (const entry of stubbed) {
+      expect(entry.reason, `${entry.id} is stubbed but does not say what it returns instead`).toBeDefined();
+    }
+  });
+});
+
 describe("planned builtins", () => {
   const planned = builtins.filter((entry) => entry.state === "planned");
 
@@ -71,8 +91,8 @@ describe("planned builtins", () => {
     expect(planned.length).toBeGreaterThan(0);
   });
 
-  test("every planned builtin that claims a narrow reason gets one that is not a placeholder", () => {
-    for (const entry of planned) {
+  test("every entry that claims a narrow reason gives one that is not a placeholder", () => {
+    for (const entry of builtins) {
       if (entry.reason === undefined) {
         continue;
       }

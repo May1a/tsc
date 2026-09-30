@@ -31,14 +31,18 @@ export type BuiltinOwner =
 export type BuiltinPlacement = "prototype" | "static";
 
 /**
- * Whether this build has a lowering for the entry.
+ * Whether this build has a lowering for the entry, and whether that lowering agrees with JavaScript.
  *
- * `"planned"` is the important half of a support table. It is how the compiler says "this is a
- * builtin I know about and have not written yet", which is a far more useful diagnostic than
- * reporting the enclosing statement's syntax kind, and it is free to generate once the table
- * exists.
+ * - `"supported"` — the lowering was checked against Node and produces the same answer.
+ * - `"stubbed"` — the compiler lowers it, but to something JavaScript does not compute. The runtime
+ *   has no locale comparison, so `localeCompare` returns the first character's code point, and
+ *   `packages.test.ts` asserts that number. This is the plan's batch-3 case: the shape is not
+ *   missing, the answer is wrong, and a two-state table would have to call it supported.
+ * - `"planned"` — the compiler recognizes the member and has not written it. This is the state that
+ *   produces a diagnostic naming the builtin, which is a far more useful answer than the enclosing
+ *   statement's syntax kind.
  */
-export type BuiltinState = "supported" | "planned";
+export type BuiltinState = "supported" | "stubbed" | "planned";
 
 /** The argument count an entry accepts, as a single count or an inclusive range. */
 export type BuiltinArity = number | { readonly from: number; readonly to: number };
@@ -139,7 +143,8 @@ export function builtinDisplay(entry: BuiltinEntry): string {
 
 /**
  * The diagnostic for a builtin the compiler knows about and has not written. It cites the manifest
- * id so the user can look up what the compiler does support for that owner.
+ * id so the user can look up what the compiler does support for that owner. A `"stubbed"` entry
+ * lowers, so this never fires for one; it is in the manifest so the wrong answer is on the record.
  */
 export function knownBuiltinMessage(entry: BuiltinEntry): string {
   const known = `${builtinDisplay(entry)} is a known builtin that this build does not implement yet (support id: ${entry.id})`;

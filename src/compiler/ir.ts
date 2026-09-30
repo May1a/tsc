@@ -37,7 +37,12 @@ import type {
   JsIrResult,
   JsIrTraceOrigin
 } from "./ir/module.js";
-import { type BuiltinOwner, plannedArrayBuiltinMessage, plannedObjectBuiltinMessage } from "./ir/builtins/index.js";
+import {
+  type BuiltinOwner,
+  plannedArrayBuiltinMessage,
+  plannedObjectBuiltinMessage,
+  plannedStringBuiltinMessage
+} from "./ir/builtins/index.js";
 import { type JsIrOperation, jsIrOperationChildren, visitJsIrOperations } from "./ir/types.js";
 export type * from "./ir/bindings.js";
 export type * from "./ir/expressions.js";
@@ -10541,6 +10546,13 @@ function unsupportedExpressionMessage(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): string | undefined {
+  // A tagged template is a call whose callee is the tag, and the template path never reaches a call
+  // diagnostic, so without this `String.raw` reports its enclosing statement instead of the builtin
+  // that is missing.
+  const tagMessage = taggedTemplateBuiltinMessage(expression, bindings);
+  if (tagMessage !== undefined) {
+    return tagMessage;
+  }
   if (isUnsupportedSymbolExpression(expression, new Map())) {
     return "General Symbol values are not supported; only the well-known Symbol.iterator key is available";
   }
@@ -10699,6 +10711,9 @@ function plannedBuiltinMessageFor(
   if (owner === "object") {
     return plannedObjectBuiltinMessage(name);
   }
+  if (owner === "string") {
+    return plannedStringBuiltinMessage(name);
+  }
   return undefined;
 }
 
@@ -10714,12 +10729,18 @@ function builtinOwnerOfReceiver(
     if (receiver.text === "Object") {
       return "object";
     }
+    if (receiver.text === "String") {
+      return "string";
+    }
     const binding = bindings.get(receiver.text);
     if (binding?.kind === "runtimeArray" || binding?.kind === "array") {
       return "array";
     }
     if (binding?.kind === "runtimeObject" || binding?.kind === "object") {
       return "object";
+    }
+    if (isRuntimeStringBinding(binding)) {
+      return "string";
     }
     return undefined;
   }
@@ -10732,6 +10753,30 @@ function builtinOwnerOfReceiver(
     }
   }
   return undefined;
+}
+
+/**
+ * True for a binding the string tier can lower through: a `string` binding, a `stringExpression`
+ * one, or a `stringVariable` one, which is what a lowered string method or a `string` parameter
+ * records. The same three kinds `lowerStringRuntimeExpression` accepts for an identifier.
+ */
+function isRuntimeStringBinding(binding: JsIrBindingValue | undefined): boolean {
+  return binding?.kind === "string" || binding?.kind === "stringExpression" || binding?.kind === "stringVariable";
+}
+
+/** The refusal for a tagged template whose tag is a known-but-unwritten builtin. */
+function taggedTemplateBuiltinMessage(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
+  if (!ts.isTaggedTemplateExpression(expression) || !ts.isPropertyAccessExpression(expression.tag)) {
+    return undefined;
+  }
+  const { tag } = expression;
+  if (ts.isPrivateIdentifier(tag.name)) {
+    return undefined;
+  }
+  return plannedBuiltinMessageFor(tag.expression, tag.name.text, bindings);
 }
 
 function unsupportedJsonMessage(callee: ts.PropertyAccessExpression): string | undefined {
