@@ -37,6 +37,7 @@ import type {
   JsIrResult,
   JsIrTraceOrigin
 } from "./ir/module.js";
+import { type BuiltinOwner, plannedArrayBuiltinMessage } from "./ir/builtins/index.js";
 import { type JsIrOperation, jsIrOperationChildren, visitJsIrOperations } from "./ir/types.js";
 export type * from "./ir/bindings.js";
 export type * from "./ir/expressions.js";
@@ -342,11 +343,15 @@ const loweredOperationList = (operations: readonly JsIrOperation[]): LoweredStat
  * the reason stays the reconstructed one; converting a recognizer to return `Lowered` replaces
  * this with the reason the recognizer itself knows.
  */
-function statementResult(operation: JsIrOperation | undefined, statement: ts.Statement): Lowered {
+function statementResult(
+  operation: JsIrOperation | undefined,
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
   if (operation !== undefined) {
     return loweredOperation(operation);
   }
-  return unsupported(unsupportedStatementMessage(statement));
+  return unsupported(unsupportedStatementMessage(statement, bindings));
 }
 
 /**
@@ -488,7 +493,7 @@ function lowerTopLevelStatements(sourceFile: ts.SourceFile): LoweredStatements {
         updateBindings(result.operation, bindings);
         continue;
       }
-      diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result));
+      diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result, bindings));
     }
   } finally {
     activeClassRegistry = previousClassRegistry;
@@ -505,9 +510,10 @@ function lowerTopLevelStatements(sourceFile: ts.SourceFile): LoweredStatements {
 function unsupportedStatementDiagnostic(
   sourceFile: ts.SourceFile,
   statement: ts.Statement,
-  result: Lowered
+  result: Lowered,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
 ): CompilerDiagnostic {
-  let message = unsupportedStatementMessage(statement);
+  let message = unsupportedStatementMessage(statement, bindings);
   if (result.kind === "unsupported") {
     message = result.reason;
   }
@@ -2151,11 +2157,11 @@ function lowerStatementCore(
   promotedAggregates: ReadonlySet<string> = new Set()
 ): Lowered {
   if (ts.isVariableStatement(statement)) {
-    return statementResult(lowerVariableBinding(statement, bindings, promotedAggregates), statement);
+    return statementResult(lowerVariableBinding(statement, bindings, promotedAggregates), statement, bindings);
   }
 
   if (ts.isIfStatement(statement)) {
-    return statementResult(lowerIfStatement(statement, bindings), statement);
+    return statementResult(lowerIfStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isSwitchStatement(statement)) {
@@ -2163,23 +2169,23 @@ function lowerStatementCore(
   }
 
   if (ts.isWhileStatement(statement)) {
-    return statementResult(lowerWhileStatement(statement, bindings), statement);
+    return statementResult(lowerWhileStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isForStatement(statement)) {
-    return statementResult(lowerForStatement(statement, bindings), statement);
+    return statementResult(lowerForStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isForOfStatement(statement)) {
-    return statementResult(lowerForOfStatement(statement, bindings), statement);
+    return statementResult(lowerForOfStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isForInStatement(statement)) {
-    return statementResult(lowerForInStatement(statement, bindings), statement);
+    return statementResult(lowerForInStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isDoStatement(statement)) {
-    return statementResult(lowerDoWhileStatement(statement, bindings), statement);
+    return statementResult(lowerDoWhileStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isBreakStatement(statement)) {
@@ -2195,11 +2201,11 @@ function lowerStatementCore(
   }
 
   if (ts.isReturnStatement(statement)) {
-    return statementResult(lowerReturnStatement(statement, bindings), statement);
+    return statementResult(lowerReturnStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isThrowStatement(statement)) {
-    return statementResult(lowerThrowStatement(statement, bindings), statement);
+    return statementResult(lowerThrowStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isTryStatement(statement)) {
@@ -2207,7 +2213,7 @@ function lowerStatementCore(
   }
 
   if (ts.isExpressionStatement(statement)) {
-    return statementResult(lowerExpressionStatement(statement.expression, bindings), statement);
+    return statementResult(lowerExpressionStatement(statement.expression, bindings), statement, bindings);
   }
 
   return notApplicable;
@@ -3085,7 +3091,7 @@ function lowerStatementList(
       return result;
     }
     if (result.kind === "notApplicable") {
-      return { kind: "unsupported", reason: unsupportedStatementMessage(statement) };
+      return { kind: "unsupported", reason: unsupportedStatementMessage(statement, blockBindings) };
     }
 
     operations.push(result.operation);
@@ -3099,7 +3105,7 @@ function lowerSwitchStatement(
   statement: ts.SwitchStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  const reason = unsupportedStatementMessage(statement);
+  const reason = unsupportedStatementMessage(statement, bindings);
   const expression = lowerValueExpression(statement.expression, bindings);
   if (expression === undefined) {
     return unsupported(reason);
@@ -3131,7 +3137,7 @@ function lowerFunctionDeclaration(
   statement: ts.FunctionDeclaration,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  const reason = unsupportedStatementMessage(statement);
+  const reason = unsupportedStatementMessage(statement, bindings);
   if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
     return unsupported(reason);
   }
@@ -10429,11 +10435,11 @@ function lowerObjectFieldName(name: ts.PropertyName): string | undefined {
   return undefined;
 }
 
-function unsupportedStatementMessage(statement: ts.Statement): string {
+function unsupportedStatementMessage(statement: ts.Statement, bindings: ReadonlyMap<string, JsIrBindingValue>): string {
   if (ts.isVariableStatement(statement)) {
     const [declaration] = statement.declarationList.declarations;
     if (declaration.initializer !== undefined) {
-      const message = unsupportedExpressionMessage(declaration.initializer);
+      const message = unsupportedExpressionMessage(declaration.initializer, bindings);
       if (message !== undefined) {
         return message;
       }
@@ -10447,7 +10453,7 @@ function unsupportedStatementMessage(statement: ts.Statement): string {
   }
 
   if (ts.isExpressionStatement(statement)) {
-    const message = unsupportedExpressionMessage(statement.expression);
+    const message = unsupportedExpressionMessage(statement.expression, bindings);
     if (message !== undefined) {
       return message;
     }
@@ -10480,7 +10486,10 @@ function syntaxKindName(kind: ts.SyntaxKind): string {
   return syntaxKindNames.get(kind) ?? String(kind);
 }
 
-function unsupportedExpressionMessage(expression: ts.Expression): string | undefined {
+function unsupportedExpressionMessage(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
   if (isUnsupportedSymbolExpression(expression, new Map())) {
     return "General Symbol values are not supported; only the well-known Symbol.iterator key is available";
   }
@@ -10488,7 +10497,7 @@ function unsupportedExpressionMessage(expression: ts.Expression): string | undef
   if (inlineCppMessage !== undefined) {
     return inlineCppMessage;
   }
-  const runtimeBoundary = unsupportedRuntimeBoundaryMessage(expression);
+  const runtimeBoundary = unsupportedRuntimeBoundaryMessage(expression, bindings);
   if (runtimeBoundary !== undefined) {
     return runtimeBoundary;
   }
@@ -10505,7 +10514,7 @@ function unsupportedExpressionMessage(expression: ts.Expression): string | undef
   if (unsupportedStringExpression(expression)) {
     return "Unsupported string expression in the current runtime string lowering slice";
   }
-  const nestedMessage = unsupportedNestedExpressionMessage(expression);
+  const nestedMessage = unsupportedNestedExpressionMessage(expression, bindings);
   if (nestedMessage !== undefined) {
     return nestedMessage;
   }
@@ -10531,15 +10540,18 @@ function unsupportedBinaryExpressionMessage(expression: ts.Expression): string |
   return undefined;
 }
 
-function unsupportedNestedExpressionMessage(expression: ts.Expression): string | undefined {
+function unsupportedNestedExpressionMessage(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
   if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-    return unsupportedExpressionMessage(expression.right);
+    return unsupportedExpressionMessage(expression.right, bindings);
   }
   if (!ts.isCallExpression(expression)) {
     return undefined;
   }
   for (const argument of expression.arguments) {
-    const message = unsupportedExpressionMessage(argument);
+    const message = unsupportedExpressionMessage(argument, bindings);
     if (message !== undefined) {
       return message;
     }
@@ -10557,7 +10569,10 @@ function unsupportedInlineCppExpressionMessage(expression: ts.Expression): strin
   return undefined;
 }
 
-function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | undefined {
+function unsupportedRuntimeBoundaryMessage(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
   if (ts.isElementAccessExpression(expression) && isLiteralElementAccessArgument(expression)) {
     if (ts.isStringLiteral(expression.argumentExpression)) {
       const key = expression.argumentExpression.text;
@@ -10589,11 +10604,8 @@ function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | 
     if (callee.name.text === "push" || callee.name.text === "pop" || callee.name.text === "shift" || callee.name.text === "unshift") {
       return "Array method calls are only supported on runtime arrays";
     }
-    if (callee.name.text === "every" || callee.name.text === "some") {
-      return "Array.prototype.every and Array.prototype.some are only supported without a callback argument in the current runtime lowering slice";
-    }
   }
-  return unrecognizedCallTargetMessage(callee);
+  return unrecognizedCallTargetMessage(callee, bindings);
 }
 
 /**
@@ -10601,11 +10613,46 @@ function unsupportedRuntimeBoundaryMessage(expression: ts.Expression): string | 
  * knows about and has not written, which reports the builtin; here the shape itself is unknown, so
  * the name of the target is the only thing worth saying.
  */
-function unrecognizedCallTargetMessage(callee: ts.LeftHandSideExpression): string | undefined {
+function unrecognizedCallTargetMessage(
+  callee: ts.LeftHandSideExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
   if (!ts.isPropertyAccessExpression(callee) || ts.isPrivateIdentifier(callee.name)) {
     return undefined;
   }
+  // A builtin the compiler knows about and has not written is a different failure from a call
+  // target it does not know at all, and the support table is what tells the two apart. The owner
+  // comes from the receiver's binding rather than its spelling, so `Array.with()` and `arr.with()`
+  // are told apart from a `with` on some other object.
+  const owner = builtinOwnerOfReceiver(callee.expression, bindings);
+  if (owner === "array") {
+    const planned = plannedArrayBuiltinMessage(callee.name.text);
+    if (planned !== undefined) {
+      return planned;
+    }
+  }
   return `Unrecognized call target: ${callee.getText()}()`;
+}
+
+/** The support-table owner a call target belongs to, from the receiver rather than its spelling. */
+function builtinOwnerOfReceiver(
+  receiver: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): BuiltinOwner | undefined {
+  if (ts.isIdentifier(receiver)) {
+    if (receiver.text === "Array") {
+      return "array";
+    }
+    const binding = bindings.get(receiver.text);
+    if (binding?.kind === "runtimeArray" || binding?.kind === "array") {
+      return "array";
+    }
+    return undefined;
+  }
+  if (ts.isCallExpression(receiver) && ts.isIdentifier(receiver.expression) && receiver.expression.text === "Array") {
+    return "array";
+  }
+  return undefined;
 }
 
 function unsupportedJsonMessage(callee: ts.PropertyAccessExpression): string | undefined {
