@@ -1,5 +1,7 @@
 import { arrayBuiltinSupport } from "./array.js";
 import { objectBuiltinSupport } from "./object.js";
+import { mathBuiltinSupport } from "./math.js";
+import { numberBuiltinSupport, numberGlobalBuiltinSupport } from "./number.js";
 import { stringBuiltinSupport } from "./string.js";
 import {
   type BuiltinDeclaration,
@@ -29,7 +31,10 @@ interface OwnerTable {
 const ownerTables: readonly OwnerTable[] = [
   { owner: "array", support: arrayBuiltinSupport },
   { owner: "object", support: objectBuiltinSupport },
-  { owner: "string", support: stringBuiltinSupport }
+  { owner: "string", support: stringBuiltinSupport },
+  { owner: "number", support: numberBuiltinSupport },
+  { owner: "number", support: numberGlobalBuiltinSupport },
+  { owner: "math", support: mathBuiltinSupport }
 ];
 
 export function supportManifest(): SupportManifest {

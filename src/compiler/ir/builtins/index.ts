@@ -1,6 +1,22 @@
 export { arrayBuiltinFor, arrayBuiltinSupport, type ArrayBuiltin, plannedArrayBuiltinMessage } from "./array.js";
 export { objectBuiltinFor, objectBuiltinSupport, type ObjectBuiltin, plannedObjectBuiltinMessage } from "./object.js";
 export {
+  type MathBuiltin,
+  mathBuiltinFor,
+  mathBuiltinSupport,
+  plannedMathBuiltinMessage
+} from "./math.js";
+export {
+  type NumberBuiltin,
+  type NumberGlobalBuiltin,
+  numberBuiltinFor,
+  numberBuiltinSupport,
+  numberGlobalBuiltinSupport,
+  numberGlobalNames,
+  plannedNumberBuiltinMessage,
+  plannedNumberGlobalMessage
+} from "./number.js";
+export {
   type StringBuiltin,
   plannedStringBuiltinMessage,
   stringBuiltinFor,

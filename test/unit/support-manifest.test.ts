@@ -4,6 +4,9 @@ import { describe, expect, test } from "vitest";
 import {
   arrayBuiltinSupport,
   builtinDisplay,
+  mathBuiltinSupport,
+  numberBuiltinSupport,
+  numberGlobalBuiltinSupport,
   objectBuiltinSupport,
   stringBuiltinSupport,
   supportManifest
@@ -33,40 +36,50 @@ function kebab(name: string): string {
   return name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
 }
 
-function fixtureFamily(owner: string, name: string): string {
-  return `${owner}-runtime-${kebab(name)}`;
+function fixtureFamily(entry: { readonly owner: string; readonly name: string; readonly fixture?: string }): string {
+  return `${entry.owner}-runtime-${entry.fixture ?? kebab(entry.name)}`;
 }
 
 const { builtins } = supportManifest();
 
 describe("support manifest", () => {
   test("derives one entry per declared builtin, keyed by its id", () => {
-    const declared =
-      Object.keys(arrayBuiltinSupport).length + Object.keys(objectBuiltinSupport).length + Object.keys(stringBuiltinSupport).length;
+    const tables = [
+      arrayBuiltinSupport,
+      objectBuiltinSupport,
+      stringBuiltinSupport,
+      numberBuiltinSupport,
+      numberGlobalBuiltinSupport,
+      mathBuiltinSupport
+    ] as const;
+    const declared = tables.reduce((total, table) => total + Object.keys(table).length, 0);
     expect(builtins.length).toBe(declared);
     expect(new Set(builtins.map((entry) => entry.id)).size).toBe(builtins.length);
   });
 
   test("lists every owner the tables cover", () => {
     const owners = [...new Set(builtins.map((entry) => entry.owner))].toSorted();
-    expect(owners).toEqual(["array", "object", "string"]);
+    expect(owners).toEqual(["array", "math", "number", "object", "string"]);
   });
 
-  test("names every entry with the owner and name it sits under", () => {
+  test("names every entry with the owner it belongs to", () => {
+    // The id need not be `<owner>.<name>`: the numeric globals carry `globalIsNaN` so they do not
+    // collide with the `Number.isNaN` static of the same name. What must hold is that the id says
+    // which owner it came from, and that it is unique, which the first test checks.
     for (const entry of builtins) {
-      expect(entry.id).toBe(`${entry.owner}.${entry.name}`);
+      expect(entry.id.startsWith(`${entry.owner}.`)).toBe(true);
     }
   });
 
   test("every supported builtin has a fixture that runs", () => {
     const supported = builtins.filter((entry) => entry.state === "supported");
     const covered = (entry: (typeof supported)[number]): boolean => {
-      const family = fixtureFamily(entry.owner, entry.name);
+      const family = fixtureFamily(entry);
       return [...fixtureNames].some((fixture) => fixture === `${family}.ts` || fixture.startsWith(`${family}-`));
     };
     const missing = supported
       .filter((entry) => !covered(entry))
-      .map((entry) => `${entry.id} (expected a ${fixtureFamily(entry.owner, entry.name)} fixture)`);
+      .map((entry) => `${entry.id} (expected a ${fixtureFamily(entry)} fixture)`);
     expect(missing).toEqual([]);
   });
 });
@@ -101,6 +114,10 @@ describe("planned builtins", () => {
   });
 
   test.each(planned.map((entry) => [entry.id, entry] as const))("%s refuses by name", async (_id, entry) => {
-    await expectUnsupportedMessage(`builtin-planned-${entry.owner}-${kebab(entry.name)}.ts`, `${builtinDisplay(entry)} is a known builtin`);
+    // A `"planned"` entry's fixture is `builtin-planned-<owner>-<name>`, stated by the table for the
+    // same reason the supported one is: a name that is an acronym has no mechanical kebab spelling.
+    const stem = entry.fixture ?? kebab(entry.name);
+    const fixture = `builtin-planned-${entry.owner}-${stem}.ts`;
+    await expectUnsupportedMessage(fixture, `${builtinDisplay(entry)} is a known builtin`);
   }, 60_000);
 });

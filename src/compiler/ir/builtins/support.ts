@@ -27,8 +27,14 @@ export type BuiltinOwner =
   | "regexp"
   | "string";
 
-/** Whether the name is a member of the owner's prototype or one of its statics. */
-export type BuiltinPlacement = "prototype" | "static";
+/**
+ * Where the name lives: on the owner's prototype, among its statics, or as a bare global.
+ *
+ * The globals are here rather than in a table of their own because they are the same thing from a
+ * user's point of view — a builtin this build knows the name of — and the diagnostic reads the same
+ * either way.
+ */
+export type BuiltinPlacement = "prototype" | "static" | "global";
 
 /**
  * Whether this build has a lowering for the entry, and whether that lowering agrees with JavaScript.
@@ -71,6 +77,13 @@ export interface BuiltinEntry<Owner extends BuiltinOwner = BuiltinOwner> {
    * what the user is told.
    */
   readonly reason?: string;
+  /**
+   * The stem of the fixture that covers this entry, without the `.ts`. The convention is
+   * `<owner>-runtime-<stem>`, but a name that is an acronym or already separated (`EPSILON`,
+   * `isNaN`) has no mechanical kebab spelling, so the table states the stem rather than the test
+   * guessing one and failing on a spelling nobody chose.
+   */
+  readonly fixture?: string;
 }
 
 /**
@@ -135,6 +148,9 @@ export function builtinEntries<Owner extends BuiltinOwner, Name extends string>(
 /** Renders an entry as the source-level expression a user would have written for it. */
 export function builtinDisplay(entry: BuiltinEntry): string {
   const owner = capitalize(entry.owner);
+  if (entry.placement === "global") {
+    return entry.name;
+  }
   if (entry.placement === "static") {
     return `${owner}.${entry.name}`;
   }

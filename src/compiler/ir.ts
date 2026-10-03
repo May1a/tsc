@@ -39,7 +39,11 @@ import type {
 } from "./ir/module.js";
 import {
   type BuiltinOwner,
+  numberGlobalNames,
   plannedArrayBuiltinMessage,
+  plannedMathBuiltinMessage,
+  plannedNumberBuiltinMessage,
+  plannedNumberGlobalMessage,
   plannedObjectBuiltinMessage,
   plannedStringBuiltinMessage
 } from "./ir/builtins/index.js";
@@ -2984,6 +2988,9 @@ function lowerPrintExpression(
   }
 
   if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
+    if (isPlannedBuiltinCall(expression.expression, bindings)) {
+      return undefined;
+    }
     const callee = bindings.get(expression.expression.text);
     const args: JsIrCallArgument[] = [];
     if (callee?.kind === "closure") {
@@ -3513,6 +3520,9 @@ function lowerCallStatement(
   let identifierBinding: JsIrBindingValue | undefined;
   if (ts.isIdentifier(expression.expression)) {
     identifierBinding = bindings.get(expression.expression.text);
+    if (unlowerableCallee(expression.expression, identifierBinding, bindings)) {
+      return undefined;
+    }
   }
   if (!ts.isIdentifier(expression.expression) || identifierBinding?.kind === "value" || identifierBinding?.kind === "valueVariable") {
     if (isPlannedBuiltinCall(expression.expression, bindings)) {
@@ -8783,6 +8793,11 @@ function lowerValueCallExpression(
       }
       return { kind: "call", name: expression.expression.text, arguments: args };
     }
+    // See `lowerCallStatement`: an unbound global has no definition behind it, while an unbound
+    // cross-module function does.
+    if (callee === undefined && isKnownGlobalCallee(expression.expression)) {
+      return undefined;
+    }
   }
 
   if (isPlannedBuiltinCall(expression.expression, bindings)) {
@@ -8813,10 +8828,38 @@ function isPlannedBuiltinCall(
   callee: ts.LeftHandSideExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): boolean {
+  if (ts.isIdentifier(callee)) {
+    return plannedGlobalMessage(callee.text) !== undefined;
+  }
   if (!ts.isPropertyAccessExpression(callee) || ts.isPrivateIdentifier(callee.name)) {
     return false;
   }
   return plannedBuiltinMessageFor(callee.expression, callee.name.text, bindings) !== undefined;
+}
+
+/**
+ * True for an identifier callee this branch must not turn into a direct `call` operation.
+ *
+ * An unbound identifier is normally a cross-module function, which the emitter resolves by name, so
+ * it passes. A *global* is different: the globals have no `@name` definition behind them, so the only
+ * thing this could emit is a call to a symbol that does not exist and the compile dies in clang with
+ * `use of undefined value '@name'` — which is what `isNaN(2);` did. A known-but-unwritten builtin is
+ * different again: it must be reported by name rather than dispatched.
+ */
+function unlowerableCallee(
+  callee: ts.Identifier,
+  binding: JsIrBindingValue | undefined,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): boolean {
+  if (binding === undefined && isKnownGlobalCallee(callee)) {
+    return true;
+  }
+  return isPlannedBuiltinCall(callee, bindings);
+}
+
+/** The refusal for a bare global this build has not written, or `undefined` when it is not one. */
+function plannedGlobalMessage(name: string): string | undefined {
+  return plannedNumberGlobalMessage(name);
 }
 
 function lowerCallThisValue(
@@ -9865,6 +9908,9 @@ function lowerNumberCallExpression(
       return undefined;
     }
   }
+  if (isPlannedBuiltinCall(expression.expression, bindings)) {
+    return undefined;
+  }
   const spreadCall = lowerSpreadCallValue(expression, bindings);
   if (spreadCall !== undefined) {
     return { kind: "valueToNumber", value: spreadCall };
@@ -10546,13 +10592,6 @@ function unsupportedExpressionMessage(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): string | undefined {
-  // A tagged template is a call whose callee is the tag, and the template path never reaches a call
-  // diagnostic, so without this `String.raw` reports its enclosing statement instead of the builtin
-  // that is missing.
-  const tagMessage = taggedTemplateBuiltinMessage(expression, bindings);
-  if (tagMessage !== undefined) {
-    return tagMessage;
-  }
   if (isUnsupportedSymbolExpression(expression, new Map())) {
     return "General Symbol values are not supported; only the well-known Symbol.iterator key is available";
   }
@@ -10586,6 +10625,27 @@ function unsupportedExpressionMessage(
       return "Dynamic computed object keys on nested known-shape objects are not supported yet";
     }
     return "Dynamic computed object keys are not supported by known-shape numeric objects";
+  }
+  return fallbackCallTargetMessage(expression, bindings);
+}
+
+/**
+ * The last-resort diagnostic for an expression nothing lowered: the name of the call target.
+ *
+ * It runs after every check that knows more about why the expression did not lower. The callee may
+ * be a bare global or a tagged template's tag, neither of which is a property access, and without
+ * this `isFinite(2)` and `String.raw` would report their enclosing statement instead of the builtin
+ * that is missing.
+ */
+function fallbackCallTargetMessage(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
+  if (ts.isCallExpression(expression) && !isRecognizedGlobalCallee(expression.expression)) {
+    return callTargetMessage(expression.expression, bindings);
+  }
+  if (ts.isTaggedTemplateExpression(expression)) {
+    return callTargetMessage(expression.tag, bindings);
   }
   return undefined;
 }
@@ -10648,6 +10708,11 @@ function unsupportedRuntimeBoundaryMessage(
     return undefined;
   }
   const callee = expression.expression;
+  // A global the compiler lowers itself is reported by its own recognizer, which knows what inside
+  // it failed; attributing the failure to the global's own name would name the wrong thing.
+  if (isRecognizedGlobalCallee(callee)) {
+    return undefined;
+  }
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
     const jsonMessage = unsupportedJsonMessage(callee);
     if (jsonMessage !== undefined) {
@@ -10668,25 +10733,64 @@ function unsupportedRuntimeBoundaryMessage(
       return "Array method calls are only supported on runtime arrays";
     }
   }
-  return unrecognizedCallTargetMessage(callee, bindings);
+  return callTargetMessage(callee, bindings);
 }
 
 /**
- * A call whose target nothing recognized. This is a different failure from a builtin the compiler
- * knows about and has not written, which reports the builtin; here the shape itself is unknown, so
- * the name of the target is the only thing worth saying.
+ * The message for a call the compiler does not recognize, whatever shape its callee has.
+ *
+ * A builtin the compiler knows about and has not written is a different failure from a call target
+ * it does not know at all, and the support tables are what tell the two apart. The owner comes from
+ * the receiver's binding rather than its spelling, so `Array.with()` and `arr.with()` are told apart
+ * from a `with` on some other object.
  */
-function unrecognizedCallTargetMessage(
+/**
+ * The globals the compiler lowers itself, so a failure inside one of them is reported by its own
+ * recognizer and must not be attributed to the global's name.
+ */
+const recognizedGlobalCallees: ReadonlySet<string> = new Set([
+  "Boolean",
+  "Number",
+  "String",
+  "isNaN",
+  "parseFloat",
+  "parseInt",
+  "print"
+]);
+
+const knownGlobalNames: ReadonlySet<string> = new Set(numberGlobalNames());
+
+function isRecognizedGlobalCallee(callee: ts.LeftHandSideExpression): boolean {
+  if (!ts.isIdentifier(callee)) {
+    return false;
+  }
+  return recognizedGlobalCallees.has(callee.text);
+}
+
+/**
+ * True for a name the support tables list as a bare global. Those have no `@name` definition behind
+ * them, so an unbound reference to one cannot be emitted as a call.
+ */
+function isKnownGlobalCallee(callee: ts.LeftHandSideExpression): boolean {
+  return ts.isIdentifier(callee) && knownGlobalNames.has(callee.text);
+}
+
+
+
+function callTargetMessage(
   callee: ts.LeftHandSideExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): string | undefined {
+  if (ts.isIdentifier(callee)) {
+    const global = plannedGlobalMessage(callee.text);
+    if (global !== undefined) {
+      return global;
+    }
+    return `Unrecognized call target: ${callee.getText()}()`;
+  }
   if (!ts.isPropertyAccessExpression(callee) || ts.isPrivateIdentifier(callee.name)) {
     return undefined;
   }
-  // A builtin the compiler knows about and has not written is a different failure from a call
-  // target it does not know at all, and the support table is what tells the two apart. The owner
-  // comes from the receiver's binding rather than its spelling, so `Array.with()` and `arr.with()`
-  // are told apart from a `with` on some other object.
   const planned = plannedBuiltinMessageFor(callee.expression, callee.name.text, bindings);
   if (planned !== undefined) {
     return planned;
@@ -10714,6 +10818,12 @@ function plannedBuiltinMessageFor(
   if (owner === "string") {
     return plannedStringBuiltinMessage(name);
   }
+  if (owner === "number") {
+    return plannedNumberBuiltinMessage(name);
+  }
+  if (owner === "math") {
+    return plannedMathBuiltinMessage(name);
+  }
   return undefined;
 }
 
@@ -10732,6 +10842,9 @@ function builtinOwnerOfReceiver(
     if (receiver.text === "String") {
       return "string";
     }
+    if (receiver.text === "Math") {
+      return "math";
+    }
     const binding = bindings.get(receiver.text);
     if (binding?.kind === "runtimeArray" || binding?.kind === "array") {
       return "array";
@@ -10741,6 +10854,9 @@ function builtinOwnerOfReceiver(
     }
     if (isRuntimeStringBinding(binding)) {
       return "string";
+    }
+    if (isNumericBinding(binding)) {
+      return "number";
     }
     return undefined;
   }
@@ -10764,19 +10880,19 @@ function isRuntimeStringBinding(binding: JsIrBindingValue | undefined): boolean 
   return binding?.kind === "string" || binding?.kind === "stringExpression" || binding?.kind === "stringVariable";
 }
 
-/** The refusal for a tagged template whose tag is a known-but-unwritten builtin. */
-function taggedTemplateBuiltinMessage(
-  expression: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): string | undefined {
-  if (!ts.isTaggedTemplateExpression(expression) || !ts.isPropertyAccessExpression(expression.tag)) {
-    return undefined;
+/**
+ * True for a binding the number tier can lower through. A `number` binding holds a
+ * `JsIrNumberExpression`, so a literal `const` is not one; a `value` binding whose value is the
+ * number tier is.
+ */
+function isNumericBinding(binding: JsIrBindingValue | undefined): boolean {
+  if (binding === undefined) {
+    return false;
   }
-  const { tag } = expression;
-  if (ts.isPrivateIdentifier(tag.name)) {
-    return undefined;
+  if (binding.kind === "number") {
+    return true;
   }
-  return plannedBuiltinMessageFor(tag.expression, tag.name.text, bindings);
+  return binding.kind === "value" && binding.value.kind === "number";
 }
 
 function unsupportedJsonMessage(callee: ts.PropertyAccessExpression): string | undefined {
