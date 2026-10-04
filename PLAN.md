@@ -356,14 +356,13 @@ files passing. The 111-probe matrix above was produced from a working `dist/`.
 
 ## Step 5 remainder: converting the class and expression tiers
 
-The statement tier returns `Lowered`; the class and expression tiers still return
-`JsIrOperation | undefined` and the class tier aborts by throwing. The conversion is
-mechanical and was done once, so the shape it needs is written down here rather than
+The statement tier returns `Lowered`; the class tier is converted and the value tier it hands
+reasons to is not. The shape and the four things that went wrong are here so neither is
 rediscovered.
 
 **Three shapes, not one.** `Lowered` has three cases because a *chain* recognizer needs
-`notApplicable` to mean "try the next one". Once a chain has matched, the steps below it
-have no next one, and a `notApplicable` there would be a bug dressed as a fallback. So:
+`notApplicable` to mean "try the next one". Once a chain has matched, the steps below it have
+no next one, and a `notApplicable` there would be a bug dressed as a fallback. So:
 
 ```ts
 export type Lowered<T = JsIrOperation> =
@@ -378,51 +377,43 @@ export type Produced<T> =
 type LoweredStatementList = Produced<readonly JsIrOperation[]>;
 ```
 
-`Produced` is for the class path and the per-member helpers; `Lowered` is for the
-expression-tier recognizers that are genuinely a chain.
+`Produced` is for the class tier and its per-member producers. `Lowered` is for the value-tier
+recognizers, which are genuinely in a chain.
 
-**`notApplicable` has to be assignable to every `Lowered<T>`.** One shared constant
-typed `Lowered` pins it to `Lowered<JsIrOperation>` and makes every other return site a
-type error. `const notApplicable: Lowered<never>` works, because `Lowered<never>`'s
-lowered branch carries `operation: never`, which fits `operation: T` for every `T`.
+**`notApplicable` has to fit every `Lowered<T>`.** One shared constant typed `Lowered` pins it
+to `Lowered<JsIrOperation>` and makes every other return site a type error.
+`const notApplicable: Lowered<never>` works, because `Lowered<never>`'s lowered branch carries
+`operation: never`, which fits `operation: T` for every `T`.
 
-**Name the constructor for its shape, not its verb.** `const lowered = <T>(...)` collides
-with the many local `lowered` bindings in `ir.ts` and `no-shadow` fires at seven sites.
-`produced` does not.
+**Name the constructor for its shape, not its verb.** `const lowered = <T>(...)` collides with
+the many local `lowered` bindings in `ir.ts` and `no-shadow` fires. `produced` does not.
 
-**The 26 bare throws become reasons, one per omission.** They are the diagnostic quality
-win and they are why the conversion is worth doing. `classCallableParameters` alone had
-five, all reported as `class lowering unsupported`, and they are five different omissions:
+**A registration that outlives its refusal is a dangling reference.** A class registers itself
+in the registry *before* its body lowers, because `this`, `super` and a self-referencing
+receiver all resolve through it. When the body refuses, the registration must be rolled back,
+or a later `class Derived extends Base` sees a base whose `Base$prototype` slot was never
+emitted and emission dies on `Expected JSValue binding`. This was invisible before because a
+refusal threw out of the whole file and the registry died with it; returning makes the rollback
+explicit. `lowerClassDeclaration` is split around it: snapshot the registry, and restore it on
+`unsupported`.
 
-| shape | reason |
-| --- | --- |
-| `param.dotDotDotToken !== undefined` | `Rest parameters are not supported on class members yet` |
-| `param.questionToken !== undefined` | `Optional parameters are not supported on class members yet` |
-| `param.initializer !== undefined` | `Parameters with defaults are not supported on class members yet` |
-| `ts.getModifiers(param)?.length > 0` | `Parameter properties are not supported on class members yet` |
-| `!ts.isIdentifier(param.name)` | `Destructuring parameters are not supported on class members yet` |
+**Splitting a function can silently drop half of it.** Splitting `lowerClassDeclaration` put the
+heritage-clause read behind the class-*expression* branch, so every derived class got
+`baseName: undefined` and lost `super`. Four oracle fixtures caught it; no unit test did. When a
+function is split, the first thing to check is that every branch of the original still reads the
+thing it read.
 
-`collectClassMembers` classifies members by shape and its final `else` is where the
-unclassified ones land; `classMemberRefusalReason(member)` names which, and it has to
-narrow `member.name === undefined` first because a construct signature has no name.
-`class-this-before-super.ts` asserted the old blanket string and now asserts
-`A derived constructor must call 'super(...)' as its first statement`.
+**"Not mine" and "mine but no" are different answers, and the diff is the only evidence.**
+`lowerClassMethodCall`'s `receiverValue === undefined` returned `undefined` in the base tree.
+Converting it to a refusal looked like an improvement and broke **81 Test262 class tests**: the
+receiver is a named instance that path cannot resolve, and a later recognizer may still handle
+the call. Before converting a site, check whether the base tree *threw* there or returned
+`undefined`. Only a throw becomes a refusal.
 
-**One regression to avoid.** With the conversion applied, nine Test262 class tests failed
-with `Error: Expected JSValue binding` from `emitValueObjectSetPrototypeOperation`, which
-means `emitNamedValueBinding(operation.targetName)` found no binding. The two class entry
-points are `lowerClassDeclaration` (a declaration) and `lowerClassExpressionStatement` (an
-expression bound to a `const`); folding them into one `lowerClassStatement` that returns
-`Produced<readonly JsIrOperation[]> | undefined` is what makes the caller branch once
-instead of twice, and it is where the bug was introduced. Every early return added to
-`lowerClassDeclaration` has to happen **before** `classes.set(info.name, info)` and before
-the operations list is built, so a refusal cannot leave the registry half-populated.
-`class-static-inheritance.ts` and `class-expression-named.ts` catch it; `class Base { y = 0 }
-class Derived extends Base {}` does not, because a base with no constructor takes a
-different path.
+Two smaller ones: `ts.isExpressionStatement` reads `node.kind` unconditionally, so an empty
+constructor body has to be checked for `undefined` rather than passed; and the static generated
+name is `` `${className}$static$${methodName}` `` — one `$` before `static`, one after.
 
-**Merging `classMethodFunctionName` and `classStaticMethodFunctionName` is a trap.** The
-static suffix is `` `${className}$static$${methodName}` `` — one `$` before `static` and
-one after. Written as `` `$static$$${methodName}` `` it silently renames every generated
-static method, and `class-static-inheritance.ts` is the only fixture that notices. Three
-call sites also pass staticness explicitly rather than through a name.
+**What is left.** Nine `throw`s remain, all at the seam into the value tier, which still returns
+`X | undefined`; they now carry a reason and `lowerStatements` still catches them. Removing that
+catch is the last piece, and it needs the value tier converted, not just the class tier.
