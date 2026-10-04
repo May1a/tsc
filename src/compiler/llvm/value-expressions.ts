@@ -1,5 +1,10 @@
 import type { JsIrValueExpression } from "../ir/expressions.js";
 import { variablePointerName } from "./names.js";
+import {
+  emitBoxedMethodCallValueExpression,
+  emitBoxedPrimitiveValueExpression,
+  emitTaggedTemplateValueExpression
+} from "./boxed-values.js";
 import { emitGeneratedJsCall, emitRootStackPush } from "./completion.js";
 import { functionObjectExpectedArgumentCount, internedFunctionGlobal } from "./function-objects.js";
 import { emitRuntimeArrayRemoveValueExpression } from "./array-mutators.js";
@@ -15,7 +20,6 @@ import {
 import { jsValueFalse, jsValueNull, jsValueTrue, jsValueUndefined } from "./values.js";
 import { emitArrayIndex } from "./numbers.js";
 import { emitStringIndexArgument } from "./string-expressions.js";
-import { addStringConstant, utf8ByteLength } from "./strings.js";
 import type { EmitContext, JsValue, NumberValue } from "./context.js";
 import {
   emitRuntimeArrayPointer,
@@ -39,12 +43,8 @@ import {
  */
 
 // eslint-disable-next-line complexity, max-statements -- Transitional JSValue emission remains centralized during aggregate boxing.
-export function emitValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue {
-  const primitive = emitPrimitiveValueExpression(expression, context);
-  if (primitive !== undefined) {
-    return primitive;
-  }
-
+/** a name and what it currently holds. */
+function emitVariableValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
   if (expression.kind === "variable") {
     const { name: expressionName } = expression;
     const binding = context.bindings.get(expressionName);
@@ -69,7 +69,81 @@ export function emitValueExpression(expression: JsIrValueExpression, context: Em
     }
     return { lines: [], value: name };
   }
+  return undefined;
+}
 
+/** reading a field or an element out of something. */
+function emitAggregateReadValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
+  if (expression.kind === "arrayAccess") {
+    return emitRuntimeArrayValueExpression(expression, context);
+  }
+  if (expression.kind === "objectDynamicAccess") {
+    return emitRuntimeObjectValueExpression(expression, context);
+  }
+  if (expression.kind === "valueObjectDynamicAccess") {
+    return emitValueObjectValueExpression(expression, context);
+  }
+  if (expression.kind === "privateFieldAccess") {
+    return emitPrivateFieldAccessExpression(expression, context);
+  }
+  if (expression.kind === "valueArrayAccess") {
+    return emitValueArrayValueExpression(expression, context);
+  }
+  return undefined;
+}
+
+/** the value *is* an aggregate: an array's identity. */
+function emitAggregateIdentityValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
+  if (expression.kind === "runtimeArrayValue") {
+    const lines: string[] = [];
+    const values = expression.elements.map((element) => context.emitValue(element));
+    for (const value of values) {
+      lines.push(...value.lines);
+    }
+    const { arrayIndex } = context;
+    context.arrayIndex += 1;
+    const arrayName = `%rest.array.${arrayIndex}`;
+    const lengthValue = expression.elements.length;
+    lines.push(`  ${arrayName} = call ptr @arrayNew(i64 ${lengthValue})`);
+    for (let i = 0; i < values.length; i++) {
+      lines.push(`  call void @arraySet(ptr ${arrayName}, i64 ${i}, i64 ${values[i].value})`);
+    }
+    const boxIndex = context.numIndex;
+    context.numIndex += 1;
+    const boxName = `%value.${boxIndex}`;
+    lines.push(`  ${boxName} = call i64 @valueBoxArray(ptr ${arrayName})`);
+    return { lines, value: boxName };
+  }
+  return undefined;
+}
+
+/** a reference to an object, a fresh literal, or an array. */
+function emitReferenceValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
+  if (expression.kind === "objectRef") {
+    const object = emitRuntimeObjectPointer(expression.name, context);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    return { lines: [...object.lines, `  ${value} = call i64 @valueBoxObject(ptr ${object.value})`], value };
+  }
+  if (expression.kind === "objectLiteralValue") {
+    const pointerName = `%obj.value.${context.objectIndex}.addr`;
+    const lines = emitRuntimeObjectLiteralStorage(pointerName, expression.value, context);
+    const object = `%obj.value.${context.objectIndex}.ptr`;
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    return { lines: [...lines, `  ${object} = load ptr, ptr ${pointerName}`, `  ${value} = call i64 @valueBoxObject(ptr ${object})`], value };
+  }
+  if (expression.kind === "arrayRef") {
+    const array = emitRuntimeArrayPointer(expression.name, context);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    return { lines: [...array.lines, `  ${value} = call i64 @valueBoxArray(ptr ${array.value})`], value };
+  }
+  return undefined;
+}
+
+/** a plain call, a value call, a constructor, `+`, find and forEach. */
+function emitInvocationValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
   if (expression.kind === "call") {
     const args = context.emitCallArguments(expression.arguments);
     const generated = emitGeneratedJsCall(expression.name, args.values, context);
@@ -78,11 +152,117 @@ export function emitValueExpression(expression: JsIrValueExpression, context: Em
       value: generated.value
     };
   }
-
   if (expression.kind === "callValue") {
     return emitValueCallExpression(expression, context);
   }
+  if (expression.kind === "newInstance") {
+    return emitNewInstanceValueExpression(expression, context);
+  }
+  if (expression.kind === "valuePlus") {
+    const left = context.emitValue(expression.left);
+    const right = context.emitValue(expression.right);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    return {
+      lines: [
+        ...left.lines,
+        ...right.lines,
+        `  ${value} = call i64 @valuePlus(i64 ${left.value}, i64 ${right.value})`,
+        emitRootStackPush(value, context)
+      ],
+      value
+    };
+  }
+  if (expression.kind === "arrayFind") {
+    const array = emitRuntimeArrayPointer(expression.arrayName, context);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    return { lines: [...array.lines, `  ${value} = call i64 @arrayFind(ptr ${array.value})`], value };
+  }
+  if (expression.kind === "arrayForEach") {
+    return { lines: [], value: jsValueUndefined };
+  }
+  return undefined;
+}
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/** constructing a RegExp. */
+function emitRegexCompileValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
   if (expression.kind === "regexCompile") {
     const pattern = context.emitStringExpression(expression.pattern);
     const flags = context.emitStringExpression(expression.flags);
@@ -102,7 +282,11 @@ export function emitValueExpression(expression: JsIrValueExpression, context: Em
       value: call.value
     };
   }
+  return undefined;
+}
 
+/** exec and match. */
+function emitRegexMatchValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
   if (expression.kind === "regexExec" || expression.kind === "regexMatch") {
     const regex = context.emitValue(expression.regex);
     const input = context.emitStringExpression(expression.input);
@@ -124,7 +308,192 @@ export function emitValueExpression(expression: JsIrValueExpression, context: Em
       value: call.value
     };
   }
+  return undefined;
+}
 
+/** JSON.parse and JSON.stringify. */
+function emitJsonValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
+  if (expression.kind === "jsonParse") {
+    const text = context.emitValue(expression.text);
+    let reviver: JsValue = { lines: [], value: jsValueUndefined };
+    if (expression.reviver !== undefined) {
+      reviver = context.emitValue(expression.reviver);
+    }
+    const call = emitGeneratedJsCall("jsonParse", [`i64 ${text.value}`, `i64 ${reviver.value}`], context);
+    return {
+      lines: [
+        ...text.lines,
+        emitRootStackPush(text.value, context),
+        ...reviver.lines,
+        emitRootStackPush(reviver.value, context),
+        ...call.lines
+      ],
+      value: call.value
+    };
+  }
+  if (expression.kind === "jsonStringify") {
+    const source = context.emitValue(expression.value);
+    const lines = [...source.lines, emitRootStackPush(source.value, context)];
+    let filter = "null";
+    if (expression.replacerName !== undefined) {
+      const filterArray = emitRuntimeArrayPointer(expression.replacerName, context);
+      lines.push(...filterArray.lines);
+      filter = filterArray.value;
+    }
+    const call = emitGeneratedJsCall("jsonStringify", [`i64 ${source.value}`, `ptr ${filter}`, `i64 ${expression.indent}`], context);
+    lines.push(...call.lines);
+    return { lines, value: call.value };
+  }
+  return undefined;
+}
+
+/** startsWith and endsWith. */
+function emitStringPredicateValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
+  if (expression.kind === "stringStartsWith" || expression.kind === "stringEndsWith") {
+    const receiver = context.emitStringExpression(expression.receiver);
+    const search = context.emitStringExpression(expression.search);
+    let helper: "stringStartsWith" | "stringStartsWithAt" | "stringEndsWith" = "stringEndsWith";
+    if (expression.kind === "stringStartsWith") {
+      helper = "stringStartsWith";
+    }
+    if (expression.position !== undefined && expression.kind === "stringStartsWith") {
+      helper = "stringStartsWithAt";
+    }
+    const cmp = context.cmpIndex;
+    context.cmpIndex += 1;
+    const name = `%cmp.${cmp}`;
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    const positionLines: string[] = [];
+    let callArgs = `i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value}`;
+    if (expression.position !== undefined) {
+      const positionValue = emitArrayIndex(expression.position, context);
+      positionLines.push(...positionValue.lines);
+      callArgs = `${callArgs}, i64 ${positionValue.value}`;
+    }
+    return {
+      lines: [...receiver.lines, ...search.lines, ...positionLines, `  ${name} = call i1 @${helper}(${callArgs})`, `  ${value} = select i1 ${name}, i64 ${jsValueTrue}, i64 ${jsValueFalse}`],
+      value
+    };
+  }
+  return undefined;
+}
+
+/** charCodeAt, codePointAt, localeCompare, indexOf and lastIndexOf. */
+function emitStringScalarValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
+  if (expression.kind === "stringCharCodeAt" || expression.kind === "stringCodePointAt" || expression.kind === "stringLocaleCompare") {
+    const receiver = context.emitStringExpression(expression.receiver);
+    const index = emitArrayIndex(expression.index, context);
+    const doubleValue = `%num.${context.numIndex}`;
+    context.numIndex += 1;
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    const lines: string[] = [
+      ...receiver.lines,
+      ...index.lines,
+      `  ${doubleValue} = call double @stringCharCodeAt(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${index.value})`,
+      `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
+    ];
+    return { lines, value };
+  }
+  if (expression.kind === "stringIndexOf" || expression.kind === "stringLastIndexOf") {
+    const receiver = context.emitStringExpression(expression.receiver);
+    const search = context.emitStringExpression(expression.search);
+    const doubleValue = `%num.${context.numIndex}`;
+    context.numIndex += 1;
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    if (expression.kind === "stringLastIndexOf") {
+      return {
+        lines: [
+          ...receiver.lines,
+          ...search.lines,
+          `  ${doubleValue} = call double @stringLastIndexOf(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value})`,
+          `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
+        ],
+        value
+      };
+    }
+    const position = emitStringIndexArgument(expression.position ?? { kind: "literal", value: 0 }, context);
+    return {
+      lines: [
+        ...receiver.lines,
+        ...search.lines,
+        ...position.lines,
+        `  ${doubleValue} = call double @stringIndexOf(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value}, i64 ${position.value})`,
+        `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
+      ],
+      value
+    };
+  }
+  return undefined;
+}
+
+/** ternary, lazy default, logical and nullish. */
+function emitBranchValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
+  if (expression.kind === "ternary") {
+    return emitTernaryValueExpression(expression, context);
+  }
+  if (expression.kind === "lazyDefault") {
+    return emitLazyDefaultValueExpression(expression, context);
+  }
+  if (expression.kind === "logicalValue") {
+    return emitLogicalValueExpression(expression, context);
+  }
+  if (expression.kind === "nullishCoalesce") {
+    return emitNullishCoalesceValueExpression(expression, context);
+  }
+  return undefined;
+}
+
+/** the optional chain and its target, void, and a sequence. */
+function emitTailValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
+  if (expression.kind === "optionalChain") {
+    return emitOptionalChainValueExpression(expression, context);
+  }
+  if (expression.kind === "optionalTarget") {
+    const target = context.optionalTargets.at(-1);
+    if (target === undefined) {
+      throw new Error("Optional chain target referenced outside an optional chain");
+    }
+    return { lines: [], value: target };
+  }
+  if (expression.kind === "void") {
+    const inner = context.emitValue(expression.expression);
+    return { lines: inner.lines, value: jsValueUndefined };
+  }
+  if (expression.kind === "sequence") {
+    const left = context.emitValue(expression.left);
+    const right = context.emitValue(expression.right);
+    return { lines: [...left.lines, ...right.lines], value: right.value };
+  }
+  return undefined;
+}
+
+/** pop, shift, includes and at. */
+function emitArrayElementValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
+  if (expression.kind === "arrayPop" || expression.kind === "arrayShift") {
+    return emitRuntimeArrayRemoveValueExpression(expression, context);
+  }
+  if (expression.kind === "arrayIncludes") {
+    const condition = emitRuntimeArrayIncludesCondition(expression, context);
+    const index = context.numIndex;
+    context.numIndex += 1;
+    const value = `%value.${index}`;
+    return { lines: [...condition.lines, `  ${value} = select i1 ${condition.value}, i64 ${jsValueTrue}, i64 ${jsValueFalse}`], value };
+  }
+  if (expression.kind === "arrayAt") {
+    const array = emitRuntimeArrayPointer(expression.arrayName, context);
+    const atIndex = emitArrayIndex(expression.index, context);
+    const value = `%value.${context.numIndex}`;
+    context.numIndex += 1;
+    return { lines: [...array.lines, ...atIndex.lines, `  ${value} = call i64 @arrayAt(ptr ${array.value}, i64 ${atIndex.value})`], value };
+  }
+  return undefined;
+}
+
+/** a function object. */
+function emitFunctionObjectValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
   if (expression.kind === "functionObject") {
     const index = context.callIndex;
     context.callIndex += 1;
@@ -162,7 +531,11 @@ export function emitValueExpression(expression: JsIrValueExpression, context: Em
     lines.push(`  ${value} = call i64 @functionObjectNew(ptr @${expression.definition.codeName}, ptr ${environment}, i64 ${jsValueUndefined}, i64 ${functionName}, i64 ${functionObjectExpectedArgumentCount(expression.definition.parameters)})`, emitRootStackPush(value, context));
     return { lines, value };
   }
+  return undefined;
+}
 
+/** a value produced by an inline C++ block. */
+function emitInlineCppValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
   if (expression.kind === "inlineCppValue") {
     const index = context.callIndex;
     context.callIndex += 1;
@@ -172,116 +545,11 @@ export function emitValueExpression(expression: JsIrValueExpression, context: Em
       value
     };
   }
+  return undefined;
+}
 
-  if (expression.kind === "newInstance") {
-    return emitNewInstanceValueExpression(expression, context);
-  }
-
-  if (expression.kind === "ternary") {
-    return emitTernaryValueExpression(expression, context);
-  }
-
-  if (expression.kind === "lazyDefault") {
-    return emitLazyDefaultValueExpression(expression, context);
-  }
-
-  if (expression.kind === "arrayAccess") {
-    return emitRuntimeArrayValueExpression(expression, context);
-  }
-
-  if (expression.kind === "objectDynamicAccess") {
-    return emitRuntimeObjectValueExpression(expression, context);
-  }
-
-  if (expression.kind === "valueObjectDynamicAccess") {
-    return emitValueObjectValueExpression(expression, context);
-  }
-
-  if (expression.kind === "privateFieldAccess") {
-    return emitPrivateFieldAccessExpression(expression, context);
-  }
-
-  if (expression.kind === "valueArrayAccess") {
-    return emitValueArrayValueExpression(expression, context);
-  }
-
-  if (expression.kind === "arrayPop" || expression.kind === "arrayShift") {
-    return emitRuntimeArrayRemoveValueExpression(expression, context);
-  }
-
-  if (expression.kind === "arrayIncludes") {
-    const condition = emitRuntimeArrayIncludesCondition(expression, context);
-    const index = context.numIndex;
-    context.numIndex += 1;
-    const value = `%value.${index}`;
-    return { lines: [...condition.lines, `  ${value} = select i1 ${condition.value}, i64 ${jsValueTrue}, i64 ${jsValueFalse}`], value };
-  }
-
-  if (expression.kind === "arrayAt") {
-    const array = emitRuntimeArrayPointer(expression.arrayName, context);
-    const atIndex = emitArrayIndex(expression.index, context);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...array.lines, ...atIndex.lines, `  ${value} = call i64 @arrayAt(ptr ${array.value}, i64 ${atIndex.value})`], value };
-  }
-
-  if (expression.kind === "valuePlus") {
-    const left = context.emitValue(expression.left);
-    const right = context.emitValue(expression.right);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return {
-      lines: [
-        ...left.lines,
-        ...right.lines,
-        `  ${value} = call i64 @valuePlus(i64 ${left.value}, i64 ${right.value})`,
-        emitRootStackPush(value, context)
-      ],
-      value
-    };
-  }
-
-  if (expression.kind === "logicalValue") {
-    return emitLogicalValueExpression(expression, context);
-  }
-
-  if (expression.kind === "nullishCoalesce") {
-    return emitNullishCoalesceValueExpression(expression, context);
-  }
-
-  if (expression.kind === "jsonParse") {
-    const text = context.emitValue(expression.text);
-    let reviver: JsValue = { lines: [], value: jsValueUndefined };
-    if (expression.reviver !== undefined) {
-      reviver = context.emitValue(expression.reviver);
-    }
-    const call = emitGeneratedJsCall("jsonParse", [`i64 ${text.value}`, `i64 ${reviver.value}`], context);
-    return {
-      lines: [
-        ...text.lines,
-        emitRootStackPush(text.value, context),
-        ...reviver.lines,
-        emitRootStackPush(reviver.value, context),
-        ...call.lines
-      ],
-      value: call.value
-    };
-  }
-
-  if (expression.kind === "jsonStringify") {
-    const source = context.emitValue(expression.value);
-    const lines = [...source.lines, emitRootStackPush(source.value, context)];
-    let filter = "null";
-    if (expression.replacerName !== undefined) {
-      const filterArray = emitRuntimeArrayPointer(expression.replacerName, context);
-      lines.push(...filterArray.lines);
-      filter = filterArray.value;
-    }
-    const call = emitGeneratedJsCall("jsonStringify", [`i64 ${source.value}`, `ptr ${filter}`, `i64 ${expression.indent}`], context);
-    lines.push(...call.lines);
-    return { lines, value: call.value };
-  }
-
+/** Map.get. */
+function emitMapGetValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
   if (expression.kind === "runtimeMapGet") {
     const collection = emitRuntimeCollectionPointer(expression.mapName, context);
     const key = context.emitValue(expression.key);
@@ -289,308 +557,58 @@ export function emitValueExpression(expression: JsIrValueExpression, context: Em
     context.numIndex += 1;
     return { lines: [...collection.lines, ...key.lines, `  ${value} = call i64 @collectionGet(ptr ${collection.value}, i64 ${key.value})`], value };
   }
+  return undefined;
+}
 
-  if (expression.kind === "optionalChain") {
-    return emitOptionalChainValueExpression(expression, context);
+type ValueRecognizer = (
+  expression: JsIrValueExpression,
+  context: EmitContext
+) => JsValue | undefined;
+
+/**
+ * The value tier's recognizer chain, in order.
+ *
+ * Every entry may decline by returning `undefined`, and the first that does not wins. It is a list
+ * rather than an `??` chain because nineteen operands is a complexity of 21 — over this repo's limit
+ * of 20 — and because a list can be read, reordered and reasoned about the way the lowering side's
+ * `Lowered` chain already is.
+ */
+const valueRecognizers: readonly ValueRecognizer[] = [
+  emitVariableValueExpression,
+  emitAggregateReadValueExpression,
+  emitAggregateIdentityValueExpression,
+  emitReferenceValueExpression,
+  emitInvocationValueExpression,
+  emitBoxedMethodCallValueExpression,
+  emitBoxedPrimitiveValueExpression,
+  emitTaggedTemplateValueExpression,
+  emitRegexCompileValueExpression,
+  emitRegexMatchValueExpression,
+  emitJsonValueExpression,
+  emitStringPredicateValueExpression,
+  emitStringScalarValueExpression,
+  emitBranchValueExpression,
+  emitTailValueExpression,
+  emitArrayElementValueExpression,
+  emitFunctionObjectValueExpression,
+  emitInlineCppValueExpression,
+  emitMapGetValueExpression,
+];
+
+export function emitValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue {
+  const primitive = emitPrimitiveValueExpression(expression, context);
+  if (primitive !== undefined) {
+    return primitive;
   }
-
-  if (expression.kind === "optionalTarget") {
-    const target = context.optionalTargets.at(-1);
-    if (target === undefined) {
-      throw new Error("Optional chain target referenced outside an optional chain");
+  for (const recognize of valueRecognizers) {
+    const recognized = recognize(expression, context);
+    if (recognized !== undefined) {
+      return recognized;
     }
-    return { lines: [], value: target };
   }
-
-  if (expression.kind === "void") {
-    const inner = context.emitValue(expression.expression);
-    return { lines: inner.lines, value: jsValueUndefined };
-  }
-
-  if (expression.kind === "sequence") {
-    const left = context.emitValue(expression.left);
-    const right = context.emitValue(expression.right);
-    return { lines: [...left.lines, ...right.lines], value: right.value };
-  }
-
-  if (expression.kind === "stringStartsWith" || expression.kind === "stringEndsWith") {
-    const receiver = context.emitStringExpression(expression.receiver);
-    const search = context.emitStringExpression(expression.search);
-    let helper: "stringStartsWith" | "stringStartsWithAt" | "stringEndsWith" = "stringEndsWith";
-    if (expression.kind === "stringStartsWith") {
-      helper = "stringStartsWith";
-    }
-    if (expression.position !== undefined && expression.kind === "stringStartsWith") {
-      helper = "stringStartsWithAt";
-    }
-    const cmp = context.cmpIndex;
-    context.cmpIndex += 1;
-    const name = `%cmp.${cmp}`;
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    const positionLines: string[] = [];
-    let callArgs = `i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value}`;
-    if (expression.position !== undefined) {
-      const positionValue = emitArrayIndex(expression.position, context);
-      positionLines.push(...positionValue.lines);
-      callArgs = `${callArgs}, i64 ${positionValue.value}`;
-    }
-    return {
-      lines: [...receiver.lines, ...search.lines, ...positionLines, `  ${name} = call i1 @${helper}(${callArgs})`, `  ${value} = select i1 ${name}, i64 ${jsValueTrue}, i64 ${jsValueFalse}`],
-      value
-    };
-  }
-
-  if (expression.kind === "stringCharCodeAt" || expression.kind === "stringCodePointAt" || expression.kind === "stringLocaleCompare") {
-    const receiver = context.emitStringExpression(expression.receiver);
-    const index = emitArrayIndex(expression.index, context);
-    const doubleValue = `%num.${context.numIndex}`;
-    context.numIndex += 1;
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    const lines: string[] = [
-      ...receiver.lines,
-      ...index.lines,
-      `  ${doubleValue} = call double @stringCharCodeAt(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${index.value})`,
-      `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
-    ];
-    return { lines, value };
-  }
-
-  if (expression.kind === "stringIndexOf" || expression.kind === "stringLastIndexOf") {
-    const receiver = context.emitStringExpression(expression.receiver);
-    const search = context.emitStringExpression(expression.search);
-    const doubleValue = `%num.${context.numIndex}`;
-    context.numIndex += 1;
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    if (expression.kind === "stringLastIndexOf") {
-      return {
-        lines: [
-          ...receiver.lines,
-          ...search.lines,
-          `  ${doubleValue} = call double @stringLastIndexOf(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value})`,
-          `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
-        ],
-        value
-      };
-    }
-    const position = emitStringIndexArgument(expression.position ?? { kind: "literal", value: 0 }, context);
-    return {
-      lines: [
-        ...receiver.lines,
-        ...search.lines,
-        ...position.lines,
-        `  ${doubleValue} = call double @stringIndexOf(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value}, i64 ${position.value})`,
-        `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
-      ],
-      value
-    };
-  }
-
-  if (expression.kind === "runtimeArrayValue") {
-    const lines: string[] = [];
-    const values = expression.elements.map((element) => context.emitValue(element));
-    for (const value of values) {
-      lines.push(...value.lines);
-    }
-    const { arrayIndex } = context;
-    context.arrayIndex += 1;
-    const arrayName = `%rest.array.${arrayIndex}`;
-    const lengthValue = expression.elements.length;
-    lines.push(`  ${arrayName} = call ptr @arrayNew(i64 ${lengthValue})`);
-    for (let i = 0; i < values.length; i++) {
-      lines.push(`  call void @arraySet(ptr ${arrayName}, i64 ${i}, i64 ${values[i].value})`);
-    }
-    const boxIndex = context.numIndex;
-    context.numIndex += 1;
-    const boxName = `%value.${boxIndex}`;
-    lines.push(`  ${boxName} = call i64 @valueBoxArray(ptr ${arrayName})`);
-    return { lines, value: boxName };
-  }
-
-  if (expression.kind === "boxedPrimitive") {
-    const lines: string[] = [];
-    const inner = context.emitValue(expression.inner);
-    lines.push(...inner.lines);
-    const { objectIndex } = context;
-    context.objectIndex += 1;
-    const objectName = `%boxed.object.${objectIndex}`;
-    let capacity = 1;
-    if (expression.storeLength === true) {
-      capacity = 2;
-    }
-    lines.push(`  ${objectName} = call ptr @objectNew(i64 ${capacity})`);
-    const primitiveKey = "primitive";
-    const primitiveKeyLen = primitiveKey.length;
-    const keyString = addStringConstant(primitiveKey, context);
-    lines.push(`  call void @objectSet(ptr ${objectName}, i64 ${primitiveKeyLen}, ptr ${keyString}, i64 ${inner.value})`);
-    if (expression.storeLength === true) {
-      const lengthKey = "length";
-      const lengthKeyLen = lengthKey.length;
-      const lengthKeyString = addStringConstant(lengthKey, context);
-      const lengthIndex = context.numIndex;
-      context.numIndex += 1;
-      const lengthValue = `%value.${lengthIndex}`;
-      lines.push(`  ${lengthValue} = call i64 @valueStringLength(i64 ${inner.value})`);
-      lines.push(`  call void @objectSet(ptr ${objectName}, i64 ${lengthKeyLen}, ptr ${lengthKeyString}, i64 ${lengthValue})`);
-    }
-    const valueIndex = context.numIndex;
-    context.numIndex += 1;
-    const value = `%value.${valueIndex}`;
-    lines.push(`  ${value} = call i64 @valueBoxObject(ptr ${objectName})`);
-    return { lines, value };
-  }
-
-  if (expression.kind === "boxedMethodCall") {
-    const lines: string[] = [];
-    const receiver = context.emitValue(expression.receiver);
-    lines.push(...receiver.lines);
-    const { objectIndex } = context;
-    context.objectIndex += 1;
-    const objectPtr = `%boxed.object.ptr.${objectIndex}`;
-    lines.push(`  ${objectPtr} = call ptr @valueObjectPtr(i64 ${receiver.value})`);
-    if (expression.method === "valueOf") {
-      const valueIndex = context.numIndex;
-      context.numIndex += 1;
-      const value = `%value.${valueIndex}`;
-      lines.push(`  ${value} = call i64 @boxedValueOf(ptr ${objectPtr})`);
-      return { lines, value };
-    }
-    const { stringIndex } = context;
-    context.stringIndex += 1;
-    const raw = `%str.result.${stringIndex}`;
-    const ptrValue = `%str.${stringIndex}`;
-    const length = `%str.len.${stringIndex}`;
-    lines.push(`  ${raw} = call { ptr, i64 } @boxedToString(ptr ${objectPtr})`);
-    lines.push(`  ${ptrValue} = extractvalue { ptr, i64 } ${raw}, 0`);
-    lines.push(`  ${length} = extractvalue { ptr, i64 } ${raw}, 1`);
-    const allocIndex = context.numIndex;
-    context.numIndex += 1;
-    const allocPtr = `%str.alloc.${allocIndex}`;
-    const totalIndex = context.numIndex;
-    context.numIndex += 1;
-    const totalLen = `%str.total.${totalIndex}`;
-    lines.push(`  ${totalLen} = add i64 ${length}, 1`);
-    lines.push(`  ${allocPtr} = call ptr @malloc(i64 ${totalLen})`);
-    lines.push(`  call ptr @memcpy(ptr ${allocPtr}, ptr ${ptrValue}, i64 ${length})`);
-    const nulIndex = context.numIndex;
-    context.numIndex += 1;
-    const nulPos = `%str.nul.${nulIndex}`;
-    lines.push(`  ${nulPos} = getelementptr i8, ptr ${allocPtr}, i64 ${length}`);
-    lines.push(`  store i8 0, ptr ${nulPos}`);
-    const boxIndex = context.numIndex;
-    context.numIndex += 1;
-    const boxValue = `%value.${boxIndex}`;
-    lines.push(`  ${boxValue} = call i64 @valueBoxString(ptr ${allocPtr}, i64 ${length})`);
-    lines.push(emitRootStackPush(boxValue, context));
-    return { lines, value: boxValue };
-  }
-
-  if (expression.kind === "taggedTemplateValue") {
-    const lines: string[] = [];
-    const { arrayIndex } = context;
-    context.arrayIndex += 1;
-    const stringsArray = `%strings.array.${arrayIndex}`;
-    const totalStrings = expression.middleTexts.length + 1;
-    lines.push(`  ${stringsArray} = call ptr @arrayNew(i64 ${totalStrings})`);
-    const headString = addStringConstant(expression.head, context);
-    const headLength = String(utf8ByteLength(expression.head));
-    const headBoxIndex = context.numIndex;
-    context.numIndex += 1;
-    const headBox = `%value.${headBoxIndex}`;
-    lines.push(`  ${headBox} = call i64 @valueBoxString(ptr ${headString}, i64 ${headLength})`);
-    lines.push(emitRootStackPush(headBox, context));
-    lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 0, i64 ${headBox})`);
-    for (let i = 0; i < expression.middleTexts.length; i++) {
-      const text = expression.middleTexts[i];
-      const textString = addStringConstant(text, context);
-      const textLength = String(utf8ByteLength(text));
-      const textBoxIndex = context.numIndex;
-      context.numIndex += 1;
-      const textBox = `%value.${textBoxIndex}`;
-      lines.push(`  ${textBox} = call i64 @valueBoxString(ptr ${textString}, i64 ${textLength})`);
-      lines.push(emitRootStackPush(textBox, context));
-      lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 ${i + 1}, i64 ${textBox})`);
-    }
-    const stringsBoxIndex = context.numIndex;
-    context.numIndex += 1;
-    const stringsBox = `%value.${stringsBoxIndex}`;
-    lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
-    lines.push(emitRootStackPush(stringsBox, context));
-    const expressionValues = expression.expressions.map((expr) => context.emitValue(expr));
-    for (const value of expressionValues) {
-      lines.push(...value.lines);
-    }
-    const valueArgs: string[] = [];
-    if (expression.wrapValuesInRest === true) {
-      const restArrayIndex = context.arrayIndex;
-      context.arrayIndex += 1;
-      const restArray = `%rest.array.${restArrayIndex}`;
-      const restLength = expressionValues.length;
-      lines.push(`  ${restArray} = call ptr @arrayNew(i64 ${restLength})`);
-      for (let i = 0; i < expressionValues.length; i++) {
-        lines.push(`  call void @arraySet(ptr ${restArray}, i64 ${i}, i64 ${expressionValues[i].value})`);
-      }
-      const restBoxIndex = context.numIndex;
-      context.numIndex += 1;
-      const restBox = `%value.${restBoxIndex}`;
-      lines.push(`  ${restBox} = call i64 @valueBoxArray(ptr ${restArray})`);
-      lines.push(emitRootStackPush(restBox, context));
-      valueArgs.push(restBox);
-    } else {
-      for (const value of expressionValues) {
-        valueArgs.push(value.value);
-      }
-    }
-    const callArgs = [`i64 ${stringsBox}`, ...valueArgs.map((arg) => `i64 ${arg}`)];
-    const generated = emitGeneratedJsCall(expression.tag, callArgs, context);
-    lines.push(...generated.lines);
-    return { lines, value: generated.value };
-  }
-
-  if (expression.kind === "arrayFind") {
-    const array = emitRuntimeArrayPointer(expression.arrayName, context);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...array.lines, `  ${value} = call i64 @arrayFind(ptr ${array.value})`], value };
-  }
-
-  if (expression.kind === "arrayForEach") {
-    return { lines: [], value: jsValueUndefined };
-  }
-
-  if (expression.kind === "objectRef") {
-    const object = emitRuntimeObjectPointer(expression.name, context);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...object.lines, `  ${value} = call i64 @valueBoxObject(ptr ${object.value})`], value };
-  }
-
-  if (expression.kind === "objectLiteralValue") {
-    const pointerName = `%obj.value.${context.objectIndex}.addr`;
-    const lines = emitRuntimeObjectLiteralStorage(pointerName, expression.value, context);
-    const object = `%obj.value.${context.objectIndex}.ptr`;
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...lines, `  ${object} = load ptr, ptr ${pointerName}`, `  ${value} = call i64 @valueBoxObject(ptr ${object})`], value };
-  }
-
-  if (expression.kind === "arrayRef") {
-    const array = emitRuntimeArrayPointer(expression.name, context);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...array.lines, `  ${value} = call i64 @valueBoxArray(ptr ${array.value})`], value };
-  }
-
-  // Defensive: the lowering pass is the closed-world producer, and this tier handles the subset
-  // that reaches it. The residual is not `never` because the expression tiers partition the union
-  // across declining sub-dispatchers, so this cannot be a compile-time check. The one
-  // exhaustiveness point the type system does enforce over operations is jsIrOperationChildren
-  // (see ir.ts). emitOperation still ends in `return []`, so an unhandled kind emits nothing;
-  // that gap is written up in AGENTS.md under no-open-union-narrowing.
   throw new Error(`Unhandled JsIrValueExpression variant: ${expression.kind}`);
 }
+
 export function emitValueArrayValueExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "valueArrayAccess" }>,
   context: EmitContext
@@ -833,3 +851,117 @@ export function emitRuntimeArrayIncludesCondition(
   context.cmpIndex += 1;
   return { lines: [...array.lines, ...value.lines, `  ${name} = call i1 @arrayIncludes(ptr ${array.value}, i64 ${value.value})`], value: name };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
