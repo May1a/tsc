@@ -1,6 +1,7 @@
 import type { JsIrBindingValue, JsIrFunctionObjectDefinition, JsIrFunctionParameter } from "../ir/bindings.js";
 import type { JsIrObjectValue } from "../ir/expressions.js";
 import type { JsIrOperation } from "../ir/types.js";
+import type { CleanupFrame, CompletionSlots } from "./completion.js";
 import type { LegacyLlvmTraceMarker } from "../llvm-ir/index.js";
 
 // Generated JavaScript functions use an explicit payload/status ABI. Most runtime
@@ -33,29 +34,7 @@ export const COMPLETION_THROW = 2;
 export const COMPLETION_BREAK = 3;
 export const COMPLETION_CONTINUE = 4;
 
-export interface CleanupFrame {
-  readonly index: number;
-  readonly entryLabel: string;
-  readonly finalDispatchLabel: string;
-  readonly joinLabel: string;
-  readonly throwEntryLabel: string;
-  readonly rootFrameName: string;
-  /** Entry label of the next outer cleanup frame, if any. */
-  readonly outerEntryLabel?: string;
-  /** Break/continue destinations resumed when this frame is the outermost cleanup. */
-  readonly resumeDests: Map<number, string>;
-  readonly kind: "finally" | "iteratorClose";
-  /** Same-loop continue targets this label and must not run IteratorClose. */
-  readonly skipContinueLabel?: string;
-  iteratorSlot?: string;
-}
 
-export interface CompletionSlots {
-  readonly kind: string;
-  readonly value: string;
-  readonly destination: string;
-  readonly until: string;
-}
 
 export interface EmitContext {
   readonly bindings: Map<string, JsIrBindingValue>;
