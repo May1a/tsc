@@ -504,6 +504,19 @@ Measured, not guessed. Each cut below ends green on its own.
    live in a type-only module and `values.ts` really did unblock `completion.ts` — but for different
    reasons than were written down, and a wrong reason recorded in the plan is worse than no reason.
 
+6. **`llvm/operations.ts` needs a third tier, and the plan's five modules do not reach the cap.**
+   Measured on `llvm.ts` at 7,667 lines: `emitLlvmModule` and the function-definition emitters end at
+   line 837, the emitter table is 838–1041, and lines 1042–7667 — 6,626 of them — are operation
+   handlers and their helpers. The IR has ~120 operation kinds, so the emitter is thousands of lines
+   by nature; `module.ts` alone would still be about 1,000.
+
+   Step 9 promotes `max-lines` to `error` for *every* file, so a 6,600-line `operations.ts` would
+   block the promotion it is supposed to enable. The split that reaches the cap is by emitter domain:
+   a `llvm/operations.ts` that holds the table and `operationEmitterFor`, over handler groups
+   (`arrays`, `objects`, `collections`, `strings`, `calls`, `control`, `values`), each under 800. That
+   is the same grouping step 6 already uses for the support tables, and for the same reason: the file
+   is sorted by it.
+
 6. **Cut 6 is the class tier.** It is the largest remaining concept but it is *interleaved* with
    value-tier functions rather than contiguous, so its seams have to be drawn by hand. Do not infer
    them from the section banners: there is one banner and it does not bound the section.
