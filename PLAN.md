@@ -477,28 +477,34 @@ Measured, not guessed. Each cut below ends green on its own.
 4. **Cut 3 is then the messages**, into `ir/diagnostics.ts`, which by then depends only on `ts`, the
    binding and expression types, and `builtins/owners.ts`.
 
-5. **`completion.ts` is blocked the same way, and the way out is bigger than it looks.** The cleanup
-   emitters (573–808: `createCleanupFrame`, `emitCompletionTransfer`, `emitCleanupAfterBody`,
-   `emitCleanupFinalDispatch`, `emitDestSwitch`, `emitThrowEntryBlock`, `emitIteratorCloseBody`) are a
-   clean 236-line concept, but they read the GC-root and return helpers:
+5. **`completion.ts` is the return-and-completion protocol, and its leaves come first.** `done`, in
+   two commits. The cleanup emitters are a clean concept, but they read `emitRootStackPush` (29 call
+   sites), `jsValueUndefined` (38), `emitPackedGeneratedReturn` (6) and `generatedReturnType`. Those
+   are not helpers the cleanup code happens to call — they *are* how every generated function returns
+   and unwinds. So the module holds GC-root push/restore, the packed return and the completion
+   transfer together: 340 lines rather than the 236 of the cleanup emitters alone, which is the
+   honest size.
 
-   | helper | call sites | what it is |
-   | --- | --- | --- |
-   | `emitRootStackPush` | 29 | the GC calling convention |
-   | `jsValueUndefined` | 38 | a js-value-abi immediate |
-   | `emitPackedGeneratedReturn` | 6 | the payload/status return ABI |
-   | `generatedReturnType` | 1 | the aggregate type name |
+   The one real dependency is `jsValueUndefined`, and `llvm/values.ts` (17 lines) resolved it: the
+   legacy-LLVM view of the js-value ABI, five constants that are otherwise `i64` literals scattered
+   across sixty sites. A reader can see the whole encoding surface on one screen, and the completion
+   module names "an absent completion value is `undefined`" instead of building a second
+   `immediate("undefined")`.
 
-   Those are not helpers the cleanup code happens to call — they *are* how every generated function
-   returns and unwinds, so moving them would move the convention, and leaving them means
-   `completion.ts` imports `llvm.ts` while `llvm.ts` imports `completion.ts`.
+   `CleanupFrame` and `CompletionSlots` moved with it, which makes `context.ts` import them back.
+   That is the emitter's only two-way relation and both edges are `import type`, so
+   `verbatimModuleSyntax` erases them.
 
-   The way out is to accept the larger module: GC-root push/restore, the packed return, and the
-   completion transfer are one concept — *how a generated function returns and unwinds* — and
-   `completion.ts` should hold all of it. That is roughly 300 lines rather than 236, and it is the
-   right boundary rather than a convenient one. Do not cut it in two.
+   **One note here was wrong and is corrected.** The `context.ts` cut recorded that
+   `verbatimModuleSyntax` and `no-duplicate-imports` are in conflict and that the second has no
+   option to allow separate type imports, so no boundary could mix values and types from one
+   specifier. That was not tested. Probing the linter shows one statement per specifier with inline
+   `type` modifiers satisfies both it and `consistent-type-imports`; the pair is not in conflict and
+   no boundary was ever forced by it. The cuts so far are still right — `predicates.ts` could not
+   live in a type-only module and `values.ts` really did unblock `completion.ts` — but for different
+   reasons than were written down, and a wrong reason recorded in the plan is worse than no reason.
 
-6. **Cut 5 is the class tier.** It is the largest remaining concept but it is *interleaved* with
+6. **Cut 6 is the class tier.** It is the largest remaining concept but it is *interleaved* with
    value-tier functions rather than contiguous, so its seams have to be drawn by hand. Do not infer
    them from the section banners: there is one banner and it does not bound the section.
 
