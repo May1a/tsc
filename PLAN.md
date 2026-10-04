@@ -559,6 +559,29 @@ Measured, not guessed. Each cut below ends green on its own.
    fixes it; the same cycle through a value every callee already has is a field. Three times now —
    the four recursion entries, the five scalar entries, and `OperationOf` for a type both sides needed.
 
+6. **`llvm/` is now 22 modules, and what remains is the module tier and the value tier. `done` for
+   everything under them.** Measured after the cuts:
+
+   | closure | decls | lines |
+   | --- | --- | --- |
+   | object literals | 3 | 57 |
+   | `emitRuntimeArray*` (the rest of it) | 12 | 343 |
+   | `emitValueExpression` | 22 | 1,195 |
+   | `emitFunctionDefinition` | 34 | 1,655 |
+   | `emitLlvmModule` | 45 | 2,075 |
+
+   `llvm.ts` is 7,711 lines / 2,861 non-blank, from 8,089 at the start of this decomposition.
+
+   The value tier and the function tier are still over the cap and they reach each other: a function
+   body is a value expression, and a function expression needs its definition emitted. Same shape as the
+   scalar knot, so the same answer is available — but it should be *measured* before being assumed. Both
+   times that reasoning was used from a measurement it was wrong, and the one time it was used from a
+   guess (`no-duplicate-imports`) it was also wrong.
+
+   `emitLlvmModule`'s closure of 45 is the module tier plus everything it reaches, which is why
+   `operations.ts` and `module.ts` come last rather than first: neither has anywhere to land until the
+   handlers below them are gone.
+
 6. **Cut 6 is the class tier.** It is the largest remaining concept but it is *interleaved* with
    value-tier functions rather than contiguous, so its seams have to be drawn by hand. Do not infer
    them from the section banners: there is one banner and it does not bound the section.
