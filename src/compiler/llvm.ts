@@ -35,6 +35,11 @@ import type {
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { type TraceMapV1, buildTraceMap } from "./trace.js";
 import { traceEndLine, traceStartLine, wrapFunctionTrace } from "./llvm/trace.js";
+import {
+  emitRuntimeArrayPointer,
+  emitRuntimeCollectionPointer,
+  emitRuntimeObjectPointer
+} from "./llvm/layout.js";
 import { addStringConstant, encodeCString, utf8ByteLength } from "./llvm/strings.js";
 import {
   bindingSlotName,
@@ -6996,30 +7001,30 @@ function emitArrayElementPointer(
   };
 }
 
-function emitRuntimeArrayPointer(arrayName: string, context: EmitContext): NumberValue {
-  const slotName = bindingSlotName(arrayName, context.bindings.get(arrayName));
-  const index = context.arrayIndex;
-  context.arrayIndex += 1;
-  const value = `%arr.ptr.${index}`;
-  return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(slotName)}`], value };
-}
 
-function emitRuntimeCollectionPointer(collectionName: string, context: EmitContext): NumberValue {
-  const index = context.objectIndex;
-  context.objectIndex += 1;
-  const value = `%collection.ptr.${index}`;
-  return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(collectionName)}`], value };
-}
 
-function emitRuntimeObjectPointer(objectName: string, context: EmitContext): NumberValue {
-  const layout = context.objectLayouts.get(objectName);
-  const slotName = bindingSlotName(objectName, context.bindings.get(objectName));
-  const pointerName = layout?.runtimePointerName ?? variablePointerName(slotName);
-  const index = context.objectIndex;
-  context.objectIndex += 1;
-  const value = `%obj.ptr.${index}`;
-  return { lines: [`  ${value} = load ptr, ptr ${pointerName}`], value };
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function emitArrayIndex(expression: JsIrNumberExpression, context: EmitContext): NumberValue {
   if (expression.kind === "literal") {
