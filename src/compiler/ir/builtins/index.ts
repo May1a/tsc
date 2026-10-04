@@ -65,6 +65,17 @@ export {
   stringBuiltinSupport
 } from "./string.js";
 export {
+  builtinOwnerOfReceiver,
+  callTargetMessage,
+  isKnownGlobalCallee,
+  isPlannedBuiltinCall,
+  isRecognizedGlobalCallee,
+  plannedBuiltinMessageFor,
+  plannedGlobalMessage,
+  plannedMemberReadMessage,
+  unlowerableCallee
+} from "./owners.js";
+export {
   type BuiltinArity,
   type BuiltinDeclaration,
   type BuiltinEntry,
