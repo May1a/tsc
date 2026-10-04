@@ -442,3 +442,44 @@ turns one fact into a cascade. The replacement has to abort the file, or produce
 statement and accept that a consequence reads as a new finding.
 
 So the value tier is the next multi-commit cut, not a follow-up line to this one.
+
+## Step 8: cut order for `ir.ts`
+
+Measured, not guessed. Each cut below ends green on its own.
+
+1. **`builtins/owners.ts` — done** (`a78c663`). Which support table answers for a call target. It
+   was one concept in three places and depends on nothing but TypeScript nodes and a bindings map.
+   `ir.ts` is 350 lines shorter.
+
+2. **The message builders cannot be cut before the predicates they read.** `unsupportedExpressionMessage`
+   and its eleven siblings are a clean 330-line concept, but they read seven predicates from the
+   lowering, and only two of those are exclusive to the messages:
+
+   | predicate | line | shared with the lowering? |
+   | --- | --- | --- |
+   | `isLiteralElementAccessArgument` | 10687 | no — used only by the messages |
+   | `isUnsupportedSymbolExpression` | 7412 | no — used only by the messages |
+   | `unwrapTypeOnlyExpression` | 5422 | yes, 28 call sites |
+   | `lowerCanonicalArrayIndexString` | 10719 | yes, 13 call sites |
+   | `errorConstructorNames` | 2907 | yes, 4 call sites |
+   | `isInlineCppTaggedTemplate` | 462 | yes |
+   | `definePropertyArgumentCount` | 135 | yes |
+
+   Moving the five shared ones into the new module is what makes the messages cuttable at all.
+   Exporting them from `ir.ts` instead would leave `diagnostics.ts` importing `ir.ts` while `ir.ts`
+   imports `diagnostics.ts` — a value cycle, and `errorConstructorNames` is a `const` set evaluated at
+   module load, so the cycle is a temporal-dead-zone error rather than merely untidy.
+
+3. **So cut 2 is the predicates, into `ir/expressions.ts`**, which currently holds only the expression
+   *types* and has no dependency on the lowering. All seven are small and take TypeScript nodes;
+   `isUnsupportedSymbolExpression` also needs `isSymbolIteratorPropertyName` moved or passed.
+
+4. **Cut 3 is then the messages**, into `ir/diagnostics.ts`, which by then depends only on `ts`, the
+   binding and expression types, and `builtins/owners.ts`.
+
+5. **Cut 4 is the class tier.** It is the largest remaining concept but it is *interleaved* with
+   value-tier functions rather than contiguous, so its seams have to be drawn by hand. Do not infer
+   them from the section banners: there is one banner and it does not bound the section.
+
+Each of these is a mechanical move with no behaviour change, so each is checked the same way: the 718
+tests, `main.ll` byte-identical across all 154 oracle fixtures, and Test262 at 955/0.
