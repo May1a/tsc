@@ -20,11 +20,18 @@ import {
   aggregateBindingForOperation,
   visitJsIrOperations
 } from "./ir.js";
-import type { CompilerDiagnostic } from "./diagnostics.js";
-import { type TraceMapV1, buildTraceMap, traceOperationId } from "./trace.js";
-import { defineStructuredRuntimeHelpers, runtimeIrText } from "./runtime-ir.js";
-import { jsValueAbi } from "./js-value-abi/index.js";
-import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
+import type {
+  ArrayValue,
+  CleanupFrame,
+  EmitContext,
+  FunctionDef,
+  JsValue,
+  LoopLabels,
+  NumberValue,
+  RuntimeArrayValue,
+  RuntimeObjectValue,
+  StringValue
+} from "./llvm/context.js";
 
 /** Pending abrupt/normal completion kinds for finally / IteratorClose cleanup. */
 const COMPLETION_NORMAL = 0;
@@ -32,138 +39,13 @@ const COMPLETION_RETURN = 1;
 const COMPLETION_THROW = 2;
 const COMPLETION_BREAK = 3;
 const COMPLETION_CONTINUE = 4;
+import type { CompilerDiagnostic } from "./diagnostics.js";
+import { type TraceMapV1, buildTraceMap, traceOperationId } from "./trace.js";
+import { defineStructuredRuntimeHelpers, runtimeIrText } from "./runtime-ir.js";
+import { jsValueAbi } from "./js-value-abi/index.js";
+import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
 
-interface CleanupFrame {
-  readonly index: number;
-  readonly entryLabel: string;
-  readonly finalDispatchLabel: string;
-  readonly joinLabel: string;
-  readonly throwEntryLabel: string;
-  readonly rootFrameName: string;
-  /** Entry label of the next outer cleanup frame, if any. */
-  readonly outerEntryLabel?: string;
-  /** Break/continue destinations resumed when this frame is the outermost cleanup. */
-  readonly resumeDests: Map<number, string>;
-  readonly kind: "finally" | "iteratorClose";
-  /** Same-loop continue targets this label and must not run IteratorClose. */
-  readonly skipContinueLabel?: string;
-  iteratorSlot?: string;
-}
 
-interface CompletionSlots {
-  readonly kind: string;
-  readonly value: string;
-  readonly destination: string;
-  readonly until: string;
-}
-
-interface EmitContext {
-  readonly bindings: Map<string, JsIrBindingValue>;
-  readonly stringConstants: string[];
-  readonly arrayGlobals: string[];
-  readonly objectTypes: string[];
-  readonly objectLayouts: Map<string, ObjectLayout>;
-  readonly valueGlobals: Set<string>;
-  readonly loopLabels: LoopLabels[];
-  /** Innermost-to-outermost cleanup regions (finally / IteratorClose). */
-  readonly cleanupStack: CleanupFrame[];
-  /** Cleanup bodies currently being emitted, outermost first. */
-  readonly activeCleanupBodies: CleanupFrame[];
-  hasNumberPrint: boolean;
-  printIndex: number;
-  ifIndex: number;
-  cmpIndex: number;
-  numIndex: number;
-  callIndex: number;
-  loopIndex: number;
-  logicIndex: number;
-  boolIndex: number;
-  stringIndex: number;
-  arrayIndex: number;
-  objectIndex: number;
-  tryIndex: number;
-  cleanupSeq: number;
-  readonly optionalTargets: string[];
-  exceptionTarget: string;
-  exceptionSlot: string;
-  // Pending completion slots (function-scoped); shared by all cleanup regions.
-  readonly completionSlots: CompletionSlots;
-  nextDestId: number;
-  /** True when emitting @main rather than a generated JS function. */
-  readonly isMain: boolean;
-  /** Label for normal @main exit (ignored for generated functions). */
-  readonly normalExitLabel?: string;
-  // GC root protocol: the SSA name holding this function's saved root-stack depth
-  // (from @gcRootSave at entry). Every ret/throw restores to this depth instead of
-  // emitting a static number of pops, so the root stack stays balanced across loops,
-  // branches, and multiple returns.
-  gcFrameName: string;
-  readonly traceMarkers: Map<string, Omit<LegacyLlvmTraceMarker, "line">>;
-  readonly suppressTrace?: boolean;
-}
-
-type ObjectLayout = ObjectValue;
-
-interface NumberValue {
-  readonly lines: readonly string[];
-  readonly value: string;
-}
-
-interface StringValue {
-  readonly lines: readonly string[];
-  readonly value: string;
-  readonly length: string;
-}
-
-interface JsValue {
-  readonly lines: readonly string[];
-  readonly value: string;
-}
-
-interface ArrayValue {
-  readonly name: string;
-  readonly length: number;
-  readonly storageKind: "global" | "stack";
-}
-
-interface RuntimeArrayValue {
-  readonly pointerName: string;
-}
-
-interface ObjectValue {
-  readonly typeName: string;
-  readonly pointerName: string;
-  readonly runtimePointerName?: string;
-  readonly value: JsIrObjectValue;
-}
-
-interface RuntimeObjectValue {
-  readonly pointerName: string;
-}
-
-interface LoopLabels {
-  readonly breakLabel: string;
-  readonly continueLabel?: string;
-  /** cleanupStack.length when the loop was entered; cleanups at or above this depth run on break. */
-  readonly cleanupDepth: number;
-}
-
-interface FunctionDef {
-  readonly name: string;
-  readonly parameters: readonly JsIrFunctionParameter[];
-  readonly body: readonly JsIrOperation[];
-  readonly outerBindings: Map<string, JsIrBindingValue>;
-  readonly traceOperation?: JsIrOperation;
-  readonly callingConvention?: "direct" | "functionObject";
-  readonly usesDynamicThis?: boolean;
-  readonly captures?: JsIrFunctionObjectDefinition["captures"];
-  returnType: LlvmReturnType;
-}
-
-// Generated JavaScript functions use an explicit payload/status ABI. Most runtime
-// helpers remain scalar; jsCall / getIteratorValue / callIteratorNext use the
-// explicit value-or-exception aggregate return.
-type LlvmReturnType = "aggregate";
 const generatedReturnType = "{ i64, i1 }";
 
 const doubleQuoteByte = 34;
