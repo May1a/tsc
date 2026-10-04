@@ -1174,6 +1174,31 @@ Measured, not guessed. Each cut below ends green on its own.
    `operations.ts` and `module.ts` come last rather than first: neither has anywhere to land until the
    handlers below them are gone.
 
+7. **`ir.ts` is not shaped like `llvm.ts` was, and that changes the approach. First cut: `done`.**
+   Measured with the same reference-closure tool:
+
+   | seed | closure |
+   | --- | --- |
+   | `lowerNumberExpression` | 342 decls, 9,022 lines |
+   | `lowerFunction*` / `lowerExpression*` / `lowerDestructur*` | 342 decls, 9,022 lines — *the same knot* |
+   | `lowerClass*` | 390 decls, 10,045 lines |
+   | `lowerStatements` | 407 decls, 10,466 lines |
+   | `lowerToJsIr` | 412 decls, 10,561 lines |
+
+   The lowering side is one recursion of 342 declarations, and the only two declarations outside it are
+   `lowerStatements` and `lowerClassMethodBody` — the hubs, reached from everywhere.
+
+   **`EmitContext`'s trick is not available here.** `llvm.ts` had a single carrier every emitter already
+   received; `ir.ts` has no equivalent. `lowerStatements(sourceFile)` and `lowerClassMethodBody(block,
+   bindings)` take plain parameters, state is threaded as `bindings` maps and scope stacks, and the
+   counters are module-level `let`s — `nextFunctionObjectId = 0` is assigned inside `lowerStatements`.
+   Building a lowering context would be a much larger change than the emitter's was, because the state
+   here is heterogeneous and partly global.
+
+   So the order is: cut leaves first, the way `llvm/` went in before its recursion moved. `ir.ts` has many
+   of them — the ranking found 40 closures under 500 lines. `ir/binding-updates.ts` (481 lines) is the
+   first, and it will become the plan's `bindings.ts` once `ir/bindings.ts`'s other users have moved.
+
 6. **Cut 6 is the class tier.** It is the largest remaining concept but it is *interleaved* with
    value-tier functions rather than contiguous, so its seams have to be drawn by hand. Do not infer
    them from the section banners: there is one banner and it does not bound the section.
