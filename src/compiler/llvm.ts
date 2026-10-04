@@ -55,6 +55,7 @@ import { emitRuntimeArrayFilterCallbackOperation,
   emitRuntimeArraySortOperation
 } from "./llvm/array-callbacks.js";
 import { emitObjectLiteralOperation, emitValueObjectSetPrototypeOperation, emitValueObjectValueExpression } from "./llvm/known-shape-objects.js";
+import { functionObjectExpectedArgumentCount, internedFunctionGlobal } from "./llvm/function-objects.js";
 import { emitInlineCppDeclarations } from "./llvm/inline-cpp.js";
 import { operationListTerminates } from "./llvm/loops.js";
 import { emitCondition, emitNamedValueBinding } from "./llvm/conditions.js";
@@ -4299,22 +4300,22 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
   throw new Error(`Unhandled JsIrValueExpression variant: ${expression.kind}`);
 }
 
-function internedFunctionGlobal(target: string): string {
-  return `fnobj.singleton.${target}`.replace(/[^A-Za-z0-9_.]/g, "_");
-}
 
-// ExpectedArgumentCount: the number of leading parameters before the first
-// one with a default initializer or a rest parameter.
-function functionObjectExpectedArgumentCount(parameters: readonly JsIrFunctionParameter[]): number {
-  let count = 0;
-  for (const parameter of parameters) {
-    if (parameter.isRest === true || parameter.defaultValue !== undefined) {
-      break;
-    }
-    count += 1;
-  }
-  return count;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // eslint-disable-next-line max-statements -- Dynamic calls materialize fixed and iterable spread arguments into one argv state machine.
 function emitValueCallExpression(
