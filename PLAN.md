@@ -1199,6 +1199,46 @@ Measured, not guessed. Each cut below ends green on its own.
    of them — the ranking found 40 closures under 500 lines. `ir/binding-updates.ts` (481 lines) is the
    first, and it will become the plan's `bindings.ts` once `ir/bindings.ts`'s other users have moved.
 
+7. **The lowering knot is the same cycle the emitter had, and the fix is measured. Not started.**
+   `ir.ts` is now 8,142 non-blank lines: a set of independent leaves plus one knot.
+
+   | seed | closure |
+   | --- | --- |
+   | `lowerRuntimeObjectOwnPropertyDescriptorBinding` | 278 decls, 7,997 lines |
+   | `lowerNumberExpression` | 278 decls, ~8,000 lines |
+   | `lowerStatements` / `lowerToJsIr` | the whole file |
+
+   The chain is short and worth naming exactly: a descriptor key can be an array index, so
+   `lowerRuntimeObjectOwnPropertyDescriptorBinding` calls `lowerNumberExpression`; and a number can be
+   `f(x)`, so `lowerNumberExpression` calls `lowerCallArguments` → `lowerValueCallArguments` →
+   `lowerValueExpression` → everything. That is the same shape as `emitNumberExpression` reaching
+   `emitCallArguments` before the scalar tiers were boxed.
+
+   **The fix is to box the lowering entry points on a context, and its surface is:**
+
+   | entry point | call sites |
+   | --- | --- |
+   | `lowerValueExpression` | 126 |
+   | `lowerNumberExpression` | 82 |
+   | `lowerConditionExpression` | 18 |
+   | `lowerStringExpression` | 10 |
+   | **total** | **236** |
+
+   Against the emitter's 144, and larger per site: `bindings` is a separate parameter threaded through
+   every one of these rather than a field on a carrier, so boxing them also means moving `bindings`
+   onto the context. That is a multi-day refactor, not a commit, and a half-applied version leaves the
+   tree broken — so it is recorded here with its size rather than started and abandoned.
+
+   Two smaller facts the same investigation turned up:
+
+   - **A module-level `let` cannot be cut out of a module at all.** An ES module binding is read-only
+     from outside, so `activeClassRegistry` and `activeInlineCppEnabled` both had to become named
+     objects before they could move. Twice now, and both "states" were one thing with an
+     `undefined` sentinel each.
+   - **The builtin producers were never next to their tables.** Step 5 says `builtins/*.ts` holds the
+     table *and its producers*; only the tables existed. `object-producers.ts` is the first owner with
+     both, and the second half of that gap is the remaining producers.
+
 6. **Cut 6 is the class tier.** It is the largest remaining concept but it is *interleaved* with
    value-tier functions rather than contiguous, so its seams have to be drawn by hand. Do not infer
    them from the section banners: there is one banner and it does not bound the section.
