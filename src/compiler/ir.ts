@@ -1,4 +1,37 @@
 import {
+
+  type ClassComputedKeyInfo,
+  type ClassComputedMethodEntry,
+  type ClassFieldInfo,
+  type ClassInfo,
+  type ClassMemberKey,
+  type ClassMethodEntry,
+  type ClassMethodInfo,
+
+  type CollectedClassMembers,
+  appendClassOperations,
+  buildClassInfo,
+  classAccessorEntries,
+  classCallableParameters,
+  classLoweringState,
+  classMethodEntries,
+  classPrototypeName,
+  classStaticStorageName,
+  collectClassMembers,
+  containsLexicalThis,
+  findClassInChain,
+  isPlainObjectReturningConstructor,
+  lowerClassInheritanceOperations,
+  lowerClassStaticFieldAccess,
+  lowerSymbolIteratorKeyExpression,
+  parameterValueKind,
+  resolveClassNames,
+  resolveReceiverClass,
+  runtimeParameters,
+  sourceSpan,
+  traceOperationFromNode
+} from "./ir/class-info.js";
+import {
   type Lowered,
   type LoweredStatementList,
   type Produced,
@@ -56,7 +89,6 @@ import type {
   JsIrLoweringMode,
   JsIrOperationTrace,
   JsIrResult,
-  JsIrTraceOrigin
 } from "./ir/module.js";
 import {
   isKnownGlobalCallee,
@@ -76,55 +108,18 @@ export * from "./ir/types.js";
 // The TypeScript checker for the program currently being lowered. Set by
 // `lowerToJsIr` and read by the class-lowering path for static method dispatch.
 // Lowering is synchronous and single-threaded, so a module-level handle is safe.
-let activeTypeChecker: ts.TypeChecker | undefined;
 
 // Name of the synthetic `this` parameter threaded through constructors/methods.
 const CLASS_THIS_NAME = "this";
 
-// Key of a class member. Literal keys are known at compile time; computed keys
-// are evaluated once at class-definition time into a module-level slot and read
-// back from there wherever the member is stored.
-type ClassMemberKey =
-  | { readonly kind: "literal"; readonly name: string }
-  | { readonly kind: "computed"; readonly slotName: string };
-
-interface ClassFieldInfo {
-  readonly key: ClassMemberKey;
-  readonly initializer: ts.Expression | undefined;
-}
-
-interface ClassMethodInfo {
-  readonly parameters: readonly JsIrFunctionParameter[];
-}
-
-interface ClassInfo {
-  readonly name: string;
-  readonly baseName?: string;
-  readonly fields: readonly ClassFieldInfo[];
-  readonly classId: number;
-  readonly constructorParameters: readonly JsIrFunctionParameter[];
-  readonly methods: ReadonlyMap<string, ClassMethodInfo>;
-  readonly staticMethods: ReadonlyMap<string, ClassMethodInfo>;
-  readonly staticFields: ReadonlySet<string>;
-  readonly getters: ReadonlySet<string>;
-  readonly setters: ReadonlySet<string>;
-  readonly iteratorMethod: ts.MethodDeclaration | undefined;
-  // Source-level private field name (`#x`) → class-mangled storage key on the
-  // instance object. Presence of the storage key doubles as the brand check.
-  readonly privateFields: ReadonlyMap<string, string>;
-}
-
 // Registry of classes in the file being lowered, consulted by the deep value
 // lowerers to resolve `new C(...)`. Scoped per file by `lowerTopLevelStatements`.
-let activeClassRegistry: Map<string, ClassInfo> | undefined;
 
 // True while lowering a constructor or method body, so `this` resolves to the
 // synthetic instance parameter.
 let classThisInScope = false;
 let activeEnclosingClass: ClassInfo | undefined;
 let activeClassMethodStatic = false;
-
-let nextClassId = 1;
 
 const inlineCppTag = "__tscn_inline_cpp";
 
@@ -166,131 +161,6 @@ const regexpConstructorArgumentCount = 2;
 const arrayFromArgumentCount = 3;
 const traceOperationIdWidth = 6;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-const sourceSpan = (sourceFile: ts.SourceFile, position: number) => {
-  const lineAndCharacter = sourceFile.getLineAndCharacterOfPosition(position);
-
-  return {
-    fileName: sourceFile.fileName,
-    line: lineAndCharacter.line + 1,
-    column: lineAndCharacter.character + 1
-  };
-};
-
-function traceOperationFromNode(
-  operation: JsIrOperation,
-  node: ts.Node,
-  origin: JsIrTraceOrigin = "source"
-): JsIrOperation {
-  if (operation.trace?.source !== undefined) {
-    return operation;
-  }
-  const sourceFile = node.getSourceFile();
-  return {
-    ...operation,
-    trace: {
-      id: operation.trace?.id ?? "",
-      source: sourceSpan(sourceFile, node.getStart(sourceFile)),
-      origin
-    }
-  };
-}
-
 function finalizeOperationTraces(operations: readonly JsIrOperation[], moduleIndex: number): readonly JsIrOperation[] {
   let operationIndex = 0;
   visitJsIrOperations(operations, (operation, parent) => {
@@ -331,39 +201,6 @@ function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): 
   return names;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /**
  * `Produced` for a recognizer that produces something other than a single operation.
  *
@@ -371,12 +208,7 @@ function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): 
  * below, and shadowing it would hide which one a call refers to.
  */
 
-
 /** The refusal, narrowed to whatever the caller returns. */
-
-
-
-
 
 /**
  * The "no recognizer claimed this" value, typed so it fits any `Lowered<T>`.
@@ -386,32 +218,6 @@ function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statement>): 
  * that produces an operation and from one that produces a list of them. Typing it as `Lowered` alone
  * pinned it to `JsIrOperation` and made every other return site a type error.
  */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /**
  * Aborts the class lowering pass.
@@ -443,13 +249,6 @@ interface LoweredStatements {
   readonly loweringMode: JsIrLoweringMode;
 }
 
-function classOperationTraceOrigin(index: number): JsIrTraceOrigin {
-  if (index === 0) {
-    return "source";
-  }
-  return "synthesized";
-}
-
 function lowerStatements(
   sourceFile: ts.SourceFile
 ): LoweredStatements {
@@ -478,7 +277,6 @@ function lowerStatements(
     };
   }
 }
-
 
 function findInlineCppTaggedTemplate(sourceFile: ts.SourceFile): ts.TaggedTemplateExpression | undefined {
   let found: ts.TaggedTemplateExpression | undefined;
@@ -523,8 +321,8 @@ function lowerTopLevelStatements(sourceFile: ts.SourceFile): LoweredStatements {
   const diagnostics: CompilerDiagnostic[] = [];
   const promotedAggregates = collectPromotedAggregateNames(sourceFile.statements);
   const classes = new Map<string, ClassInfo>();
-  const previousClassRegistry = activeClassRegistry;
-  activeClassRegistry = classes;
+  const { registry: previousClassRegistry } = classLoweringState;
+  classLoweringState.registry = classes;
 
   try {
     for (const statement of sourceFile.statements) {
@@ -551,7 +349,7 @@ function lowerTopLevelStatements(sourceFile: ts.SourceFile): LoweredStatements {
       diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result, bindings));
     }
   } finally {
-    activeClassRegistry = previousClassRegistry;
+    classLoweringState.registry = previousClassRegistry;
   }
 
   return { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" };
@@ -578,21 +376,6 @@ function unsupportedStatementDiagnostic(
     message,
     span: sourceSpan(sourceFile, statement.getStart(sourceFile))
   };
-}
-
-// Pushes a class's lowered operations into the statement stream, attaching
-// trace origins and updating bindings the same way ordinary statements do.
-function appendClassOperations(
-  operations: JsIrOperation[],
-  classOperations: readonly JsIrOperation[],
-  statement: ts.Statement,
-  bindings: Map<string, JsIrBindingValue>
-): void {
-  for (let index = 0; index < classOperations.length; index += 1) {
-    const traced = traceOperationFromNode(classOperations[index], statement, classOperationTraceOrigin(index));
-    operations.push(traced);
-    updateBindings(traced, bindings);
-  }
 }
 
 // ---- Real class lowering (static dispatch) ----------------------------------
@@ -623,29 +406,12 @@ function classAccessorFunctionName(className: string, propertyName: string, isGe
   return classSetterFunctionName(className, propertyName);
 }
 
-// Name of the per-class module-level slot holding the object that backs static
-// fields. Created once at module init; `C.x` reads/writes are properties on it.
-function classStaticStorageName(className: string): string {
-  return `${className}$statics`;
-}
-
-function classPrototypeName(className: string): string {
-  return `${className}$prototype`;
-}
-
 function classGetterFunctionName(className: string, propertyName: string): string {
   return `${className}$get$${propertyName}`;
 }
 
 function classSetterFunctionName(className: string, propertyName: string): string {
   return `${className}$set$${propertyName}`;
-}
-
-// Storage key for a private field: mangled with the owning class name behind a
-// NUL prefix so it can never collide with a source-level property name. Its
-// presence as an own property of an instance doubles as the class brand.
-function classPrivateFieldStorageKey(className: string, fieldName: string): string {
-  return `\0private\0${className}\0${fieldName}`;
 }
 
 // Node-compatible TypeError messages for private field access on an instance
@@ -656,13 +422,6 @@ function classPrivateFieldReadMessage(fieldName: string): string {
 
 function classPrivateFieldWriteMessage(fieldName: string): string {
   return `Cannot write private member ${fieldName} to an object whose class did not declare it`;
-}
-
-function classMemberHasStaticModifier(member: ts.ClassElement): boolean {
-  if (!ts.canHaveModifiers(member)) {
-    return false;
-  }
-  return ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ?? false;
 }
 
 // Lowers `const C = class [Inner] { ... }` by registering the class under the
@@ -736,127 +495,6 @@ function lowerClassDeclaration(
   return result;
 }
 
-/** `lowerClassDeclaration` with the registry rollback left to its caller. */
-/**
- * The names a class body is lowered under: the one its generated functions are named after, the inner
- * name a named class expression binds inside its own body, and the base it extends.
- *
- * Class expressions take their codegen name from the bound variable; a named class expression
- * additionally binds its inner name inside the class body.
- */
-interface ClassNames {
-  readonly infoName: string;
-  readonly innerName: string | undefined;
-  readonly baseName: string | undefined;
-}
-
-function resolveClassNames(
-  statement: ts.ClassDeclaration | ts.ClassExpression,
-  expressionBindingName: string | undefined,
-  classes: ReadonlyMap<string, ClassInfo>
-): Produced<ClassNames> {
-  let infoName: string | undefined = expressionBindingName;
-  let innerName: string | undefined;
-  if (infoName === undefined) {
-    if (statement.name === undefined) {
-      return unsupportedIn("A class declaration must be named");
-    }
-    infoName = statement.name.text;
-  } else if (statement.name !== undefined && statement.name.text !== infoName) {
-    // A named class expression binds its inner name inside its own body, per JS class scope.
-    innerName = statement.name.text;
-  }
-  if (statement.heritageClauses === undefined || statement.heritageClauses.length === 0) {
-    return produced({ infoName, innerName, baseName: undefined });
-  }
-  const baseName = resolveExtendedClassName(statement.heritageClauses, classes);
-  if (baseName === undefined) {
-    return unsupportedIn(classHeritageRefusal(statement.heritageClauses));
-  }
-  return produced({ infoName, innerName, baseName });
-}
-
-/** Why a heritage clause produced no usable base class. */
-function classHeritageRefusal(heritageClauses: ts.NodeArray<ts.HeritageClause>): string {
-  if (heritageClauses.length !== 1) {
-    return "A class may have at most one heritage clause";
-  }
-  const [heritage] = heritageClauses;
-  if (heritage.token !== ts.SyntaxKind.ExtendsKeyword) {
-    return "Class `implements` clauses are not supported yet; only `extends` is lowered";
-  }
-  if (heritage.types.length === 1 && ts.isIdentifier(heritage.types[0].expression)) {
-    return `\`extends ${heritage.types[0].expression.text}\` does not name a class declared in this module`;
-  }
-  return "`extends` must name a single class declared in this module";
-}
-
-/** The base class a heritage clause names, or `undefined` when it names something unusable. */
-function resolveExtendedClassName(
-  heritageClauses: ts.NodeArray<ts.HeritageClause>,
-  classes: ReadonlyMap<string, ClassInfo>
-): string | undefined {
-  if (heritageClauses.length !== 1) {
-    return undefined;
-  }
-  const [heritage] = heritageClauses;
-  if (heritage.token !== ts.SyntaxKind.ExtendsKeyword || heritage.types.length !== 1) {
-    return undefined;
-  }
-  const [type] = heritage.types;
-  if (!ts.isIdentifier(type.expression)) {
-    return undefined;
-  }
-  const { text } = type.expression;
-  if (!classes.has(text)) {
-    return undefined;
-  }
-  return text;
-}
-
-/**
- * The `ClassInfo` a class registers, from its members and parameter tables.
- *
- * A derived class with no constructor of its own forwards the base's parameter list, so the generated
- * constructor takes the same arguments the base does.
- */
-function buildClassInfo(
-  names: ClassNames,
-  members: CollectedClassMembers,
-  classes: ReadonlyMap<string, ClassInfo>
-): Produced<ClassInfo> {
-  const ownParameters = constructorParametersOf(members.constructorDeclaration);
-  if (ownParameters.kind !== "lowered") {
-    return ownParameters;
-  }
-  const ownMethods = classMethodInfoMap(members.methodDeclarations);
-  if (ownMethods.kind !== "lowered") {
-    return ownMethods;
-  }
-  const staticMethods = classMethodInfoMap(members.staticMethodDeclarations);
-  if (staticMethods.kind !== "lowered") {
-    return staticMethods;
-  }
-  let constructorParameters = ownParameters.operation;
-  if (names.baseName !== undefined && members.constructorDeclaration === undefined) {
-    constructorParameters = classes.get(names.baseName)?.constructorParameters ?? [];
-  }
-  return produced({
-    name: names.infoName,
-    baseName: names.baseName,
-    fields: members.fields,
-    classId: nextClassId++,
-    constructorParameters,
-    methods: ownMethods.operation,
-    staticMethods: staticMethods.operation,
-    staticFields: literalStaticFieldNames(members.staticFields),
-    getters: new Set(members.getAccessors.map((entry) => entry.name)),
-    setters: new Set(members.setAccessors.map((entry) => entry.name)),
-    iteratorMethod: members.iteratorMethod,
-    privateFields: members.privateFields
-  });
-}
-
 /** The operations a registered class contributes to the module, in definition order. */
 function lowerClassOperations(
   info: ClassInfo,
@@ -885,28 +523,6 @@ function lowerClassOperations(
     operations.push(...inheritance.operation);
   }
   return lowerClassMemberOperations(info, members, memberBindings, operations);
-}
-
-/** The two prototype-chain operations a derived class needs, or a refusal. */
-function lowerClassInheritanceOperations(
-  info: ClassInfo,
-  baseName: string | undefined
-): Produced<readonly JsIrOperation[]> {
-  if (baseName === undefined) {
-    return produced([]);
-  }
-  return produced([
-    {
-      kind: "valueObjectSetPrototype",
-      targetName: classPrototypeName(info.name),
-      prototypeName: classPrototypeName(baseName)
-    },
-    {
-      kind: "valueObjectSetPrototype",
-      targetName: classStaticStorageName(info.name),
-      prototypeName: classStaticStorageName(baseName)
-    }
-  ]);
 }
 
 /** Appends the per-member operations, stopping at the first member that cannot be placed. */
@@ -961,26 +577,6 @@ function lowerClassMemberOperations(
   return loweredOperationList(operations);
 }
 
-/** The instance and static method entries, paired with whether each is static. */
-function classMethodEntries(
-  members: CollectedClassMembers
-): readonly (readonly [readonly ClassMethodEntry[], boolean])[] {
-  return [
-    [members.methodDeclarations, false],
-    [members.staticMethodDeclarations, true]
-  ];
-}
-
-/** The getter and setter entries, paired with whether each is a getter. */
-function classAccessorEntries(
-  members: CollectedClassMembers
-): readonly (readonly [readonly ClassAccessorEntry[], boolean])[] {
-  return [
-    [members.getAccessors, true],
-    [members.setAccessors, false]
-  ];
-}
-
 /** `lowerClassDeclaration` with the registry rollback left to its caller. */
 function lowerRegisteredClassDeclaration(
   statement: ts.ClassDeclaration | ts.ClassExpression,
@@ -1011,7 +607,7 @@ function lowerRegisteredClassDeclaration(
   }
   const info = built.operation;
   classes.set(info.name, info);
-  activeClassRegistry = classes;
+  classLoweringState.registry = classes;
   let previousInnerName: ClassInfo | undefined;
   if (names.innerName !== undefined) {
     previousInnerName = classes.get(names.innerName);
@@ -1029,16 +625,6 @@ function lowerRegisteredClassDeclaration(
       classes.set(names.innerName, previousInnerName);
     }
   }
-}
-
-function literalStaticFieldNames(staticFields: readonly ClassFieldInfo[]): ReadonlySet<string> {
-  const names = new Set<string>();
-  for (const field of staticFields) {
-    if (field.key.kind === "literal") {
-      names.add(field.key.name);
-    }
-  }
-  return names;
 }
 
 // Emits the module-init slot holding a runtime-computed member name: the name
@@ -1142,226 +728,6 @@ function classMemberKeyStringExpression(key: ClassMemberKey): JsIrStringExpressi
   return { kind: "stringConversion", value: { kind: "variable", name: key.slotName } };
 }
 
-// Resolves a computed member name that is constant at compile time (a string,
-// numeric, or template literal, or a const-bound string), so such members keep
-// using the ordinary static machinery.
-function resolveConstantComputedMemberName(
-  expression: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): string | undefined {
-  if (ts.isStringLiteral(expression) || ts.isNumericLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
-    return expression.text;
-  }
-  if (ts.isIdentifier(expression)) {
-    const binding = bindings.get(expression.text);
-    if (binding?.kind === "string") {
-      return binding.value;
-    }
-  }
-  return undefined;
-}
-
-// Resolves the key of a class member. Runtime-computed names are recorded in
-// `computedKeys` (in definition order) so their evaluation can be emitted once
-// at class-definition time. Returns undefined for names this lowering cannot
-// handle (private identifiers, symbol keys other than Symbol.iterator).
-function classMemberKeyOf(
-  name: ts.PropertyName,
-  bindings: ReadonlyMap<string, JsIrBindingValue>,
-  computedKeys: ClassComputedKeyInfo[],
-  slotPrefix: string
-): ClassMemberKey | undefined {
-  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
-    return { kind: "literal", name: name.text };
-  }
-  if (!ts.isComputedPropertyName(name)) {
-    return undefined;
-  }
-  const constant = resolveConstantComputedMemberName(name.expression, bindings);
-  if (constant !== undefined) {
-    return { kind: "literal", name: constant };
-  }
-  const slotName = `${slotPrefix}$computed$${computedKeys.length}`;
-  computedKeys.push({ slotName, expression: name.expression });
-  return { kind: "computed", slotName };
-}
-
-/**
- * The literal name of a member that only supports compile-time names, or the reason it has none.
- *
- * Accessors are the only members that need this: a getter's name is baked into the generated
- * function's LLVM name at emit time, so a computed one has nothing to bake. The reason says that
- * rather than letting the caller report the enclosing class.
- */
-function classLiteralMemberName(
-  name: ts.PropertyName,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): Produced<string> {
-  const key = classMemberKeyOf(name, bindings, [], "");
-  if (key?.kind !== "literal") {
-    return unsupportedIn("Accessor names must be compile-time literals");
-  }
-  return produced(key.name);
-}
-
-interface ClassComputedKeyInfo {
-  readonly slotName: string;
-  readonly expression: ts.Expression;
-}
-
-interface ClassMethodEntry {
-  readonly name: string;
-  readonly declaration: ts.MethodDeclaration;
-}
-
-interface ClassComputedMethodEntry {
-  readonly slotName: string;
-  readonly declaration: ts.MethodDeclaration;
-}
-
-interface ClassAccessorEntry {
-  readonly name: string;
-  readonly declaration: ts.AccessorDeclaration;
-}
-
-interface CollectedClassMembers {
-  readonly fields: readonly ClassFieldInfo[];
-  readonly staticFields: readonly ClassFieldInfo[];
-  readonly computedKeys: readonly ClassComputedKeyInfo[];
-  readonly constructorDeclaration: ts.ConstructorDeclaration | undefined;
-  readonly methodDeclarations: readonly ClassMethodEntry[];
-  readonly staticMethodDeclarations: readonly ClassMethodEntry[];
-  readonly computedMethodDeclarations: readonly ClassComputedMethodEntry[];
-  readonly computedStaticMethodDeclarations: readonly ClassComputedMethodEntry[];
-  readonly getAccessors: readonly ClassAccessorEntry[];
-  readonly setAccessors: readonly ClassAccessorEntry[];
-  readonly iteratorMethod: ts.MethodDeclaration | undefined;
-  readonly privateFields: ReadonlyMap<string, string>;
-}
-
-// eslint-disable-next-line complexity, max-statements -- Class member classification keeps mutually exclusive syntax forms in declaration order.
-function collectClassMembers(
-  statement: ts.ClassDeclaration | ts.ClassExpression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>,
-  slotPrefix: string
-): Produced<CollectedClassMembers> {
-  const fields: ClassFieldInfo[] = [];
-  const staticFields: ClassFieldInfo[] = [];
-  const computedKeys: ClassComputedKeyInfo[] = [];
-  const methodDeclarations: ClassMethodEntry[] = [];
-  const staticMethodDeclarations: ClassMethodEntry[] = [];
-  const computedMethodDeclarations: ClassComputedMethodEntry[] = [];
-  const computedStaticMethodDeclarations: ClassComputedMethodEntry[] = [];
-  const getAccessors: ClassAccessorEntry[] = [];
-  const setAccessors: ClassAccessorEntry[] = [];
-  const privateFields = new Map<string, string>();
-  let constructorDeclaration: ts.ConstructorDeclaration | undefined;
-  let iteratorMethod: ts.MethodDeclaration | undefined;
-  for (const member of statement.members) {
-    if (ts.isPropertyDeclaration(member) && ts.isPrivateIdentifier(member.name)) {
-      // Instance private fields join the ordinary field list (under a
-      // class-mangled key) so they initialize in declaration order. Static
-      // private fields are not lowered yet.
-      if (classMemberHasStaticModifier(member)) {
-        return unsupportedIn("Static private class fields are not supported yet");
-      }
-      const storageKey = classPrivateFieldStorageKey(slotPrefix, member.name.text);
-      privateFields.set(member.name.text, storageKey);
-      fields.push({ key: { kind: "literal", name: storageKey }, initializer: member.initializer });
-    } else if (ts.isPropertyDeclaration(member)) {
-      const key = classMemberKeyOf(member.name, bindings, computedKeys, slotPrefix);
-      if (key === undefined) {
-        return unsupportedIn("Class field names must be identifiers, string literals, or computable from constants");
-      }
-      let target = fields;
-      if (classMemberHasStaticModifier(member)) {
-        target = staticFields;
-      }
-      target.push({ key, initializer: member.initializer });
-    } else if (ts.isConstructorDeclaration(member)) {
-      constructorDeclaration = member;
-    } else if (ts.isMethodDeclaration(member) && member.body !== undefined && isSymbolIteratorPropertyName(member.name, bindings)) {
-      if (classMemberHasStaticModifier(member)) {
-        return unsupportedIn("A static [Symbol.iterator] method is not supported yet");
-      }
-      if (iteratorMethod !== undefined) {
-        return unsupportedIn("A class may declare at most one [Symbol.iterator] method");
-      }
-      iteratorMethod = member;
-    } else if (ts.isMethodDeclaration(member) && member.body !== undefined) {
-      const key = classMemberKeyOf(member.name, bindings, computedKeys, slotPrefix);
-      if (key === undefined) {
-        return unsupportedIn("Method names must be identifiers, string literals, or computable from constants");
-      }
-      if (key.kind === "literal") {
-        if (classMemberHasStaticModifier(member)) {
-          staticMethodDeclarations.push({ name: key.name, declaration: member });
-        } else {
-          methodDeclarations.push({ name: key.name, declaration: member });
-        }
-      } else if (classMemberHasStaticModifier(member)) {
-        computedStaticMethodDeclarations.push({ slotName: key.slotName, declaration: member });
-      } else {
-        computedMethodDeclarations.push({ slotName: key.slotName, declaration: member });
-      }
-    } else if (ts.isGetAccessorDeclaration(member) && !classMemberHasStaticModifier(member) && member.body !== undefined) {
-      const accessorName = classLiteralMemberName(member.name, bindings);
-      if (accessorName.kind !== "lowered") {
-        return accessorName;
-      }
-      getAccessors.push({ name: accessorName.operation, declaration: member });
-    } else if (ts.isSetAccessorDeclaration(member) && !classMemberHasStaticModifier(member) && member.body !== undefined) {
-      const accessorName = classLiteralMemberName(member.name, bindings);
-      if (accessorName.kind !== "lowered") {
-        return accessorName;
-      }
-      setAccessors.push({ name: accessorName.operation, declaration: member });
-    } else {
-      return unsupportedIn(classMemberRefusalReason(member));
-    }
-  }
-  return produced({
-    fields,
-    staticFields,
-    computedKeys,
-    constructorDeclaration,
-    methodDeclarations,
-    staticMethodDeclarations,
-    computedMethodDeclarations,
-    computedStaticMethodDeclarations,
-    getAccessors,
-    setAccessors,
-    iteratorMethod,
-    privateFields
-  });
-}
-
-/**
- * Why a member reached the end of `collectClassMembers` unclassified.
- *
- * Every branch above claims the members it can place, so whatever is left is one of the forms the
- * class tier does not lower. Naming which one is the difference between a diagnostic that says
- * "private methods are not supported yet" and one that says "class lowering unsupported".
- */
-function classMemberRefusalReason(member: ts.ClassElement): string {
-  if (ts.isConstructorDeclaration(member)) {
-    return "An overloaded constructor is not supported yet; only the implementation is lowered";
-  }
-  if (member.name === undefined) {
-    return "Index signatures and construct signatures are not supported in a class yet";
-  }
-  if (ts.isPrivateIdentifier(member.name)) {
-    return "Private class methods and accessors are not supported yet";
-  }
-  if (ts.isMethodDeclaration(member) && member.body === undefined) {
-    return "Method overload signatures are not supported yet; only the implementation is lowered";
-  }
-  if ((ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) && classMemberHasStaticModifier(member)) {
-    return "Static accessors are not supported yet";
-  }
-  return "This class member form is not supported yet";
-}
-
 function lowerClassAccessor(
   info: ClassInfo,
   accessor: ts.AccessorDeclaration,
@@ -1402,63 +768,6 @@ function lowerClassAccessor(
     activeEnclosingClass = previousClass;
     activeClassMethodStatic = previousStatic;
   }
-}
-
-function constructorParametersOf(
-  declaration: ts.ConstructorDeclaration | undefined
-): Produced<readonly JsIrFunctionParameter[]> {
-  if (declaration === undefined) {
-    return produced([] as readonly JsIrFunctionParameter[]);
-  }
-  return classCallableParameters(declaration);
-}
-
-function classMethodInfoMap(
-  entries: readonly ClassMethodEntry[]
-): Produced<ReadonlyMap<string, ClassMethodInfo>> {
-  const map = new Map<string, ClassMethodInfo>();
-  for (const entry of entries) {
-    const parameters = classCallableParameters(entry.declaration);
-    if (parameters.kind !== "lowered") {
-      return parameters;
-    }
-    map.set(entry.name, { parameters: parameters.operation });
-  }
-  return produced(map);
-}
-
-/**
- * The runtime parameters of a class member, or the reason it has none this build can place.
- *
- * A class member's parameter list becomes an LLVM function signature with one slot per parameter, so
- * a parameter with no fixed shape has no slot: a rest parameter is a different calling convention, an
- * optional or defaulted one needs a slot filled at the call site, and a destructuring or
- * parameter-property one has no name to give the slot. Those are five different omissions that all
- * used to be one string, and the reason is what a user needs in order to know which one they wrote.
- */
-function classCallableParameters(
-  declaration: ts.ConstructorDeclaration | ts.MethodDeclaration | ts.AccessorDeclaration
-): Produced<readonly JsIrFunctionParameter[]> {
-  const parameters: JsIrFunctionParameter[] = [];
-  for (const param of runtimeParameters(declaration.parameters)) {
-    if (param.dotDotDotToken !== undefined) {
-      return unsupportedIn("Rest parameters are not supported on class members yet");
-    }
-    if (param.questionToken !== undefined) {
-      return unsupportedIn("Optional parameters are not supported on class members yet");
-    }
-    if (param.initializer !== undefined) {
-      return unsupportedIn("Parameters with defaults are not supported on class members yet");
-    }
-    if ((ts.getModifiers(param)?.length ?? 0) > 0) {
-      return unsupportedIn("Parameter properties are not supported on class members yet");
-    }
-    if (!ts.isIdentifier(param.name)) {
-      return unsupportedIn("Destructuring parameters are not supported on class members yet");
-    }
-    parameters.push({ name: param.name.text, valueKind: parameterValueKind(param) });
-  }
-  return produced(parameters);
 }
 
 function lowerClassMethod(
@@ -1567,7 +876,7 @@ function lowerClassConstructor(
     const body: JsIrOperation[] = [];
     let remainingStatements: readonly ts.Statement[] = constructorDeclaration?.body?.statements ?? [];
     if (info.baseName !== undefined) {
-      const base = activeClassRegistry?.get(info.baseName);
+      const base = classLoweringState.registry?.get(info.baseName);
       if (base === undefined) {
         return unsupportedIn(`\`extends ${info.baseName ?? "that class"}\` names a class this module did not lower`);
       }
@@ -1690,7 +999,7 @@ function lowerClassValueExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
-  if (activeClassRegistry === undefined) {
+  if (classLoweringState.registry === undefined) {
     return undefined;
   }
 
@@ -1737,7 +1046,7 @@ function lowerClassPropertyValueAccess(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  if (activeClassRegistry === undefined || !ts.isPropertyAccessExpression(expression)) {
+  if (classLoweringState.registry === undefined || !ts.isPropertyAccessExpression(expression)) {
     return notApplicable;
   }
   if (ts.isPrivateIdentifier(expression.name)) {
@@ -1750,7 +1059,7 @@ function lowerClassPropertyValueAccess(
 
   // C.prototype where C is a class name (not in bindings) gives the prototype object
   if (ts.isIdentifier(expression.expression) && !bindings.has(expression.expression.text) && expression.name.text === "prototype") {
-    const classInfo = activeClassRegistry.get(expression.expression.text);
+    const classInfo = classLoweringState.registry.get(expression.expression.text);
     if (classInfo !== undefined) {
       return produced({ kind: "variable", name: classPrototypeName(classInfo.name) } as JsIrValueExpression);
     }
@@ -1859,31 +1168,6 @@ function lowerClassPrivateFieldStore(
   });
 }
 
-// Resolves a static field read `C.x` to a property access on the class's
-// module-level static storage slot. Returns undefined when the receiver is not a
-// class name or the property is not a declared static field.
-function lowerClassStaticFieldAccess(
-  expression: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrValueExpression | undefined {
-  if (activeClassRegistry === undefined || !ts.isPropertyAccessExpression(expression)) {
-    return undefined;
-  }
-  const receiver = expression.expression;
-  if (!ts.isIdentifier(receiver) || bindings.has(receiver.text)) {
-    return undefined;
-  }
-  const info = activeClassRegistry.get(receiver.text);
-  if (info === undefined || findClassInChain(info, (candidate) => candidate.staticFields.has(expression.name.text)) === undefined) {
-    return undefined;
-  }
-  return {
-    kind: "valueObjectDynamicAccess",
-    value: { kind: "variable", name: classStaticStorageName(info.name) },
-    key: { kind: "literal", value: expression.name.text }
-  };
-}
-
 // Resolves a static method call `C.m(...)` or an instance method call
 // `(<instance>).m(...)` to a direct call of the generated method function.
 // eslint-disable-next-line complexity, max-statements -- Method resolution handles super, static inheritance, and instance inheritance at one dispatch seam.
@@ -1892,7 +1176,7 @@ function lowerClassMethodCall(
   callee: ts.PropertyAccessExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<Extract<JsIrValueExpression, { readonly kind: "call" }>> {
-  if (activeClassRegistry === undefined) {
+  if (classLoweringState.registry === undefined) {
     return notApplicable;
   }
   const methodName = callee.name.text;
@@ -1902,7 +1186,7 @@ function lowerClassMethodCall(
   }
 
   if (ts.isIdentifier(callee.expression) && !bindings.has(callee.expression.text)) {
-    const staticClass = activeClassRegistry.get(callee.expression.text);
+    const staticClass = classLoweringState.registry.get(callee.expression.text);
     let definingClass: ClassInfo | undefined;
     if (staticClass !== undefined) {
       definingClass = findClassInChain(staticClass, (candidate) => candidate.staticMethods.has(methodName));
@@ -1954,7 +1238,7 @@ function lowerSuperMethodCall(
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   methodName: string
 ): Lowered<Extract<JsIrValueExpression, { readonly kind: "call" }>> {
-  const registry = activeClassRegistry;
+  const { registry } = classLoweringState;
   if (registry === undefined) {
     return notApplicable;
   }
@@ -2022,54 +1306,6 @@ function baseClassOf(
   return registry.get(enclosing.baseName);
 }
 
-function findClassInChain(info: ClassInfo, predicate: (candidate: ClassInfo) => boolean): ClassInfo | undefined {
-  let current: ClassInfo | undefined = info;
-  while (current !== undefined) {
-    if (predicate(current)) {
-      return current;
-    }
-    if (current.baseName === undefined) {
-      return undefined;
-    }
-    current = activeClassRegistry?.get(current.baseName);
-  }
-  return undefined;
-}
-
-// Determines the class of a method-call receiver. Directly-known instances
-// (`new C()`) resolve via the registry; named-variable receivers resolve through
-// the TypeScript checker.
-function resolveReceiverClass(
-  receiver: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): ClassInfo | undefined {
-  if (activeClassRegistry === undefined) {
-    return undefined;
-  }
-  if (ts.isNewExpression(receiver) && ts.isIdentifier(receiver.expression) && !bindings.has(receiver.expression.text)) {
-    return activeClassRegistry.get(receiver.expression.text);
-  }
-  if (ts.isIdentifier(receiver)) {
-    // A variable initialized with `new C(...)` resolves through its binding,
-    // which also covers class types the checker cannot name (anonymous class
-    // expressions).
-    const binding = bindings.get(receiver.text);
-    if (binding?.kind === "value" && binding.value.kind === "newInstance") {
-      return activeClassRegistry.get(binding.value.className);
-    }
-    if (binding?.kind === "valueVariable" && binding.className !== undefined) {
-      return activeClassRegistry.get(binding.className);
-    }
-  }
-  if (ts.isIdentifier(receiver) && activeTypeChecker !== undefined) {
-    const symbol = activeTypeChecker.getTypeAtLocation(receiver).getSymbol();
-    if (symbol !== undefined) {
-      return activeClassRegistry.get(symbol.getName());
-    }
-  }
-  return undefined;
-}
-
 // Lowers a method-call receiver to a stable instance value. Only inline
 // receivers (`this`, `new C()`) are supported; named-variable instances require
 // stable value storage and are reported as unsupported for now.
@@ -2093,14 +1329,14 @@ function lowerClassInstanceExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  if (activeClassRegistry === undefined) {
+  if (classLoweringState.registry === undefined) {
     return notApplicable;
   }
   if (classThisInScope && expression.kind === ts.SyntaxKind.ThisKeyword) {
     return produced({ kind: "variable", name: CLASS_THIS_NAME } as JsIrValueExpression);
   }
   if (ts.isNewExpression(expression) && ts.isIdentifier(expression.expression) && !bindings.has(expression.expression.text)) {
-    const info = activeClassRegistry.get(expression.expression.text);
+    const info = classLoweringState.registry.get(expression.expression.text);
     if (info !== undefined) {
       const args = lowerTypedCallArguments(info.constructorParameters, expression.arguments ?? ts.factory.createNodeArray(), bindings);
       if (args === undefined) {
@@ -2135,7 +1371,7 @@ function lowerClassPropertyAssignment(
   right: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  if (activeClassRegistry === undefined) {
+  if (classLoweringState.registry === undefined) {
     return notApplicable;
   }
   const receiverClass = resolveReceiverClass(left.expression, bindings);
@@ -2195,404 +1431,6 @@ function unsupportedRegExpPatternMessage(pattern: string, flags: string): string
   }
   return undefined;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 function isNonExecutableDeclaration(statement: ts.Statement): boolean {
   if (
@@ -2920,7 +1758,6 @@ function lowerErrorTryCatchStatement(
   }
   return { kind: "block", operations: [...operations] };
 }
-
 
 function lowerRuntimeErrorLiteral(
   name: string,
@@ -3742,63 +2579,6 @@ function declaredFunctionReturnKind(type: ts.TypeNode | undefined): JsIrValueKin
   return "value";
 }
 
-function isPlainObjectReturningConstructor(declaration: ts.FunctionDeclaration): boolean {
-  if (declaration.body === undefined || containsLexicalThis(declaration.body)) {
-    return false;
-  }
-  const { statements } = declaration.body;
-  const finalStatement = statements.at(-1);
-  if (finalStatement === undefined || !ts.isReturnStatement(finalStatement) || finalStatement.expression === undefined) {
-    return false;
-  }
-  if (statements.slice(0, -1).some(containsReturnStatement)) {
-    return false;
-  }
-  const returned = unwrapTypeOnlyExpression(finalStatement.expression);
-  if (ts.isObjectLiteralExpression(returned)) {
-    return true;
-  }
-  if (!ts.isIdentifier(returned)) {
-    return false;
-  }
-  for (const statement of statements.slice(0, -1)) {
-    if (!ts.isVariableStatement(statement)) {
-      continue;
-    }
-    for (const variable of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(variable.name) || variable.name.text !== returned.text || variable.initializer === undefined) {
-        continue;
-      }
-      if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0) {
-        return false;
-      }
-      const initializer = unwrapTypeOnlyExpression(variable.initializer);
-      if (ts.isObjectLiteralExpression(initializer)) {
-        return true;
-      }
-      return ts.isNewExpression(initializer) && ts.isIdentifier(initializer.expression) &&
-        errorConstructorNames.has(initializer.expression.text);
-    }
-  }
-  return false;
-}
-
-function containsReturnStatement(node: ts.Node): boolean {
-  if (ts.isFunctionLike(node)) {
-    return false;
-  }
-  if (ts.isReturnStatement(node)) {
-    return true;
-  }
-  let found = false;
-  ts.forEachChild(node, (child) => {
-    if (!found && containsReturnStatement(child)) {
-      found = true;
-    }
-  });
-  return found;
-}
-
 function collectFunctionDeclarationEnclosingCaptureNames(
   declaration: ts.FunctionDeclaration,
   outerBindings: ReadonlyMap<string, JsIrBindingValue>
@@ -3834,7 +2614,7 @@ function collectFunctionDeclarationEnclosingCaptureNames(
 }
 
 function identifierResolvesInEnclosingFunction(identifier: ts.Identifier, declaration: ts.FunctionDeclaration): boolean {
-  const symbol = activeTypeChecker?.getSymbolAtLocation(identifier);
+  const symbol = classLoweringState.typeChecker?.getSymbolAtLocation(identifier);
   if (symbol?.declarations === undefined) {
     return true;
   }
@@ -3931,26 +2711,6 @@ function functionFrameBindings(bindings: ReadonlyMap<string, JsIrBindingValue>):
   }
   return frameBindings;
 }
-
-function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValueKind {
-  if (parameter.type?.kind === ts.SyntaxKind.StringKeyword) {
-    return "string";
-  }
-  if (parameter.type?.kind === ts.SyntaxKind.UnknownKeyword || parameter.type?.kind === ts.SyntaxKind.AnyKeyword) {
-    return "value";
-  }
-  return "number";
-}
-
-/** True for TypeScript's type-only `this: T` parameter (not a runtime argv slot). */
-function isTypeOnlyThisParameter(parameter: ts.ParameterDeclaration): boolean {
-  return ts.isIdentifier(parameter.name) && parameter.name.text === "this";
-}
-
-function runtimeParameters(parameters: readonly ts.ParameterDeclaration[]): readonly ts.ParameterDeclaration[] {
-  return parameters.filter((parameter) => !isTypeOnlyThisParameter(parameter));
-}
-
 
 function lowerCallStatement(
   expression: ts.CallExpression,
@@ -5435,7 +4195,6 @@ function lowerConstVariableBinding(
   return undefined;
 }
 
-
 // eslint-disable-next-line complexity, max-statements -- Const aggregate binding routes the supported built-in constructors and inspectors.
 function lowerConstAggregateBinding(
   name: string,
@@ -6226,22 +4985,6 @@ function arrayCallbackDirection(method: "map" | "flatMap" | "filter" | "find" | 
     return "right";
   }
   return "left";
-}
-
-function containsLexicalThis(node: ts.Node): boolean {
-  let found = false;
-  const visit = (child: ts.Node): void => {
-    if (found || child.kind === ts.SyntaxKind.ThisKeyword) {
-      found = true;
-      return;
-    }
-    if (child !== node && ts.isFunctionLike(child) && !ts.isArrowFunction(child)) {
-      return;
-    }
-    ts.forEachChild(child, visit);
-  };
-  ts.forEachChild(node, visit);
-  return found;
 }
 
 function lowerInlineFunctionBody(
@@ -7399,27 +6142,6 @@ function lowerPropertyKeyExpression(
   return lowerStringRuntimeExpression(expression, bindings);
 }
 
-/**
- * Recognise the well-known `Symbol.iterator` member access as the compiler-owned
- * sentinel key. General `Symbol()` / `Symbol.for` remain unsupported.
- */
-function lowerSymbolIteratorKeyExpression(
-  expression: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrStringExpression | undefined {
-  if (!ts.isPropertyAccessExpression(expression) || !ts.isIdentifier(expression.expression)) {
-    return undefined;
-  }
-  if (expression.expression.text !== "Symbol" || bindings.has("Symbol")) {
-    return undefined;
-  }
-  if (expression.name.text !== "iterator") {
-    return undefined;
-  }
-  return { kind: "literal", value: SYMBOL_ITERATOR_SENTINEL };
-}
-
-
 function lowerStringConcatExpression(
   expression: ts.BinaryExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -7564,7 +6286,7 @@ function lowerInstanceOfCondition(
 ): JsIrCondition | undefined {
   const right = unwrapTypeOnlyExpression(expression.right);
   if (ts.isIdentifier(right) && !bindings.has(right.text)) {
-    const classInfo = activeClassRegistry?.get(right.text);
+    const classInfo = classLoweringState.registry?.get(right.text);
     if (classInfo !== undefined) {
       const instance = lowerClassInstanceExpression(unwrapTypeOnlyExpression(expression.left), bindings);
       if (instance.kind === "unsupported") {
@@ -9280,7 +8002,6 @@ function lowerValueCallExpression(
   };
 }
 
-
 function lowerCallThisValue(
   callee: ts.LeftHandSideExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -10167,14 +8888,14 @@ function lowerClassNumberAccess(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrNumberExpression | undefined {
-  if (activeClassRegistry === undefined || activeTypeChecker === undefined) {
+  if (classLoweringState.registry === undefined || classLoweringState.typeChecker === undefined) {
     return undefined;
   }
   const isMemberAccess = ts.isPropertyAccessExpression(expression) || (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression));
   if (!isMemberAccess) {
     return undefined;
   }
-  const type = activeTypeChecker.getTypeAtLocation(expression);
+  const type = classLoweringState.typeChecker.getTypeAtLocation(expression);
   if ((type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) === 0) {
     return undefined;
   }
@@ -10189,7 +8910,7 @@ function lowerNumberAccessExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrNumberExpression | undefined {
-  if (activeTypeChecker?.getTypeAtLocation(expression).getCallSignatures().length !== 0) {
+  if (classLoweringState.typeChecker?.getTypeAtLocation(expression).getCallSignatures().length !== 0) {
     return undefined;
   }
   if (ts.isElementAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
@@ -10321,8 +9042,8 @@ function lowerNumberCallExpression(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrNumberExpression | undefined {
-  if (activeTypeChecker !== undefined) {
-    const callType = activeTypeChecker.getTypeAtLocation(expression);
+  if (classLoweringState.typeChecker !== undefined) {
+    const callType = classLoweringState.typeChecker.getTypeAtLocation(expression);
     if ((callType.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) !== 0) {
       return undefined;
     }
@@ -10676,7 +9397,6 @@ function lowerNumberOperator(kind: ts.SyntaxKind): JsIrNumberOperator | undefine
   }
 }
 
-
 function lowerValueElementAccessNumber(
   expression: ts.ElementAccessExpression,
   binding: JsIrBindingValue | undefined,
@@ -10704,7 +9424,6 @@ function lowerValueElementAccessNumber(
     }
   };
 }
-
 
 function lowerArrayLiteralExpression(
   expression: ts.Expression,
@@ -10923,13 +9642,6 @@ function lowerRuntimeObjectFieldName(
     return lowerPropertyKeyExpression(name.expression, bindings);
 }
 
-function isSymbolIteratorPropertyName(
-  name: ts.PropertyName,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): boolean {
-  return ts.isComputedPropertyName(name) && lowerSymbolIteratorKeyExpression(name.expression, bindings) !== undefined;
-}
-
 function lowerObjectFieldName(name: ts.PropertyName): string | undefined {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) {
     return name.text;
@@ -11042,7 +9754,7 @@ export function lowerToJsIr(
 ): JsIrResult {
   const allDiagnostics: CompilerDiagnostic[] = [];
   const inlineCppBlocks: JsIrInlineCppBlock[] = [];
-  activeTypeChecker = checker;
+  classLoweringState.typeChecker = checker;
   activeInlineCppEnabled = options.fcpp === true;
   activeInlineCppBlocks = inlineCppBlocks;
   let modules;
@@ -11059,7 +9771,7 @@ export function lowerToJsIr(
       };
     });
   } finally {
-    activeTypeChecker = undefined;
+    classLoweringState.typeChecker = undefined;
     activeInlineCppEnabled = false;
     activeInlineCppBlocks = undefined;
   }
