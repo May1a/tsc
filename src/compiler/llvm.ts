@@ -1,13 +1,9 @@
 import {
   type JsIrBindingValue,
-  type JsIrCallArgument,
   type JsIrFunctionObjectDefinition,
   type JsIrFunctionParameter,
   type JsIrModule,
-  type JsIrNumberExpression,
   type JsIrOperation,
-  type JsIrStringExpression,
-  type JsIrValueExpression,
   aggregateBindingForOperation,
   visitJsIrOperations
 } from "./ir.js";
@@ -16,14 +12,13 @@ import type { EmitContext, FunctionDef, OperationOf } from "./llvm/context.js";
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { type TraceMapV1, buildTraceMap } from "./trace.js";
 import { traceEndLine, traceStartLine, wrapFunctionTrace } from "./llvm/trace.js";
-import { emitRuntimeArrayPointer } from "./llvm/layout.js";
-import { emitNumberExpression, llvmDoubleBitcastOperand } from "./llvm/numbers.js";
+import { emitNumberExpression } from "./llvm/numbers.js";
 import { emitStringExpression } from "./llvm/string-expressions.js";
 import { emitRuntimeCollectionFromArrayOperation, emitRuntimeCollectionFromCollectionOperation, emitRuntimeCollectionFromIterableOperation, emitRuntimeCollectionMutationOperation, emitRuntimeCollectionNewOperation, emitRuntimeCollectionResultOperation } from "./llvm/collections.js";
 import { emitRuntimeObjectAssignOperation, emitRuntimeObjectCreateOperation, emitRuntimeObjectDefineDataPropertyOperation, emitRuntimeObjectDeleteOperation, emitRuntimeObjectEntriesOperation, emitRuntimeObjectFromEntriesOperation, emitRuntimeObjectGetPrototypeOperation, emitRuntimeObjectKeysOperation, emitRuntimeObjectLiteralOperation, emitRuntimeObjectOwnPropertyDescriptorOperation, emitRuntimeObjectOwnPropertyDescriptorsOperation, emitRuntimeObjectOwnPropertyNamesOperation, emitRuntimeObjectSetPrototypeOperation, emitRuntimeObjectStateMutationOperation, emitRuntimeObjectStoreOperation, emitRuntimeObjectValuesOperation } from "./llvm/objects.js";
 import { emitPrintOperation } from "./llvm/print.js";
 import { emitDoWhileOperation, emitForInArrayOperation, emitForInObjectOperation, emitForOfArrayOperation, emitForOfMapOperation, emitForOfProtocolOperation, emitForOfSetOperation, emitForOfStringOperation, emitForOperation, emitWhileOperation } from "./llvm/loop-statements.js";
-import { emitBreakOperation, emitContinueOperation, emitIfOperation, emitOperationsWithScopedBindings, emitSwitchOperation, emitTryCatchOperation, noLines } from "./llvm/branches.js";
+import { emitBreakOperation, emitContinueOperation, emitIfOperation, emitSwitchOperation, emitTryCatchOperation, noLines } from "./llvm/branches.js";
 import { emitRuntimeArrayAppendOperation, emitRuntimeArrayCopyWithinOperation, emitRuntimeArrayDeleteOperation, emitRuntimeArrayFillOperation, emitRuntimeArrayRemoveOperation, emitRuntimeArrayReverseOperation, emitRuntimeArraySetLengthOperation, emitRuntimeArrayStoreOperation } from "./llvm/array-mutators.js";
 import { emitRuntimeArrayFilterCallbackOperation,
   emitRuntimeArrayFlatMapCallbackOperation,
@@ -43,6 +38,7 @@ import {
 import { emitValueExpression } from "./llvm/value-expressions.js";
 import { emitArrayDestructureProtocolOperation, emitArrayStoreOperation, emitAssignBooleanOperation, emitAssignNumberOperation, emitAssignStringOperation, emitLetBooleanOperation, emitLetNumberOperation, emitLetStringOperation, emitLetValueOperation, emitObjectStoreOperation, emitPrivateFieldStoreOperation, emitValueAggregateDeleteOperation, emitValueAggregateStoreOperation } from "./llvm/bindings.js";
 import { emitArrayLiteralOperation, emitRuntimeArrayConcatOperation, emitRuntimeArrayLiteralOperation, emitRuntimeArrayMutatorResultOperation, emitRuntimeArraySliceOperation, emitRuntimeArraySpliceOperation, emitRuntimeArraySpliceStatementOperation, emitRuntimeErrorLiteralOperation, emitRuntimeIteratorNewOperation, emitRuntimeRegexSplitOperation, emitRuntimeStringSplitOperation } from "./llvm/aggregate-constructors.js";
+import { emitBindingGroupOperation, emitCallOperation, emitHoistedFunctionOperation, emitNumberReturnOperation, emitRuntimeArrayNamedDeleteOperation, emitRuntimeArrayNamedStoreOperation, emitScopedBlockOperation, emitStringReturnOperation, emitThrowValueOperation, emitValueReturnOperation } from "./llvm/statements.js";
 import { emitInlineCppDeclarations } from "./llvm/inline-cpp.js";
 import { operationListTerminates } from "./llvm/loops.js";
 import { emitCondition } from "./llvm/conditions.js";
@@ -53,7 +49,6 @@ import { defineStructuredRuntimeHelpers, runtimeIrText } from "./runtime-ir.js";
 import {
   COMPLETION_NORMAL,
   emitExceptionReturnBlock,
-  emitGeneratedJsCall,
   emitNormalGeneratedReturn,
   emitPackedGeneratedReturn,
   emitRootStackPush,
@@ -1061,38 +1056,13 @@ function emitOperation(operation: JsIrOperation, context: EmitContext): string[]
   return operationEmitterFor(operation)(operation, context);
 }
 
-function emitScopedBlockOperation(
-  operation: OperationOf<"block">,
-  context: EmitContext
-): string[] {
-  return emitOperationsWithScopedBindings(operation.operations, context);
-}
 
-function emitBindingGroupOperation(
-  operation: OperationOf<"bindingGroup">,
-  context: EmitContext
-): string[] {
-  return context.emitOperations(operation.operations);
-}
 
-function emitHoistedFunctionOperation(_operation: OperationOf<"function">, _context: EmitContext): string[] {
-  return [];
-}
 
 
 
 
 
-function emitThrowValueOperation(operation: OperationOf<"throwValue">, context: EmitContext): string[] {
-  const value = context.emitValue(operation.value);
-  // exceptionTarget is already the nearest catch or cleanup throw-entry.
-  return [
-    ...value.lines,
-    emitRootStackPush(value.value, context),
-    `  store i64 ${value.value}, ptr ${context.exceptionSlot}`,
-    `  br label %${context.exceptionTarget}`
-  ];
-}
 
 
 
@@ -3210,15 +3180,6 @@ function emitThrowValueOperation(operation: OperationOf<"throwValue">, context: 
 
 
 
-function emitRuntimeArrayNamedStoreOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayNamedStore" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const key = context.emitStringExpression(operation.key);
-  const value = context.emitValue(operation.value);
-  return [...array.lines, ...key.lines, ...value.lines, `  call void @arraySetNamed(ptr ${array.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
-}
 
 
 
@@ -3229,14 +3190,6 @@ function emitRuntimeArrayNamedStoreOperation(
 
 
 
-function emitRuntimeArrayNamedDeleteOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayNamedDelete" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const key = context.emitStringExpression(operation.key);
-  return [...array.lines, ...key.lines, `  call void @arrayDeleteNamed(ptr ${array.value}, i64 ${key.length}, ptr ${key.value})`];
-}
 
 
 
@@ -3574,10 +3527,6 @@ function emitRuntimeArrayNamedDeleteOperation(
 
 
 
-function emitCallOperation(operation: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): string[] {
-  const args = context.emitCallArguments(operation.arguments);
-  return [...args.lines, ...emitGeneratedJsCall(operation.name, args.values, context).lines];
-}
 
 
 
@@ -3692,33 +3641,79 @@ function emitCallOperation(operation: { readonly kind: "call"; readonly name: st
 
 
 
-function emitNumberReturnOperation(operation: { readonly kind: "returnNumber"; readonly expression: JsIrNumberExpression }, context: EmitContext): string[] {
-  const result = context.emitNumberExpression(operation.expression);
-  const index = context.numIndex;
-  context.numIndex += 1;
-  const boxed = `%ret.num.${index}`;
-  return [...result.lines, `  ${boxed} = call i64 @valueBoxNumber(double ${llvmDoubleBitcastOperand(result.value)})`, ...emitNormalGeneratedReturn(boxed, context)];
-}
 
-function emitStringReturnOperation(operation: { readonly kind: "returnString"; readonly expression: JsIrStringExpression }, context: EmitContext): string[] {
-  const result = context.emitStringExpression(operation.expression);
-  const index = context.stringIndex;
-  context.stringIndex += 1;
-  const boxed = `%ret.str.${index}`;
-  // Box, then restore this frame and return the raw i64. No safepoint runs between the
-  // box and the ret, and the caller re-roots the result at the handoff (see the value
-  // "call" emitter), so the freshly-boxed string is never collected in the gap.
-  return [
-    ...result.lines,
-    `  ${boxed} = call i64 @valueBoxString(ptr ${result.value}, i64 ${result.length})`,
-    ...emitNormalGeneratedReturn(boxed, context)
-  ];
-}
 
-function emitValueReturnOperation(operation: { readonly kind: "returnValue"; readonly expression: JsIrValueExpression }, context: EmitContext): string[] {
-  const result = context.emitValue(operation.expression);
-  return [...result.lines, ...emitNormalGeneratedReturn(result.value, context)];
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
