@@ -27,8 +27,7 @@ import type {
   LoopLabels,
   NumberValue,
   RuntimeArrayValue,
-  RuntimeObjectValue,
-  StringValue
+  RuntimeObjectValue
 } from "./llvm/context.js";
 
 import type { CompilerDiagnostic } from "./diagnostics.js";
@@ -48,6 +47,7 @@ import {
   llvmDoubleLiteral
 } from "./llvm/numbers.js";
 import { emitStringExpression, emitStringIndexArgument } from "./llvm/string-expressions.js";
+import { emitCallArguments, emitCallExpressionResult, emitStringCallExpressionResult } from "./llvm/calls.js";
 import { addStringConstant, encodeCString, utf8ByteLength } from "./llvm/strings.js";
 import {
   loopFrameName,
@@ -3604,23 +3604,23 @@ function emitCallOperation(operation: { readonly kind: "call"; readonly name: st
   return [...args.lines, ...emitGeneratedJsCall(operation.name, args.values, context).lines];
 }
 
-function emitCallExpressionResult(expression: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrNumberExpression[] }, context: EmitContext): { readonly lines: string[]; readonly value: string } {
-  const lines: string[] = [];
-  const argValues: string[] = [];
-  for (const arg of expression.arguments) {
-    const result = context.emitNumberExpression(arg);
-    const argIndex = context.numIndex;
-    context.numIndex += 1;
-    const boxed = `%arg.num.${argIndex}`;
-    lines.push(...result.lines, `  ${boxed} = call i64 @valueBoxNumber(double ${llvmDoubleBitcastOperand(result.value)})`);
-    argValues.push(`i64 ${boxed}`);
-  }
-  const generated = emitGeneratedJsCall(expression.name, argValues, context);
-  const number = `%call.${context.numIndex}.num`;
-  context.numIndex += 1;
-  lines.push(...generated.lines, `  ${number} = call double @valueNumber(i64 ${generated.value})`);
-  return { lines, value: number };
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function emitNumberCallExpressionResult(expression: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): { readonly lines: string[]; readonly value: string } {
   const args = context.emitCallArguments(expression.arguments);
@@ -3633,23 +3633,23 @@ function emitNumberCallExpressionResult(expression: { readonly kind: "call"; rea
   };
 }
 
-function emitStringCallExpressionResult(expression: { readonly kind: "call"; readonly name: string; readonly arguments: readonly JsIrCallArgument[] }, context: EmitContext): StringValue {
-  const args = context.emitCallArguments(expression.arguments);
-  const generated = emitGeneratedJsCall(expression.name, args.values, context);
-  const value = `%call.${context.stringIndex}.ptr`;
-  const length = `%call.${context.stringIndex}.len`;
-  context.stringIndex += 1;
-  return {
-    lines: [
-      ...args.lines,
-      ...generated.lines,
-      `  ${value} = call ptr @valueStringPtr(i64 ${generated.value})`,
-      `  ${length} = call i64 @valueStringLength(i64 ${generated.value})`
-    ],
-    value,
-    length
-  };
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function emitNewInstanceValueExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "newInstance" }>,
@@ -3688,34 +3688,34 @@ function emitNewInstanceValueExpression(
   };
 }
 
-function emitCallArguments(args: readonly JsIrCallArgument[], context: EmitContext): { readonly lines: string[]; readonly values: string[] } {
-  const lines: string[] = [];
-  const values: string[] = [];
-  for (const arg of args) {
-    if (arg.valueKind === "string") {
-      const result = context.emitStringExpression(arg.value);
-      const index = context.stringIndex;
-      context.stringIndex += 1;
-      const boxed = `%arg.str.${index}`;
-      lines.push(...result.lines, `  ${boxed} = call i64 @valueBoxString(ptr ${result.value}, i64 ${result.length})`);
-      values.push(`i64 ${boxed}`);
-      continue;
-    }
-    if (arg.valueKind === "value") {
-      const result = context.emitValue(arg.value);
-      lines.push(...result.lines);
-      values.push(`i64 ${result.value}`);
-      continue;
-    }
-    const result = context.emitNumberExpression(arg.value);
-    const index = context.numIndex;
-    context.numIndex += 1;
-    const boxed = `%arg.num.${index}`;
-    lines.push(...result.lines, `  ${boxed} = call i64 @valueBoxNumber(double ${llvmDoubleBitcastOperand(result.value)})`);
-    values.push(`i64 ${boxed}`);
-  }
-  return { lines, values };
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function emitNumberReturnOperation(operation: { readonly kind: "returnNumber"; readonly expression: JsIrNumberExpression }, context: EmitContext): string[] {
   const result = context.emitNumberExpression(operation.expression);
