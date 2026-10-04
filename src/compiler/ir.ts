@@ -29,6 +29,15 @@ import type {
   JsIrSwitchClause,
   JsIrValueExpression
 } from "./ir/expressions.js";
+import {
+  definePropertyArgumentCount,
+  errorConstructorNames,
+  isInlineCppTaggedTemplate,
+  isLiteralElementAccessArgument,
+  isUnsupportedSymbolExpression,
+  lowerCanonicalArrayIndexString,
+  unwrapTypeOnlyExpression,
+} from "./ir/predicates.js";
 import type {
   JsIrInlineCppBlock,
   JsIrLowerOptions,
@@ -132,7 +141,6 @@ type ObjectLiteralClassification =
       readonly value: JsIrRuntimeObjectValue;
     };
 
-const definePropertyArgumentCount = 3;
 const arrayFillRangeArgumentCount = 3;
 const arrayCopyWithinArgumentCount = 3;
 const arrayCallbackArgumentCount = 3;
@@ -459,9 +467,6 @@ function lowerStatements(
   }
 }
 
-function isInlineCppTaggedTemplate(expression: ts.Expression): expression is ts.TaggedTemplateExpression {
-  return ts.isTaggedTemplateExpression(expression) && ts.isIdentifier(expression.tag) && expression.tag.text === inlineCppTag;
-}
 
 function findInlineCppTaggedTemplate(sourceFile: ts.SourceFile): ts.TaggedTemplateExpression | undefined {
   let found: ts.TaggedTemplateExpression | undefined;
@@ -2904,7 +2909,6 @@ function lowerErrorTryCatchStatement(
   return { kind: "block", operations: [...operations] };
 }
 
-const errorConstructorNames: ReadonlySet<string> = new Set(["Error", "TypeError", "RangeError", "EvalError", "URIError", "SyntaxError"]);
 
 function lowerRuntimeErrorLiteral(
   name: string,
@@ -5419,12 +5423,6 @@ function lowerConstVariableBinding(
   return undefined;
 }
 
-function unwrapTypeOnlyExpression(expression: ts.Expression): ts.Expression {
-  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression) || ts.isNonNullExpression(expression) || ts.isParenthesizedExpression(expression)) {
-    return unwrapTypeOnlyExpression(expression.expression);
-  }
-  return expression;
-}
 
 // eslint-disable-next-line complexity, max-statements -- Const aggregate binding routes the supported built-in constructors and inspectors.
 function lowerConstAggregateBinding(
@@ -7409,24 +7407,6 @@ function lowerSymbolIteratorKeyExpression(
   return { kind: "literal", value: SYMBOL_ITERATOR_SENTINEL };
 }
 
-function isUnsupportedSymbolExpression(
-  expression: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): boolean {
-  if (bindings.has("Symbol")) {
-    return false;
-  }
-  let member: ts.Expression = expression;
-  let isCall = false;
-  if (ts.isCallExpression(member)) {
-    isCall = true;
-    member = member.expression;
-  }
-  if (ts.isIdentifier(member)) {
-    return member.text === "Symbol";
-  }
-  return ts.isPropertyAccessExpression(member) && ts.isIdentifier(member.expression) && member.expression.text === "Symbol" && (isCall || member.name.text !== "iterator");
-}
 
 function lowerStringConcatExpression(
   expression: ts.BinaryExpression,
@@ -10684,9 +10664,6 @@ function lowerNumberOperator(kind: ts.SyntaxKind): JsIrNumberOperator | undefine
   }
 }
 
-function isLiteralElementAccessArgument(expression: ts.ElementAccessExpression): boolean {
-  return ts.isStringLiteral(expression.argumentExpression) || ts.isNumericLiteral(expression.argumentExpression);
-}
 
 function lowerValueElementAccessNumber(
   expression: ts.ElementAccessExpression,
@@ -10716,22 +10693,6 @@ function lowerValueElementAccessNumber(
   };
 }
 
-function lowerCanonicalArrayIndexString(expression: ts.Expression): number | undefined {
-  if (!ts.isStringLiteral(expression)) {
-    return undefined;
-  }
-  if (expression.text === "0") {
-    return 0;
-  }
-  if (!/^[1-9][0-9]*$/.test(expression.text)) {
-    return undefined;
-  }
-  const value = Number(expression.text);
-  if (!Number.isSafeInteger(value)) {
-    return undefined;
-  }
-  return value;
-}
 
 function lowerArrayLiteralExpression(
   expression: ts.Expression,
