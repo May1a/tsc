@@ -45,6 +45,7 @@ import { emitNumberValueExpression, emitRuntimeObjectAssignOperation, emitRuntim
 import { emitPrintOperation } from "./llvm/print.js";
 import { emitDoWhileOperation, emitForInArrayOperation, emitForInObjectOperation, emitForOfArrayOperation, emitForOfMapOperation, emitForOfProtocolOperation, emitForOfSetOperation, emitForOfStringOperation, emitForOperation, emitWhileOperation } from "./llvm/loop-statements.js";
 import { emitBreakOperation, emitContinueOperation, emitIfOperation, emitOperationsWithScopedBindings, emitSwitchOperation, emitTryCatchOperation, noLines } from "./llvm/branches.js";
+import { emitRuntimeArrayAppendOperation, emitRuntimeArrayCopyWithinOperation, emitRuntimeArrayDeleteOperation, emitRuntimeArrayFillOperation, emitRuntimeArrayRemoveOperation, emitRuntimeArrayRemoveValueExpression, emitRuntimeArrayReverseOperation, emitRuntimeArraySetLengthOperation, emitRuntimeArrayStoreOperation } from "./llvm/array-mutators.js";
 import { emitInlineCppDeclarations } from "./llvm/inline-cpp.js";
 import { operationListTerminates } from "./llvm/loops.js";
 import { emitCondition, emitNamedValueBinding } from "./llvm/conditions.js";
@@ -3215,15 +3216,15 @@ function emitArrayStoreOperation(
   return [...pointer.lines, ...value.lines, `  store double ${value.value}, ptr ${pointer.value}`];
 }
 
-function emitRuntimeArrayStoreOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayStore" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const index = emitArrayIndex(operation.index, context);
-  const value = context.emitValue(operation.value);
-  return [...array.lines, ...index.lines, ...value.lines, `  call void @arraySet(ptr ${array.value}, i64 ${index.value}, i64 ${value.value})`];
-}
+
+
+
+
+
+
+
+
+
 
 function emitRuntimeArrayNamedStoreOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayNamedStore" }>,
@@ -3235,14 +3236,14 @@ function emitRuntimeArrayNamedStoreOperation(
   return [...array.lines, ...key.lines, ...value.lines, `  call void @arraySetNamed(ptr ${array.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
-function emitRuntimeArrayDeleteOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayDelete" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const index = emitArrayIndex(operation.index, context);
-  return [...array.lines, ...index.lines, `  call void @arrayDelete(ptr ${array.value}, i64 ${index.value})`];
-}
+
+
+
+
+
+
+
+
 
 function emitRuntimeArrayNamedDeleteOperation(
   operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayNamedDelete" }>,
@@ -3253,98 +3254,98 @@ function emitRuntimeArrayNamedDeleteOperation(
   return [...array.lines, ...key.lines, `  call void @arrayDeleteNamed(ptr ${array.value}, i64 ${key.length}, ptr ${key.value})`];
 }
 
-function emitRuntimeArraySetLengthOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArraySetLength" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const length = emitArrayIndex(operation.length, context);
-  return [...array.lines, ...length.lines, `  call void @arraySetLength(ptr ${array.value}, i64 ${length.value})`];
-}
 
-function emitRuntimeArrayAppendOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayPush" | "runtimeArrayUnshift" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const values = operation.values.map((value) => context.emitValue(value));
-  const lines = [...array.lines];
-  const helper = runtimeArrayAppendHelper(operation.kind);
-  for (const value of values) {
-    lines.push(...value.lines, `  call i64 @${helper}(ptr ${array.value}, i64 ${value.value})`);
-  }
-  return lines;
-}
 
-function emitRuntimeArrayRemoveOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayPop" | "runtimeArrayShift" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const helper = runtimeArrayRemoveHelper(operation.kind);
-  return [...array.lines, `  call i64 @${helper}(ptr ${array.value})`];
-}
 
-function emitRuntimeArrayFillOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayFill" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const value = context.emitValue(operation.value);
-  let start: NumberValue = { lines: [], value: "0" };
-  let end: NumberValue;
-  if (operation.start !== undefined) {
-    start = emitArrayIndex(operation.start, context);
-  }
-  if (operation.end === undefined) {
-    const length = `%arr.len.${context.numIndex}`;
-    context.numIndex += 1;
-    end = { lines: [`  ${length} = call i64 @arrayLength(ptr ${array.value})`], value: length };
-  } else {
-    end = emitArrayIndex(operation.end, context);
-  }
-  return [...array.lines, ...value.lines, ...start.lines, ...end.lines, `  call void @arrayFill(ptr ${array.value}, i64 ${value.value}, i64 ${start.value}, i64 ${end.value})`];
-}
 
-function emitRuntimeArrayReverseOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayReverse" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  return [...array.lines, `  call void @arrayReverse(ptr ${array.value})`];
-}
 
-function emitRuntimeArrayCopyWithinOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "runtimeArrayCopyWithin" }>,
-  context: EmitContext
-): string[] {
-  const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const target = emitArrayIndex(operation.target, context);
-  const start = emitArrayIndex(operation.start, context);
-  let end: NumberValue;
-  if (operation.end === undefined) {
-    const length = `%arr.len.${context.numIndex}`;
-    context.numIndex += 1;
-    end = { lines: [`  ${length} = call i64 @arrayLength(ptr ${array.value})`], value: length };
-  } else {
-    end = emitArrayIndex(operation.end, context);
-  }
-  return [...array.lines, ...target.lines, ...start.lines, ...end.lines, `  call void @arrayCopyWithin(ptr ${array.value}, i64 ${target.value}, i64 ${start.value}, i64 ${end.value})`];
-}
 
-function runtimeArrayAppendHelper(kind: "runtimeArrayPush" | "runtimeArrayUnshift"): "arrayPush" | "arrayUnshift" {
-  if (kind === "runtimeArrayPush") {
-    return "arrayPush";
-  }
-  return "arrayUnshift";
-}
 
-function runtimeArrayRemoveHelper(kind: "runtimeArrayPop" | "runtimeArrayShift"): "arrayPop" | "arrayShift" {
-  if (kind === "runtimeArrayPop") {
-    return "arrayPop";
-  }
-  return "arrayShift";
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function emitObjectStoreOperation(
   operation: Extract<JsIrOperation, { readonly kind: "objectStore" }>,
@@ -4486,24 +4487,24 @@ function emitDispatchedCall(
   };
 }
 
-function emitRuntimeArrayRemoveValueExpression(
-  expression: Extract<JsIrValueExpression, { readonly kind: "arrayPop" | "arrayShift" }>,
-  context: EmitContext
-): JsValue {
-  const array = emitRuntimeArrayPointer(expression.arrayName, context);
-  const valueIndex = context.numIndex;
-  context.numIndex += 1;
-  const value = `%value.${valueIndex}`;
-  const helper = arrayValueRemoveHelper(expression.kind);
-  return { lines: [...array.lines, `  ${value} = call i64 @${helper}(ptr ${array.value})`], value };
-}
 
-function arrayValueRemoveHelper(kind: "arrayPop" | "arrayShift"): "arrayPop" | "arrayShift" {
-  if (kind === "arrayPop") {
-    return "arrayPop";
-  }
-  return "arrayShift";
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function emitRuntimeArrayValueExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "arrayAccess" }>,
