@@ -10,7 +10,6 @@ import {
   type JsIrOperation,
   type JsIrRuntimeArrayElement,
   type JsIrStringExpression,
-  type JsIrSwitchClause,
   type JsIrValueExpression,
   type JsIrValueKind,
   aggregateBindingForOperation,
@@ -47,12 +46,18 @@ import { emitStringExpression, emitStringIndexArgument } from "./llvm/string-exp
 import { emitRuntimeCollectionFromArrayOperation, emitRuntimeCollectionFromCollectionOperation, emitRuntimeCollectionFromIterableOperation, emitRuntimeCollectionMutationOperation, emitRuntimeCollectionNewOperation, emitRuntimeCollectionResultOperation } from "./llvm/collections.js";
 import { emitNumberValueExpression, emitRuntimeObjectAssignOperation, emitRuntimeObjectCreateOperation, emitRuntimeObjectDefineDataPropertyOperation, emitRuntimeObjectDeleteOperation, emitRuntimeObjectEntriesOperation, emitRuntimeObjectFromEntriesOperation, emitRuntimeObjectGetPrototypeOperation, emitRuntimeObjectKeysOperation, emitRuntimeObjectLiteralOperation, emitRuntimeObjectLiteralStorage, emitRuntimeObjectOwnPropertyDescriptorOperation, emitRuntimeObjectOwnPropertyDescriptorsOperation, emitRuntimeObjectOwnPropertyNamesOperation, emitRuntimeObjectSetPrototypeOperation, emitRuntimeObjectStateMutationOperation, emitRuntimeObjectStoreOperation, emitRuntimeObjectValueExpression, emitRuntimeObjectValuesOperation, knownShapeObjectToRuntimeValue } from "./llvm/objects.js";
 import { emitPrintOperation } from "./llvm/print.js";
+import {
+  emitLoopBackEdge,
+  emitLoopFrameSave,
+  emitLoopIterationPrologue,
+  operationListTerminates,
+  switchClauseTerminates
+} from "./llvm/loops.js";
 import { emitCondition, emitNamedValueBinding } from "./llvm/conditions.js";
 import { errorClassIds } from "./llvm/error-ids.js";
 import { emitCallArguments, emitCallExpressionResult, emitStringCallExpressionResult } from "./llvm/calls.js";
 import { addStringConstant, utf8ByteLength } from "./llvm/strings.js";
 import {
-  loopFrameName,
   loopItemSlotName,
   runtimeIteratorKindCode,
   stringLengthPointerName,
@@ -5091,69 +5096,69 @@ function switchCompareLabel(loopIndex: number, clauseIndex: number | undefined):
   return `switch.test.${loopIndex}.${clauseIndex}`;
 }
 
-function switchClauseTerminates(clause: JsIrSwitchClause): boolean {
-  return operationListTerminates(clause.operations);
-}
-
-function tryCatchOperationTerminates(operation: Extract<JsIrOperation, { readonly kind: "tryCatch" }>): boolean {
-  if (operation.finallyOperations === undefined) {
-    return operationListTerminates(operation.tryOperations) && operationListTerminates(operation.catchOperations);
-  }
-  // Fall through only when try or catch can complete normally and finally falls through.
-  if (operationListTerminates(operation.finallyOperations)) {
-    return true;
-  }
-  const tryFallsThrough = !operationListTerminates(operation.tryOperations);
-  const { hasCatch } = operation;
-  const catchFallsThrough = hasCatch && !operationListTerminates(operation.catchOperations);
-  // No NORMAL join path ⇒ the statement never reaches subsequent ops.
-  return !tryFallsThrough && !catchFallsThrough;
-}
-
-function operationListTerminates(operations: readonly JsIrOperation[]): boolean {
-  const last = operations.at(-1);
-  if (last === undefined) {
-    return false;
-  }
-  if (last.kind === "block" || last.kind === "bindingGroup") {
-    return operationListTerminates(last.operations);
-  }
-  if (last.kind === "tryCatch") {
-    return tryCatchOperationTerminates(last);
-  }
-  if (last.kind === "if") {
-    return last.elseOperations.length > 0 && operationListTerminates(last.thenOperations) && operationListTerminates(last.elseOperations);
-  }
-  return last.kind === "break" || last.kind === "continue" || last.kind === "returnNumber" || last.kind === "returnString" || last.kind === "returnValue" || last.kind === "returnClosure" || last.kind === "throwValue";
-}
-
-function emitLoopBackEdge(target: string, operations: readonly JsIrOperation[]): string[] {
-  if (operationListTerminates(operations)) {
-    return [];
-  }
-  return [`  br label %${target}`];
-}
 
 
 
 
 
 
-// Emitted once before a loop: capture the root-stack depth so each iteration can be
-// reset back to it. Keeps per-iteration temporaries from accumulating across the
-// stress loops while preserving every loop-invariant root pushed before the loop.
-function emitLoopFrameSave(loopIndex: number): string {
-  return `  ${loopFrameName(loopIndex)} = call i64 @gcRootSave()`;
-}
 
-// Emitted at the top of every loop body: drop the previous iteration's roots, then run
-// a safepoint. Collection only ever happens here (and at function-level boundaries), so
-// raw pointers built mid-statement are never reclaimed, and prior-iteration garbage is
-// reclaimed once the body has re-rooted whatever it still needs. Also reached via
-// `continue`, which targets the cond/step block and flows back through the body top.
-function emitLoopIterationPrologue(loopIndex: number): string[] {
-  return [`  call void @gcRootRestore(i64 ${loopFrameName(loopIndex)})`, "  call void @gcSafepoint()"];
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function emitWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "while" }>, context: EmitContext): string[] {
   const { loopIndex } = context;
