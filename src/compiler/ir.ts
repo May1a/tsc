@@ -1,4 +1,9 @@
 import {
+  inlineCppDisabledDiagnostic,
+  inlineCppState,
+  lowerInlineCppValueExpression
+} from "./ir/inline-cpp.js";
+import {
   isBoxedAggregateCandidateBinding,
   lowerObjectAccessPath,
   lowerRuntimeDataDescriptorMapValue,
@@ -96,7 +101,6 @@ import type {
 import {
   definePropertyArgumentCount,
   errorConstructorNames,
-  isInlineCppTaggedTemplate,
   lowerCanonicalArrayIndexString,
   unwrapTypeOnlyExpression,
 } from "./ir/predicates.js";
@@ -138,10 +142,10 @@ let classThisInScope = false;
 let activeEnclosingClass: ClassInfo | undefined;
 let activeClassMethodStatic = false;
 
-const inlineCppTag = "__tscn_inline_cpp";
 
-let activeInlineCppEnabled = false;
-let activeInlineCppBlocks: JsIrInlineCppBlock[] | undefined;
+
+
+
 let nextFunctionObjectId = 0;
 let nextJsonStatementValueId = 0;
 
@@ -295,37 +299,37 @@ function lowerStatements(
   }
 }
 
-function findInlineCppTaggedTemplate(sourceFile: ts.SourceFile): ts.TaggedTemplateExpression | undefined {
-  let found: ts.TaggedTemplateExpression | undefined;
-  const visit = (node: ts.Node): void => {
-    if (found !== undefined) {
-      return;
-    }
-    if (ts.isTaggedTemplateExpression(node) && ts.isIdentifier(node.tag) && node.tag.text === inlineCppTag) {
-      found = node;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return found;
-}
 
-function inlineCppDisabledDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnostic | undefined {
-  if (activeInlineCppEnabled) {
-    return undefined;
-  }
-  const node = findInlineCppTaggedTemplate(sourceFile);
-  if (node === undefined) {
-    return undefined;
-  }
-  return {
-    code: "TSCN1003",
-    category: "error",
-    message: "Inline C++ requires -fcpp",
-    span: sourceSpan(sourceFile, node.getStart(sourceFile))
-  };
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /**
  * Lowers a source file's top-level statements, collecting a TSCN1002 for each one nothing
@@ -7068,27 +7072,27 @@ function lowerValueExpression(
   return undefined;
 }
 
-function lowerInlineCppValueExpression(expression: ts.Expression): JsIrValueExpression | undefined {
-  if (!isInlineCppTaggedTemplate(expression) || !ts.isNoSubstitutionTemplateLiteral(expression.template)) {
-    return undefined;
-  }
-  if (!activeInlineCppEnabled || activeInlineCppBlocks === undefined) {
-    return undefined;
-  }
-  const symbol = `__tscn_cpp_${activeInlineCppBlocks.length}`;
-  activeInlineCppBlocks.push({ symbol, code: rawNoSubstitutionTemplateText(expression.template) });
-  return { kind: "inlineCppValue", symbol };
-}
 
-function rawNoSubstitutionTemplateText(template: ts.NoSubstitutionTemplateLiteral): string {
-  const sourceFile = template.getSourceFile();
-  const start = template.getStart(sourceFile);
-  const end = template.getEnd();
-  if (sourceFile.text[start] === "`" && sourceFile.text[end - 1] === "`") {
-    return sourceFile.text.slice(start + 1, end - 1);
-  }
-  return template.text;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function lowerAggregateValueExpression(
   expression: ts.Expression,
@@ -9772,8 +9776,8 @@ export function lowerToJsIr(
   const allDiagnostics: CompilerDiagnostic[] = [];
   const inlineCppBlocks: JsIrInlineCppBlock[] = [];
   classLoweringState.typeChecker = checker;
-  activeInlineCppEnabled = options.fcpp === true;
-  activeInlineCppBlocks = inlineCppBlocks;
+  inlineCppState.enabled = options.fcpp === true;
+  inlineCppState.blocks = inlineCppBlocks;
   let modules;
   try {
     modules = sourceFiles.map((sourceFile, moduleIndex) => {
@@ -9789,8 +9793,8 @@ export function lowerToJsIr(
     });
   } finally {
     classLoweringState.typeChecker = undefined;
-    activeInlineCppEnabled = false;
-    activeInlineCppBlocks = undefined;
+    inlineCppState.enabled = false;
+    inlineCppState.blocks = undefined;
   }
   return {
     module: {
