@@ -83,7 +83,13 @@ const descriptorEnumerableFlag = 2;
 const descriptorConfigurableFlag = 4;
 
 function createMainEmitContext(): EmitContext {
-  return {
+  // The four dispatch bindings close over `context` itself, which is safe because they are only
+  // called once emission is under way — the object is complete by then.
+  const context: EmitContext = {
+    emitValue: (expression) => emitValueExpression(expression, context),
+    emitOperations: (operations) => emitOperations(operations, context),
+    emitCondition: (condition) => emitCondition(condition, context),
+    emitOperation: (operation) => emitOperation(operation, context),
     bindings: new Map(),
     stringConstants: [],
     arrayGlobals: [],
@@ -122,10 +128,15 @@ function createMainEmitContext(): EmitContext {
     gcFrameName: "%gc.main.frame",
     traceMarkers: new Map()
   };
+  return context;
 }
 
 function createFunctionEmitContext(fn: FunctionDef, parent: EmitContext): EmitContext {
-  return {
+  const context: EmitContext = {
+    emitValue: (expression) => emitValueExpression(expression, context),
+    emitOperations: (operations) => emitOperations(operations, context),
+    emitCondition: (condition) => emitCondition(condition, context),
+    emitOperation: (operation) => emitOperation(operation, context),
     bindings: new Map(fn.outerBindings),
     stringConstants: parent.stringConstants,
     arrayGlobals: parent.arrayGlobals,
@@ -164,6 +175,7 @@ function createFunctionEmitContext(fn: FunctionDef, parent: EmitContext): EmitCo
     traceMarkers: parent.traceMarkers,
     suppressTrace: fn.traceOperation === undefined
   };
+  return context;
 }
 
 const encodeCString = (value: string): { readonly value: string; readonly length: number } => {
@@ -301,7 +313,7 @@ function emitLlvmIr(module: JsIrModule): LlvmIrEmission {
       }
     }
   }
-  const mainLines = emitOperations(mainOps, context);
+  const mainLines = context.emitOperations(mainOps);
   const functionObjectGlobals = [...internedFunctions].map(([target]) => `@${internedFunctionGlobal(target)} = internal global i64 ${jsValueUndefined}`);
   const valueGlobals = [...context.valueGlobals].map((name) => `@${name}.value = internal global i64 ${jsValueUndefined}`);
   const aggregateGlobals = [...context.objectTypes, ...context.arrayGlobals, ...functionObjectGlobals, ...valueGlobals].join("\n");
@@ -589,7 +601,7 @@ function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[]
     ...emitParameterRoots(fn.parameters),
     ...emitStringParameterStores(fn.parameters, fnContext),
     ...emitNumberParameterUnbox(fn.parameters),
-    ...emitOperations(fn.body, fnContext)
+    ...fnContext.emitOperations(fn.body)
   ];
   context.printIndex = fnContext.printIndex;
   context.hasNumberPrint = fnContext.hasNumberPrint;
@@ -682,7 +694,7 @@ function emitFunctionObjectDefinition(fn: FunctionDef, context: EmitContext): st
     }
     fnContext.bindings.set(parameter.name, { kind: "valueVariable", name: value });
   }
-  bodyLines.push(...emitOperations(fn.body, fnContext));
+  bodyLines.push(...fnContext.emitOperations(fn.body));
   context.printIndex = fnContext.printIndex;
   context.hasNumberPrint = fnContext.hasNumberPrint;
   context.arrayIndex = fnContext.arrayIndex;
@@ -822,7 +834,7 @@ function emitOperations(operations: readonly JsIrOperation[], context: EmitConte
   const lines: string[] = [];
 
   for (const operation of operations) {
-    const emitted = emitOperation(operation, context);
+    const emitted = context.emitOperation(operation);
     if (context.suppressTrace === true) {
       lines.push(...emitted);
     } else {
@@ -1058,7 +1070,7 @@ function emitBindingGroupOperation(
   operation: OperationOf<"bindingGroup">,
   context: EmitContext
 ): string[] {
-  return emitOperations(operation.operations, context);
+  return context.emitOperations(operation.operations);
 }
 
 function emitHoistedFunctionOperation(_operation: OperationOf<"function">, _context: EmitContext): string[] {
@@ -1070,7 +1082,7 @@ function emitPrintOperation(operation: OperationOf<"print">, context: EmitContex
 }
 
 function emitThrowValueOperation(operation: OperationOf<"throwValue">, context: EmitContext): string[] {
-  const value = emitValueExpression(operation.value, context);
+  const value = context.emitValue(operation.value);
   // exceptionTarget is already the nearest catch or cleanup throw-entry.
   return [
     ...value.lines,
@@ -1282,19 +1294,19 @@ function emitRuntimeCollectionMutationOperation(
 ): string[] {
   if (operation.kind === "runtimeCollectionSetIterator") {
     const collection = emitRuntimeCollectionPointer(operation.collectionName, context);
-    const value = emitValueExpression(operation.value, context);
+    const value = context.emitValue(operation.value);
     const slot = `%collection.iterator.slot.${context.objectIndex}`;
     context.objectIndex += 1;
     return [...collection.lines, ...value.lines, `  ${slot} = getelementptr i8, ptr ${collection.value}, i64 32`, `  store i64 ${value.value}, ptr ${slot}`];
   }
   if (operation.kind === "runtimeMapSet") {
     const collection = emitRuntimeCollectionPointer(operation.mapName, context);
-    const key = emitValueExpression(operation.key, context);
-    const value = emitValueExpression(operation.value, context);
+    const key = context.emitValue(operation.key);
+    const value = context.emitValue(operation.value);
     return [...collection.lines, ...key.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${key.value}, i64 ${value.value})`];
   }
   const collection = emitRuntimeCollectionPointer(operation.setName, context);
-  const value = emitValueExpression(operation.value, context);
+  const value = context.emitValue(operation.value);
   return [...collection.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${value.value}, i64 ${jsValueTrue})`];
 }
 
@@ -1382,7 +1394,7 @@ function emitLetBooleanOperation(
   operation: Extract<JsIrOperation, { readonly kind: "letBoolean" }>,
   context: EmitContext
 ): string[] {
-  const result = emitCondition(operation.value, context);
+  const result = context.emitCondition(operation.value);
   const pointer = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "booleanVariable", name: operation.name });
   return [...result.lines, `  ${pointer} = alloca i1`, `  store i1 ${result.value}, ptr ${pointer}`];
@@ -1462,7 +1474,7 @@ function emitRuntimeArrayLiteralOperation(
           throw new Error("Expected fixed array spread binding");
         }
         for (let spreadIndex = 0; spreadIndex < binding.length; spreadIndex++) {
-          const value = emitValueExpression({ kind: "number", value: { kind: "arrayAccess", arrayName: element.arrayName, index: { kind: "literal", value: spreadIndex } } }, context);
+          const value = context.emitValue({ kind: "number", value: { kind: "arrayAccess", arrayName: element.arrayName, index: { kind: "literal", value: spreadIndex } } });
           const current = `%${operation.name}.fixed.spread.current.${i}.${spreadIndex}`;
           lines.push(...value.lines, `  ${current} = load ptr, ptr ${arrayValue.pointerName}`, `  call i64 @arrayPush(ptr ${current}, i64 ${value.value})`);
         }
@@ -1486,7 +1498,7 @@ function emitRuntimeArrayLiteralOperation(
       );
       continue;
     }
-    const value = emitValueExpression(element.value, context);
+    const value = context.emitValue(element.value);
     if (operation.elements.some((candidate) => candidate.kind === "spread" || candidate.kind === "iterableSpread")) {
       const current = `%${operation.name}.value.current.${i}`;
       lines.push(...value.lines, `  ${current} = load ptr, ptr ${arrayValue.pointerName}`, `  call i64 @arrayPush(ptr ${current}, i64 ${value.value})`);
@@ -1511,7 +1523,7 @@ function emitIterableAppend(
 ): string[] {
   const index = context.arrayIndex;
   context.arrayIndex += 1;
-  const source = emitValueExpression(sourceExpression, context);
+  const source = context.emitValue(sourceExpression);
   const messageConstant = addStringConstant(notIterableMessageText, context);
   const message = `%spread.message.${index}`;
   const iteratorCall = emitGeneratedJsCall("getIteratorValue", [`i64 ${source.value}`, `i64 ${message}`], context);
@@ -1652,11 +1664,11 @@ function emitRuntimeCollectionResultOperation(
   const pointerName = variablePointerName(operation.name);
   const lines = [`  ${pointerName} = alloca ptr`, ...collection.lines];
   if (operation.kind === "runtimeMapSetResult") {
-    const key = emitValueExpression(operation.key, context);
-    const value = emitValueExpression(operation.value, context);
+    const key = context.emitValue(operation.key);
+    const value = context.emitValue(operation.value);
     lines.push(...key.lines, ...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${key.value}, i64 ${value.value})`);
   } else {
-    const value = emitValueExpression(operation.value, context);
+    const value = context.emitValue(operation.value);
     lines.push(...value.lines, `  call void @collectionSet(ptr ${collection.value}, i64 ${value.value}, i64 ${jsValueTrue})`);
   }
   lines.push(`  store ptr ${collection.value}, ptr ${pointerName}`);
@@ -1831,7 +1843,7 @@ function emitFunctionObjectValue(operation: Extract<JsIrOperation, { readonly ki
   const captureLines: string[] = [];
   let environment = "null";
   if (captures.length > 0) {
-    const emittedCaptures = captures.map((capture) => emitValueExpression(capture.value, context));
+    const emittedCaptures = captures.map((capture) => context.emitValue(capture.value));
     for (const capture of emittedCaptures) {
       captureLines.push(...capture.lines, `  call void @gcRootPush(i64 ${capture.value})`);
     }
@@ -1855,7 +1867,7 @@ function emitFunctionObjectThisArg(
   if (operation.thisArg === undefined) {
     return { setup: [], value: jsValueUndefined, cleanup: [] };
   }
-  const { lines, value: emittedValue } = emitValueExpression(operation.thisArg, context);
+  const { lines, value: emittedValue } = context.emitValue(operation.thisArg);
   let value = jsValueUndefined;
   if (operation.callbackKind === "ordinary") {
     value = emittedValue;
@@ -2108,7 +2120,7 @@ function emitRuntimeArrayReduceCallbackOperationWithReturn(
   const element = `%arr.reduce.value.${index}`;
   let initial: JsValue | undefined;
   if (operation.initialValue !== undefined) {
-    initial = emitValueExpression(operation.initialValue, context);
+    initial = context.emitValue(operation.initialValue);
   }
   let startIndex = "1";
   let initialLines = [`  %arr.reduce.initial.${index} = call i64 @arrayGet(ptr ${source.value}, i64 0)`];
@@ -2307,7 +2319,7 @@ function emitRuntimeErrorLiteralOperation(
   const classId = errorClassIds.get(operation.errorName) ?? 0;
   const nameConstant = addStringConstant(operation.errorName, context);
   const nameLength = utf8ByteLength(operation.errorName);
-  const message = emitValueExpression(operation.message, context);
+  const message = context.emitValue(operation.message);
   const objectName = `%obj.rt.${context.objectIndex}`;
   context.objectIndex += 1;
   return [
@@ -2508,7 +2520,7 @@ function emitRuntimeArraySpliceOperation(
     lines.push(...deleteCount.lines);
     deleteCountArg = deleteCount.value;
   }
-  const items = operation.items.map((item) => emitValueExpression(item, context));
+  const items = operation.items.map((item) => context.emitValue(item));
   const itemsName = `%arr.splice.items.${context.arrayIndex}`;
   context.arrayIndex += 1;
   lines.push(`  ${itemsName} = call ptr @arrayNew(i64 ${items.length})`);
@@ -2543,7 +2555,7 @@ function emitRuntimeArraySpliceStatementOperation(
     lines.push(...deleteCount.lines);
     deleteCountArg = deleteCount.value;
   }
-  const items = operation.items.map((item) => emitValueExpression(item, context));
+  const items = operation.items.map((item) => context.emitValue(item));
   const itemsName = `%arr.splice.items.${context.arrayIndex}`;
   context.arrayIndex += 1;
   lines.push(`  ${itemsName} = call ptr @arrayNew(i64 ${items.length})`);
@@ -2607,7 +2619,7 @@ function emitRuntimeRegexSplitOperation(
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
   const receiver = emitStringExpression(operation.receiver, context);
-  const regex = emitValueExpression(operation.regex, context);
+  const regex = context.emitValue(operation.regex);
   const inputValue = `%regex.split.input.${context.callIndex}`;
   const result = `%regex.split.result.${context.arrayIndex}`;
   context.arrayIndex += 1;
@@ -2639,11 +2651,11 @@ function emitRuntimeArrayConcatOperation(
   const left = emitRuntimeArrayPointer(operation.leftName, context);
   const values = operation.values.flatMap((value) => {
     if (value.kind === "value") {
-      return [emitValueExpression(value.value, context)];
+      return [context.emitValue(value.value)];
     }
     const elements: JsValue[] = [];
     for (let index = 0; index < value.length; index += 1) {
-      elements.push(emitValueExpression({ kind: "number", value: { kind: "arrayAccess", arrayName: value.arrayName, index: { kind: "literal", value: index } } }, context));
+      elements.push(context.emitValue({ kind: "number", value: { kind: "arrayAccess", arrayName: value.arrayName, index: { kind: "literal", value: index } } }));
     }
     return elements;
   });
@@ -2716,14 +2728,14 @@ function emitRuntimeArrayFromValueOperation(
 ): string[] {
   const pointerName = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "runtimeArray", name: operation.name });
-  const source = emitValueExpression(operation.source, context);
+  const source = context.emitValue(operation.source);
   let mapper: JsValue = { lines: [], value: jsValueUndefined };
   if (operation.mapper !== undefined) {
-    mapper = emitValueExpression(operation.mapper, context);
+    mapper = context.emitValue(operation.mapper);
   }
   let thisArg: JsValue = { lines: [], value: jsValueUndefined };
   if (operation.thisArg !== undefined) {
-    thisArg = emitValueExpression(operation.thisArg, context);
+    thisArg = context.emitValue(operation.thisArg);
   }
   const generated = emitGeneratedJsCall("arrayFromValue", [`i64 ${source.value}`, `i64 ${mapper.value}`, `i64 ${thisArg.value}`], context);
   const arrayPtr = `%arr.from.value.${context.arrayIndex}`;
@@ -2754,11 +2766,11 @@ function emitRuntimeArrayFromCollectionOperation(
   const collection = emitRuntimeCollectionPointer(operation.collectionName, context);
   let mapper: JsValue = { lines: [], value: jsValueUndefined };
   if (operation.mapper !== undefined) {
-    mapper = emitValueExpression(operation.mapper, context);
+    mapper = context.emitValue(operation.mapper);
   }
   let thisArg: JsValue = { lines: [], value: jsValueUndefined };
   if (operation.thisArg !== undefined) {
-    thisArg = emitValueExpression(operation.thisArg, context);
+    thisArg = context.emitValue(operation.thisArg);
   }
   const modeCode = runtimeIteratorKindCode(operation.iterationKind);
   let sourceCode = 3;
@@ -2854,7 +2866,7 @@ function emitRuntimeCollectionFromIterableOperation(
     helper = "mapFromIterable";
   }
   context.bindings.set(operation.name, { kind: bindingKind, name: operation.name });
-  const iterable = emitValueExpression(operation.iterable, context);
+  const iterable = context.emitValue(operation.iterable);
   const messageConstant = addStringConstant(operation.notIterableMessage, context);
   const message = `%${operation.name}.not.iterable`;
   const generated = emitGeneratedJsCall(helper, [`i64 ${iterable.value}`, `i64 ${message}`], context);
@@ -3058,10 +3070,10 @@ function runtimeAggregateArgumentType(targetKind: "object" | "array" | "value"):
 function emitNamedValueBinding(name: string, context: EmitContext): JsValue {
   const binding = context.bindings.get(name);
   if (binding?.kind === "value") {
-    return emitValueExpression(binding.value, context);
+    return context.emitValue(binding.value);
   }
   if (binding?.kind === "valueVariable") {
-    return emitValueExpression({ kind: "variable", name: binding.name }, context);
+    return context.emitValue({ kind: "variable", name: binding.name });
   }
   throw new Error("Expected JSValue binding");
 }
@@ -3072,7 +3084,7 @@ function emitLetValueOperation(
   operation: Extract<JsIrOperation, { readonly kind: "letValue" }>,
   context: EmitContext
 ): string[] {
-  const value = emitValueExpression(operation.value, context);
+  const value = context.emitValue(operation.value);
   const pointer = variablePointerName(operation.name);
   context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
   if (operation.moduleGlobal === true) {
@@ -3131,7 +3143,7 @@ function emitRuntimeObjectLiteralStorage(
       continue;
     }
     const key = emitStringExpression(field.key, context);
-    const fieldValue = emitValueExpression(field.value, context);
+    const fieldValue = context.emitValue(field.value);
     lines.push(...key.lines, ...fieldValue.lines, `  call void @objectSet(ptr ${objectName}, i64 ${key.length}, ptr ${key.value}, i64 ${fieldValue.value})`);
   }
   return lines;
@@ -3176,7 +3188,7 @@ function emitAssignBooleanOperation(
     return [];
   }
 
-  const result = emitCondition(operation.value, context);
+  const result = context.emitCondition(operation.value);
   return [...result.lines, `  store i1 ${result.value}, ptr ${variablePointerName(binding.name)}`];
 }
 
@@ -3195,7 +3207,7 @@ function emitRuntimeArrayStoreOperation(
 ): string[] {
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const index = emitArrayIndex(operation.index, context);
-  const value = emitValueExpression(operation.value, context);
+  const value = context.emitValue(operation.value);
   return [...array.lines, ...index.lines, ...value.lines, `  call void @arraySet(ptr ${array.value}, i64 ${index.value}, i64 ${value.value})`];
 }
 
@@ -3205,7 +3217,7 @@ function emitRuntimeArrayNamedStoreOperation(
 ): string[] {
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
   const key = emitStringExpression(operation.key, context);
-  const value = emitValueExpression(operation.value, context);
+  const value = context.emitValue(operation.value);
   return [...array.lines, ...key.lines, ...value.lines, `  call void @arraySetNamed(ptr ${array.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
@@ -3241,7 +3253,7 @@ function emitRuntimeArrayAppendOperation(
   context: EmitContext
 ): string[] {
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const values = operation.values.map((value) => emitValueExpression(value, context));
+  const values = operation.values.map((value) => context.emitValue(value));
   const lines = [...array.lines];
   const helper = runtimeArrayAppendHelper(operation.kind);
   for (const value of values) {
@@ -3264,7 +3276,7 @@ function emitRuntimeArrayFillOperation(
   context: EmitContext
 ): string[] {
   const array = emitRuntimeArrayPointer(operation.arrayName, context);
-  const value = emitValueExpression(operation.value, context);
+  const value = context.emitValue(operation.value);
   let start: NumberValue = { lines: [], value: "0" };
   let end: NumberValue;
   if (operation.start !== undefined) {
@@ -3346,7 +3358,7 @@ function emitRuntimeObjectStoreOperation(
 ): string[] {
   const object = emitRuntimeObjectPointer(operation.objectName, context);
   const key = emitStringExpression(operation.key, context);
-  const value = emitValueExpression(operation.value, context);
+  const value = context.emitValue(operation.value);
   return [...object.lines, ...key.lines, ...value.lines, `  call void @objectSet(ptr ${object.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
@@ -3370,11 +3382,11 @@ function emitValueAggregateStoreOperation(
   }
   if (operation.kind === "valueArrayStore") {
     const index = emitArrayIndex(operation.index, context);
-    const value = emitValueExpression(operation.value, context);
+    const value = context.emitValue(operation.value);
     return [...receiver.lines, ...index.lines, ...value.lines, `  call void @valueArraySet(i64 ${receiver.value}, i64 ${index.value}, i64 ${value.value})`];
   }
   const key = emitStringExpression(operation.key, context);
-  const value = emitValueExpression(operation.value, context);
+  const value = context.emitValue(operation.value);
   return [...receiver.lines, ...key.lines, ...value.lines, `  call void @valueObjectSet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value}, i64 ${value.value})`];
 }
 
@@ -3404,7 +3416,7 @@ function emitPrivateFieldStoreOperation(
   context: EmitContext
 ): string[] {
   const receiver = emitNamedValueBinding(operation.targetName, context);
-  const value = emitValueExpression(operation.value, context);
+  const value = context.emitValue(operation.value);
   const keyConstant = addStringConstant(operation.key, context);
   const keyLength = utf8ByteLength(operation.key);
   const index = context.objectIndex;
@@ -3484,7 +3496,7 @@ function emitRuntimeObjectDefineDataPropertyOperation(
 ): string[] {
   const object = emitRuntimeObjectPointer(operation.objectName, context);
   const key = emitStringExpression(operation.descriptor.key, context);
-  const value = emitValueExpression(operation.descriptor.value, context);
+  const value = context.emitValue(operation.descriptor.value);
   const flags = descriptorFlags(operation.descriptor);
   return [
     ...object.lines,
@@ -3543,7 +3555,7 @@ function emitRuntimeObjectAssignOperation(
       }
       continue;
     }
-    const value = emitValueExpression(source.value, context);
+    const value = context.emitValue(source.value);
     lines.push(...value.lines, `  call void @valueObjectAssign(ptr ${target.value}, i64 ${value.value})`);
   }
   return lines;
@@ -3666,7 +3678,7 @@ function emitCallArguments(args: readonly JsIrCallArgument[], context: EmitConte
       continue;
     }
     if (arg.valueKind === "value") {
-      const result = emitValueExpression(arg.value, context);
+      const result = context.emitValue(arg.value);
       lines.push(...result.lines);
       values.push(`i64 ${result.value}`);
       continue;
@@ -3705,7 +3717,7 @@ function emitStringReturnOperation(operation: { readonly kind: "returnString"; r
 }
 
 function emitValueReturnOperation(operation: { readonly kind: "returnValue"; readonly expression: JsIrValueExpression }, context: EmitContext): string[] {
-  const result = emitValueExpression(operation.expression, context);
+  const result = context.emitValue(operation.expression);
   return [...result.lines, ...emitNormalGeneratedReturn(result.value, context)];
 }
 
@@ -3723,7 +3735,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
       return { lines: [], value: binding.name };
     }
     if (binding?.kind === "value") {
-      return emitValueExpression(binding.value, context);
+      return context.emitValue(binding.value);
     }
     let name = expressionName;
     if (binding?.kind === "valueVariable") {
@@ -3775,7 +3787,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
   }
 
   if (expression.kind === "regexExec" || expression.kind === "regexMatch") {
-    const regex = emitValueExpression(expression.regex, context);
+    const regex = context.emitValue(expression.regex);
     const input = emitStringExpression(expression.input, context);
     const inputValue = `%regex.input.${context.callIndex}`;
     let helper: "regexExec" | "regexMatch" = "regexExec";
@@ -3820,7 +3832,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     }
     let environment = "null";
     if (captures.length > 0) {
-      const emittedCaptures = captures.map((capture) => emitValueExpression(capture.value, context));
+      const emittedCaptures = captures.map((capture) => context.emitValue(capture.value));
       for (const capture of emittedCaptures) {
         lines.push(...capture.lines, `  call void @gcRootPush(i64 ${capture.value})`);
       }
@@ -3897,8 +3909,8 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
   }
 
   if (expression.kind === "valuePlus") {
-    const left = emitValueExpression(expression.left, context);
-    const right = emitValueExpression(expression.right, context);
+    const left = context.emitValue(expression.left);
+    const right = context.emitValue(expression.right);
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
     return {
@@ -3921,10 +3933,10 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
   }
 
   if (expression.kind === "jsonParse") {
-    const text = emitValueExpression(expression.text, context);
+    const text = context.emitValue(expression.text);
     let reviver: JsValue = { lines: [], value: jsValueUndefined };
     if (expression.reviver !== undefined) {
-      reviver = emitValueExpression(expression.reviver, context);
+      reviver = context.emitValue(expression.reviver);
     }
     const call = emitGeneratedJsCall("jsonParse", [`i64 ${text.value}`, `i64 ${reviver.value}`], context);
     return {
@@ -3940,7 +3952,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
   }
 
   if (expression.kind === "jsonStringify") {
-    const source = emitValueExpression(expression.value, context);
+    const source = context.emitValue(expression.value);
     const lines = [...source.lines, emitRootStackPush(source.value, context)];
     let filter = "null";
     if (expression.replacerName !== undefined) {
@@ -3955,7 +3967,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   if (expression.kind === "runtimeMapGet") {
     const collection = emitRuntimeCollectionPointer(expression.mapName, context);
-    const key = emitValueExpression(expression.key, context);
+    const key = context.emitValue(expression.key);
     const value = `%value.${context.numIndex}`;
     context.numIndex += 1;
     return { lines: [...collection.lines, ...key.lines, `  ${value} = call i64 @collectionGet(ptr ${collection.value}, i64 ${key.value})`], value };
@@ -3974,13 +3986,13 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
   }
 
   if (expression.kind === "void") {
-    const inner = emitValueExpression(expression.expression, context);
+    const inner = context.emitValue(expression.expression);
     return { lines: inner.lines, value: jsValueUndefined };
   }
 
   if (expression.kind === "sequence") {
-    const left = emitValueExpression(expression.left, context);
-    const right = emitValueExpression(expression.right, context);
+    const left = context.emitValue(expression.left);
+    const right = context.emitValue(expression.right);
     return { lines: [...left.lines, ...right.lines], value: right.value };
   }
 
@@ -4061,7 +4073,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   if (expression.kind === "runtimeArrayValue") {
     const lines: string[] = [];
-    const values = expression.elements.map((element) => emitValueExpression(element, context));
+    const values = expression.elements.map((element) => context.emitValue(element));
     for (const value of values) {
       lines.push(...value.lines);
     }
@@ -4082,7 +4094,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   if (expression.kind === "boxedPrimitive") {
     const lines: string[] = [];
-    const inner = emitValueExpression(expression.inner, context);
+    const inner = context.emitValue(expression.inner);
     lines.push(...inner.lines);
     const { objectIndex } = context;
     context.objectIndex += 1;
@@ -4115,7 +4127,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
   if (expression.kind === "boxedMethodCall") {
     const lines: string[] = [];
-    const receiver = emitValueExpression(expression.receiver, context);
+    const receiver = context.emitValue(expression.receiver);
     lines.push(...receiver.lines);
     const { objectIndex } = context;
     context.objectIndex += 1;
@@ -4189,7 +4201,7 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
     const stringsBox = `%value.${stringsBoxIndex}`;
     lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
     lines.push(emitRootStackPush(stringsBox, context));
-    const expressionValues = expression.expressions.map((expr) => emitValueExpression(expr, context));
+    const expressionValues = expression.expressions.map((expr) => context.emitValue(expr));
     for (const value of expressionValues) {
       lines.push(...value.lines);
     }
@@ -4285,11 +4297,11 @@ function emitValueCallExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "callValue" }>,
   context: EmitContext
 ): JsValue {
-  let callee = emitValueExpression(expression.callee, context);
+  let callee = context.emitValue(expression.callee);
   const args = emitCallArguments(expression.arguments, context);
   let thisValue: JsValue = { lines: [], value: jsValueUndefined };
   if (expression.methodReceiver !== undefined && expression.methodKey !== undefined) {
-    const receiver = emitValueExpression(expression.methodReceiver, context);
+    const receiver = context.emitValue(expression.methodReceiver);
     const key = emitStringExpression(expression.methodKey, context);
     const value = `%call.method.${context.callIndex}`;
     callee = {
@@ -4303,7 +4315,7 @@ function emitValueCallExpression(
     };
     thisValue = { lines: [], value: receiver.value };
   } else if (expression.thisValue !== undefined) {
-    thisValue = emitValueExpression(expression.thisValue, context);
+    thisValue = context.emitValue(expression.thisValue);
   }
   if (expression.spreadArguments !== undefined) {
     const index = context.callIndex;
@@ -4328,7 +4340,7 @@ function emitValueCallExpression(
         throw new Error(`Call spread argument ${argumentIndex} is missing`);
       }
       if (argument.kind === "value") {
-        const value = emitValueExpression(argument.value, context);
+        const value = context.emitValue(argument.value);
         lines.push(...value.lines, `  call void @gcRootPush(i64 ${value.value})`, `  call i64 @arrayPush(ptr ${argumentArray}, i64 ${value.value})`);
       } else if (argument.kind === "iterableSpread") {
         lines.push(...emitIterableAppend(argument.source, argument.notIterableMessage, argumentArray, `call.${index}.${argumentIndex}`, context));
@@ -4339,10 +4351,10 @@ function emitValueCallExpression(
             throw new Error("Expected fixed call-spread array binding");
           }
           for (let spreadIndex = 0; spreadIndex < binding.length; spreadIndex += 1) {
-            const value = emitValueExpression({
+            const value = context.emitValue({
               kind: "number",
               value: { kind: "arrayAccess", arrayName: argument.arrayName, index: { kind: "literal", value: spreadIndex } }
-            }, context);
+            });
             lines.push(...value.lines, `  call i64 @arrayPush(ptr ${argumentArray}, i64 ${value.value})`);
           }
           continue;
@@ -4533,7 +4545,7 @@ function emitValueObjectValueExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "valueObjectDynamicAccess" }>,
   context: EmitContext
 ): JsValue {
-  const receiver = emitValueExpression(expression.value, context);
+  const receiver = context.emitValue(expression.value);
   const key = emitStringExpression(expression.key, context);
   const valueIndex = context.numIndex;
   context.numIndex += 1;
@@ -4550,7 +4562,7 @@ function emitPrivateFieldAccessExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "privateFieldAccess" }>,
   context: EmitContext
 ): JsValue {
-  const receiver = emitValueExpression(expression.receiver, context);
+  const receiver = context.emitValue(expression.receiver);
   const keyConstant = addStringConstant(expression.key, context);
   const keyLength = utf8ByteLength(expression.key);
   const index = context.numIndex;
@@ -4577,7 +4589,7 @@ function emitValueArrayValueExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "valueArrayAccess" }>,
   context: EmitContext
 ): JsValue {
-  const receiver = emitValueExpression(expression.value, context);
+  const receiver = context.emitValue(expression.value);
   const index = emitArrayIndex(expression.index, context);
   const key = emitStringExpression(expression.key, context);
   const valueIndex = context.numIndex;
@@ -4630,7 +4642,7 @@ function emitNumberValueExpression(expression: Extract<JsIrValueExpression, { re
 }
 
 function emitBooleanValueExpression(expression: Extract<JsIrValueExpression, { readonly kind: "boolean" }>, context: EmitContext): JsValue {
-  const condition = emitCondition(expression.value, context);
+  const condition = context.emitCondition(expression.value);
   const index = context.numIndex;
   context.numIndex += 1;
   const value = `%value.${index}`;
@@ -4676,9 +4688,9 @@ function emitTernaryValueExpression(
   expression: Extract<JsIrValueExpression, { readonly kind: "ternary" }>,
   context: EmitContext
 ): JsValue {
-  const condition = emitCondition(expression.condition, context);
-  const consequent = emitValueExpression(expression.consequent, context);
-  const alternate = emitValueExpression(expression.alternate, context);
+  const condition = context.emitCondition(expression.condition);
+  const consequent = context.emitValue(expression.consequent);
+  const alternate = context.emitValue(expression.alternate);
   const index = context.numIndex;
   context.numIndex += 1;
   const value = `%value.${index}`;
@@ -4703,8 +4715,8 @@ function emitLazyDefaultValueExpression(
   const defaultLabel = `default.value.${index}`;
   const defaultJoinLabel = `default.join.${index}`;
   const endLabel = `default.end.${index}`;
-  const current = emitValueExpression(expression.value, context);
-  const fallback = emitValueExpression(expression.defaultValue, context);
+  const current = context.emitValue(expression.value);
+  const fallback = context.emitValue(expression.defaultValue);
   const isUndefined = `%cmp.${context.cmpIndex}`;
   context.cmpIndex += 1;
   const value = `%value.${context.numIndex}`;
@@ -4737,10 +4749,10 @@ function emitLogicalValueExpression(
   const leftLabel = `value.logic.left.${index}`;
   const rhsLabel = `value.logic.rhs.${index}`;
   const endLabel = `value.logic.end.${index}`;
-  const left = emitValueExpression(expression.left, context);
+  const left = context.emitValue(expression.left);
   const leftTruthy = `%cmp.${context.cmpIndex}`;
   context.cmpIndex += 1;
-  const right = emitValueExpression(expression.right, context);
+  const right = context.emitValue(expression.right);
   const value = `%value.${context.numIndex}`;
   context.numIndex += 1;
   let leftTrueLabel = endLabel;
@@ -4793,9 +4805,9 @@ function emitNullishCoalesceValueExpression(
   const rightLabel = `nullish.right.${index}`;
   const joinLabel = `nullish.join.${index}`;
   const endLabel = `nullish.end.${index}`;
-  const left = emitValueExpression(expression.left, context);
+  const left = context.emitValue(expression.left);
   const nullish = emitNullishTest(left.value, context);
-  const right = emitValueExpression(expression.right, context);
+  const right = context.emitValue(expression.right);
   const value = `%value.${context.numIndex}`;
   context.numIndex += 1;
   return {
@@ -4830,10 +4842,10 @@ function emitOptionalChainValueExpression(
   const accessLabel = `optional.access.${index}`;
   const joinLabel = `optional.join.${index}`;
   const endLabel = `optional.end.${index}`;
-  const guard = emitValueExpression(expression.guard, context);
+  const guard = context.emitValue(expression.guard);
   const nullish = emitNullishTest(guard.value, context);
   context.optionalTargets.push(guard.value);
-  const access = emitValueExpression(expression.access, context);
+  const access = context.emitValue(expression.access);
   context.optionalTargets.pop();
   const value = `%value.${context.numIndex}`;
   context.numIndex += 1;
@@ -4883,7 +4895,7 @@ function emitExpressionPrint(expression: JsIrExpression, context: EmitContext): 
   }
 
   if (expression.kind === "value") {
-    const result = emitValueExpression(expression.value, context);
+    const result = context.emitValue(expression.value);
     return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
   }
 
@@ -4907,12 +4919,12 @@ function emitBindingPrint(binding: JsIrBindingValue, context: EmitContext): stri
   }
 
   if (binding.kind === "booleanExpression") {
-    const result = emitCondition(binding.value, context);
+    const result = context.emitCondition(binding.value);
     return [...result.lines, ...emitBooleanValuePrint(result.value, context)];
   }
 
   if (binding.kind === "booleanVariable") {
-    const result = emitCondition({ kind: "booleanVariable", name: binding.name }, context);
+    const result = context.emitCondition({ kind: "booleanVariable", name: binding.name });
     return [...result.lines, ...emitBooleanValuePrint(result.value, context)];
   }
 
@@ -4931,22 +4943,22 @@ function emitBindingPrint(binding: JsIrBindingValue, context: EmitContext): stri
   }
 
   if (binding.kind === "value") {
-    const result = emitValueExpression(binding.value, context);
+    const result = context.emitValue(binding.value);
     return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
   }
 
   if (binding.kind === "valueVariable") {
-    const value = emitValueExpression({ kind: "variable", name: binding.name }, context);
+    const value = context.emitValue({ kind: "variable", name: binding.name });
     return [...value.lines, `  call void @valuePrint(i64 ${value.value})`];
   }
 
   if (binding.kind === "runtimeObject") {
-    const result = emitValueExpression({ kind: "objectRef", name: binding.name }, context);
+    const result = context.emitValue({ kind: "objectRef", name: binding.name });
     return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
   }
 
   if (binding.kind === "runtimeArray") {
-    const result = emitValueExpression({ kind: "arrayRef", name: binding.name }, context);
+    const result = context.emitValue({ kind: "arrayRef", name: binding.name });
     return [...result.lines, `  call void @valuePrint(i64 ${result.value})`];
   }
 
@@ -4964,7 +4976,7 @@ function emitIfOperation(operation: Extract<JsIrOperation, { readonly kind: "if"
   if (elseOperations.length > noLines) {
     falseLabel = elseLabel;
   }
-  const emittedCondition = emitCondition(condition, context);
+  const emittedCondition = context.emitCondition(condition);
   const lines = [
     ...emittedCondition.lines,
     `  br i1 ${emittedCondition.value}, label %${thenLabel}, label %${falseLabel}`,
@@ -5007,7 +5019,7 @@ function emitSwitchOperation(operation: Extract<JsIrOperation, { readonly kind: 
   if (defaultIndex !== -1) {
     noMatchLabel = clauseLabels[defaultIndex];
   }
-  const discriminant = emitValueExpression(operation.expression, context);
+  const discriminant = context.emitValue(operation.expression);
   const firstCompareLabel = switchCompareLabel(loopIndex, caseIndexes[0]);
   let firstDispatchLabel = noMatchLabel;
   if (firstCompareLabel !== undefined) {
@@ -5018,7 +5030,7 @@ function emitSwitchOperation(operation: Extract<JsIrOperation, { readonly kind: 
   for (let index = 0; index < caseIndexes.length; index++) {
     const clauseIndex = caseIndexes[index];
     const clause = operation.clauses[clauseIndex];
-    const test = emitValueExpression(clause.test ?? { kind: "undefined" }, context);
+    const test = context.emitValue(clause.test ?? { kind: "undefined" });
     const compare = `%switch.cmp.${loopIndex}.${index}`;
     const currentCompareLabel = `switch.test.${loopIndex}.${clauseIndex}`;
     const nextCompareLabel = switchCompareLabel(loopIndex, caseIndexes[index + 1]);
@@ -5127,9 +5139,9 @@ function emitWhileOperation(operation: Extract<JsIrOperation, { readonly kind: "
   const condLabel = `while.cond.${loopIndex}`;
   const bodyLabel = `while.body.${loopIndex}`;
   const endLabel = `while.end.${loopIndex}`;
-  const emittedCondition = emitCondition(operation.condition, context);
+  const emittedCondition = context.emitCondition(operation.condition);
   context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel , cleanupDepth: context.cleanupStack.length });
-  const bodyLines = emitOperations(operation.body, context);
+  const bodyLines = context.emitOperations(operation.body);
   context.loopLabels.pop();
 
   return [
@@ -5153,9 +5165,9 @@ function emitDoWhileOperation(operation: Extract<JsIrOperation, { readonly kind:
   const condLabel = `do.cond.${loopIndex}`;
   const endLabel = `do.end.${loopIndex}`;
   context.loopLabels.push({ breakLabel: endLabel, continueLabel: condLabel , cleanupDepth: context.cleanupStack.length });
-  const bodyLines = emitOperations(operation.body, context);
+  const bodyLines = context.emitOperations(operation.body);
   context.loopLabels.pop();
-  const emittedCondition = emitCondition(operation.condition, context);
+  const emittedCondition = context.emitCondition(operation.condition);
 
   return [
     emitLoopFrameSave(loopIndex),
@@ -5178,12 +5190,12 @@ function emitForOperation(operation: Extract<JsIrOperation, { readonly kind: "fo
   const bodyLabel = `for.body.${loopIndex}`;
   const stepLabel = `for.step.${loopIndex}`;
   const endLabel = `for.end.${loopIndex}`;
-  const initializerLines = emitOperations([operation.initializer], context);
-  const emittedCondition = emitCondition(operation.condition, context);
+  const initializerLines = context.emitOperations([operation.initializer]);
+  const emittedCondition = context.emitCondition(operation.condition);
   context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
-  const bodyLines = emitOperations(operation.body, context);
+  const bodyLines = context.emitOperations(operation.body);
   context.loopLabels.pop();
-  const incrementLines = emitOperations([operation.increment], context);
+  const incrementLines = context.emitOperations([operation.increment]);
 
   return [
     ...initializerLines,
@@ -5226,7 +5238,7 @@ function emitForOfArrayOperation(operation: Extract<JsIrOperation, { readonly ki
     context.bindings.set(name, value);
   }
   context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
-  const bodyLines = emitOperations(operation.body, context);
+  const bodyLines = context.emitOperations(operation.body);
   context.loopLabels.pop();
   context.bindings.clear();
   for (const [name, value] of previousBindings) {
@@ -5288,7 +5300,7 @@ function emitForOfStringOperation(operation: Extract<JsIrOperation, { readonly k
     context.bindings.set(name, value);
   }
   context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
-  const bodyLines = emitOperations(operation.body, context);
+  const bodyLines = context.emitOperations(operation.body);
   context.loopLabels.pop();
   context.bindings.clear();
   for (const [name, value] of previousBindings) {
@@ -5398,7 +5410,7 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
   const itemPointer = variablePointerName(itemSlot);
   const iteratorSlot = `%for.of.proto.iter.${loopIndex}.addr`;
 
-  const iterable = emitValueExpression(operation.iterable, context);
+  const iterable = context.emitValue(operation.iterable);
   const notIterableMessageConstant = addStringConstant(operation.notIterableMessage, context);
   const notIterableMessage = `%for.of.proto.not.iterable.${loopIndex}`;
   const getIterator = emitGeneratedJsCall("getIteratorValue", [`i64 ${iterable.value}`, `i64 ${notIterableMessage}`], context);
@@ -5422,7 +5434,7 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
   const outerException = context.exceptionTarget;
   // Escaping throws close the iterator before propagating.
   context.exceptionTarget = closeFrame.throwEntryLabel;
-  const bodyLines = emitOperations(operation.body, context);
+  const bodyLines = context.emitOperations(operation.body);
   context.exceptionTarget = outerException;
   context.cleanupStack.pop();
   context.loopLabels.pop();
@@ -5511,7 +5523,7 @@ function emitArrayDestructureProtocolOperation(
     iteratorCall = emitGeneratedJsCall("getCollectionIterator", [`ptr ${collection.value}`, `i64 ${sourceKind}`, `i64 ${iterationKind}`], context);
     setupLines = [...collection.lines, ...iteratorCall.lines];
   } else {
-    const iterable = emitValueExpression(operation.source.value, context);
+    const iterable = context.emitValue(operation.source.value);
     const messageConstant = addStringConstant(operation.notIterableMessage, context);
     const message = `%destructure.proto.not.iterable.${index}`;
     iteratorCall = emitGeneratedJsCall("getIteratorValue", [`i64 ${iterable.value}`, `i64 ${message}`], context);
@@ -5653,7 +5665,7 @@ function emitArrayDestructureProtocolOperation(
         const storeLabel = `destructure.proto.store.${index}.${elementIndex}`;
         const useDefault = `%destructure.proto.use.default.${index}.${elementIndex}`;
         context.exceptionTarget = closeFrame.throwEntryLabel;
-        const defaultValue = emitValueExpression(element.defaultValue, context);
+        const defaultValue = context.emitValue(element.defaultValue);
         context.exceptionTarget = outerException;
         lines.push(
           `  ${useDefault} = icmp eq i64 ${incoming}, ${jsValueUndefined}`,
@@ -5671,7 +5683,7 @@ function emitArrayDestructureProtocolOperation(
     } else {
       lines.push(`  store i64 ${incoming}, ptr ${variablePointerName(element.temporaryName)}`);
       context.exceptionTarget = closeFrame.throwEntryLabel;
-      lines.push(...emitOperations(element.operations, context));
+      lines.push(...context.emitOperations(element.operations));
       context.exceptionTarget = outerException;
     }
   }
@@ -5756,7 +5768,7 @@ function emitForInKeyIteration(
     context.bindings.set(name, value);
   }
   context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
-  const bodyLines = emitOperations(body, context);
+  const bodyLines = context.emitOperations(body);
   context.loopLabels.pop();
   context.bindings.clear();
   for (const [name, value] of previousBindings) {
@@ -5846,7 +5858,7 @@ function emitForOfCollectionValueOperation(
     context.bindings.set(name, value);
   }
   context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
-  const bodyLines = emitOperations(body, context);
+  const bodyLines = context.emitOperations(body);
   context.loopLabels.pop();
   context.bindings.clear();
   for (const [name, value] of previousBindings) {
@@ -6045,7 +6057,7 @@ function objectPathToIndexes(value: JsIrObjectValue, path: readonly string[]): r
 // eslint-disable-next-line max-statements -- Typed condition emission keeps specialized RegExp and class predicates beside numeric comparisons.
 function emitCondition(condition: JsIrCondition, context: EmitContext): NumberValue {
   if (condition.kind === "regexTest") {
-    const regex = emitValueExpression(condition.regex, context);
+    const regex = context.emitValue(condition.regex);
     const input = emitStringExpression(condition.input, context);
     const inputValue = `%regex.test.input.${context.callIndex}`;
     const call = emitGeneratedJsCall("regexTest", [`i64 ${regex.value}`, `i64 ${inputValue}`], context);
@@ -6064,7 +6076,7 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
     };
   }
   if (condition.kind === "classInstanceOf") {
-    const value = emitValueExpression(condition.value, context);
+    const value = context.emitValue(condition.value);
     const prototype = emitNamedValueBinding(condition.prototypeName, context);
     const prototypePointer = `%instanceof.prototype.${context.objectIndex}`;
     const result = `%cmp.${context.cmpIndex}`;
@@ -6081,7 +6093,7 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
     };
   }
   if (condition.kind === "errorInstanceOf") {
-    const value = emitValueExpression(condition.value, context);
+    const value = context.emitValue(condition.value);
     const index = context.cmpIndex;
     context.cmpIndex += 1;
     const classId = errorClassIds.get(condition.errorName) ?? 0;
@@ -6124,7 +6136,7 @@ function emitCondition(condition: JsIrCondition, context: EmitContext): NumberVa
   }
 
   if (condition.kind === "negate") {
-    const inner = emitCondition(condition.condition, context);
+    const inner = context.emitCondition(condition.condition);
     const index = context.cmpIndex;
     context.cmpIndex += 1;
     const name = `%cmp.${index}`;
@@ -6182,8 +6194,8 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
   }
 
   if (condition.kind === "valueLooseComparison" || condition.kind === "valueRelationalComparison") {
-    const left = emitValueExpression(condition.left, context);
-    const right = emitValueExpression(condition.right, context);
+    const left = context.emitValue(condition.left);
+    const right = context.emitValue(condition.right);
     const index = context.cmpIndex;
     const name = `%cmp.${index}`;
     context.cmpIndex += 1;
@@ -6238,21 +6250,21 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
     if (typeof condition.value === "boolean") {
       return { lines: [], value: String(condition.value) };
     }
-    const value = emitValueExpression(condition.value, context);
+    const value = context.emitValue(condition.value);
     const name = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
     return { lines: [...value.lines, `  ${name} = call i1 @valueIsArray(i64 ${value.value})`], value: name };
   }
 
   if (condition.kind === "valueTruthy") {
-    const value = emitValueExpression(condition.value, context);
+    const value = context.emitValue(condition.value);
     const name = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
     return { lines: [...value.lines, `  ${name} = call i1 @valueTruthy(i64 ${value.value})`], value: name };
   }
 
   if (condition.kind === "numberPredicate") {
-    const value = emitValueExpression(condition.value, context);
+    const value = context.emitValue(condition.value);
     const name = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
     const helperByPredicate = {
@@ -6294,8 +6306,8 @@ function emitRuntimeCondition(condition: JsIrCondition, context: EmitContext): N
   }
 
   if (condition.kind === "objectIs") {
-    const left = emitValueExpression(condition.left, context);
-    const right = emitValueExpression(condition.right, context);
+    const left = context.emitValue(condition.left);
+    const right = context.emitValue(condition.right);
     const name = `%cmp.${context.cmpIndex}`;
     context.cmpIndex += 1;
     return { lines: [...left.lines, ...right.lines, `  ${name} = call i1 @objectIs(i64 ${left.value}, i64 ${right.value})`], value: name };
@@ -6309,7 +6321,7 @@ function emitRuntimeCollectionCondition(
   context: EmitContext
 ): NumberValue {
   const collection = emitRuntimeCollectionPointer(condition.collectionName, context);
-  const key = emitValueExpression(condition.key, context);
+  const key = context.emitValue(condition.key);
   const name = `%cmp.${context.cmpIndex}`;
   context.cmpIndex += 1;
   let helper: "collectionDelete" | "collectionHas" = "collectionDelete";
@@ -6413,7 +6425,7 @@ function emitRuntimeArrayIncludesCondition(
   context: EmitContext
 ): NumberValue {
   const array = emitRuntimeArrayPointer(expression.arrayName, context);
-  const value = emitValueExpression(expression.value, context);
+  const value = context.emitValue(expression.value);
   const name = `%cmp.${context.cmpIndex}`;
   context.cmpIndex += 1;
   return { lines: [...array.lines, ...value.lines, `  ${name} = call i1 @arrayIncludes(ptr ${array.value}, i64 ${value.value})`], value: name };
@@ -6468,8 +6480,8 @@ function emitBooleanComparisonCondition(
   const index = context.cmpIndex;
   context.cmpIndex += 1;
   const name = `%cmp.${index}`;
-  const left = emitCondition(condition.left, context);
-  const right = emitCondition(condition.right, context);
+  const left = context.emitCondition(condition.left);
+  const right = context.emitCondition(condition.right);
   let predicate = "eq";
   if (condition.operator === "!==") {
     predicate = "ne";
@@ -6483,8 +6495,8 @@ function emitValueComparisonCondition(
 ): NumberValue {
   const index = context.cmpIndex;
   context.cmpIndex += 1;
-  const left = emitValueExpression(condition.left, context);
-  const right = emitValueExpression(condition.right, context);
+  const left = context.emitValue(condition.left);
+  const right = context.emitValue(condition.right);
   const equals = `%value.eq.${index}`;
   const name = `%cmp.${index}`;
   let predicate = "eq";
@@ -6511,8 +6523,8 @@ function emitLogicalCondition(
   const leftLabel = `logic.left.${index}`;
   const rhsLabel = `logic.rhs.${index}`;
   const endLabel = `logic.end.${index}`;
-  const left = emitCondition(condition.left, context);
-  const right = emitCondition(condition.right, context);
+  const left = context.emitCondition(condition.left);
+  const right = context.emitCondition(condition.right);
   const value = `%logic.${index}`;
   let shortCircuitValue = "true";
   let leftTrueLabel = endLabel;
@@ -6569,7 +6581,7 @@ function llvmComparisonInstruction(operator: "===" | "!==" | "<" | "<=" | ">" | 
 // eslint-disable-next-line complexity, max-statements -- Number expression lowering includes temporary runtime array method branches.
 function emitNumberExpression(expression: JsIrNumberExpression, context: EmitContext): NumberValue {
   if (expression.kind === "regexSearch") {
-    const regex = emitValueExpression(expression.regex, context);
+    const regex = context.emitValue(expression.regex);
     const input = emitStringExpression(expression.input, context);
     const inputValue = `%regex.search.input.${context.callIndex}`;
     const call = emitGeneratedJsCall("regexSearch", [`i64 ${regex.value}`, `i64 ${inputValue}`], context);
@@ -6602,7 +6614,7 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
 
   if (expression.kind === "arrayIndexOf") {
     const array = emitRuntimeArrayPointer(expression.arrayName, context);
-    const needle = emitValueExpression(expression.value, context);
+    const needle = context.emitValue(expression.value);
     let fromIndex: NumberValue = { lines: [], value: "0" };
     if (expression.fromEnd === true) {
       fromIndex = { lines: [], value: "9223372036854775807" };
@@ -6640,7 +6652,7 @@ function emitNumberExpression(expression: JsIrNumberExpression, context: EmitCon
   }
 
   if (expression.kind === "valueToNumber") {
-    const value = emitValueExpression(expression.value, context);
+    const value = context.emitValue(expression.value);
     const number = `%num.${context.numIndex}`;
     context.numIndex += 1;
     return { lines: [...value.lines, `  ${number} = call double @valueToNumber(i64 ${value.value})`], value: number };
@@ -6785,7 +6797,7 @@ function emitRuntimeArrayAppendNumberExpression(
   context: EmitContext
 ): NumberValue {
   const array = emitRuntimeArrayPointer(expression.arrayName, context);
-  const values = expression.values.map((value) => emitValueExpression(value, context));
+  const values = expression.values.map((value) => context.emitValue(value));
   const lines = [...array.lines];
   const helper = arrayNumberAppendHelper(expression.kind);
   let result = "0";
@@ -6909,7 +6921,7 @@ function emitAggregateNumberExpression(
   }
 
   if (expression.kind === "valueArrayLength") {
-    const receiver = emitValueExpression(expression.value, context);
+    const receiver = context.emitValue(expression.value);
     const index = context.numIndex;
     context.numIndex += 1;
     const length = `%arr.len.${index}`;
@@ -6918,7 +6930,7 @@ function emitAggregateNumberExpression(
   }
 
   if (expression.kind === "valueLength") {
-    const receiver = emitValueExpression(expression.value, context);
+    const receiver = context.emitValue(expression.value);
     const index = context.numIndex;
     context.numIndex += 1;
     const length = `%value.len.${index}`;
@@ -6927,7 +6939,7 @@ function emitAggregateNumberExpression(
   }
 
   if (expression.kind === "valueObjectLength") {
-    const receiver = emitValueExpression(expression.value, context);
+    const receiver = context.emitValue(expression.value);
     const index = context.numIndex;
     context.numIndex += 1;
     const raw = `%obj.len.${index}`;
@@ -7104,7 +7116,7 @@ function emitTernaryNumberExpression(
   expression: Extract<JsIrNumberExpression, { readonly kind: "ternary" }>,
   context: EmitContext
 ): NumberValue {
-  const condition = emitCondition(expression.condition, context);
+  const condition = context.emitCondition(expression.condition);
   const consequent = emitNumberExpression(expression.consequent, context);
   const alternate = emitNumberExpression(expression.alternate, context);
   const index = context.numIndex;
@@ -7189,7 +7201,7 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
 
   if (expression.kind === "regexReplace") {
     const receiver = emitStringExpression(expression.receiver, context);
-    const regex = emitValueExpression(expression.regex, context);
+    const regex = context.emitValue(expression.regex);
     const replacement = emitStringExpression(expression.replacement, context);
     const receiverValue = `%regex.replace.receiver.${context.callIndex}`;
     const replacementValue = `%regex.replace.replacement.${context.callIndex}`;
@@ -7444,7 +7456,7 @@ function emitTaggedTemplateCall(
   const stringsBox = `%value.${stringsBoxIndex}`;
   lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
   lines.push(emitRootStackPush(stringsBox, context));
-  const expressionValues = expressions.map((expr) => emitValueExpression(expr, context));
+  const expressionValues = expressions.map((expr) => context.emitValue(expr));
   for (const value of expressionValues) {
     lines.push(...value.lines);
   }
@@ -7474,7 +7486,7 @@ function emitStringConversionExpression(
   expression: Extract<JsIrStringExpression, { readonly kind: "stringConversion" }>,
   context: EmitContext
 ): StringValue {
-  const source = emitValueExpression(expression.value, context);
+  const source = context.emitValue(expression.value);
   const index = context.stringIndex;
   context.stringIndex += 1;
   const raw = `%str.result.${index}`;
@@ -7529,7 +7541,7 @@ function emitTernaryStringExpression(
   const endLabel = `str.end.${index}`;
   const value = `%str.${index}`;
   const length = `%str.len.${index}`;
-  const condition = emitCondition(expression.condition, context);
+  const condition = context.emitCondition(expression.condition);
   const consequent = emitStringExpression(expression.consequent, context);
   const alternate = emitStringExpression(expression.alternate, context);
 
@@ -7590,7 +7602,7 @@ function llvmNumberOperator(operator: JsIrNumberOperator): string {
 function emitOperationsWithScopedBindings(operations: readonly JsIrOperation[], context: EmitContext): string[] {
   const previousBindings = new Map(context.bindings);
   const previousObjectLayouts = new Map(context.objectLayouts);
-  const lines = emitOperations(operations, context);
+  const lines = context.emitOperations(operations);
   context.bindings.clear();
   for (const [name, value] of previousBindings) {
     context.bindings.set(name, value);

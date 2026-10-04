@@ -1,5 +1,5 @@
 import type { JsIrBindingValue, JsIrFunctionObjectDefinition, JsIrFunctionParameter } from "../ir/bindings.js";
-import type { JsIrObjectValue } from "../ir/expressions.js";
+import type { JsIrCondition, JsIrObjectValue, JsIrValueExpression } from "../ir/expressions.js";
 import type { JsIrOperation } from "../ir/types.js";
 import type { CleanupFrame, CompletionSlots } from "./completion.js";
 import type { LegacyLlvmTraceMarker } from "../llvm-ir/index.js";
@@ -36,7 +36,27 @@ export const COMPLETION_CONTINUE = 4;
 
 
 
-export interface EmitContext {
+/**
+ * The recursion the emitter cannot express with static imports.
+ *
+ * `emitValue`, `emitOperations`, `emitCondition` and `emitOperation` call each other through the
+ * operation table, and every handler in the table calls back into them. Written as free functions
+ * that is a cycle across modules the moment a handler moves out of `llvm.ts` — the handler needs the
+ * core, and the core needs the handler. Written as fields on the context it is not a cycle at all:
+ * `EmitContext` is already the state carrier, it is already passed to every one of these functions,
+ * and the four bindings are assigned once per emission.
+ *
+ * The parameter disappears with them. `emitValueExpression(e, ctx)` becomes `ctx.emitValue(e)`, which
+ * is why this is 144 call sites and no signature changes.
+ */
+export interface Emitter {
+  readonly emitValue: (expression: JsIrValueExpression) => JsValue;
+  readonly emitOperations: (operations: readonly JsIrOperation[]) => string[];
+  readonly emitCondition: (condition: JsIrCondition) => NumberValue;
+  readonly emitOperation: (operation: JsIrOperation) => string[];
+}
+
+export interface EmitContext extends Emitter {
   readonly bindings: Map<string, JsIrBindingValue>;
   readonly stringConstants: string[];
   readonly arrayGlobals: string[];
