@@ -1,5 +1,5 @@
-import type { JsIrBindingValue, JsIrFunctionObjectDefinition, JsIrFunctionParameter } from "../ir/bindings.js";
-import type { JsIrCondition, JsIrObjectValue, JsIrValueExpression } from "../ir/expressions.js";
+import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionObjectDefinition, JsIrFunctionParameter } from "../ir/bindings.js";
+import type { JsIrCondition, JsIrNumberExpression, JsIrObjectValue, JsIrStringExpression, JsIrValueExpression } from "../ir/expressions.js";
 import type { JsIrOperation } from "../ir/types.js";
 import type { CleanupFrame, CompletionSlots } from "./completion.js";
 import type { LegacyLlvmTraceMarker } from "../llvm-ir/index.js";
@@ -54,6 +54,27 @@ export interface Emitter {
   readonly emitOperations: (operations: readonly JsIrOperation[]) => string[];
   readonly emitCondition: (condition: JsIrCondition) => NumberValue;
   readonly emitOperation: (operation: JsIrOperation) => string[];
+  /**
+   * The scalar tiers and the argument ABI, for the same reason as the four above and with the same
+   * cost. `emitCallArguments` needs the *raw* number and string forms so it can box them, and the
+   * number and string tiers need the argument ABI for a call, so each names the other two and the
+   * three form a cycle that no ordering of imports can break.
+   */
+  readonly emitNumberExpression: (expression: JsIrNumberExpression) => NumberValue;
+  readonly emitStringExpression: (expression: JsIrStringExpression) => StringValue;
+  readonly emitCallArguments: (
+    args: readonly JsIrCallArgument[]
+  ) => { readonly lines: string[]; readonly values: string[] };
+  readonly emitCallExpressionResult: (expression: {
+    readonly kind: "call";
+    readonly name: string;
+    readonly arguments: readonly JsIrNumberExpression[];
+  }) => { readonly lines: string[]; readonly value: string };
+  readonly emitStringCallExpressionResult: (expression: {
+    readonly kind: "call";
+    readonly name: string;
+    readonly arguments: readonly JsIrCallArgument[];
+  }) => StringValue;
 }
 
 export interface EmitContext extends Emitter {
