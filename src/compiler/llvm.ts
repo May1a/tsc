@@ -37,13 +37,13 @@ import {
   emitNumberExpression,
   llvmDoubleBitcastOperand,
 } from "./llvm/numbers.js";
-import { emitStringExpression, emitStringIndexArgument } from "./llvm/string-expressions.js";
+import { emitStringExpression } from "./llvm/string-expressions.js";
 import { emitRuntimeCollectionFromArrayOperation, emitRuntimeCollectionFromCollectionOperation, emitRuntimeCollectionFromIterableOperation, emitRuntimeCollectionMutationOperation, emitRuntimeCollectionNewOperation, emitRuntimeCollectionResultOperation } from "./llvm/collections.js";
-import { emitNumberValueExpression, emitRuntimeObjectAssignOperation, emitRuntimeObjectCreateOperation, emitRuntimeObjectDefineDataPropertyOperation, emitRuntimeObjectDeleteOperation, emitRuntimeObjectEntriesOperation, emitRuntimeObjectFromEntriesOperation, emitRuntimeObjectGetPrototypeOperation, emitRuntimeObjectKeysOperation, emitRuntimeObjectLiteralOperation, emitRuntimeObjectLiteralStorage, emitRuntimeObjectOwnPropertyDescriptorOperation, emitRuntimeObjectOwnPropertyDescriptorsOperation, emitRuntimeObjectOwnPropertyNamesOperation, emitRuntimeObjectSetPrototypeOperation, emitRuntimeObjectStateMutationOperation, emitRuntimeObjectStoreOperation, emitRuntimeObjectValueExpression, emitRuntimeObjectValuesOperation } from "./llvm/objects.js";
+import { emitNumberValueExpression, emitRuntimeObjectAssignOperation, emitRuntimeObjectCreateOperation, emitRuntimeObjectDefineDataPropertyOperation, emitRuntimeObjectDeleteOperation, emitRuntimeObjectEntriesOperation, emitRuntimeObjectFromEntriesOperation, emitRuntimeObjectGetPrototypeOperation, emitRuntimeObjectKeysOperation, emitRuntimeObjectLiteralOperation, emitRuntimeObjectOwnPropertyDescriptorOperation, emitRuntimeObjectOwnPropertyDescriptorsOperation, emitRuntimeObjectOwnPropertyNamesOperation, emitRuntimeObjectSetPrototypeOperation, emitRuntimeObjectStateMutationOperation, emitRuntimeObjectStoreOperation, emitRuntimeObjectValuesOperation } from "./llvm/objects.js";
 import { emitPrintOperation } from "./llvm/print.js";
 import { emitDoWhileOperation, emitForInArrayOperation, emitForInObjectOperation, emitForOfArrayOperation, emitForOfMapOperation, emitForOfProtocolOperation, emitForOfSetOperation, emitForOfStringOperation, emitForOperation, emitWhileOperation } from "./llvm/loop-statements.js";
 import { emitBreakOperation, emitContinueOperation, emitIfOperation, emitOperationsWithScopedBindings, emitSwitchOperation, emitTryCatchOperation, noLines } from "./llvm/branches.js";
-import { emitRuntimeArrayAppendOperation, emitRuntimeArrayCopyWithinOperation, emitRuntimeArrayDeleteOperation, emitRuntimeArrayFillOperation, emitRuntimeArrayRemoveOperation, emitRuntimeArrayRemoveValueExpression, emitRuntimeArrayReverseOperation, emitRuntimeArraySetLengthOperation, emitRuntimeArrayStoreOperation } from "./llvm/array-mutators.js";
+import { emitRuntimeArrayAppendOperation, emitRuntimeArrayCopyWithinOperation, emitRuntimeArrayDeleteOperation, emitRuntimeArrayFillOperation, emitRuntimeArrayRemoveOperation, emitRuntimeArrayReverseOperation, emitRuntimeArraySetLengthOperation, emitRuntimeArrayStoreOperation } from "./llvm/array-mutators.js";
 import { emitRuntimeArrayFilterCallbackOperation,
   emitRuntimeArrayFlatMapCallbackOperation,
   emitRuntimeArrayFlatOperation,
@@ -54,17 +54,14 @@ import { emitRuntimeArrayFilterCallbackOperation,
   emitRuntimeArrayScalarCallbackOperation,
   emitRuntimeArraySortOperation
 } from "./llvm/array-callbacks.js";
-import { emitObjectLiteralOperation, emitValueObjectSetPrototypeOperation, emitValueObjectValueExpression } from "./llvm/known-shape-objects.js";
+import { emitObjectLiteralOperation, emitValueObjectSetPrototypeOperation } from "./llvm/known-shape-objects.js";
 import { functionObjectExpectedArgumentCount, internedFunctionGlobal } from "./llvm/function-objects.js";
 import {
   emitIterableAppend,
-  emitNewInstanceValueExpression,
-  emitNullishTest,
-  emitPrivateFieldAccessExpression,
   emitPrivateFieldBrandThrow,
-  emitRuntimeArrayValueExpression,
   emitValueCallExpression
 } from "./llvm/value-calls.js";
+import { emitValueExpression } from "./llvm/value-expressions.js";
 import { emitInlineCppDeclarations } from "./llvm/inline-cpp.js";
 import { operationListTerminates } from "./llvm/loops.js";
 import { emitCondition, emitNamedValueBinding } from "./llvm/conditions.js";
@@ -92,9 +89,7 @@ import {
   generatedReturnType
 } from "./llvm/completion.js";
 import {
-  jsValueFalse,
-  jsValueNull,
-  jsValueTrue,
+
   jsValueUndefined
 } from "./llvm/values.js";
 import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
@@ -3755,559 +3750,6 @@ function emitValueReturnOperation(operation: { readonly kind: "returnValue"; rea
   return [...result.lines, ...emitNormalGeneratedReturn(result.value, context)];
 }
 
-// eslint-disable-next-line complexity, max-statements -- Transitional JSValue emission remains centralized during aggregate boxing.
-function emitValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue {
-  const primitive = emitPrimitiveValueExpression(expression, context);
-  if (primitive !== undefined) {
-    return primitive;
-  }
-
-  if (expression.kind === "variable") {
-    const { name: expressionName } = expression;
-    const binding = context.bindings.get(expressionName);
-    if (binding?.kind === "valueVariable" && binding.name.startsWith("%")) {
-      return { lines: [], value: binding.name };
-    }
-    if (binding?.kind === "value") {
-      return context.emitValue(binding.value);
-    }
-    let name = expressionName;
-    if (binding?.kind === "valueVariable") {
-      ({ name } = binding);
-    }
-    if (!name.startsWith("%")) {
-      const value = `%value.${context.numIndex}`;
-      context.numIndex += 1;
-      let pointer = variablePointerName(name);
-      if (context.valueGlobals.has(name)) {
-        pointer = `@${name}.value`;
-      }
-      return { lines: [`  ${value} = load i64, ptr ${pointer}`], value };
-    }
-    return { lines: [], value: name };
-  }
-
-  if (expression.kind === "call") {
-    const args = context.emitCallArguments(expression.arguments);
-    const generated = emitGeneratedJsCall(expression.name, args.values, context);
-    return {
-      lines: [...args.lines, ...generated.lines],
-      value: generated.value
-    };
-  }
-
-  if (expression.kind === "callValue") {
-    return emitValueCallExpression(expression, context);
-  }
-
-  if (expression.kind === "regexCompile") {
-    const pattern = context.emitStringExpression(expression.pattern);
-    const flags = context.emitStringExpression(expression.flags);
-    const patternValue = `%regex.pattern.${context.callIndex}`;
-    const flagsValue = `%regex.flags.${context.callIndex}`;
-    const call = emitGeneratedJsCall("regexCompile", [`i64 ${patternValue}`, `i64 ${flagsValue}`], context);
-    return {
-      lines: [
-        ...pattern.lines,
-        ...flags.lines,
-        `  ${patternValue} = call i64 @valueBoxString(ptr ${pattern.value}, i64 ${pattern.length})`,
-        `  call void @gcRootPush(i64 ${patternValue})`,
-        `  ${flagsValue} = call i64 @valueBoxString(ptr ${flags.value}, i64 ${flags.length})`,
-        `  call void @gcRootPush(i64 ${flagsValue})`,
-        ...call.lines
-      ],
-      value: call.value
-    };
-  }
-
-  if (expression.kind === "regexExec" || expression.kind === "regexMatch") {
-    const regex = context.emitValue(expression.regex);
-    const input = context.emitStringExpression(expression.input);
-    const inputValue = `%regex.input.${context.callIndex}`;
-    let helper: "regexExec" | "regexMatch" = "regexExec";
-    if (expression.kind === "regexMatch") {
-      helper = "regexMatch";
-    }
-    const call = emitGeneratedJsCall(helper, [`i64 ${regex.value}`, `i64 ${inputValue}`], context);
-    return {
-      lines: [
-        ...regex.lines,
-        `  call void @gcRootPush(i64 ${regex.value})`,
-        ...input.lines,
-        `  ${inputValue} = call i64 @valueBoxString(ptr ${input.value}, i64 ${input.length})`,
-        `  call void @gcRootPush(i64 ${inputValue})`,
-        ...call.lines
-      ],
-      value: call.value
-    };
-  }
-
-  if (expression.kind === "functionObject") {
-    const index = context.callIndex;
-    context.callIndex += 1;
-    const value = `%fnobj.${index}`;
-    if (expression.definition.directTarget !== undefined && (expression.definition.captures?.length ?? 0) === 0) {
-      return {
-        lines: [`  ${value} = load i64, ptr @${internedFunctionGlobal(expression.definition.directTarget)}`],
-        value
-      };
-    }
-    const captures = expression.definition.captures ?? [];
-    const lines: string[] = [];
-    let functionName = jsValueUndefined;
-    if (expression.definition.inferredName !== undefined) {
-      const name = context.emitStringExpression({ kind: "literal", value: expression.definition.inferredName });
-      functionName = `%fnobj.name.${index}`;
-      lines.push(
-        ...name.lines,
-        `  ${functionName} = call i64 @valueBoxString(ptr ${name.value}, i64 ${name.length})`,
-        emitRootStackPush(functionName, context)
-      );
-    }
-    let environment = "null";
-    if (captures.length > 0) {
-      const emittedCaptures = captures.map((capture) => context.emitValue(capture.value));
-      for (const capture of emittedCaptures) {
-        lines.push(...capture.lines, `  call void @gcRootPush(i64 ${capture.value})`);
-      }
-      environment = `%fnobj.env.${index}`;
-      lines.push(`  ${environment} = call ptr @environmentNew(i64 ${captures.length})`);
-      for (let captureIndex = 0; captureIndex < emittedCaptures.length; captureIndex += 1) {
-        lines.push(`  call void @environmentSet(ptr ${environment}, i64 ${captureIndex}, i64 ${emittedCaptures[captureIndex].value})`);
-      }
-    }
-    lines.push(`  ${value} = call i64 @functionObjectNew(ptr @${expression.definition.codeName}, ptr ${environment}, i64 ${jsValueUndefined}, i64 ${functionName}, i64 ${functionObjectExpectedArgumentCount(expression.definition.parameters)})`, emitRootStackPush(value, context));
-    return { lines, value };
-  }
-
-  if (expression.kind === "inlineCppValue") {
-    const index = context.callIndex;
-    context.callIndex += 1;
-    const value = `%cpp.${index}`;
-    return {
-      lines: [`  ${value} = call i64 @${expression.symbol}()`, emitRootStackPush(value, context)],
-      value
-    };
-  }
-
-  if (expression.kind === "newInstance") {
-    return emitNewInstanceValueExpression(expression, context);
-  }
-
-  if (expression.kind === "ternary") {
-    return emitTernaryValueExpression(expression, context);
-  }
-
-  if (expression.kind === "lazyDefault") {
-    return emitLazyDefaultValueExpression(expression, context);
-  }
-
-  if (expression.kind === "arrayAccess") {
-    return emitRuntimeArrayValueExpression(expression, context);
-  }
-
-  if (expression.kind === "objectDynamicAccess") {
-    return emitRuntimeObjectValueExpression(expression, context);
-  }
-
-  if (expression.kind === "valueObjectDynamicAccess") {
-    return emitValueObjectValueExpression(expression, context);
-  }
-
-  if (expression.kind === "privateFieldAccess") {
-    return emitPrivateFieldAccessExpression(expression, context);
-  }
-
-  if (expression.kind === "valueArrayAccess") {
-    return emitValueArrayValueExpression(expression, context);
-  }
-
-  if (expression.kind === "arrayPop" || expression.kind === "arrayShift") {
-    return emitRuntimeArrayRemoveValueExpression(expression, context);
-  }
-
-  if (expression.kind === "arrayIncludes") {
-    const condition = emitRuntimeArrayIncludesCondition(expression, context);
-    const index = context.numIndex;
-    context.numIndex += 1;
-    const value = `%value.${index}`;
-    return { lines: [...condition.lines, `  ${value} = select i1 ${condition.value}, i64 ${jsValueTrue}, i64 ${jsValueFalse}`], value };
-  }
-
-  if (expression.kind === "arrayAt") {
-    const array = emitRuntimeArrayPointer(expression.arrayName, context);
-    const atIndex = emitArrayIndex(expression.index, context);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...array.lines, ...atIndex.lines, `  ${value} = call i64 @arrayAt(ptr ${array.value}, i64 ${atIndex.value})`], value };
-  }
-
-  if (expression.kind === "valuePlus") {
-    const left = context.emitValue(expression.left);
-    const right = context.emitValue(expression.right);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return {
-      lines: [
-        ...left.lines,
-        ...right.lines,
-        `  ${value} = call i64 @valuePlus(i64 ${left.value}, i64 ${right.value})`,
-        emitRootStackPush(value, context)
-      ],
-      value
-    };
-  }
-
-  if (expression.kind === "logicalValue") {
-    return emitLogicalValueExpression(expression, context);
-  }
-
-  if (expression.kind === "nullishCoalesce") {
-    return emitNullishCoalesceValueExpression(expression, context);
-  }
-
-  if (expression.kind === "jsonParse") {
-    const text = context.emitValue(expression.text);
-    let reviver: JsValue = { lines: [], value: jsValueUndefined };
-    if (expression.reviver !== undefined) {
-      reviver = context.emitValue(expression.reviver);
-    }
-    const call = emitGeneratedJsCall("jsonParse", [`i64 ${text.value}`, `i64 ${reviver.value}`], context);
-    return {
-      lines: [
-        ...text.lines,
-        emitRootStackPush(text.value, context),
-        ...reviver.lines,
-        emitRootStackPush(reviver.value, context),
-        ...call.lines
-      ],
-      value: call.value
-    };
-  }
-
-  if (expression.kind === "jsonStringify") {
-    const source = context.emitValue(expression.value);
-    const lines = [...source.lines, emitRootStackPush(source.value, context)];
-    let filter = "null";
-    if (expression.replacerName !== undefined) {
-      const filterArray = emitRuntimeArrayPointer(expression.replacerName, context);
-      lines.push(...filterArray.lines);
-      filter = filterArray.value;
-    }
-    const call = emitGeneratedJsCall("jsonStringify", [`i64 ${source.value}`, `ptr ${filter}`, `i64 ${expression.indent}`], context);
-    lines.push(...call.lines);
-    return { lines, value: call.value };
-  }
-
-  if (expression.kind === "runtimeMapGet") {
-    const collection = emitRuntimeCollectionPointer(expression.mapName, context);
-    const key = context.emitValue(expression.key);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...collection.lines, ...key.lines, `  ${value} = call i64 @collectionGet(ptr ${collection.value}, i64 ${key.value})`], value };
-  }
-
-  if (expression.kind === "optionalChain") {
-    return emitOptionalChainValueExpression(expression, context);
-  }
-
-  if (expression.kind === "optionalTarget") {
-    const target = context.optionalTargets.at(-1);
-    if (target === undefined) {
-      throw new Error("Optional chain target referenced outside an optional chain");
-    }
-    return { lines: [], value: target };
-  }
-
-  if (expression.kind === "void") {
-    const inner = context.emitValue(expression.expression);
-    return { lines: inner.lines, value: jsValueUndefined };
-  }
-
-  if (expression.kind === "sequence") {
-    const left = context.emitValue(expression.left);
-    const right = context.emitValue(expression.right);
-    return { lines: [...left.lines, ...right.lines], value: right.value };
-  }
-
-  if (expression.kind === "stringStartsWith" || expression.kind === "stringEndsWith") {
-    const receiver = context.emitStringExpression(expression.receiver);
-    const search = context.emitStringExpression(expression.search);
-    let helper: "stringStartsWith" | "stringStartsWithAt" | "stringEndsWith" = "stringEndsWith";
-    if (expression.kind === "stringStartsWith") {
-      helper = "stringStartsWith";
-    }
-    if (expression.position !== undefined && expression.kind === "stringStartsWith") {
-      helper = "stringStartsWithAt";
-    }
-    const cmp = context.cmpIndex;
-    context.cmpIndex += 1;
-    const name = `%cmp.${cmp}`;
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    const positionLines: string[] = [];
-    let callArgs = `i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value}`;
-    if (expression.position !== undefined) {
-      const positionValue = emitArrayIndex(expression.position, context);
-      positionLines.push(...positionValue.lines);
-      callArgs = `${callArgs}, i64 ${positionValue.value}`;
-    }
-    return {
-      lines: [...receiver.lines, ...search.lines, ...positionLines, `  ${name} = call i1 @${helper}(${callArgs})`, `  ${value} = select i1 ${name}, i64 ${jsValueTrue}, i64 ${jsValueFalse}`],
-      value
-    };
-  }
-
-  if (expression.kind === "stringCharCodeAt" || expression.kind === "stringCodePointAt" || expression.kind === "stringLocaleCompare") {
-    const receiver = context.emitStringExpression(expression.receiver);
-    const index = emitArrayIndex(expression.index, context);
-    const doubleValue = `%num.${context.numIndex}`;
-    context.numIndex += 1;
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    const lines: string[] = [
-      ...receiver.lines,
-      ...index.lines,
-      `  ${doubleValue} = call double @stringCharCodeAt(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${index.value})`,
-      `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
-    ];
-    return { lines, value };
-  }
-
-  if (expression.kind === "stringIndexOf" || expression.kind === "stringLastIndexOf") {
-    const receiver = context.emitStringExpression(expression.receiver);
-    const search = context.emitStringExpression(expression.search);
-    const doubleValue = `%num.${context.numIndex}`;
-    context.numIndex += 1;
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    if (expression.kind === "stringLastIndexOf") {
-      return {
-        lines: [
-          ...receiver.lines,
-          ...search.lines,
-          `  ${doubleValue} = call double @stringLastIndexOf(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value})`,
-          `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
-        ],
-        value
-      };
-    }
-    const position = emitStringIndexArgument(expression.position ?? { kind: "literal", value: 0 }, context);
-    return {
-      lines: [
-        ...receiver.lines,
-        ...search.lines,
-        ...position.lines,
-        `  ${doubleValue} = call double @stringIndexOf(i64 ${receiver.length}, ptr ${receiver.value}, i64 ${search.length}, ptr ${search.value}, i64 ${position.value})`,
-        `  ${value} = call i64 @valueBoxNumber(double ${doubleValue})`
-      ],
-      value
-    };
-  }
-
-  if (expression.kind === "runtimeArrayValue") {
-    const lines: string[] = [];
-    const values = expression.elements.map((element) => context.emitValue(element));
-    for (const value of values) {
-      lines.push(...value.lines);
-    }
-    const { arrayIndex } = context;
-    context.arrayIndex += 1;
-    const arrayName = `%rest.array.${arrayIndex}`;
-    const lengthValue = expression.elements.length;
-    lines.push(`  ${arrayName} = call ptr @arrayNew(i64 ${lengthValue})`);
-    for (let i = 0; i < values.length; i++) {
-      lines.push(`  call void @arraySet(ptr ${arrayName}, i64 ${i}, i64 ${values[i].value})`);
-    }
-    const boxIndex = context.numIndex;
-    context.numIndex += 1;
-    const boxName = `%value.${boxIndex}`;
-    lines.push(`  ${boxName} = call i64 @valueBoxArray(ptr ${arrayName})`);
-    return { lines, value: boxName };
-  }
-
-  if (expression.kind === "boxedPrimitive") {
-    const lines: string[] = [];
-    const inner = context.emitValue(expression.inner);
-    lines.push(...inner.lines);
-    const { objectIndex } = context;
-    context.objectIndex += 1;
-    const objectName = `%boxed.object.${objectIndex}`;
-    let capacity = 1;
-    if (expression.storeLength === true) {
-      capacity = 2;
-    }
-    lines.push(`  ${objectName} = call ptr @objectNew(i64 ${capacity})`);
-    const primitiveKey = "primitive";
-    const primitiveKeyLen = primitiveKey.length;
-    const keyString = addStringConstant(primitiveKey, context);
-    lines.push(`  call void @objectSet(ptr ${objectName}, i64 ${primitiveKeyLen}, ptr ${keyString}, i64 ${inner.value})`);
-    if (expression.storeLength === true) {
-      const lengthKey = "length";
-      const lengthKeyLen = lengthKey.length;
-      const lengthKeyString = addStringConstant(lengthKey, context);
-      const lengthIndex = context.numIndex;
-      context.numIndex += 1;
-      const lengthValue = `%value.${lengthIndex}`;
-      lines.push(`  ${lengthValue} = call i64 @valueStringLength(i64 ${inner.value})`);
-      lines.push(`  call void @objectSet(ptr ${objectName}, i64 ${lengthKeyLen}, ptr ${lengthKeyString}, i64 ${lengthValue})`);
-    }
-    const valueIndex = context.numIndex;
-    context.numIndex += 1;
-    const value = `%value.${valueIndex}`;
-    lines.push(`  ${value} = call i64 @valueBoxObject(ptr ${objectName})`);
-    return { lines, value };
-  }
-
-  if (expression.kind === "boxedMethodCall") {
-    const lines: string[] = [];
-    const receiver = context.emitValue(expression.receiver);
-    lines.push(...receiver.lines);
-    const { objectIndex } = context;
-    context.objectIndex += 1;
-    const objectPtr = `%boxed.object.ptr.${objectIndex}`;
-    lines.push(`  ${objectPtr} = call ptr @valueObjectPtr(i64 ${receiver.value})`);
-    if (expression.method === "valueOf") {
-      const valueIndex = context.numIndex;
-      context.numIndex += 1;
-      const value = `%value.${valueIndex}`;
-      lines.push(`  ${value} = call i64 @boxedValueOf(ptr ${objectPtr})`);
-      return { lines, value };
-    }
-    const { stringIndex } = context;
-    context.stringIndex += 1;
-    const raw = `%str.result.${stringIndex}`;
-    const ptrValue = `%str.${stringIndex}`;
-    const length = `%str.len.${stringIndex}`;
-    lines.push(`  ${raw} = call { ptr, i64 } @boxedToString(ptr ${objectPtr})`);
-    lines.push(`  ${ptrValue} = extractvalue { ptr, i64 } ${raw}, 0`);
-    lines.push(`  ${length} = extractvalue { ptr, i64 } ${raw}, 1`);
-    const allocIndex = context.numIndex;
-    context.numIndex += 1;
-    const allocPtr = `%str.alloc.${allocIndex}`;
-    const totalIndex = context.numIndex;
-    context.numIndex += 1;
-    const totalLen = `%str.total.${totalIndex}`;
-    lines.push(`  ${totalLen} = add i64 ${length}, 1`);
-    lines.push(`  ${allocPtr} = call ptr @malloc(i64 ${totalLen})`);
-    lines.push(`  call ptr @memcpy(ptr ${allocPtr}, ptr ${ptrValue}, i64 ${length})`);
-    const nulIndex = context.numIndex;
-    context.numIndex += 1;
-    const nulPos = `%str.nul.${nulIndex}`;
-    lines.push(`  ${nulPos} = getelementptr i8, ptr ${allocPtr}, i64 ${length}`);
-    lines.push(`  store i8 0, ptr ${nulPos}`);
-    const boxIndex = context.numIndex;
-    context.numIndex += 1;
-    const boxValue = `%value.${boxIndex}`;
-    lines.push(`  ${boxValue} = call i64 @valueBoxString(ptr ${allocPtr}, i64 ${length})`);
-    lines.push(emitRootStackPush(boxValue, context));
-    return { lines, value: boxValue };
-  }
-
-  if (expression.kind === "taggedTemplateValue") {
-    const lines: string[] = [];
-    const { arrayIndex } = context;
-    context.arrayIndex += 1;
-    const stringsArray = `%strings.array.${arrayIndex}`;
-    const totalStrings = expression.middleTexts.length + 1;
-    lines.push(`  ${stringsArray} = call ptr @arrayNew(i64 ${totalStrings})`);
-    const headString = addStringConstant(expression.head, context);
-    const headLength = String(utf8ByteLength(expression.head));
-    const headBoxIndex = context.numIndex;
-    context.numIndex += 1;
-    const headBox = `%value.${headBoxIndex}`;
-    lines.push(`  ${headBox} = call i64 @valueBoxString(ptr ${headString}, i64 ${headLength})`);
-    lines.push(emitRootStackPush(headBox, context));
-    lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 0, i64 ${headBox})`);
-    for (let i = 0; i < expression.middleTexts.length; i++) {
-      const text = expression.middleTexts[i];
-      const textString = addStringConstant(text, context);
-      const textLength = String(utf8ByteLength(text));
-      const textBoxIndex = context.numIndex;
-      context.numIndex += 1;
-      const textBox = `%value.${textBoxIndex}`;
-      lines.push(`  ${textBox} = call i64 @valueBoxString(ptr ${textString}, i64 ${textLength})`);
-      lines.push(emitRootStackPush(textBox, context));
-      lines.push(`  call void @arraySet(ptr ${stringsArray}, i64 ${i + 1}, i64 ${textBox})`);
-    }
-    const stringsBoxIndex = context.numIndex;
-    context.numIndex += 1;
-    const stringsBox = `%value.${stringsBoxIndex}`;
-    lines.push(`  ${stringsBox} = call i64 @valueBoxArray(ptr ${stringsArray})`);
-    lines.push(emitRootStackPush(stringsBox, context));
-    const expressionValues = expression.expressions.map((expr) => context.emitValue(expr));
-    for (const value of expressionValues) {
-      lines.push(...value.lines);
-    }
-    const valueArgs: string[] = [];
-    if (expression.wrapValuesInRest === true) {
-      const restArrayIndex = context.arrayIndex;
-      context.arrayIndex += 1;
-      const restArray = `%rest.array.${restArrayIndex}`;
-      const restLength = expressionValues.length;
-      lines.push(`  ${restArray} = call ptr @arrayNew(i64 ${restLength})`);
-      for (let i = 0; i < expressionValues.length; i++) {
-        lines.push(`  call void @arraySet(ptr ${restArray}, i64 ${i}, i64 ${expressionValues[i].value})`);
-      }
-      const restBoxIndex = context.numIndex;
-      context.numIndex += 1;
-      const restBox = `%value.${restBoxIndex}`;
-      lines.push(`  ${restBox} = call i64 @valueBoxArray(ptr ${restArray})`);
-      lines.push(emitRootStackPush(restBox, context));
-      valueArgs.push(restBox);
-    } else {
-      for (const value of expressionValues) {
-        valueArgs.push(value.value);
-      }
-    }
-    const callArgs = [`i64 ${stringsBox}`, ...valueArgs.map((arg) => `i64 ${arg}`)];
-    const generated = emitGeneratedJsCall(expression.tag, callArgs, context);
-    lines.push(...generated.lines);
-    return { lines, value: generated.value };
-  }
-
-  if (expression.kind === "arrayFind") {
-    const array = emitRuntimeArrayPointer(expression.arrayName, context);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...array.lines, `  ${value} = call i64 @arrayFind(ptr ${array.value})`], value };
-  }
-
-  if (expression.kind === "arrayForEach") {
-    return { lines: [], value: jsValueUndefined };
-  }
-
-  if (expression.kind === "objectRef") {
-    const object = emitRuntimeObjectPointer(expression.name, context);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...object.lines, `  ${value} = call i64 @valueBoxObject(ptr ${object.value})`], value };
-  }
-
-  if (expression.kind === "objectLiteralValue") {
-    const pointerName = `%obj.value.${context.objectIndex}.addr`;
-    const lines = emitRuntimeObjectLiteralStorage(pointerName, expression.value, context);
-    const object = `%obj.value.${context.objectIndex}.ptr`;
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...lines, `  ${object} = load ptr, ptr ${pointerName}`, `  ${value} = call i64 @valueBoxObject(ptr ${object})`], value };
-  }
-
-  if (expression.kind === "arrayRef") {
-    const array = emitRuntimeArrayPointer(expression.name, context);
-    const value = `%value.${context.numIndex}`;
-    context.numIndex += 1;
-    return { lines: [...array.lines, `  ${value} = call i64 @valueBoxArray(ptr ${array.value})`], value };
-  }
-
-  // Defensive: the lowering pass is the closed-world producer, and this tier handles the subset
-  // that reaches it. The residual is not `never` because the expression tiers partition the union
-  // across declining sub-dispatchers, so this cannot be a compile-time check. The one
-  // exhaustiveness point the type system does enforce over operations is jsIrOperationChildren
-  // (see ir.ts). emitOperation still ends in `return []`, so an unhandled kind emits nothing;
-  // that gap is written up in AGENTS.md under no-open-union-narrowing.
-  throw new Error(`Unhandled JsIrValueExpression variant: ${expression.kind}`);
-}
 
 
 
@@ -4619,53 +4061,12 @@ function emitValueExpression(expression: JsIrValueExpression, context: EmitConte
 
 
 
-function emitValueArrayValueExpression(
-  expression: Extract<JsIrValueExpression, { readonly kind: "valueArrayAccess" }>,
-  context: EmitContext
-): JsValue {
-  const receiver = context.emitValue(expression.value);
-  const index = emitArrayIndex(expression.index, context);
-  const key = context.emitStringExpression(expression.key);
-  const valueIndex = context.numIndex;
-  context.numIndex += 1;
-  const value = `%value.${valueIndex}`;
-  // Prefer valuePropertyGet for named keys so built-in iterator methods resolve.
-  // Numeric index access still uses valueArrayGet for correct hole/index semantics.
-  if (expression.index.kind === "literal" && expression.index.value < 0) {
-    return {
-      lines: [...receiver.lines, ...index.lines, ...key.lines, `  ${value} = call i64 @valuePropertyGet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value})`],
-      value
-    };
-  }
-  return {
-    lines: [...receiver.lines, ...index.lines, ...key.lines, `  ${value} = call i64 @valueArrayGet(i64 ${receiver.value}, i64 ${index.value}, i64 ${key.length}, ptr ${key.value})`],
-    value
-  };
-}
 
-function emitPrimitiveValueExpression(expression: JsIrValueExpression, context: EmitContext): JsValue | undefined {
-  if (expression.kind === "undefined") {
-    return { lines: [], value: jsValueUndefined };
-  }
 
-  if (expression.kind === "null") {
-    return { lines: [], value: jsValueNull };
-  }
 
-  if (expression.kind === "number") {
-    return emitNumberValueExpression(expression, context);
-  }
 
-  if (expression.kind === "boolean") {
-    return emitBooleanValueExpression(expression, context);
-  }
 
-  if (expression.kind === "string") {
-    return emitStringValueExpression(expression, context);
-  }
 
-  return undefined;
-}
 
 
 
@@ -4675,28 +4076,7 @@ function emitPrimitiveValueExpression(expression: JsIrValueExpression, context: 
 
 
 
-function emitBooleanValueExpression(expression: Extract<JsIrValueExpression, { readonly kind: "boolean" }>, context: EmitContext): JsValue {
-  const condition = context.emitCondition(expression.value);
-  const index = context.numIndex;
-  context.numIndex += 1;
-  const value = `%value.${index}`;
-  return { lines: [...condition.lines, `  ${value} = select i1 ${condition.value}, i64 ${jsValueTrue}, i64 ${jsValueFalse}`], value };
-}
 
-function emitStringValueExpression(expression: Extract<JsIrValueExpression, { readonly kind: "string" }>, context: EmitContext): JsValue {
-  const string = context.emitStringExpression(expression.value);
-  const index = context.numIndex;
-  context.numIndex += 1;
-  const value = `%value.${index}`;
-  return {
-    lines: [
-      ...string.lines,
-      `  ${value} = call i64 @valueBoxString(ptr ${string.value}, i64 ${string.length})`,
-      emitRootStackPush(value, context)
-    ],
-    value
-  };
-}
 
 
 
@@ -4718,99 +4098,8 @@ function emitStringValueExpression(expression: Extract<JsIrValueExpression, { re
 
 
 
-function emitTernaryValueExpression(
-  expression: Extract<JsIrValueExpression, { readonly kind: "ternary" }>,
-  context: EmitContext
-): JsValue {
-  const condition = context.emitCondition(expression.condition);
-  const consequent = context.emitValue(expression.consequent);
-  const alternate = context.emitValue(expression.alternate);
-  const index = context.numIndex;
-  context.numIndex += 1;
-  const value = `%value.${index}`;
-  return {
-    lines: [
-      ...condition.lines,
-      ...consequent.lines,
-      ...alternate.lines,
-      `  ${value} = select i1 ${condition.value}, i64 ${consequent.value}, i64 ${alternate.value}`
-    ],
-    value
-  };
-}
 
-function emitLazyDefaultValueExpression(
-  expression: Extract<JsIrValueExpression, { readonly kind: "lazyDefault" }>,
-  context: EmitContext
-): JsValue {
-  const index = context.logicIndex;
-  context.logicIndex += 1;
-  const checkLabel = `default.check.${index}`;
-  const defaultLabel = `default.value.${index}`;
-  const defaultJoinLabel = `default.join.${index}`;
-  const endLabel = `default.end.${index}`;
-  const current = context.emitValue(expression.value);
-  const fallback = context.emitValue(expression.defaultValue);
-  const isUndefined = `%cmp.${context.cmpIndex}`;
-  context.cmpIndex += 1;
-  const value = `%value.${context.numIndex}`;
-  context.numIndex += 1;
-  return {
-    lines: [
-      ...current.lines,
-      `  br label %${checkLabel}`,
-      `${checkLabel}:`,
-      `  ${isUndefined} = icmp eq i64 ${current.value}, ${jsValueUndefined}`,
-      `  br i1 ${isUndefined}, label %${defaultLabel}, label %${endLabel}`,
-      `${defaultLabel}:`,
-      ...fallback.lines,
-      `  br label %${defaultJoinLabel}`,
-      `${defaultJoinLabel}:`,
-      `  br label %${endLabel}`,
-      `${endLabel}:`,
-      `  ${value} = phi i64 [ ${current.value}, %${checkLabel} ], [ ${fallback.value}, %${defaultJoinLabel} ]`
-    ],
-    value
-  };
-}
 
-function emitLogicalValueExpression(
-  expression: Extract<JsIrValueExpression, { readonly kind: "logicalValue" }>,
-  context: EmitContext
-): JsValue {
-  const index = context.logicIndex;
-  context.logicIndex += 1;
-  const leftLabel = `value.logic.left.${index}`;
-  const rhsLabel = `value.logic.rhs.${index}`;
-  const endLabel = `value.logic.end.${index}`;
-  const left = context.emitValue(expression.left);
-  const leftTruthy = `%cmp.${context.cmpIndex}`;
-  context.cmpIndex += 1;
-  const right = context.emitValue(expression.right);
-  const value = `%value.${context.numIndex}`;
-  context.numIndex += 1;
-  let leftTrueLabel = endLabel;
-  let leftFalseLabel = rhsLabel;
-  if (expression.operator === "&&") {
-    leftTrueLabel = rhsLabel;
-    leftFalseLabel = endLabel;
-  }
-  return {
-    lines: [
-      `  br label %${leftLabel}`,
-      `${leftLabel}:`,
-      ...left.lines,
-      `  ${leftTruthy} = call i1 @valueTruthy(i64 ${left.value})`,
-      `  br i1 ${leftTruthy}, label %${leftTrueLabel}, label %${leftFalseLabel}`,
-      `${rhsLabel}:`,
-      ...right.lines,
-      `  br label %${endLabel}`,
-      `${endLabel}:`,
-      `  ${value} = phi i64 [ ${left.value}, %${leftLabel} ], [ ${right.value}, %${rhsLabel} ]`
-    ],
-    value
-  };
-}
 
 
 
@@ -4828,81 +4117,787 @@ function emitLogicalValueExpression(
 
 
 
-function emitNullishCoalesceValueExpression(
-  expression: Extract<JsIrValueExpression, { readonly kind: "nullishCoalesce" }>,
-  context: EmitContext
-): JsValue {
-  const index = context.logicIndex;
-  context.logicIndex += 1;
-  const leftLabel = `nullish.left.${index}`;
-  const checkLabel = `nullish.check.${index}`;
-  const rightLabel = `nullish.right.${index}`;
-  const joinLabel = `nullish.join.${index}`;
-  const endLabel = `nullish.end.${index}`;
-  const left = context.emitValue(expression.left);
-  const nullish = emitNullishTest(left.value, context);
-  const right = context.emitValue(expression.right);
-  const value = `%value.${context.numIndex}`;
-  context.numIndex += 1;
-  return {
-    lines: [
-      `  br label %${leftLabel}`,
-      `${leftLabel}:`,
-      ...left.lines,
-      `  br label %${checkLabel}`,
-      `${checkLabel}:`,
-      ...nullish.lines,
-      `  br i1 ${nullish.value}, label %${rightLabel}, label %${endLabel}`,
-      `${rightLabel}:`,
-      ...right.lines,
-      `  br label %${joinLabel}`,
-      `${joinLabel}:`,
-      `  br label %${endLabel}`,
-      `${endLabel}:`,
-      `  ${value} = phi i64 [ ${left.value}, %${checkLabel} ], [ ${right.value}, %${joinLabel} ]`
-    ],
-    value
-  };
-}
 
-function emitOptionalChainValueExpression(
-  expression: Extract<JsIrValueExpression, { readonly kind: "optionalChain" }>,
-  context: EmitContext
-): JsValue {
-  const index = context.logicIndex;
-  context.logicIndex += 1;
-  const guardLabel = `optional.guard.${index}`;
-  const checkLabel = `optional.check.${index}`;
-  const accessLabel = `optional.access.${index}`;
-  const joinLabel = `optional.join.${index}`;
-  const endLabel = `optional.end.${index}`;
-  const guard = context.emitValue(expression.guard);
-  const nullish = emitNullishTest(guard.value, context);
-  context.optionalTargets.push(guard.value);
-  const access = context.emitValue(expression.access);
-  context.optionalTargets.pop();
-  const value = `%value.${context.numIndex}`;
-  context.numIndex += 1;
-  return {
-    lines: [
-      `  br label %${guardLabel}`,
-      `${guardLabel}:`,
-      ...guard.lines,
-      `  br label %${checkLabel}`,
-      `${checkLabel}:`,
-      ...nullish.lines,
-      `  br i1 ${nullish.value}, label %${endLabel}, label %${accessLabel}`,
-      `${accessLabel}:`,
-      ...access.lines,
-      `  br label %${joinLabel}`,
-      `${joinLabel}:`,
-      `  br label %${endLabel}`,
-      `${endLabel}:`,
-      `  ${value} = phi i64 [ ${jsValueUndefined}, %${checkLabel} ], [ ${access.value}, %${joinLabel} ]`
-    ],
-    value
-  };
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -6454,16 +6449,16 @@ function emitArrayDestructureProtocolOperation(
 
 
 
-function emitRuntimeArrayIncludesCondition(
-  expression: Extract<JsIrValueExpression, { readonly kind: "arrayIncludes" }>,
-  context: EmitContext
-): NumberValue {
-  const array = emitRuntimeArrayPointer(expression.arrayName, context);
-  const value = context.emitValue(expression.value);
-  const name = `%cmp.${context.cmpIndex}`;
-  context.cmpIndex += 1;
-  return { lines: [...array.lines, ...value.lines, `  ${name} = call i1 @arrayIncludes(ptr ${array.value}, i64 ${value.value})`], value: name };
-}
+
+
+
+
+
+
+
+
+
+
 
 
 
