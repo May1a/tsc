@@ -5,7 +5,6 @@ import {
   type JsIrFunctionParameter,
   type JsIrModule,
   type JsIrNumberExpression,
-  type JsIrObjectValue,
   type JsIrOperation,
   type JsIrRuntimeArrayElement,
   type JsIrStringExpression,
@@ -26,7 +25,7 @@ import type {
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { type TraceMapV1, buildTraceMap } from "./trace.js";
 import { traceEndLine, traceStartLine, wrapFunctionTrace } from "./llvm/trace.js";
-import { emitObjectFieldPointer, emitObjectIndexedPointer } from "./llvm/paths.js";
+import { emitObjectFieldPointer } from "./llvm/paths.js";
 import {
   emitRuntimeArrayPointer,
   emitRuntimeCollectionPointer,
@@ -40,7 +39,7 @@ import {
 } from "./llvm/numbers.js";
 import { emitStringExpression, emitStringIndexArgument } from "./llvm/string-expressions.js";
 import { emitRuntimeCollectionFromArrayOperation, emitRuntimeCollectionFromCollectionOperation, emitRuntimeCollectionFromIterableOperation, emitRuntimeCollectionMutationOperation, emitRuntimeCollectionNewOperation, emitRuntimeCollectionResultOperation } from "./llvm/collections.js";
-import { emitNumberValueExpression, emitRuntimeObjectAssignOperation, emitRuntimeObjectCreateOperation, emitRuntimeObjectDefineDataPropertyOperation, emitRuntimeObjectDeleteOperation, emitRuntimeObjectEntriesOperation, emitRuntimeObjectFromEntriesOperation, emitRuntimeObjectGetPrototypeOperation, emitRuntimeObjectKeysOperation, emitRuntimeObjectLiteralOperation, emitRuntimeObjectLiteralStorage, emitRuntimeObjectOwnPropertyDescriptorOperation, emitRuntimeObjectOwnPropertyDescriptorsOperation, emitRuntimeObjectOwnPropertyNamesOperation, emitRuntimeObjectSetPrototypeOperation, emitRuntimeObjectStateMutationOperation, emitRuntimeObjectStoreOperation, emitRuntimeObjectValueExpression, emitRuntimeObjectValuesOperation, knownShapeObjectToRuntimeValue } from "./llvm/objects.js";
+import { emitNumberValueExpression, emitRuntimeObjectAssignOperation, emitRuntimeObjectCreateOperation, emitRuntimeObjectDefineDataPropertyOperation, emitRuntimeObjectDeleteOperation, emitRuntimeObjectEntriesOperation, emitRuntimeObjectFromEntriesOperation, emitRuntimeObjectGetPrototypeOperation, emitRuntimeObjectKeysOperation, emitRuntimeObjectLiteralOperation, emitRuntimeObjectLiteralStorage, emitRuntimeObjectOwnPropertyDescriptorOperation, emitRuntimeObjectOwnPropertyDescriptorsOperation, emitRuntimeObjectOwnPropertyNamesOperation, emitRuntimeObjectSetPrototypeOperation, emitRuntimeObjectStateMutationOperation, emitRuntimeObjectStoreOperation, emitRuntimeObjectValueExpression, emitRuntimeObjectValuesOperation } from "./llvm/objects.js";
 import { emitPrintOperation } from "./llvm/print.js";
 import { emitDoWhileOperation, emitForInArrayOperation, emitForInObjectOperation, emitForOfArrayOperation, emitForOfMapOperation, emitForOfProtocolOperation, emitForOfSetOperation, emitForOfStringOperation, emitForOperation, emitWhileOperation } from "./llvm/loop-statements.js";
 import { emitBreakOperation, emitContinueOperation, emitIfOperation, emitOperationsWithScopedBindings, emitSwitchOperation, emitTryCatchOperation, noLines } from "./llvm/branches.js";
@@ -55,6 +54,7 @@ import { emitRuntimeArrayFilterCallbackOperation,
   emitRuntimeArrayScalarCallbackOperation,
   emitRuntimeArraySortOperation
 } from "./llvm/array-callbacks.js";
+import { emitObjectLiteralOperation, emitValueObjectSetPrototypeOperation, emitValueObjectValueExpression } from "./llvm/known-shape-objects.js";
 import { emitInlineCppDeclarations } from "./llvm/inline-cpp.js";
 import { operationListTerminates } from "./llvm/loops.js";
 import { emitCondition, emitNamedValueBinding } from "./llvm/conditions.js";
@@ -2278,28 +2278,28 @@ function runtimeArrayLiteralInitialLength(elements: readonly JsIrRuntimeArrayEle
 
 
 
-function emitObjectLiteralOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "objectLiteral" }>,
-  context: EmitContext
-): string[] {
-  const typeName = defineObjectType(operation.value, context);
-  const pointerName = variablePointerName(operation.name);
-  let runtimePointerName: string | undefined;
-  if (operation.needsRuntimeShadow) {
-    runtimePointerName = `%${operation.name}.obj.addr`;
-  }
-  context.objectLayouts.set(operation.name, { typeName, pointerName, runtimePointerName, value: operation.value });
-  context.bindings.set(operation.name, { kind: "object", value: operation.value });
-  const lines = [
-    `  ${pointerName} = alloca ${typeName}`,
-    ...emitObjectFieldStores(typeName, pointerName, operation.value, [], context)
-  ];
-  if (runtimePointerName !== undefined) {
-    const runtimeValue = knownShapeObjectToRuntimeValue(operation.value);
-    lines.push(...emitRuntimeObjectLiteralStorage(runtimePointerName, runtimeValue, context));
-  }
-  return lines;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -3496,23 +3496,23 @@ function emitValueAggregateDeleteOperation(
 
 
 
-function emitValueObjectSetPrototypeOperation(
-  operation: Extract<JsIrOperation, { readonly kind: "valueObjectSetPrototype" }>,
-  context: EmitContext
-): string[] {
-  const target = emitNamedValueBinding(operation.targetName, context);
-  const prototype = emitNamedValueBinding(operation.prototypeName, context);
-  const targetPointer = `%class.prototype.target.${context.objectIndex}`;
-  const prototypePointer = `%class.prototype.base.${context.objectIndex}`;
-  context.objectIndex += 1;
-  return [
-    ...target.lines,
-    ...prototype.lines,
-    `  ${targetPointer} = call ptr @valueObjectPtr(i64 ${target.value})`,
-    `  ${prototypePointer} = call ptr @valueObjectPtr(i64 ${prototype.value})`,
-    `  call void @objectSetPrototype(ptr ${targetPointer}, ptr ${prototypePointer})`
-  ];
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -4565,20 +4565,20 @@ function emitRuntimeArrayValueExpression(
 
 
 
-function emitValueObjectValueExpression(
-  expression: Extract<JsIrValueExpression, { readonly kind: "valueObjectDynamicAccess" }>,
-  context: EmitContext
-): JsValue {
-  const receiver = context.emitValue(expression.value);
-  const key = context.emitStringExpression(expression.key);
-  const valueIndex = context.numIndex;
-  context.numIndex += 1;
-  const value = `%value.${valueIndex}`;
-  return {
-    lines: [...receiver.lines, ...key.lines, `  ${value} = call i64 @valueObjectGet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value})`],
-    value
-  };
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // Emits a private field read: the class-mangled key must be an own property of
 // the receiver (the brand), otherwise a TypeError is thrown.
@@ -5995,42 +5995,42 @@ function emitArrayDestructureProtocolOperation(
 
 
 
-function defineObjectType(value: JsIrObjectValue, context: EmitContext): string {
-  const typeName = `%obj.${context.objectIndex}`;
-  context.objectIndex += 1;
-  const fieldTypes = value.fields
-    .map((field) => {
-      if (field.value.kind === "number") {
-        return "double";
-      }
-      return defineObjectType(field.value.value, context);
-    })
-    .join(", ");
-  context.objectTypes.push(`${typeName} = type { ${fieldTypes} }`);
-  return typeName;
-}
 
-function emitObjectFieldStores(
-  rootType: string,
-  rootPointer: string,
-  value: JsIrObjectValue,
-  path: readonly number[],
-  context: EmitContext
-): string[] {
-  const lines: string[] = [];
-  for (let i = 0; i < value.fields.length; i++) {
-    const field = value.fields[i];
-    const nextPath = [...path, i];
-    if (field.value.kind === "object") {
-      lines.push(...emitObjectFieldStores(rootType, rootPointer, field.value.value, nextPath, context));
-      continue;
-    }
-    const pointer = emitObjectIndexedPointer(rootType, rootPointer, nextPath, context);
-    const number = context.emitNumberExpression(field.value.value);
-    lines.push(...pointer.lines, ...number.lines, `  store double ${number.value}, ptr ${pointer.value}`);
-  }
-  return lines;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
