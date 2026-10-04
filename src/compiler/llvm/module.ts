@@ -5,24 +5,24 @@ import {
   type JsIrOperation,
   aggregateBindingForOperation,
   visitJsIrOperations
-} from "./ir.js";
-import type { EmitContext, FunctionDef } from "./llvm/context.js";
+} from "../ir.js";
+import type { EmitContext, FunctionDef } from "./context.js";
 
-import type { CompilerDiagnostic } from "./diagnostics.js";
-import { type TraceMapV1, buildTraceMap } from "./trace.js";
-import { noLines } from "./llvm/branches.js";
-import { functionObjectExpectedArgumentCount, internedFunctionGlobal } from "./llvm/function-objects.js";
-import { emitFunctionDefinition, emitFunctionObjectThunk } from "./llvm/function-definitions.js";
-import { emitInlineCppDeclarations } from "./llvm/inline-cpp.js";
-import { operationListTerminates } from "./llvm/loops.js";
-import { createMainEmitContext } from "./llvm/contexts.js";
-import { addStringConstant, utf8ByteLength } from "./llvm/strings.js";
-import { defineStructuredRuntimeHelpers, runtimeIrText } from "./runtime-ir.js";
-import { COMPLETION_NORMAL } from "./llvm/completion.js";
+import type { CompilerDiagnostic } from "../diagnostics.js";
+import { type TraceMapV1, buildTraceMap } from "../trace.js";
+import { noLines } from "./branches.js";
+import { functionObjectExpectedArgumentCount, internedFunctionGlobal } from "./function-objects.js";
+import { emitFunctionDefinition, emitFunctionObjectThunk } from "./function-definitions.js";
+import { emitInlineCppDeclarations } from "./inline-cpp.js";
+import { operationListTerminates } from "./loops.js";
+import { createMainEmitContext } from "./contexts.js";
+import { addStringConstant, utf8ByteLength } from "./strings.js";
+import { defineStructuredRuntimeHelpers, runtimeIrText } from "../runtime-ir.js";
+import { COMPLETION_NORMAL } from "./completion.js";
 import {
   jsValueUndefined
-} from "./llvm/values.js";
-import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
+} from "./values.js";
+import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "../llvm-ir/index.js";
 
 interface LlvmIrEmission {
   readonly rendered: RenderedLlvmModule;

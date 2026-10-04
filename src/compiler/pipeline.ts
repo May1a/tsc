@@ -6,7 +6,7 @@ import { CompilationFailed } from "./errors.js";
 import { loadProgram } from "./frontend.js";
 import { lowerToJsIr } from "./ir.js";
 import { type LinkResult, linkWithClang, linkWithClangxx, linkerErrorToLinkResult } from "./linker.js";
-import { emitLlvmModule } from "./llvm.js";
+import { emitLlvmModule } from "./llvm/module.js";
 import { emitInlineCppSource } from "./llvm/inline-cpp.js";
 import { Toolchain } from "./toolchain.js";
 import type { CompileOptions, CompileResult } from "./types.js";
