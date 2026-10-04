@@ -538,26 +538,26 @@ Measured, not guessed. Each cut below ends green on its own.
    module, and only then do the domains and `module.ts` have anywhere to land. Cutting a domain
    before that produces a cycle, not a module.
 
-6. **The scalar tier is an irreducible knot, and that is the thing step 9 has to reckon with.**
-   Measured. `emitNumberExpression` and `emitStringExpression` have a closure of 30 declarations and
-   1,093 lines *each*, and the closure of either is the closure of both — they reach each other, and
-   so do everything between them.
+6. **The scalar knot was real, and boxing it a second time split it. `done`.** The earlier note here
+   said the number and string tiers were irreducible. They were not — the fix was the same one that
+   broke the main recursion, applied to the second cycle. Measured, before and after:
 
-   The hub is `emitCallArguments`, which dispatches on `arg.valueKind` and calls
-   `emitStringExpression`, `emitNumberExpression` and `context.emitValue`. That dispatch is genuine
-   and cannot be collapsed to `context.emitValue`: the string and number cases need the *raw* scalar
-   so they can box it themselves, and `emitValue` returns an already-boxed `JsValue`. So the
-   argument emitter is a 30-declaration knot that includes both scalar tiers.
+   | closure | before | after |
+   | --- | --- | --- |
+   | `emitNumberExpression` | 30 decls, 1,093 lines | 17 decls, 546 lines |
+   | `emitStringExpression` | 30 decls, 1,093 lines | 8 decls, 452 lines |
+   | `emitCallArguments` | 30 decls, 1,093 lines | 2 decls, 37 lines |
+   | `emitCondition` | 46 decls, 1,607 lines | 15 decls, 522 lines |
 
-   This is why the domain cuts came out at 1,200–2,800 lines when measured rather than 400–700 when
-   counted by name: `Condition` is 1,607 lines because ten condition emitters legitimately need the
-   number and string expression tiers, and those are one unit.
+   Breaking one direction was not enough: arguments need the *raw* scalar so they can box it, and both
+   scalar tiers need the argument ABI for a call, so it is a three-way cycle. All five of those entries
+   went on `EmitContext` together — 92 call sites, no signature changes — and every resulting tier is
+   now under the 800-line cap step 9 promotes to an error.
 
-   Reaching 800 lines per file therefore needs one more move than "split by domain", and the options
-   are: give the scalar tier its own module above the cap and record that the cap does not apply
-   there; or box the argument ABI on the context the way the four recursion entries were boxed, so
-   the number and string tiers stop naming each other. The second is the honest one and is the same
-   trick as `EmitContext.emitValue`, just applied to a second cycle.
+   The generalisable finding, and the reason it is written down: **`EmitContext` is the place cycles
+   get broken in this emitter.** A cycle between two modules is an import problem and no file ordering
+   fixes it; the same cycle through a value every callee already has is a field. Three times now —
+   the four recursion entries, the five scalar entries, and `OperationOf` for a type both sides needed.
 
 6. **Cut 6 is the class tier.** It is the largest remaining concept but it is *interleaved* with
    value-tier functions rather than contiguous, so its seams have to be drawn by hand. Do not infer
