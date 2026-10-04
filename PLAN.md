@@ -477,7 +477,28 @@ Measured, not guessed. Each cut below ends green on its own.
 4. **Cut 3 is then the messages**, into `ir/diagnostics.ts`, which by then depends only on `ts`, the
    binding and expression types, and `builtins/owners.ts`.
 
-5. **Cut 4 is the class tier.** It is the largest remaining concept but it is *interleaved* with
+5. **`completion.ts` is blocked the same way, and the way out is bigger than it looks.** The cleanup
+   emitters (573–808: `createCleanupFrame`, `emitCompletionTransfer`, `emitCleanupAfterBody`,
+   `emitCleanupFinalDispatch`, `emitDestSwitch`, `emitThrowEntryBlock`, `emitIteratorCloseBody`) are a
+   clean 236-line concept, but they read the GC-root and return helpers:
+
+   | helper | call sites | what it is |
+   | --- | --- | --- |
+   | `emitRootStackPush` | 29 | the GC calling convention |
+   | `jsValueUndefined` | 38 | a js-value-abi immediate |
+   | `emitPackedGeneratedReturn` | 6 | the payload/status return ABI |
+   | `generatedReturnType` | 1 | the aggregate type name |
+
+   Those are not helpers the cleanup code happens to call — they *are* how every generated function
+   returns and unwinds, so moving them would move the convention, and leaving them means
+   `completion.ts` imports `llvm.ts` while `llvm.ts` imports `completion.ts`.
+
+   The way out is to accept the larger module: GC-root push/restore, the packed return, and the
+   completion transfer are one concept — *how a generated function returns and unwinds* — and
+   `completion.ts` should hold all of it. That is roughly 300 lines rather than 236, and it is the
+   right boundary rather than a convenient one. Do not cut it in two.
+
+6. **Cut 5 is the class tier.** It is the largest remaining concept but it is *interleaved* with
    value-tier functions rather than contiguous, so its seams have to be drawn by hand. Do not infer
    them from the section banners: there is one banner and it does not bound the section.
 
