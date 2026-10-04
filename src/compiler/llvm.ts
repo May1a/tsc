@@ -35,6 +35,7 @@ import type {
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { type TraceMapV1, buildTraceMap } from "./trace.js";
 import { traceEndLine, traceStartLine, wrapFunctionTrace } from "./llvm/trace.js";
+import { addStringConstant, encodeCString, utf8ByteLength } from "./llvm/strings.js";
 import {
   bindingSlotName,
   loopFrameName,
@@ -72,11 +73,11 @@ import {
 } from "./llvm/values.js";
 import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
 
-const doubleQuoteByte = 34;
-const backslashByte = 92;
-const firstPrintableAsciiByte = 32;
-const lastPrintableAsciiByte = 126;
-const hexadecimalRadix = 16;
+
+
+
+
+
 const noLines = 0;
 const descriptorWritableFlag = 1;
 const descriptorEnumerableFlag = 2;
@@ -178,31 +179,31 @@ function createFunctionEmitContext(fn: FunctionDef, parent: EmitContext): EmitCo
   return context;
 }
 
-const encodeCString = (value: string): { readonly value: string; readonly length: number } => {
-  const bytes = [...Buffer.from(value, "utf8"), 0];
-  const encoded = bytes
-    .map((byte) => {
-      if (byte === doubleQuoteByte) {
-        return String.raw`\22`;
-      }
 
-      if (byte === backslashByte) {
-        return String.raw`\5C`;
-      }
 
-      if (byte >= firstPrintableAsciiByte && byte <= lastPrintableAsciiByte) {
-        return String.fromCharCode(byte);
-      }
 
-      return `\\${byte.toString(hexadecimalRadix).toUpperCase().padStart(2, "0")}`;
-    })
-    .join("");
 
-  return {
-    value: encoded,
-    length: bytes.length
-  };
-};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function emitInlineCppDeclarations(blocks: readonly JsIrInlineCppBlock[]): string[] {
   return blocks.map((block) => `declare i64 @${block.symbol}()`);
@@ -7526,9 +7527,9 @@ function emitConcatStringExpression(
   };
 }
 
-function utf8ByteLength(value: string): number {
-  return Buffer.byteLength(value, "utf8");
-}
+
+
+
 
 function emitTernaryStringExpression(
   expression: Extract<JsIrStringExpression, { readonly kind: "ternary" }>,
@@ -7628,13 +7629,13 @@ function emitStringPointerPrint(value: string, context: EmitContext): string {
   return `  %print.${index} = call i32 @puts(ptr ${value})`;
 }
 
-function addStringConstant(value: string, context: EmitContext): string {
-  const index = context.printIndex;
-  context.printIndex += 1;
-  const encoded = encodeCString(value);
-  context.stringConstants.push(`@.str.${index} = private unnamed_addr constant [${encoded.length} x i8] c"${encoded.value}"`);
-  return `@.str.${index}`;
-}
+
+
+
+
+
+
+
 
 function emitNumberPrint(value: string, context: EmitContext): string {
   const index = context.printIndex;
