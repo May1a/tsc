@@ -49,6 +49,17 @@ export const COMPLETION_CONTINUE = 4;
  * The parameter disappears with them. `emitValueExpression(e, ctx)` becomes `ctx.emitValue(e)`, which
  * is why this is 144 call sites and no signature changes.
  */
+/**
+ * The operation variant a handler for kind `K` receives.
+ *
+ * This is what makes `operationEmitters` total rather than merely checked: each handler is typed
+ * against the one variant its key selects, so a handler cannot read a field its kind does not have,
+ * and the mapped parameter type of the table forces a key for every kind. The single assertion in
+ * `operationEmitterFor` exists only because TypeScript cannot correlate a union-typed discriminant
+ * with the handler it selects — see the note there.
+ */
+export type OperationOf<K extends JsIrOperation["kind"]> = Extract<JsIrOperation, { readonly kind: K }>;
+
 export interface Emitter {
   readonly emitValue: (expression: JsIrValueExpression) => JsValue;
   readonly emitOperations: (operations: readonly JsIrOperation[]) => string[];
