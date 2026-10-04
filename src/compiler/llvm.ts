@@ -35,6 +35,7 @@ import type {
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { type TraceMapV1, buildTraceMap } from "./trace.js";
 import { traceEndLine, traceStartLine, wrapFunctionTrace } from "./llvm/trace.js";
+import { emitObjectFieldPointer, emitObjectIndexedPointer } from "./llvm/paths.js";
 import {
   emitRuntimeArrayPointer,
   emitRuntimeCollectionPointer,
@@ -6015,51 +6016,51 @@ function emitObjectFieldStores(
   return lines;
 }
 
-function emitObjectFieldPointer(
-  objectName: string,
-  path: readonly string[],
-  context: EmitContext
-): { readonly lines: string[]; readonly value: string } | undefined {
-  const layout = context.objectLayouts.get(objectName);
-  if (layout === undefined) {
-    return undefined;
-  }
-  const indexes = objectPathToIndexes(layout.value, path);
-  if (indexes === undefined) {
-    return undefined;
-  }
-  return emitObjectIndexedPointer(layout.typeName, layout.pointerName, indexes, context);
-}
 
-function emitObjectIndexedPointer(
-  rootType: string,
-  rootPointer: string,
-  indexes: readonly number[],
-  context: EmitContext
-): { readonly lines: string[]; readonly value: string } {
-  const index = context.objectIndex;
-  context.objectIndex += 1;
-  const name = `%obj.gep.${index}`;
-  const gepIndexes = indexes.map((item) => `i32 ${item}`).join(", ");
-  return { lines: [`  ${name} = getelementptr ${rootType}, ptr ${rootPointer}, i32 0, ${gepIndexes}`], value: name };
-}
 
-function objectPathToIndexes(value: JsIrObjectValue, path: readonly string[]): readonly number[] | undefined {
-  const indexes: number[] = [];
-  let current = value;
-  for (const segment of path) {
-    const index = current.fields.findIndex((field) => field.name === segment);
-    if (index === -1) {
-      return undefined;
-    }
-    indexes.push(index);
-    const field = current.fields[index];
-    if (field.value.kind === "object") {
-      current = field.value.value;
-    }
-  }
-  return indexes;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // eslint-disable-next-line max-statements -- Typed condition emission keeps specialized RegExp and class predicates beside numeric comparisons.
 function emitCondition(condition: JsIrCondition, context: EmitContext): NumberValue {
