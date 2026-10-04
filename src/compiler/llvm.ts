@@ -33,7 +33,8 @@ import type {
 } from "./llvm/context.js";
 
 import type { CompilerDiagnostic } from "./diagnostics.js";
-import { type TraceMapV1, buildTraceMap, traceOperationId } from "./trace.js";
+import { type TraceMapV1, buildTraceMap } from "./trace.js";
+import { traceEndLine, traceStartLine, wrapFunctionTrace } from "./llvm/trace.js";
 import { defineStructuredRuntimeHelpers, runtimeIrText } from "./runtime-ir.js";
 import { jsValueAbi } from "./js-value-abi/index.js";
 import {
@@ -539,33 +540,6 @@ function emitGeneratedJsCall(callee: string, arguments_: readonly string[], cont
   };
 }
 
-function traceStartLine(operation: JsIrOperation, context: EmitContext): string {
-  const { trace } = operation;
-  const id = traceOperationId(operation);
-  const source = trace?.source;
-  let location = "-";
-  if (source !== undefined) {
-    location = `${source.fileName}:${source.line}:${source.column}`;
-  }
-  const line = `; tscn-trace-start ${id} ${operation.kind} ${location} ${trace?.origin ?? "synthesized"}`;
-  context.traceMarkers.set(line, { id, kind: "start" });
-  return line;
-}
-
-function traceEndLine(operation: JsIrOperation, context: EmitContext): string {
-  const id = traceOperationId(operation);
-  const line = `; tscn-trace-end ${id}`;
-  context.traceMarkers.set(line, { id, kind: "end" });
-  return line;
-}
-
-function wrapFunctionTrace(operation: JsIrOperation, lines: readonly string[], context: EmitContext): string[] {
-  let content = lines;
-  if (lines.at(-1) === "") {
-    content = lines.slice(0, -1);
-  }
-  return [traceStartLine(operation, context), ...content, traceEndLine(operation, context), ""];
-}
 
 function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
   if (fn.callingConvention === "functionObject") {
