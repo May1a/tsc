@@ -1,4 +1,4 @@
-import type { EmitContext } from "./context.js";
+import type { EmitContext, JsValue } from "./context.js";
 import { jsValueUndefined } from "./values.js";
 
 /**
@@ -78,6 +78,39 @@ export function emitPackedGeneratedReturn(value: string, status: string, context
     `  ${result} = insertvalue ${generatedReturnType} ${base}, i1 ${status}, 1`,
     `  ret ${generatedReturnType} ${result}`
   ];
+}
+
+/**
+ * Calling a generated function, and what happens when it threw.
+ *
+ * This is the other end of `emitPackedGeneratedReturn`: a generated function answers through the
+ * `{ i64, i1 }` aggregate, so a caller unpacks the payload and the status, roots the payload across
+ * whatever the callee did, stores it as the pending exception, and branches on the status.
+ *
+ * It belongs next to the return rather than with the call sites because the two halves of that
+ * convention are only correct together. A caller that forgot to root the payload, or a return that
+ * forgot to restore the root stack, produces a module that is wrong at every safepoint rather than
+ * wrong in one place.
+ */
+export function emitGeneratedJsCall(callee: string, arguments_: readonly string[], context: EmitContext): JsValue {
+  const index = context.callIndex;
+  context.callIndex += 1;
+  const result = `%call.${index}.result`;
+  const payload = `%call.${index}.payload`;
+  const exception = `%call.${index}.exception`;
+  const continuation = `call.continue.${index}`;
+  return {
+    lines: [
+      `  ${result} = call ${generatedReturnType} @${callee}(${arguments_.join(", ")})`,
+      `  ${payload} = extractvalue ${generatedReturnType} ${result}, 0`,
+      `  ${exception} = extractvalue ${generatedReturnType} ${result}, 1`,
+      emitRootStackPush(payload, context),
+      `  store i64 ${payload}, ptr ${context.exceptionSlot}`,
+      `  br i1 ${exception}, label %${context.exceptionTarget}, label %${continuation}`,
+      `${continuation}:`
+    ],
+    value: payload
+  };
 }
 
 export function emitNormalGeneratedReturn(value: string, context: EmitContext): string[] {

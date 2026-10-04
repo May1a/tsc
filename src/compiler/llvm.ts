@@ -62,6 +62,7 @@ import {
   emitCleanupFinalDispatch,
   emitCompletionTransfer,
   emitExceptionReturnBlock,
+  emitGeneratedJsCall,
   emitIteratorCloseBody,
   emitNormalGeneratedReturn,
   emitPackedGeneratedReturn,
@@ -545,26 +546,26 @@ function classifyAggregateOperation(operation: JsIrOperation, context: EmitConte
   return false;
 }
 
-function emitGeneratedJsCall(callee: string, arguments_: readonly string[], context: EmitContext): JsValue {
-  const index = context.callIndex;
-  context.callIndex += 1;
-  const result = `%call.${index}.result`;
-  const payload = `%call.${index}.payload`;
-  const exception = `%call.${index}.exception`;
-  const continuation = `call.continue.${index}`;
-  return {
-    lines: [
-      `  ${result} = call ${generatedReturnType} @${callee}(${arguments_.join(", ")})`,
-      `  ${payload} = extractvalue ${generatedReturnType} ${result}, 0`,
-      `  ${exception} = extractvalue ${generatedReturnType} ${result}, 1`,
-      emitRootStackPush(payload, context),
-      `  store i64 ${payload}, ptr ${context.exceptionSlot}`,
-      `  br i1 ${exception}, label %${context.exceptionTarget}, label %${continuation}`,
-      `${continuation}:`
-    ],
-    value: payload
-  };
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 function emitFunctionDefinition(fn: FunctionDef, context: EmitContext): string[] {
