@@ -39,12 +39,21 @@ import type {
 } from "./ir/module.js";
 import {
   type BuiltinOwner,
+  builtinEntryForOwnerAndName,
+  knownBuiltinMessage,
   numberGlobalNames,
   plannedArrayBuiltinMessage,
+  plannedCollectionBuiltinMessage,
+  plannedDateBuiltinMessage,
+  plannedErrorBuiltinMessage,
+  plannedFunctionBuiltinMessage,
+  plannedIteratorBuiltinMessage,
+  plannedJsonBuiltinMessage,
   plannedMathBuiltinMessage,
   plannedNumberBuiltinMessage,
   plannedNumberGlobalMessage,
   plannedObjectBuiltinMessage,
+  plannedRegexpBuiltinMessage,
   plannedStringBuiltinMessage
 } from "./ir/builtins/index.js";
 import { type JsIrOperation, jsIrOperationChildren, visitJsIrOperations } from "./ir/types.js";
@@ -10626,7 +10635,7 @@ function unsupportedExpressionMessage(
     }
     return "Dynamic computed object keys are not supported by known-shape numeric objects";
   }
-  return fallbackCallTargetMessage(expression, bindings);
+  return fallbackCallTargetMessage(expression, bindings) ?? plannedMemberReadMessage(expression, bindings);
 }
 
 /**
@@ -10803,29 +10812,90 @@ function callTargetMessage(
  * `undefined` when the target is not one of those. Each owner's table is consulted in turn, so
  * adding a table is what makes its refusals name the builtin.
  */
+/**
+ * Each owner's refusal, keyed by owner so a new table is a compile error here until it is listed.
+ *
+ * Every entry is `(name) => string | undefined`, so this reads as a dispatch on the owner rather than
+ * as twelve ifs. That is the point of the tables: adding an owner to `BuiltinOwner` and shipping its
+ * table is not enough on its own, it also has to say what its refusals read like.
+ */
+const plannedMessageForOwner: Readonly<
+  Record<BuiltinOwner, (name: string) => string | undefined>
+> = {
+  array: plannedArrayBuiltinMessage,
+  collection: plannedCollectionBuiltinMessage,
+  date: plannedDateBuiltinMessage,
+  error: plannedErrorBuiltinMessage,
+  function: plannedFunctionBuiltinMessage,
+  iterator: plannedIteratorBuiltinMessage,
+  json: plannedJsonBuiltinMessage,
+  math: plannedMathBuiltinMessage,
+  number: plannedNumberBuiltinMessage,
+  object: plannedObjectBuiltinMessage,
+  regexp: plannedRegexpBuiltinMessage,
+  string: plannedStringBuiltinMessage
+};
+
+/**
+ * The refusal for a call whose target is a builtin the compiler knows about and has not written, or
+ * `undefined` when the target is not one of those. The owner's table is what knows the name, so the
+ * work here is finding the owner.
+ */
 function plannedBuiltinMessageFor(
   receiver: ts.Expression,
   name: string,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): string | undefined {
   const owner = builtinOwnerOfReceiver(receiver, bindings);
-  if (owner === "array") {
-    return plannedArrayBuiltinMessage(name);
+  if (owner === undefined) {
+    return undefined;
   }
-  if (owner === "object") {
-    return plannedObjectBuiltinMessage(name);
-  }
-  if (owner === "string") {
-    return plannedStringBuiltinMessage(name);
-  }
-  if (owner === "number") {
-    return plannedNumberBuiltinMessage(name);
-  }
-  if (owner === "math") {
-    return plannedMathBuiltinMessage(name);
-  }
-  return undefined;
+  return plannedMessageForOwner[owner](name);
 }
+
+/**
+ * The diagnostic for a member this build has not written, when the expression is a read rather than a
+ * call.
+ *
+ * A call goes through `callTargetMessage`, which sees the callee; `f.length` and `e.stack` are reads,
+ * and without this they reported `Unsupported statement in the current lowering slice:
+ * ExpressionStatement` — a message about the enclosing statement that names nothing the user wrote. It
+ * only fires when the owner's table has an entry for the name, so an unrecognized member of an
+ * unrecognized object still gets the statement fallback rather than a builtin the compiler has never
+ * heard of.
+ */
+function plannedMemberReadMessage(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
+  if (!ts.isPropertyAccessExpression(expression)) {
+    return undefined;
+  }
+  const owner = builtinOwnerOfReceiver(expression.expression, bindings);
+  if (owner === undefined) {
+    return undefined;
+  }
+  const entry = builtinEntryForOwnerAndName(owner, expression.name.text);
+  if (entry === undefined || entry.state === "supported") {
+    return undefined;
+  }
+  return knownBuiltinMessage(entry);
+}
+
+/**
+ * The owners reachable by the spelling of a receiver, for the builtins that are globals rather than
+ * values a program holds: `Array.of` is the array table's business and `Math.min` the math table's,
+ * and there is no binding to read that from.
+ */
+const staticBuiltinOwners: Readonly<Record<string, BuiltinOwner | undefined>> = {
+  Array: "array",
+  Date: "date",
+  JSON: "json",
+  Math: "math",
+  Object: "object",
+  String: "string",
+  Symbol: "iterator"
+};
 
 /** The support-table owner a call target belongs to, from the receiver rather than its spelling. */
 function builtinOwnerOfReceiver(
@@ -10833,51 +10903,134 @@ function builtinOwnerOfReceiver(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): BuiltinOwner | undefined {
   if (ts.isIdentifier(receiver)) {
-    if (receiver.text === "Array") {
-      return "array";
+    const staticOwner = staticBuiltinOwners[receiver.text];
+    if (staticOwner !== undefined) {
+      return staticOwner;
     }
-    if (receiver.text === "Object") {
-      return "object";
-    }
-    if (receiver.text === "String") {
-      return "string";
-    }
-    if (receiver.text === "Math") {
-      return "math";
-    }
-    const binding = bindings.get(receiver.text);
-    if (binding?.kind === "runtimeArray" || binding?.kind === "array") {
-      return "array";
-    }
-    if (binding?.kind === "runtimeObject" || binding?.kind === "object") {
-      return "object";
-    }
-    if (isRuntimeStringBinding(binding)) {
-      return "string";
-    }
-    if (isNumericBinding(binding)) {
-      return "number";
-    }
-    return undefined;
+    return builtinOwnerOfBinding(bindings.get(receiver.text));
   }
   if (ts.isCallExpression(receiver) && ts.isIdentifier(receiver.expression)) {
-    if (receiver.expression.text === "Array") {
-      return "array";
-    }
-    if (receiver.expression.text === "Object") {
-      return "object";
-    }
+    return staticBuiltinOwners[receiver.expression.text];
   }
   return undefined;
 }
 
 /**
- * True for a binding the string tier can lower through: a `string` binding, a `stringExpression`
- * one, or a `stringVariable` one, which is what a lowered string method or a `string` parameter
- * records. The same three kinds `lowerStringRuntimeExpression` accepts for an identifier.
+ * The support-table owner for a receiver that is a variable, read off what the binding holds.
+ *
+ * This is why the owner is not the receiver's name: `const s = new Set()` and `const a = []` are both
+ * locals, and only the binding says which table answers for `s.add` or `a.at`.
  */
-function isRuntimeStringBinding(binding: JsIrBindingValue | undefined): boolean {
-  return binding?.kind === "string" || binding?.kind === "stringExpression" || binding?.kind === "stringVariable";
+function builtinOwnerOfBinding(binding: JsIrBindingValue | undefined): BuiltinOwner | undefined {
+  if (binding === undefined) {
+    return undefined;
+  }
+  switch (binding.kind) {
+    case "array":
+    case "runtimeArray": {
+      return "array";
+    }
+    case "object": {
+      return "object";
+    }
+    case "runtimeMap":
+    case "runtimeSet": {
+      return "collection";
+    }
+    case "runtimeIterator": {
+      return "iterator";
+    }
+    case "string":
+    case "stringExpression":
+    case "stringVariable": {
+      return "string";
+    }
+    case "value": {
+      return builtinOwnerOfValueExpression(binding.value);
+    }
+    case "valueVariable": {
+      return valueVariableOwner(binding);
+    }
+    case "closure":
+    case "closureFactory":
+    case "function":
+    case "functionReference": {
+      // A function value is a `Function`, so `f.call` is `Function.prototype.call`. Nothing on that
+      // prototype lowers, and the function table is what says so by name rather than letting the call
+      // through to a runtime that has no such function.
+      return "function";
+    }
+    case "runtimeObject": {
+      // An `Error` instance is a runtime object carrying its constructor name, and its members are
+      // `Object.prototype`'s by inheritance. Which table answers for a missing member is the only
+      // thing that tells the two apart, so the error name has to be read here.
+      return runtimeObjectOwner(binding);
+    }
+    default: {
+      return numericOwnerOrUndefined(binding);
+    }
+  }
+}
+
+/**
+ * The owner for a receiver held in a `value` binding, which the string and number tiers both write.
+ *
+ * A boxed value carries its own kind, so the owner follows that rather than the binding: a
+ * `stringValue` is the string table's and a `numberValue` the number table's, and the same `value`
+ * binding can hold either depending on the initializer.
+ */
+function builtinOwnerOfValueExpression(value: JsIrValueExpression | undefined): BuiltinOwner | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  switch (value.kind) {
+    case "string": {
+      return "string";
+    }
+    case "regexCompile":
+    case "regexExec":
+    case "regexMatch": {
+      return "regexp";
+    }
+    case "number": {
+      return numberBindingOwner(value.value);
+    }
+    default: {
+      return undefined;
+    }
+  }
+}
+
+/** The number tier's business for a boxed number, or `undefined` for a literal, which has no owner. */
+function numberBindingOwner(value: JsIrNumberExpression): BuiltinOwner | undefined {
+  if (value.kind === "literal") {
+    return undefined;
+  }
+  return "number";
+}
+
+/** `Function.prototype` is the function table's; nothing else a `valueVariable` can hold is. */
+function valueVariableOwner(binding: Extract<JsIrBindingValue, { readonly kind: "valueVariable" }>): BuiltinOwner | undefined {
+  if (binding.valueType === "regex") {
+    return "regexp";
+  }
+  return undefined;
+}
+
+/** An `Error` instance is a runtime object that carries its constructor name; a plain one does not. */
+function runtimeObjectOwner(binding: Extract<JsIrBindingValue, { readonly kind: "runtimeObject" }>): BuiltinOwner | undefined {
+  if (binding.errorName === undefined) {
+    return "object";
+  }
+  return "error";
+}
+
+/** The number tier's business for the binding kinds it writes, or `undefined` for the rest. */
+function numericOwnerOrUndefined(binding: JsIrBindingValue): BuiltinOwner | undefined {
+  if (isNumericBinding(binding)) {
+    return "number";
+  }
+  return undefined;
 }
 
 /**

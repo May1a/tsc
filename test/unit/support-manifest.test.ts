@@ -4,14 +4,22 @@ import { describe, expect, test } from "vitest";
 import {
   arrayBuiltinSupport,
   builtinDisplay,
+  collectionBuiltinSupport,
+  dateBuiltinSupport,
+  errorBuiltinSupport,
+  functionBuiltinSupport,
+  iteratorBuiltinSupport,
+  jsonBuiltinSupport,
   mathBuiltinSupport,
   numberBuiltinSupport,
   numberGlobalBuiltinSupport,
   objectBuiltinSupport,
+  regexpBuiltinSupport,
   stringBuiltinSupport,
   supportManifest
 } from "../../src/compiler/ir/builtins/index.js";
-import { expectUnsupportedMessage } from "../integration/helpers.js";
+import { expectUnsupportedDiagnostic, expectUnsupportedMessage } from "../integration/helpers.js";
+import { oracleFixtures } from "../integration/oracle.js";
 
 /**
  * The support manifest is what the compiler says it supports, derived from the support tables so
@@ -40,7 +48,7 @@ function fixtureFamily(entry: { readonly owner: string; readonly name: string; r
   return `${entry.owner}-runtime-${entry.fixture ?? kebab(entry.name)}`;
 }
 
-const { builtins } = supportManifest();
+const { builtins, forms } = supportManifest();
 
 describe("support manifest", () => {
   test("derives one entry per declared builtin, keyed by its id", () => {
@@ -50,7 +58,14 @@ describe("support manifest", () => {
       stringBuiltinSupport,
       numberBuiltinSupport,
       numberGlobalBuiltinSupport,
-      mathBuiltinSupport
+      mathBuiltinSupport,
+      collectionBuiltinSupport,
+      jsonBuiltinSupport,
+      regexpBuiltinSupport,
+      dateBuiltinSupport,
+      functionBuiltinSupport,
+      errorBuiltinSupport,
+      iteratorBuiltinSupport
     ] as const;
     const declared = tables.reduce((total, table) => total + Object.keys(table).length, 0);
     expect(builtins.length).toBe(declared);
@@ -59,7 +74,20 @@ describe("support manifest", () => {
 
   test("lists every owner the tables cover", () => {
     const owners = [...new Set(builtins.map((entry) => entry.owner))].toSorted();
-    expect(owners).toEqual(["array", "math", "number", "object", "string"]);
+    expect(owners).toEqual([
+      "array",
+      "collection",
+      "date",
+      "error",
+      "function",
+      "iterator",
+      "json",
+      "math",
+      "number",
+      "object",
+      "regexp",
+      "string"
+    ]);
   });
 
   test("names every entry with the owner it belongs to", () => {
@@ -69,6 +97,27 @@ describe("support manifest", () => {
     for (const entry of builtins) {
       expect(entry.id.startsWith(`${entry.owner}.`)).toBe(true);
     }
+  });
+
+  test("every supported builtin added with a table is compared against Node", () => {
+    // The manifest claiming a builtin works is a claim about output, so the evidence has to be an
+    // output comparison. `oracleFixtures` is that list, and it moved into `oracle.ts` for this
+    // assertion to be possible at all.
+    //
+    // This covers the owners whose tables carry the entries added after the array table, and only
+    // those. Most of the older fixtures are deliberately not Node-equivalent — `array-runtime-
+    // find-index.ts` calls `findIndex()` with no callback, which throws in Node, and exists to pin a
+    // refusal rather than a result — so demanding oracle coverage for every entry would be asking
+    // for a match the compiler does not claim. Those owners' fixtures are checked by the tests that
+    // assert them, and an entry that is genuinely divergent is a `"stubbed"` entry with the
+    // divergence written down rather than a `"supported"` one.
+    const ownersWithNodeCheckedFixtures = new Set(["collection", "json", "regexp", "error", "iterator"]);
+    const missing = builtins
+      .filter((entry) => entry.state === "supported")
+      .filter((entry) => ownersWithNodeCheckedFixtures.has(entry.owner))
+      .filter((entry) => !oracleFixtures.includes(`${fixtureFamily(entry)}.ts`))
+      .map((entry) => entry.id);
+    expect(missing).toEqual([]);
   });
 
   test("every supported builtin has a fixture that runs", () => {
@@ -120,4 +169,70 @@ describe("planned builtins", () => {
     const fixture = `builtin-planned-${entry.owner}-${stem}.ts`;
     await expectUnsupportedMessage(fixture, `${builtinDisplay(entry)} is a known builtin`);
   }, 60_000);
+});
+
+describe("erasure forms", () => {
+  const admitted = forms.filter((form) => form.state === "admitted");
+  const planned = forms.filter((form) => form.state === "planned");
+
+  test("every one has a unique id and a syntax to search for", () => {
+    // The id is what a diagnostic would quote and what a fixture is keyed on, so a duplicate would
+    // let one form's fixture stand in for another's.
+    expect(new Set(forms.map((form) => form.id)).size).toBe(forms.length);
+    for (const form of forms) {
+      expect(form.syntax, `${form.id} states no syntax`).toBeDefined();
+    }
+  });
+
+  test("there is at least one of each, or a state is dead weight", () => {
+    expect(admitted.length).toBeGreaterThan(0);
+    expect(planned.length).toBeGreaterThan(0);
+  });
+
+  test("every planned form says why, and admits something specific", () => {
+    // "Not implemented" is what the compiler already says everywhere; the value of the list is a
+    // reason that names the shape and where the work is.
+    for (const form of planned) {
+      expect(form.reason, `${form.id} is planned without a reason`).toBeDefined();
+      expect(form.reason).not.toMatch(/^not (yet )?implemented$/i);
+    }
+  });
+
+  /**
+   * The forms the Node oracle cannot check, because Node cannot run the fixture at all.
+   *
+   * `accessor` is a stage-3 proposal keyword and Node 22's type stripper rejects it with a
+   * `SyntaxError` before executing anything, so there is no Node output to compare. Its native
+   * output is asserted in `core.test.ts` instead. The set is stated here rather than inferred from a
+   * filename so that adding an admitted form cannot silently skip both checks.
+   */
+  const notRunnableUnderNode = new Set(["accessor-keyword"]);
+
+  test.each(admitted.map((form) => [form.id, form] as const))(
+    "%s is checked somewhere real, not merely present as a file",
+    (_id, form) => {
+      // Existence is not evidence. Either the oracle compares the fixture's native output with
+      // Node's, or Node cannot run it and another test asserts the value — and the manifest still
+      // says the form works.
+      const fixture = `form-admitted-${form.id}.ts`;
+      expect(fixtureNames.has(fixture), `expected ${fixture} to exist`).toBe(true);
+      if (notRunnableUnderNode.has(form.id)) {
+        expect(oracleFixtures, `${fixture} should not be in the oracle: Node cannot parse it`).not.toContain(fixture);
+        return;
+      }
+      expect(oracleFixtures, `${fixture} is not compared against Node`).toContain(fixture);
+    },
+    60_000
+  );
+
+  test.each(planned.map((form) => [form.id, form] as const))(
+    "%s has a fixture the compiler refuses today",
+    async (_id, form) => {
+      // The refusal is asserted as *a* TSCN1002 and not as the reason above: the reason says what
+      // the work is, and today's message is the generic one. Pinning the generic message would make
+      // the test fail the moment the diagnostic improves, which is the opposite of what it is for.
+      await expectUnsupportedDiagnostic(`form-planned-${form.id}.ts`);
+    },
+    60_000
+  );
 });

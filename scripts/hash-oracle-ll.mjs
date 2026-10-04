@@ -9,8 +9,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const oracle = readFileSync(path.join(repoRoot, "test/integration/oracle.test.ts"), "utf8");
+// The fixture list moved to `oracle.ts` when it became shared between the oracle test and
+// `support-manifest.test.ts`; reading the test file here found nothing and printed an empty report,
+// which is the one failure mode a "byte-identical" check must not have.
+const oracle = readFileSync(path.join(repoRoot, "test/integration/oracle.ts"), "utf8");
 const fixtures = [...oracle.matchAll(/"([^"]+\.ts)"/g)].map((match) => match[1]);
+if (fixtures.length === 0) {
+  process.stderr.write("no fixtures found: the hash report would be empty, which proves nothing\n");
+  process.exit(1);
+}
 const cli = path.join(repoRoot, "dist/cli/main.js");
 
 const hashes = [];

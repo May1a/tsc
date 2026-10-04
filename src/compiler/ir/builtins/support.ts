@@ -56,6 +56,31 @@ export type BuiltinArity = number | { readonly from: number; readonly to: number
 /** The manifest: every builtin the compiler knows about, with the state it is in. */
 export interface SupportManifest {
   readonly builtins: readonly BuiltinEntry[];
+  readonly forms: readonly TypeScriptForm[];
+}
+
+/**
+ * One TypeScript form the compiler has to answer for, and whether it admits it.
+ *
+ * A builtin entry says what happens to `x.at(0)`. It cannot say anything about `new Date(0)` or
+ * `satisfies T`, because those are erased before there is a receiver to dispatch on: the failure
+ * happens at a `const` declaration, where no table can be consulted and the diagnostic names no
+ * feature at all. The manifest needs a second half for those, or "what does tscn support" stays a
+ * question about members alone.
+ */
+export interface TypeScriptForm {
+  /** The form as it is written in a diagnostic, so the user can search for it. */
+  readonly form: string;
+  readonly id: string;
+  /** `"admitted"` compiles and agrees with Node; `"planned"` does not compile yet. */
+  readonly state: "admitted" | "planned";
+  /** The syntax the form is written with, for a test that has to find the fixture. */
+  readonly syntax?: string;
+  /**
+   * Why it is not admitted. Generated into the diagnostic when the compiler can recognize the form
+   * well enough to say so.
+   */
+  readonly reason?: string;
 }
 
 /** One builtin the compiler knows about. */
@@ -77,6 +102,12 @@ export interface BuiltinEntry<Owner extends BuiltinOwner = BuiltinOwner> {
    * what the user is told.
    */
   readonly reason?: string;
+  /**
+   * The name to show for the owner, when the table's `owner` is a bucket rather than the object the
+   * member lives on. `collection` holds both `Map` and `Set`, and a diagnostic reading
+   * `Collection.prototype.get` would name something that does not exist.
+   */
+  readonly ownerLabel?: string;
   /**
    * The stem of the fixture that covers this entry, without the `.ts`. The convention is
    * `<owner>-runtime-<stem>`, but a name that is an acronym or already separated (`EPSILON`,
@@ -147,7 +178,7 @@ export function builtinEntries<Owner extends BuiltinOwner, Name extends string>(
 
 /** Renders an entry as the source-level expression a user would have written for it. */
 export function builtinDisplay(entry: BuiltinEntry): string {
-  const owner = capitalize(entry.owner);
+  const owner = capitalize(entry.ownerLabel ?? entry.owner);
   if (entry.placement === "global") {
     return entry.name;
   }

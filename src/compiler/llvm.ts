@@ -1732,6 +1732,37 @@ function stringLengthPointerName(name: string): string {
   return `%${name}.len.addr`;
 }
 
+/**
+ * The slot a loop keeps its current item in.
+ *
+ * A loop item's binding key is the source identifier — the body refers to it by that name — but the
+ * slot it lives in cannot be, because a function may hold two loops over `value` and both would
+ * allocate `%value.addr`. clang then rejects the module with `multiple definition of local value named
+ * 'value.addr'`, so the program does not build at all. The binding carries the slot name in its `name`
+ * field, which is what the resolvers below read; the key stays the identifier so the body still
+ * resolves.
+ */
+function loopItemSlotName(itemName: string, loopIndex: number): string {
+  return `${itemName}.loop.${loopIndex}`;
+}
+
+/**
+ * The slot a binding lives in.
+ *
+ * Every kind whose slot is allocated from its `name` resolves through here rather than through the
+ * identifier the expression names. The two are the same for a plain declaration, which is why this
+ * was not needed until a loop could bind one identifier to two slots.
+ */
+function bindingSlotName(name: string, binding: JsIrBindingValue | undefined): string {
+  // Only these three name a slot directly. `number` carries its slot inside `value`, `value` carries
+  // no slot at all, and the rest either name one (`array`, `runtimeObject`, ...) or have no slot to
+  // name. Reading `binding.name` off the union would need a case per kind to say the same thing.
+  if (binding?.kind === "stringVariable" || binding?.kind === "runtimeArray" || binding?.kind === "runtimeObject" || binding?.kind === "runtimeMap" || binding?.kind === "runtimeSet" || binding?.kind === "runtimeIterator" || binding?.kind === "valueVariable") {
+    return binding.name;
+  }
+  return name;
+}
+
 function emitLetNumberOperation(
   operation: Extract<JsIrOperation, { readonly kind: "letNumber" }>,
   context: EmitContext
@@ -5587,12 +5618,13 @@ function emitForOperation(operation: Extract<JsIrOperation, { readonly kind: "fo
 function emitForOfArrayOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfArray" }>, context: EmitContext): string[] {
   const { loopIndex } = context;
   context.loopIndex += 1;
+  const itemSlot = loopItemSlotName(operation.itemName, loopIndex);
   const condLabel = `for.of.cond.${loopIndex}`;
   const bodyLabel = `for.of.body.${loopIndex}`;
   const stepLabel = `for.of.step.${loopIndex}`;
   const endLabel = `for.of.end.${loopIndex}`;
   const indexPointer = `%for.of.index.${loopIndex}.addr`;
-  const itemPointer = variablePointerName(operation.itemName);
+  const itemPointer = variablePointerName(itemSlot);
   const bodyBindings = new Map(context.bindings);
   bodyBindings.set(operation.itemName, { kind: "number", value: { kind: "variable", name: itemPointer } });
   const previousBindings = new Map(context.bindings);
@@ -5755,14 +5787,13 @@ function emitForOfStringOperation(operation: Extract<JsIrOperation, { readonly k
 }
 
 function emitForOfSetOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfSet" }>, context: EmitContext): string[] {
-  const itemPointer = variablePointerName(operation.itemName);
-  return emitForOfCollectionValueOperation(operation.setName, operation.itemName, itemPointer, "i64", operation.body, context, (entryPointer) => {
+  return emitForOfCollectionValueOperation(operation.setName, operation.itemName, "i64", operation.body, context, (entryPointer, itemPointer, itemSlot) => {
     const valueSlot = `%for.of.collection.value.slot.${context.objectIndex}`;
     const value = `%for.of.collection.value.${context.objectIndex}`;
     context.objectIndex += 1;
     return {
       lines: [`  ${valueSlot} = getelementptr i8, ptr ${entryPointer}, i64 8`, `  ${value} = load i64, ptr ${valueSlot}`, `  store i64 ${value}, ptr ${itemPointer}`],
-      binding: { kind: "valueVariable", name: operation.itemName }
+      binding: { kind: "valueVariable", name: itemSlot }
     };
   });
 }
@@ -5771,11 +5802,12 @@ function emitForOfSetOperation(operation: Extract<JsIrOperation, { readonly kind
 function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfProtocol" }>, context: EmitContext): string[] {
   const { loopIndex } = context;
   context.loopIndex += 1;
+  const itemSlot = loopItemSlotName(operation.itemName, loopIndex);
   const condLabel = `for.of.proto.cond.${loopIndex}`;
   const bodyLabel = `for.of.proto.body.${loopIndex}`;
   const stepLabel = `for.of.proto.step.${loopIndex}`;
   const endLabel = `for.of.proto.end.${loopIndex}`;
-  const itemPointer = variablePointerName(operation.itemName);
+  const itemPointer = variablePointerName(itemSlot);
   const iteratorSlot = `%for.of.proto.iter.${loopIndex}.addr`;
 
 
@@ -5785,7 +5817,7 @@ function emitForOfProtocolOperation(operation: Extract<JsIrOperation, { readonly
   const getIterator = emitGeneratedJsCall("getIteratorValue", [`i64 ${iterable.value}`, `i64 ${notIterableMessage}`], context);
 
   const bodyBindings = new Map(context.bindings);
-  bodyBindings.set(operation.itemName, { kind: "valueVariable", name: operation.itemName });
+  bodyBindings.set(operation.itemName, { kind: "valueVariable", name: itemSlot });
   const previousBindings = new Map(context.bindings);
   context.bindings.clear();
   for (const [name, value] of bodyBindings) {
@@ -6076,8 +6108,7 @@ function emitArrayDestructureProtocolOperation(
 }
 
 function emitForOfMapOperation(operation: Extract<JsIrOperation, { readonly kind: "forOfMap" }>, context: EmitContext): string[] {
-  const itemPointer = variablePointerName(operation.itemName);
-  return emitForOfCollectionValueOperation(operation.mapName, operation.itemName, itemPointer, "ptr", operation.body, context, (entryPointer) => {
+  return emitForOfCollectionValueOperation(operation.mapName, operation.itemName, "ptr", operation.body, context, (entryPointer, itemPointer, itemSlot) => {
     const index = context.objectIndex;
     context.objectIndex += 1;
     const keySlot = `%for.of.map.key.slot.${index}`;
@@ -6096,7 +6127,7 @@ function emitForOfMapOperation(operation: Extract<JsIrOperation, { readonly kind
         `  call void @arraySet(ptr ${pair}, i64 1, i64 ${value})`,
         `  store ptr ${pair}, ptr ${itemPointer}`
       ],
-      binding: { kind: "runtimeArray", name: operation.itemName }
+      binding: { kind: "runtimeArray", name: itemSlot }
     };
   });
 }
@@ -6122,15 +6153,16 @@ function emitForInKeyIteration(
 ): string[] {
   const { loopIndex } = context;
   context.loopIndex += 1;
+  const itemSlot = loopItemSlotName(itemName, loopIndex);
   const condLabel = `for.in.cond.${loopIndex}`;
   const bodyLabel = `for.in.body.${loopIndex}`;
   const stepLabel = `for.in.step.${loopIndex}`;
   const endLabel = `for.in.end.${loopIndex}`;
   const indexPointer = `%for.in.index.${loopIndex}.addr`;
-  const itemPointer = variablePointerName(itemName);
-  const itemLengthPointer = stringLengthPointerName(itemName);
+  const itemPointer = variablePointerName(itemSlot);
+  const itemLengthPointer = stringLengthPointerName(itemSlot);
   const bodyBindings = new Map(context.bindings);
-  bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
+  bodyBindings.set(itemName, { kind: "stringVariable", name: itemSlot });
   const previousBindings = new Map(context.bindings);
   context.bindings.clear();
   for (const [name, value] of bodyBindings) {
@@ -6188,14 +6220,19 @@ function emitForInKeyIteration(
 function emitForOfCollectionValueOperation(
   collectionName: string,
   itemName: string,
-  itemPointer: string,
   itemPointerType: "i64" | "ptr",
   body: readonly JsIrOperation[],
   context: EmitContext,
-  emitItemStore: (entryPointer: string) => { readonly lines: readonly string[]; readonly binding: JsIrBindingValue }
+  emitItemStore: (
+    entryPointer: string,
+    itemPointer: string,
+    itemSlot: string
+  ) => { readonly lines: readonly string[]; readonly binding: JsIrBindingValue }
 ): string[] {
   const { loopIndex } = context;
   context.loopIndex += 1;
+  const itemSlot = loopItemSlotName(itemName, loopIndex);
+  const itemPointer = variablePointerName(itemSlot);
   const condLabel = `for.of.cond.${loopIndex}`;
   const checkLabel = `for.of.check.${loopIndex}`;
   const bodyLabel = `for.of.body.${loopIndex}`;
@@ -6215,7 +6252,7 @@ function emitForOfCollectionValueOperation(
   const entryPointer = `%for.of.collection.entry.${loopIndex}`;
   const active = `%for.of.collection.active.${loopIndex}`;
   const isActive = `%for.of.collection.is.active.${loopIndex}`;
-  const item = emitItemStore(entryPointer);
+  const item = emitItemStore(entryPointer, itemPointer, itemSlot);
   bodyBindings.set(itemName, item.binding);
   context.bindings.clear();
   for (const [name, value] of bodyBindings) {
@@ -7360,10 +7397,11 @@ function emitArrayElementPointer(
 }
 
 function emitRuntimeArrayPointer(arrayName: string, context: EmitContext): NumberValue {
+  const slotName = bindingSlotName(arrayName, context.bindings.get(arrayName));
   const index = context.arrayIndex;
   context.arrayIndex += 1;
   const value = `%arr.ptr.${index}`;
-  return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(arrayName)}`], value };
+  return { lines: [`  ${value} = load ptr, ptr ${variablePointerName(slotName)}`], value };
 }
 
 function emitRuntimeCollectionPointer(collectionName: string, context: EmitContext): NumberValue {
@@ -7375,7 +7413,8 @@ function emitRuntimeCollectionPointer(collectionName: string, context: EmitConte
 
 function emitRuntimeObjectPointer(objectName: string, context: EmitContext): NumberValue {
   const layout = context.objectLayouts.get(objectName);
-  const pointerName = layout?.runtimePointerName ?? variablePointerName(objectName);
+  const slotName = bindingSlotName(objectName, context.bindings.get(objectName));
+  const pointerName = layout?.runtimePointerName ?? variablePointerName(slotName);
   const index = context.objectIndex;
   context.objectIndex += 1;
   const value = `%obj.ptr.${index}`;
@@ -7507,10 +7546,11 @@ function emitStringExpression(expression: JsIrStringExpression, context: EmitCon
     context.stringIndex += 1;
     const name = `%str.${index}`;
     const length = `%str.len.${index}`;
+    const slotName = bindingSlotName(expression.name, context.bindings.get(expression.name));
     return {
       lines: [
-        `  ${name} = load ptr, ptr ${variablePointerName(expression.name)}`,
-        `  ${length} = load i64, ptr ${stringLengthPointerName(expression.name)}`
+        `  ${name} = load ptr, ptr ${variablePointerName(slotName)}`,
+        `  ${length} = load i64, ptr ${stringLengthPointerName(slotName)}`
       ],
       value: name,
       length

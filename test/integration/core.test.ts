@@ -997,3 +997,19 @@ describe("tscn call targets", () => {
     }
   });
 });
+
+describe("tscn erasure forms", () => {
+  test("lowers an accessor field to a readable value", async () => {
+    // Not in the Node oracle: Node 22's type stripper rejects the `accessor` keyword with a
+    // `SyntaxError` before running anything, so there is no Node output to compare against. The
+    // expected value is what the specification says the field reads back as, and the manifest test
+    // still asserts the form is admitted — this is the check that backs it.
+    const result = await expectSuccessfulCompile("form-admitted-accessor-keyword.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
