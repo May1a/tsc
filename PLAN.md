@@ -517,6 +517,27 @@ Measured, not guessed. Each cut below ends green on its own.
    is the same grouping step 6 already uses for the support tables, and for the same reason: the file
    is sorted by it.
 
+6. **The order of the remaining `llvm/` cuts is forced, and the reason is the recursion.** `done` for
+   the leaves. `emitValueExpression` and `emitOperations` are mutually recursive with the operation
+   table — every handler reaches back through them into the dispatch that called it. So a handler
+   *domain* cannot be cut first: an "arrays" module needing `emitValueExpression` would import
+   `llvm.ts` while `llvm.ts` imports it. `module.ts` is blocked the same way, since it needs
+   `emitOperation`.
+
+   What can be cut is the layer below the recursion, and that is what `values.ts`, `trace.ts`,
+   `completion.ts` and `names.ts` are. Measured, rather than assumed:
+
+   | module | lines | back-edges to `llvm.ts` |
+   | --- | --- | --- |
+   | `llvm/values.ts` | 17 | none |
+   | `llvm/names.ts` | 48 | none |
+   | `llvm/trace.ts` | 46 | none |
+   | `llvm/completion.ts` | 340 | none (needs `values.ts`, one-way) |
+
+   So the remaining sequence is: finish the leaves, lift the recursion out of `llvm.ts` into its own
+   module, and only then do the domains and `module.ts` have anywhere to land. Cutting a domain
+   before that produces a cycle, not a module.
+
 6. **Cut 6 is the class tier.** It is the largest remaining concept but it is *interleaved* with
    value-tier functions rather than contiguous, so its seams have to be drawn by hand. Do not infer
    them from the section banners: there is one banner and it does not bound the section.
