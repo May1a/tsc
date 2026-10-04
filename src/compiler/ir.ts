@@ -779,9 +779,8 @@ function classHeritageRefusal(heritageClauses: ts.NodeArray<ts.HeritageClause>):
   if (heritage.token !== ts.SyntaxKind.ExtendsKeyword) {
     return "Class `implements` clauses are not supported yet; only `extends` is lowered";
   }
-  const expression = heritage.types[0]?.expression;
-  if (expression !== undefined && ts.isIdentifier(expression)) {
-    return `\`extends ${expression.text}\` does not name a class declared in this module`;
+  if (heritage.types.length === 1 && ts.isIdentifier(heritage.types[0].expression)) {
+    return `\`extends ${heritage.types[0].expression.text}\` does not name a class declared in this module`;
   }
   return "`extends` must name a single class declared in this module";
 }
@@ -799,7 +798,7 @@ function resolveExtendedClassName(
     return undefined;
   }
   const [type] = heritage.types;
-  if (type === undefined || !ts.isIdentifier(type.expression)) {
+  if (!ts.isIdentifier(type.expression)) {
     return undefined;
   }
   const { text } = type.expression;
