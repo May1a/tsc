@@ -43,6 +43,13 @@ import type { CompilerDiagnostic } from "./diagnostics.js";
 import { type TraceMapV1, buildTraceMap, traceOperationId } from "./trace.js";
 import { defineStructuredRuntimeHelpers, runtimeIrText } from "./runtime-ir.js";
 import { jsValueAbi } from "./js-value-abi/index.js";
+import {
+  jsValueFalse,
+  jsValueNull,
+  jsValueTrue,
+  jsValueUndefined,
+  legacyJsValue
+} from "./llvm/values.js";
 import { type LegacyLlvmTraceMarker, type RenderedLlvmModule, createLlvmModule } from "./llvm-ir/index.js";
 
 
@@ -54,11 +61,6 @@ const firstPrintableAsciiByte = 32;
 const lastPrintableAsciiByte = 126;
 const hexadecimalRadix = 16;
 const noLines = 0;
-const legacyJsValue = jsValueAbi.forLegacyLlvm();
-const jsValueUndefined = legacyJsValue.immediate("undefined");
-const jsValueFalse = legacyJsValue.immediate("false");
-const jsValueTrue = legacyJsValue.immediate("true");
-const jsValueNull = legacyJsValue.immediate("null");
 const descriptorWritableFlag = 1;
 const descriptorEnumerableFlag = 2;
 const descriptorConfigurableFlag = 4;
