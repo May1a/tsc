@@ -414,6 +414,31 @@ Two smaller ones: `ts.isExpressionStatement` reads `node.kind` unconditionally, 
 constructor body has to be checked for `undefined` rather than passed; and the static generated
 name is `` `${className}$static$${methodName}` `` — one `$` before `static`, one after.
 
-**What is left.** Nine `throw`s remain, all at the seam into the value tier, which still returns
-`X | undefined`; they now carry a reason and `lowerStatements` still catches them. Removing that
-catch is the last piece, and it needs the value tier converted, not just the class tier.
+**What is left, and why it is its own piece.** Nine `throw`s remain, all at one seam: a class
+recognizer returns `unsupported`, and a value-tier recognizer that returns `X | undefined` swallows
+it. Removing them means the value tier carries reasons, and that is not a mechanical sweep:
+
+- `lowerValueExpression` has **126** call sites.
+- Converting `lowerConditionExpression` alone fans out to **28** further sites — the condition tier,
+  the assignment tier, `for` initializers, the statement dispatch. It is a multi-commit project on its
+  own, and doing it in one commit is the merge conflict the decomposition section warns about.
+
+Three ways of removing the seam without converting the value tier were built and measured:
+
+1. *Re-run the class recognizers from the diagnostic.* Does not fire. The class recognizers only know
+   what they think while the enclosing class scope is installed, which is during the attempt; by the
+   time a diagnostic is being built that scope has already unwound.
+2. *Ask the class recognizer from `lowerStatementList`, where a refusal already propagates as a
+   value.* Same problem: the refusal is produced at the inner statement, and re-asking it there sees
+   no class scope.
+3. *Re-derive the recognizer's conditions inside the diagnostic.* It fires, but it is a second
+   implementation of "is this receiver a class instance" and the two drift. It also produced a
+   *worse* diagnostic — it silently skipped a case and reported the blanket message instead.
+
+There is a behavioural trap in replacing the exception. The exception aborted the whole file, and
+that is load-bearing: a refused function body leaves its name unbound, so continuing past it makes
+every later call to that function a second diagnostic. Removing the throw without an equivalent abort
+turns one fact into a cascade. The replacement has to abort the file, or produce one diagnostic per
+statement and accept that a consequence reads as a new finding.
+
+So the value tier is the next multi-commit cut, not a follow-up line to this one.
