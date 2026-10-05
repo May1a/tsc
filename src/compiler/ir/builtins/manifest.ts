@@ -183,7 +183,8 @@ const declaredForms: readonly TypeScriptForm[] = [
     id: "object-literal-accessor",
     state: "planned",
     syntax: "{ get v(): number {} }",
-    reason: "the class tier has `lowerClassAccessor` and the object literal path does not"
+    reason:
+      "an accessor is a property descriptor, and the runtime has only `objectDefineDataProperty`, so an accessor would have to be simulated at each access site — which reads correctly through `o.v` and silently wrong through every dynamic read: object rest, spread, `Object.keys` and `JSON.stringify` all see a property that is not there. `obj-ptrn-rest-getter.js` in Test262 is exactly that case, and simulating it moves that test from rejected to compiled-and-wrong. Defining a real accessor property is runtime breadth, which this plan defers."
   },
   {
     form: "new.target",
