@@ -205,7 +205,8 @@ const declaredForms: readonly TypeScriptForm[] = [
     id: "new-target",
     state: "planned",
     syntax: "new.target",
-    reason: "needs a synthetic binding initialized from a runtime call"
+    reason:
+      "inside a constructor it is the constructor itself, and this compiler has no value for a class: `C.tag()` lowers because static member access is special-cased, but `const ref = C` is refused. Binding `new.target` needs a class as a boxed value, which is a runtime concept. In a plain function it is `undefined` unless the function was called with `new`, and this compiler has no way to call one that way."
   },
 
   // Batch 3, narrowing a shape the compiler accepts and lowers wrongly.

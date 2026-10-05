@@ -320,7 +320,15 @@ Each step ends green and is separately revertable.
    in the value tier — three in `lowerClassValueExpression` and one in
    `lowerInstanceReceiverValue`. The condition tier and the whole assignment and call-statement paths
    are converted. The file-level `try` in `lowerStatements` cannot go until
-   the last one does, and `lowerValueExpression` — 127 call sites — is what remains.]**
+   the last one does.]**
+
+   The value tier is one atomic change rather than a sequence, and it is worth saying so before someone
+   starts it. Converting `lowerValueExpression` alone produced **164 type errors across 144 lines and
+   about 60 functions** — the seven tiers hang off it (`lowerNumberExpression` 82 sites,
+   `lowerStringRuntimeExpression` 52), and they hang off each other. 72 of the 127 `lowerValueExpression`
+   call sites are the same mechanical shape (`const x = f(..); if (x === undefined) return undefined;`),
+   which is what makes it tractable at all; the rest are per-function judgements about whether a `return`
+   is an operation or a decline. The condition tier, by comparison, was 34 errors and one window.
 6. The builtin tables, one owner at a time, `array` first because it has the most entries.
    **[DONE — 12 owners under `src/compiler/ir/builtins/`.]**
 7. The manifest and `support-manifest.test.ts`. **[DONE]**
