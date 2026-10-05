@@ -492,6 +492,50 @@ Converting the value tier to `Produced` — so the reason travels in the return 
 is still the next multi-commit cut. `lowerValueExpression` reaches 203 functions transitively. The
 holder is the four sites' interim address, not the destination.
 
+**The value tier was attempted, and this is what it costs.** Measured, then abandoned at a known point:
+
+| | |
+| --- | --- |
+| transitive closure of `lowerValueExpression` | 264 declarations, 258 functions |
+| of those, returning `undefined` | 174 |
+| sites that are a *chain step* (`if (x.kind !== "notApplicable") return x;`) | 147 |
+| sites that are not | 57 |
+
+The closure is one strongly connected component, so there is no smaller subset to convert: the entry,
+its six direct recognisers and everything they reach are mutually recursive. The 174 is all of it or
+none of it.
+
+Most of the conversion is mechanical, and was done and then reverted rather than left half-applied.
+Rewriting the annotations was compiler-directed and total — 174 return types, 36 local annotations — and
+so were 463 guard rewrites and 235 payload wraps. Those four passes are the easy half and they compose;
+running them repeatedly converges, with nothing left that they can reach.
+
+**The residue is a judgement, and it is the interesting finding here.** There are 204 guards of the
+shape
+
+```ts
+if (x.kind !== "notApplicable") { return x; }
+```
+
+and the next line decides what the guard means, not the guard itself:
+
+- In a **chain step**, `notApplicable` means *try the next recogniser*, so the guard must stay
+  `!== "notApplicable"` — it returns for `lowered` and for `unsupported`, and falls through for neither.
+- At a **use site**, where the value is final, the guard has to become `!== "lowered"` so that `x`
+  narrows to the single `lowered` variant and `x.operation` exists. Changing it to `!== "notApplicable"`
+  there is the same edit and the opposite meaning: it would return `notApplicable` instead of continuing.
+
+147 of the 204 are the first kind and 57 are the second. Nothing in the text distinguishes them — a
+recogniser call within the next dozen lines is a heuristic, not a fact — and getting it wrong does not
+fail to compile, it silently changes which recogniser claims a shape. So this is the part that has to be
+decided per site by reading the surrounding chain, and it is why the cut is a sequence of reviewed
+commits rather than a codemod.
+
+What is left after the four mechanical passes is therefore about 596 diagnostics across four shapes:
+420 already guarded, 89 declaration-then-use, 66 assorted, 21 guard-then-use. The first group is
+mechanical *once the chain/use distinction has been made by a human*, and the mechanical passes will
+finish the rest immediately afterwards.
+
 ## Known gap: a function body referring to an outer object binding
 
 A function that reads a field of an outer *object* — an object literal, or a namespace, which is one —
