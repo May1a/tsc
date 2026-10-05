@@ -517,6 +517,49 @@ relies on for nothing.
 
 Measured, not guessed. Each cut below ends green on its own.
 
+**The recursion in `ir.ts` is measured now.** `scripts/ir-cut-graph.mjs` resolves the file with the
+compiler's own symbol resolution and prints the strongly connected components largest-first, so the two
+questions step 8 depends on are answered by measurement instead of argument. It says:
+
+| | |
+| --- | --- |
+| top-level declarations | 316, totalling 8,673 lines of declaration extent (the file is 8,884 non-blank: the difference is comments and the blank lines between declarations, which belong to no declaration) |
+| components | 131 |
+| root component | **185 declarations, 6,977 lines** |
+| declarations nothing else in the file uses | 26, totalling 63 lines |
+
+The tool is checked against modules known to be acyclic: `ir/lowered.ts` reports 12 declarations in 12
+components, `llvm/names.ts` 7 in 7, `builtins/manifest.ts` 10 in 10 — one component each, as it must be.
+`ir.ts` reporting 131 components for 316 declarations is therefore a real knot and not an artefact.
+
+Those 26 are almost entirely one-line constants (`CLASS_THIS_NAME`, `jsonMaxIndent`,
+`arrayCallbackArgumentCount`, the loop-depth and label trackers), and they are the only genuinely free
+cuts. Everything else is one knot: 185 declarations that reach each other, so no domain can be cut first
+and no file ordering fixes it. This is the situation `llvm.ts` was in, and it was resolved the same way.
+
+**Four entries, and the recursion moves onto a context.** Called from outside the root component:
+
+| entry | called by |
+| --- | --- |
+| `lowerStatement` | `lowerTopLevelStatements`, `lowerClassMethodBody`, `lowerClassConstructor` |
+| `lowerObjectMethodFunctionValue` | `lowerClassComputedMethodStore`, `lowerClassIteratorStore` |
+| `lowerTypedCallArguments` | `lowerClassConstructor` |
+| `lowerValueExpression` | `lowerClassComputedKeySlot`, `lowerClassMethodBody`, `lowerClassFieldInitializer` |
+
+So the cut before any domain can be cut is the one the plan already names for the emitter, applied to the
+lowerer: a `LoweringContext` holding these four, which every callee already reaches. Threading it is
+cheaper than it looks, because all 283 top-level declarations in the file are hoisted `function`
+declarations — there is not one closure — so `context.lowerValueExpression = lowerValueExpression` is a
+plain reference, and there is no `this` to rebind. Measured: 145 bare call sites of the four entries, in
+**90 distinct functions**, each of which gains one leading parameter.
+
+That is the whole of the load-bearing cut. After it, the root component's 185 declarations can be grouped
+by domain exactly as `llvm/` was — `statements`, `values`, `numbers`, `strings`, `calls`, `classes`,
+`objects` — with each group importing the context type instead of reaching back into one file. `class-info.ts`
+is at 835 non-blank lines and is over the cap on its own, so it needs the same treatment.
+
+
+
 1. **`builtins/owners.ts` — done** (`a78c663`). Which support table answers for a call target. It
    was one concept in three places and depends on nothing but TypeScript nodes and a bindings map.
    `ir.ts` is 350 lines shorter.
