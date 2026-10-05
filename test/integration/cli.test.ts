@@ -68,6 +68,32 @@ describe("tscn CLI", () => {
     }
   }, roadmapIntegrationTimeoutMs);
 
+  // The same capture gap reached clang instead of dying in the emitter, which is worse than being
+  // silent: a program that is correct TypeScript and correct JavaScript fails at link time, through a
+  // namespace — a form this project admits.
+  test("names a capture gap that reaches the linker rather than dying in the emitter", async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), "tscn-capture-"));
+    const run = await Effect.runPromise(
+      captureCommand("bun", [
+        "src/cli/main.ts",
+        "test/fixtures/defect-closure-over-namespace.ts",
+        "--out-dir",
+        outDir
+      ], { cwd: repoRoot }).pipe(Effect.provide(commandExecutorLayer))
+    );
+
+    try {
+      expect(run.status).not.toBe(0);
+      expect(run.stdout).toBe("");
+      expect(run.stderr, "a failed compile must say what it could not emit").not.toBe("");
+      // The diagnostic is a link failure rather than a complaint about the source, and it is what the
+      // user sees. Both fixtures record the same cause from the two sides the compiler can fail on.
+      expect(run.stderr).toContain("%Config.addr");
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  }, roadmapIntegrationTimeoutMs);
+
   test("runs emitted native executable when clang is available", async () => {
     const result = await expectSuccessfulCompile("hello.ts", { link: true });
 

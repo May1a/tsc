@@ -470,6 +470,27 @@ statement and accept that a consequence reads as a new finding.
 
 So the value tier is the next multi-commit cut, not a follow-up line to this one.
 
+## Known gap: a function body referring to an outer object binding
+
+A function that reads a field of an outer *object* — an object literal, or a namespace, which is one —
+resolves the reference as a frame slot rather than through the capture environment, and nothing allocated
+that slot inside the generated function. `lowerCapturedBindingValue` does record the capture, as an
+`objectRef`; the loss is in emission, where `emitReferenceValueExpression` turns an `objectRef` into
+`emitRuntimeObjectPointer`, which is a plain SSA name derived from the binding. The read then names a
+value that does not exist.
+
+It fails two different ways depending on the shape. A fixed-shape object reaches the emitter's
+unhandled-variant path, which is a defect; a runtime object — a namespace — reaches clang, which rejects
+the module and surfaces as a link failure. Both witnesses are fixtures:
+`defect-closure-over-object-literal.ts` and `defect-closure-over-namespace.ts`, each with a test in
+`cli.test.ts`.
+
+**A wrong reason was recorded here first, and is worth recording as such.** The first version blamed the
+emission order in `src/compiler/llvm/module.ts` — that `fnLines` is assembled before `mainLines` while both
+consume the same counters. Reordering was tried: it changes every `main.ll` and it does not fix this,
+because the layout was never the problem. That trade would have cost the byte-identity signal this project
+relies on for nothing.
+
 ## Step 8: cut order for `ir.ts`
 
 Measured, not guessed. Each cut below ends green on its own.
