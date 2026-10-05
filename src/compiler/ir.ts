@@ -2036,14 +2036,17 @@ function lowerForStatement(
   if (initializer === undefined) {
     return undefined;
   }
-  updateBindings(initializer, forBindings);
 
   const condition = lowerConditionExpression(statement.condition, forBindings);
   if (condition === undefined) {
     return undefined;
   }
 
-  const increment = lowerAssignmentStatement(statement.incrementor, forBindings);
+  // `i = i + 1` and `i++` are both incrementors, and the two lower through different recognizers: the
+  // second is an update expression, which the expression-statement tier already lowers to the same
+  // `assignNumber`. Only routing one of them makes the other look unsupported.
+  const increment = lowerAssignmentStatement(statement.incrementor, forBindings) ??
+    lowerUpdateExpressionStatement(statement.incrementor, forBindings);
   if (increment === undefined) {
     return undefined;
   }
@@ -2201,29 +2204,43 @@ function lowerForInStatement(
   return undefined;
 }
 
+/**
+ * The bindings a `for` initializer declares, in source order.
+ *
+ * The initializer is a declaration list, so it may declare more than one name, and every declaration is
+ * evaluated before the condition runs: `for (let i = 0, j = i + 1; ...)` needs `i` visible to `j`. The
+ * caller therefore folds each result into its binding map as it goes rather than after the fact.
+ *
+ * `undefined` means this initializer is not one the loop tier can represent — a `const`, a destructuring
+ * pattern, or a value that is not a number — and the caller declines the whole statement.
+ */
 function lowerForInitializer(
   initializer: ts.ForInitializer,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
-  if (!ts.isVariableDeclarationList(initializer) || initializer.declarations.length !== 1) {
+  bindings: Map<string, JsIrBindingValue>
+): readonly JsIrOperation[] | undefined {
+  if (!ts.isVariableDeclarationList(initializer) || (initializer.flags & ts.NodeFlags.Const) !== 0) {
     return undefined;
   }
 
-  const [declaration] = initializer.declarations;
-  if (!ts.isIdentifier(declaration.name) || !declaration.initializer || (initializer.flags & ts.NodeFlags.Const) !== 0) {
-    return undefined;
+  const declarations: JsIrOperation[] = [];
+  for (const declaration of initializer.declarations) {
+    if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+      return undefined;
+    }
+    const value = lowerNumberExpression(declaration.initializer, bindings);
+    if (value === undefined) {
+      return undefined;
+    }
+    const operation: JsIrOperation = {
+      kind: "letNumber",
+      name: declaration.name.text,
+      value
+    };
+    declarations.push(operation);
+    updateBindings(operation, bindings);
   }
 
-  const value = lowerNumberExpression(declaration.initializer, bindings);
-  if (value === undefined) {
-    return undefined;
-  }
-
-  return {
-    kind: "letNumber",
-    name: declaration.name.text,
-    value
-  };
+  return declarations;
 }
 
 function lowerWhileStatement(

@@ -588,7 +588,12 @@ export type JsIrOperationNode =
     }
   | {
       readonly kind: "for";
-      readonly initializer: JsIrOperation;
+      /**
+       * The `for` initializer's declarations, in source order. A list because the initializer is a
+       * declaration list: `for (let i = 0, j = 1;;)` declares two bindings, and dropping all but the
+       * first would change which names the condition and body can see.
+       */
+      readonly initializer: readonly JsIrOperation[];
       readonly condition: JsIrCondition;
       readonly increment: JsIrOperation;
       readonly body: readonly JsIrOperation[];
@@ -808,7 +813,7 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
       return operation.body;
     }
     case "for": {
-      return [operation.initializer, ...operation.body, operation.increment];
+      return [...operation.initializer, ...operation.body, operation.increment];
     }
     default: {
       // The residual is exactly the leaf set. Indexing jsIrLeafOperationKinds is total by

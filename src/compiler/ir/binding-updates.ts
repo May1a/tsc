@@ -277,7 +277,7 @@ export function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObject
   if (operation.kind === "for") {
     return {
       ...operation,
-      initializer: markRuntimeObjectShadow(operation.initializer, shadowedObjects),
+      initializer: operation.initializer.map((declaration) => markRuntimeObjectShadow(declaration, shadowedObjects)),
       body: markRuntimeObjectShadows(operation.body),
       increment: markRuntimeObjectShadow(operation.increment, shadowedObjects)
     };
@@ -407,7 +407,9 @@ export function collectOperationValueExpressions(operation: JsIrOperation, names
     }
   }
   if (operation.kind === "for") {
-    collectRuntimeShadowObjectNames(operation.initializer, names);
+    for (const declaration of operation.initializer) {
+      collectRuntimeShadowObjectNames(declaration, names);
+    }
     for (const nested of operation.body) {
       collectRuntimeShadowObjectNames(nested, names);
     }

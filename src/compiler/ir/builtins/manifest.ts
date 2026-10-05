@@ -179,9 +179,8 @@ const declaredForms: readonly TypeScriptForm[] = [
   {
     form: "comma declarators in a for initializer",
     id: "for-comma-declarators",
-    state: "planned",
-    syntax: "for (let i = 0, j = 1;;)",
-    reason: "`lowerForInitializer` handles one declarator and the rest are silently dropped"
+    state: "admitted",
+    syntax: "for (let i = 0, j = 1;;)"
   },
   {
     form: "get or set accessor in an object literal",

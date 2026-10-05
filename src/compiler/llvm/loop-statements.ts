@@ -84,7 +84,7 @@ export function emitForOperation(operation: Extract<JsIrOperation, { readonly ki
   const bodyLabel = `for.body.${loopIndex}`;
   const stepLabel = `for.step.${loopIndex}`;
   const endLabel = `for.end.${loopIndex}`;
-  const initializerLines = context.emitOperations([operation.initializer]);
+  const initializerLines = context.emitOperations(operation.initializer);
   const emittedCondition = context.emitCondition(operation.condition);
   context.loopLabels.push({ breakLabel: endLabel, continueLabel: stepLabel , cleanupDepth: context.cleanupStack.length });
   const bodyLines = context.emitOperations(operation.body);
