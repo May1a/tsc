@@ -134,14 +134,14 @@ import {
   unlowerableCallee,
 } from "./ir/builtins/index.js";
 import { unsupportedStatementMessage } from "./ir/diagnostics.js";
-import { type JsIrOperation, visitJsIrOperations } from "./ir/types.js";
+import type { JsIrOperation } from "./ir/types.js";
+import { visitJsIrOperations } from "./ir/visit.js";
 export { aggregateBindingForOperation } from "./ir/binding-updates.js";
 export type { Lowered, Produced } from "./ir/lowered.js";
 export type * from "./ir/bindings.js";
 export type * from "./ir/expressions.js";
 export type * from "./ir/module.js";
-export * from "./ir/types.js";
-export * from "./ir/types.js";
+export type * from "./ir/types.js";
 
 // The TypeScript checker for the program currently being lowered. Set by
 // `lowerToJsIr` and read by the class-lowering path for static method dispatch.
@@ -149,6 +149,57 @@ export * from "./ir/types.js";
 
 // Name of the synthetic `this` parameter threaded through constructors/methods.
 const CLASS_THIS_NAME = "this";
+
+/**
+ * The labels of the loops this lowering is inside, outermost first.
+ *
+ * A label names a loop, not a place in the emitted code, so `break outer` is resolved here rather than
+ * carried to emission: the loop it named sits at a known depth in this list, and the `break` becomes an
+ * ordinary one that leaves that many loops. Searching from the innermost is what makes a repeated label
+ * name mean the inner loop, which is what JavaScript does.
+ */
+const enclosingLoopLabels: (string | undefined)[] = [];
+
+/**
+ * The label the next loop lowering should adopt, set by a `label: loop` statement.
+ *
+ * A loop takes the label and clears it, so `outer: for (..)` labels that loop and nothing else. It is a
+ * holder rather than a parameter because the loop recognizers are shared by every loop form and threading a
+ * label through each of their signatures would reach the whole statement tier.
+ */
+let pendingLoopLabel: string | undefined;
+
+/**
+ * Lower a loop's body with `pendingLoopLabel` adopted as the label of the loop being entered.
+ *
+ * The label is consumed either way, so a loop that declines leaves nothing behind for its next sibling.
+ */
+function withinLoopLabel<T>(lowerBody: () => T): T {
+  const label = pendingLoopLabel;
+  pendingLoopLabel = undefined;
+  // Every loop takes a frame, labelled or not: the depth a `break label` resolves to counts *loops*, so an
+  // unlabelled one between here and the target has to occupy a position or the count is short.
+  enclosingLoopLabels.push(label);
+  try {
+    return lowerBody();
+  } finally {
+    enclosingLoopLabels.pop();
+  }
+}
+
+/**
+ * How many loops lie between here and the one `label` names, or `undefined` when no enclosing loop has
+ * that label — which for a well-typed program means a labelled `break` that names nothing in scope.
+ */
+function loopDepthForLabel(label: string): number | undefined {
+  for (let index = enclosingLoopLabels.length - 1; index >= 0; index--) {
+    if (enclosingLoopLabels[index] === label) {
+      return enclosingLoopLabels.length - 1 - index;
+    }
+  }
+  return undefined;
+}
+
 
 // Registry of classes in the file being lowered, consulted by the deep value
 // lowerers to resolve `new C(...)`. Scoped per file by `lowerTopLevelStatements`.
@@ -1574,11 +1625,15 @@ function lowerStatementCore(
   }
 
   if (ts.isBreakStatement(statement)) {
-    return loweredOperation({ kind: "break" });
+    return loweredOperation(lowerLabelledJump("break", statement.label));
   }
 
   if (ts.isContinueStatement(statement)) {
-    return loweredOperation({ kind: "continue" });
+    return loweredOperation(lowerLabelledJump("continue", statement.label));
+  }
+
+  if (ts.isLabeledStatement(statement)) {
+    return lowerLabelledStatement(statement, bindings);
   }
 
   if (ts.isFunctionDeclaration(statement)) {
@@ -2096,7 +2151,7 @@ function lowerForStatement(
     return undefined;
   }
 
-  const body = bodyOperations(lowerStatementBody(statement.statement, forBindings));
+  const body = withinLoopLabel(() => bodyOperations(lowerStatementBody(statement.statement, forBindings)));
   if (body === undefined) {
     return undefined;
   }
@@ -2297,7 +2352,7 @@ function lowerWhileStatement(
     return undefined;
   }
 
-  const body = bodyOperations(lowerStatementBody(statement.statement, bindings));
+  const body = withinLoopLabel(() => bodyOperations(lowerStatementBody(statement.statement, bindings)));
   if (body === undefined) {
     return undefined;
   }
@@ -2318,7 +2373,7 @@ function lowerDoWhileStatement(
     return undefined;
   }
 
-  const body = bodyOperations(lowerStatementBody(statement.statement, bindings));
+  const body = withinLoopLabel(() => bodyOperations(lowerStatementBody(statement.statement, bindings)));
   if (body === undefined) {
     return undefined;
   }
@@ -2328,6 +2383,59 @@ function lowerDoWhileStatement(
     condition,
     body
   };
+}
+
+/**
+ * `break` or `continue`, with the depth a label resolved to.
+ *
+ * An unlabelled jump is the innermost loop, which is depth zero and therefore carries no field at all — so
+ * every existing jump lowers to the same operation it did before.
+ */
+function lowerLabelledJump(kind: "break" | "continue", label: ts.Identifier | undefined): JsIrOperation {
+  if (label === undefined) {
+    return { kind };
+  }
+  const targetDepth = loopDepthForLabel(label.text);
+  if (targetDepth === undefined) {
+    return { kind };
+  }
+  return { kind, targetDepth };
+}
+
+/**
+ * `label: statement`.
+ *
+ * A label on a loop names the loop, and `break label` / `continue label` then resolve to a depth — which is
+ * what makes the two indistinguishable from an unlabelled jump once the depth is known. A label on
+ * anything else names a statement that is not a jump target this lowering can reach: a `break` out of a
+ * labelled block has to leave a construct the IR has no frame for, so it is declined by name rather than
+ * compiled as a jump to the wrong loop.
+ */
+function lowerLabelledStatement(
+  statement: ts.LabeledStatement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (!ts.isIdentifier(statement.label)) {
+    return unsupportedIn("A statement label must be an identifier");
+  }
+  const body = statement.statement;
+  const isLoop =
+    ts.isForStatement(body) ||
+    ts.isForOfStatement(body) ||
+    ts.isForInStatement(body) ||
+    ts.isWhileStatement(body) ||
+    ts.isDoStatement(body);
+  if (!isLoop) {
+    return unsupportedIn(
+      `\`${statement.label.text}:\` must label a loop; a label on a block or conditional is not supported yet`
+    );
+  }
+  pendingLoopLabel = statement.label.text;
+  try {
+    return lowerStatement(body, bindings);
+  } finally {
+    pendingLoopLabel = undefined;
+  }
 }
 
 // Lowers a statement body that may be a block or a single unbraced statement

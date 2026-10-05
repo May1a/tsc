@@ -328,8 +328,8 @@ export function switchCompareLabel(loopIndex: number, clauseIndex: number | unde
   }
   return `switch.test.${loopIndex}.${clauseIndex}`;
 }
-export function emitBreakOperation(context: EmitContext): string[] {
-  const labels = context.loopLabels.at(-1);
+export function emitBreakOperation(operation: { readonly targetDepth?: number }, context: EmitContext): string[] {
+  const labels = context.loopLabels.at(-1 - (operation.targetDepth ?? 0));
   if (labels === undefined) {
     return [];
   }
@@ -343,14 +343,22 @@ export function emitBreakOperation(context: EmitContext): string[] {
   }
   return [`  br label %${labels.breakLabel}`];
 }
-export function emitContinueOperation(context: EmitContext): string[] {
+export function emitContinueOperation(operation: { readonly targetDepth?: number }, context: EmitContext): string[] {
   let labels: LoopLabels | undefined;
+  // Frames without a `continueLabel` — a `switch`, for one — are not loops a `continue` can target, so
+  // the depth counts only the frames that are. A `continue label` skips that many of them and takes the
+  // next one, which is the loop the label named.
+  let remaining = operation.targetDepth ?? 0;
   for (let index = context.loopLabels.length - 1; index >= 0; index--) {
     const candidate = context.loopLabels[index];
-    if (candidate.continueLabel !== undefined) {
+    if (candidate.continueLabel === undefined) {
+      continue;
+    }
+    if (remaining === 0) {
       labels = candidate;
       break;
     }
+    remaining -= 1;
   }
   if (labels === undefined) {
     return [];

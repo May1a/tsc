@@ -1,6 +1,7 @@
 import type { JsIrBindingValue, JsIrValueKind } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
-import { type JsIrOperation, jsIrOperationChildren } from "./types.js";
+import type { JsIrOperation } from "./types.js";
+import { jsIrOperationChildren } from "./visit.js";
 
 /**
  * The binding map: what name means what, and how that changes as operations are emitted.

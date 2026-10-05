@@ -165,12 +165,12 @@ const declaredForms: readonly TypeScriptForm[] = [
     id: "namespace-declaration",
     state: "admitted",
     syntax: "namespace N { }"
-  },  {
+  },
+  {
     form: "labeled statement",
     id: "labeled-statement",
-    state: "planned",
-    syntax: "outer: for (;;) { break outer; }",
-    reason: "`break` and `continue` carry a target depth, and a source label is not a depth"
+    state: "admitted",
+    syntax: "outer: for (;;) { break outer; }"
   },
   {
     form: "comma declarators in a for initializer",

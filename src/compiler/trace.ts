@@ -1,11 +1,6 @@
 import type { SourceSpan } from "./diagnostics.js";
-import {
-  type JsIrLoweringMode,
-  type JsIrModule,
-  type JsIrOperation,
-  type JsIrTraceOrigin,
-  visitJsIrOperations
-} from "./ir.js";
+import type { JsIrLoweringMode, JsIrModule, JsIrOperation, JsIrTraceOrigin } from "./ir.js";
+import { visitJsIrOperations } from "./ir/visit.js";
 
 export interface LlvmLineRange {
   readonly startLine: number;

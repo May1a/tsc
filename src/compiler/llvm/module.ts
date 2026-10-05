@@ -1,11 +1,5 @@
-import {
-  type JsIrBindingValue,
-  type JsIrFunctionObjectDefinition,
-  type JsIrModule,
-  type JsIrOperation,
-  aggregateBindingForOperation,
-  visitJsIrOperations
-} from "../ir.js";
+import { type JsIrBindingValue, type JsIrFunctionObjectDefinition, type JsIrModule, type JsIrOperation, aggregateBindingForOperation } from "../ir.js";
+import { visitJsIrOperations } from "../ir/visit.js";
 import type { EmitContext, FunctionDef } from "./context.js";
 
 import type { CompilerDiagnostic } from "../diagnostics.js";
