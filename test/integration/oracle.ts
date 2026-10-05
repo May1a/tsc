@@ -329,4 +329,5 @@ export const oracleFixtures: readonly string[] = [
   "form-admitted-abstract-member.ts",
   "form-admitted-declare-member.ts",
   "form-admitted-for-comma-declarators.ts",
+  "form-admitted-computed-method-name.ts",
 ] as const;

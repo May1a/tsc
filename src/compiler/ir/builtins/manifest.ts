@@ -179,6 +179,20 @@ const declaredForms: readonly TypeScriptForm[] = [
     syntax: "for (let i = 0, j = 1;;)"
   },
   {
+    form: "computed method name in an object literal",
+    id: "computed-method-name",
+    state: "admitted",
+    syntax: "{ [Symbol.iterator]() {} }"
+  },
+  {
+    form: "generator method in an object literal",
+    id: "object-literal-generator-method",
+    state: "planned",
+    syntax: "{ *[Symbol.iterator]() { yield 1; } }",
+    reason:
+      "a generator needs a suspendable frame the runtime has no representation for, and `for ... of` over a non-array needs the iterator protocol driven from the loop; both are runtime breadth this plan defers"
+  },
+  {
     form: "get or set accessor in an object literal",
     id: "object-literal-accessor",
     state: "planned",
@@ -200,13 +214,6 @@ const declaredForms: readonly TypeScriptForm[] = [
     id: "computed-object-method",
     state: "admitted",
     syntax: "{ [key]() {} }"
-  },
-  {
-    form: "iterator method in an object literal",
-    id: "object-literal-iterator-method",
-    state: "planned",
-    syntax: "{ [Symbol.iterator]() {} }",
-    reason: "the object path rejects any computed key with a message that names a numeric object, which is a different limitation and a wrong name"
   },
   {
     form: "Date constructor",
