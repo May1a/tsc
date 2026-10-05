@@ -68,7 +68,6 @@ import {
   resolveClassNames,
   resolveReceiverClass,
   runtimeParameters,
-  sourceSpan,
   traceOperationFromNode
 } from "./ir/class-info.js";
 import {
@@ -326,13 +325,6 @@ function classAbortReason(result: Lowered): string {
   return "A statement in a class member body could not be lowered";
 }
 
-class ClassLoweringUnsupportedError extends Error {
-  public constructor(reason?: string) {
-    super(reason ?? "class lowering unsupported");
-    this.name = "ClassLoweringUnsupportedError";
-  }
-}
-
 interface LoweredStatements {
   readonly operations: readonly JsIrOperation[];
   readonly diagnostics: readonly CompilerDiagnostic[];
@@ -349,23 +341,11 @@ function lowerStatements(
     return { operations: [], diagnostics: [inlineCppDiagnostic], loweringMode: "native" };
   }
 
-  try {
-    return lowerTopLevelStatements(sourceFile);
-  } catch (error) {
-    if (!(error instanceof ClassLoweringUnsupportedError)) {
-      throw error;
-    }
-    return {
-      operations: [],
-      diagnostics: [{
-        code: "TSCN1002",
-        category: "error",
-        message: error.message,
-        span: sourceSpan(sourceFile, 0)
-      }],
-      loweringMode: "native"
-    };
-  }
+  // No try/catch, and that is the point of the change: this used to wrap the whole file, so one class
+  // refusal threw away every operation lowered before it and reported a single diagnostic at position 0
+  // for a file that may contain hundreds of statements. A refusal now travels with the statement that
+  // caused it, through `classLoweringState.refusal`, and the statement tier reports it where it happened.
+  return lowerTopLevelStatements(sourceFile);
 }
 
 
@@ -473,8 +453,8 @@ function lowerTopLevelStatements(sourceFile: ts.SourceFile): LoweredStatements {
 // Classes compile to real LLVM code: instances are runtime objects, fields are
 // object properties, and the constructor is an ordinary function whose first
 // parameter is the explicit `this` instance value. Features that are not yet
-// handled throw `ClassLoweringUnsupportedError`, which `lowerStatements` reports
-// as a hard TSCN1002 compile error.
+// handled by recording a refusal in `classLoweringState`, which the statement
+// tier reports against the statement that caused it as a TSCN1002.
 
 function classConstructorName(className: string): string {
   return `${className}$constructor`;
@@ -1134,7 +1114,8 @@ function lowerClassValueExpression(
 
   const instance = lowerClassInstanceExpression(expression, bindings);
   if (instance.kind === "unsupported") {
-    throw new ClassLoweringUnsupportedError(instance.reason);
+    classLoweringState.refusal = instance.reason;
+    return undefined;
   }
   if (instance.kind === "lowered") {
     return instance.operation;
@@ -1143,7 +1124,8 @@ function lowerClassValueExpression(
   if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
     const methodCall = lowerClassMethodCall(expression, expression.expression, bindings);
     if (methodCall.kind === "unsupported") {
-      throw new ClassLoweringUnsupportedError(methodCall.reason);
+      classLoweringState.refusal = methodCall.reason;
+      return undefined;
     }
     if (methodCall.kind === "lowered") {
       return methodCall.operation;
@@ -1157,7 +1139,8 @@ function lowerClassValueExpression(
 
   const property = lowerClassPropertyValueAccess(expression, bindings);
   if (property.kind === "unsupported") {
-    throw new ClassLoweringUnsupportedError(property.reason);
+    classLoweringState.refusal = property.reason;
+    return undefined;
   }
   if (property.kind === "lowered") {
     return property.operation;
@@ -1440,7 +1423,8 @@ function lowerInstanceReceiverValue(
 ): JsIrValueExpression | undefined {
   const instance = lowerClassInstanceExpression(receiver, bindings);
   if (instance.kind === "unsupported") {
-    throw new ClassLoweringUnsupportedError(instance.reason);
+    classLoweringState.refusal = instance.reason;
+    return undefined;
   }
   if (instance.kind === "lowered") {
     return instance.operation;
@@ -2599,6 +2583,26 @@ function lowerBlockStatements(
   return lowerStatementList(block.statements, bindings);
 }
 
+/**
+ * The reason to report for a statement nothing lowered.
+ *
+ * A class-tier refusal is preferred over the message reconstructed from the syntax, and it is taken
+ * read-and-cleared: the class tier records one when it declines (see `classLoweringState.refusal`), and
+ * the statement that caused it is the one being reported here. Clearing it means a reason can never
+ * attach to a later statement, which is the failure mode of leaving it set.
+ */
+function takeRecordedClassRefusal(
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string {
+  const recorded = classLoweringState.refusal;
+  if (recorded === undefined) {
+    return unsupportedStatementMessage(statement, bindings);
+  }
+  classLoweringState.refusal = undefined;
+  return recorded;
+}
+
 function lowerStatementList(
   statements: readonly ts.Statement[],
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -2616,7 +2620,7 @@ function lowerStatementList(
       return result;
     }
     if (result.kind === "notApplicable") {
-      return { kind: "unsupported", reason: unsupportedStatementMessage(statement, blockBindings) };
+      return { kind: "unsupported", reason: takeRecordedClassRefusal(statement, blockBindings) };
     }
 
     operations.push(result.operation);

@@ -132,7 +132,26 @@ export const classLoweringState: {
   typeChecker: ts.TypeChecker | undefined;
   registry: Map<string, ClassInfo> | undefined;
   nextId: number;
-} = { typeChecker: undefined, registry: undefined, nextId: 1 };
+  /**
+   * The reason the class tier last refused, set when it declines rather than answering.
+   *
+   * The class tier returns `Produced<T>` — lowered or refused, with no `notApplicable`, because it is
+   * below every chain and nothing else will try. Its four callers in the value tier, though, are chain
+   * steps that return `JsIrValueExpression | undefined`, and `Lowered` has not reached that tier yet:
+   * `lowerValueExpression` reaches 203 functions transitively. So a refusal has nowhere to travel to,
+   * and it used to travel by throwing.
+   *
+   * It travels through here instead: the refusal is recorded, the chain declines, and the statement tier
+   * takes the recorded reason when it declines in turn. That is the same information the throw carried,
+   * without the file-level abort that came with it — the exception discarded every operation lowered so
+   * far, so one class refusal erased the whole file.
+   *
+   * Read-and-cleared by the statement tier, so a reason is attributed to the statement that caused it and
+   * never leaks into the next one. `Produced` everywhere it is possible is still the destination; this is
+   * the four sites that have not got there yet.
+   */
+  refusal: string | undefined;
+} = { typeChecker: undefined, registry: undefined, nextId: 1, refusal: undefined };
 
 /** `lowerClassDeclaration` with the registry rollback left to its caller. */
 /**

@@ -124,8 +124,9 @@ is where most of the diagnostic quality improvement comes from, and it will surf
 code silently dropped.
 
 Delete `lowerTopLevelStatements`'s `strict` parameter, `tryLowerStatementsWithClasses`, and
-`ClassLoweringUnsupportedError` once nothing throws. The class path uses the exception to abort a
-strict attempt; with `Lowered` it can just report `unsupported` and let the chain continue.
+`ClassLoweringUnsupportedError` once nothing throws. The class path used the exception to abort a
+strict attempt; with `Lowered` it can just report `unsupported` and let the chain continue. Done — see
+the step 5 status block for how the four remaining sites got there.
 
 ### 2. Build the builtin tables
 
@@ -314,13 +315,11 @@ Each step ends green and is separately revertable.
    **[DONE at the statement tier and, since, through the whole assignment path and the
    call-statement path.]**
 5. The double-lower removed. `strict`, `tryLowerStatementsWithClasses` and
-   `ClassLoweringUnsupportedError` go. **[PARTIALLY DONE. `strict`,
-   `tryLowerStatementsWithClasses` and `sourceFileContainsClass` are deleted and each file is
-   traversed once. Nine `throw new ClassLoweringUnsupportedError` sites existed; four remain, all
-   in the value tier — three in `lowerClassValueExpression` and one in
-   `lowerInstanceReceiverValue`. The condition tier and the whole assignment and call-statement paths
-   are converted. The file-level `try` in `lowerStatements` cannot go until
-   the last one does.]**
+   `ClassLoweringUnsupportedError` go. **[DONE. `strict`, `tryLowerStatementsWithClasses` and
+   `sourceFileContainsClass` are deleted and each file is traversed once. All nine
+   `throw new ClassLoweringUnsupportedError` sites are gone, the class and the file-level `try` in
+   `lowerStatements` with them. The condition tier and the whole assignment and call-statement paths
+   are converted.]**
 
    The value tier is one atomic change rather than a sequence, and it is worth saying so before someone
    starts it. Converting `lowerValueExpression` alone produced **164 type errors across 144 lines and
@@ -476,7 +475,22 @@ every later call to that function a second diagnostic. Removing the throw withou
 turns one fact into a cascade. The replacement has to abort the file, or produce one diagnostic per
 statement and accept that a consequence reads as a new finding.
 
-So the value tier is the next multi-commit cut, not a follow-up line to this one.
+**[RESOLVED: the second option.]** The throw is gone and lowering does not abort. The four sites
+recorded a reason in `classLoweringState.refusal` instead, and the statement tier took it read-and-cleared
+when it declined in turn — so the reason is the class tier's own words, it is reported against the
+statement that caused it rather than at position 0 for the file, and it cannot leak onto a later
+statement. Read-and-cleared is what makes the continuation safe in the one way it had to be: the
+recorded reason belongs to the refusal that just happened, not to the file.
+
+The cascade the trap warns about does still happen — a refused class leaves its constructor unbound, so
+a later `new A()` reads as a second finding. That was accepted, because it is exactly what a
+statement-tier refusal has already done since the statement tier became `Lowered`, and the alternative
+was a bespoke abort for one tier only: a second way for lowering to stop, which is the thing step 5 is
+removing. Consistency won; `class-refusal-reason-survives.ts` pins the behaviour.
+
+Converting the value tier to `Produced` — so the reason travels in the return value instead of a holder —
+is still the next multi-commit cut. `lowerValueExpression` reaches 203 functions transitively. The
+holder is the four sites' interim address, not the destination.
 
 ## Known gap: a function body referring to an outer object binding
 

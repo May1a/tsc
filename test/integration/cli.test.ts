@@ -44,6 +44,30 @@ describe("tscn CLI", () => {
   // from inside a function needs a layout that `@main` registers after the function definitions are
   // emitted, so the emitter cannot resolve it. The ordering is documented in the fixture; fixing it
   // reorders emission and changes every `main.ll`, so it is not done here.
+  // A class refusal used to reach the diagnostic by throwing, and the throw unwound the whole file: one
+  // class failure discarded every operation lowered before it and reported a single message at position 0.
+  // It now travels with the statement that caused it, and lowering continues — so the reason is reported
+  // *and* the statement after it is still looked at, which is what every other refusal here has done
+  // since the statement tier became `Lowered`.
+  test("a class refusal reports its own reason and lowering continues", async () => {
+    const result = await compileFixture("class-refusal-reason-survives.ts");
+
+    try {
+      expect(result.status).not.toBe(0);
+      // The reason names the class, not the syntax: it is the class tier's own words.
+      expect(result.stderr).toContain("error TSCN1002");
+      expect(result.stderr).toContain("`extends B` does not name a class declared in this module");
+      // Continuing past it means the consequence is reported too. That is the plan's stated alternative
+      // to aborting the file — one diagnostic per refused statement — and it is the behaviour a
+      // statement-tier refusal already had.
+      expect(result.stderr).toContain("Unrecognized call target: new A().m()");
+      // Reported against the statement that caused it, not at position 0 as the file-level catch did.
+      expect(result.stderr).toMatch(/class-refusal-reason-survives\.ts:6:1: error TSCN1002/);
+    } finally {
+      await result.cleanup();
+    }
+  }, roadmapIntegrationTimeoutMs);
+
   test("reports a compiler defect instead of exiting silently", async () => {
     const outDir = await mkdtemp(path.join(tmpdir(), "tscn-defect-"));
     const run = await Effect.runPromise(
