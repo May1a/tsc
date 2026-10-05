@@ -1598,7 +1598,7 @@ function lowerStatementCore(
   }
 
   if (ts.isIfStatement(statement)) {
-    return statementResult(lowerIfStatement(statement, bindings), statement, bindings);
+    return loweredStatementResult(lowerIfStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isSwitchStatement(statement)) {
@@ -1606,11 +1606,11 @@ function lowerStatementCore(
   }
 
   if (ts.isWhileStatement(statement)) {
-    return statementResult(lowerWhileStatement(statement, bindings), statement, bindings);
+    return loweredStatementResult(lowerWhileStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isForStatement(statement)) {
-    return statementResult(lowerForStatement(statement, bindings), statement, bindings);
+    return loweredStatementResult(lowerForStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isForOfStatement(statement)) {
@@ -1622,7 +1622,7 @@ function lowerStatementCore(
   }
 
   if (ts.isDoStatement(statement)) {
-    return statementResult(lowerDoWhileStatement(statement, bindings), statement, bindings);
+    return loweredStatementResult(lowerDoWhileStatement(statement, bindings), statement, bindings);
   }
 
   if (ts.isBreakStatement(statement)) {
@@ -2120,24 +2120,24 @@ function lowerDeleteExpression(
 function lowerForStatement(
   statement: ts.ForStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   if (
     statement.initializer === undefined ||
     statement.condition === undefined ||
     statement.incrementor === undefined
   ) {
-    return undefined;
+    return notApplicable;
   }
 
   const forBindings = new Map(bindings);
   const initializer = lowerForInitializer(statement.initializer, forBindings);
   if (initializer === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
   const condition = lowerConditionExpression(statement.condition, forBindings);
-  if (condition === undefined) {
-    return undefined;
+  if (condition.kind !== "lowered") {
+    return condition;
   }
 
   // `i = i + 1` and `i++` are both incrementors, and the two lower through different recognizers: the
@@ -2145,7 +2145,7 @@ function lowerForStatement(
   // `assignNumber`. Only routing one of them makes the other look unsupported.
   const incrementor = lowerAssignmentStatement(statement.incrementor, forBindings);
   if (incrementor.kind === "unsupported") {
-    return undefined;
+    return incrementor;
   }
   let increment: JsIrOperation | undefined;
   if (incrementor.kind === "lowered") {
@@ -2154,21 +2154,21 @@ function lowerForStatement(
     increment = lowerUpdateExpressionStatement(statement.incrementor, forBindings);
   }
   if (increment === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
   const body = withinLoopLabel(() => bodyOperations(lowerStatementBody(statement.statement, forBindings)));
   if (body === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
-  return {
+  return produced({
     kind: "for",
     initializer,
-    condition,
+    condition: condition.operation,
     increment,
     body
-  };
+  });
 }
 
 // eslint-disable-next-line complexity, max-statements -- for...of lowering dispatches specialized source kinds first, then the generic Symbol.iterator protocol.
@@ -2352,43 +2352,43 @@ function lowerForInitializer(
 function lowerWhileStatement(
   statement: ts.WhileStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const condition = lowerConditionExpression(statement.expression, bindings);
-  if (condition === undefined) {
-    return undefined;
+  if (condition.kind !== "lowered") {
+    return condition;
   }
 
   const body = withinLoopLabel(() => bodyOperations(lowerStatementBody(statement.statement, bindings)));
   if (body === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
-  return {
+  return produced({
     kind: "while",
-    condition,
+    condition: condition.operation,
     body
-  };
+  });
 }
 
 function lowerDoWhileStatement(
   statement: ts.DoStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const condition = lowerConditionExpression(statement.expression, bindings);
-  if (condition === undefined) {
-    return undefined;
+  if (condition.kind !== "lowered") {
+    return condition;
   }
 
   const body = withinLoopLabel(() => bodyOperations(lowerStatementBody(statement.statement, bindings)));
   if (body === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
-  return {
+  return produced({
     kind: "doWhile",
-    condition,
+    condition: condition.operation,
     body
-  };
+  });
 }
 
 /**
@@ -2564,37 +2564,32 @@ function lowerStringPrintExpression(
 function lowerIfStatement(
   statement: ts.IfStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const condition = lowerConditionExpression(statement.expression, bindings);
-  if (condition === undefined) {
-    return undefined;
+  if (condition.kind !== "lowered") {
+    return condition;
   }
 
   const thenOperations = bodyOperations(lowerStatementBody(statement.thenStatement, bindings));
   if (thenOperations === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
   if (!statement.elseStatement) {
-    return {
-      kind: "if",
-      condition,
-      thenOperations,
-      elseOperations: []
-    };
+    return produced({ kind: "if", condition: condition.operation, thenOperations, elseOperations: [] });
   }
 
   const elseOperations = bodyOperations(lowerStatementBody(statement.elseStatement, bindings));
   if (elseOperations === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
-  return {
+  return produced({
     kind: "if",
-    condition,
+    condition: condition.operation,
     thenOperations,
     elseOperations
-  };
+  });
 }
 
 function lowerBlockStatements(
@@ -4515,11 +4510,11 @@ function lowerVarRedeclaration(
     return { kind: "assignString", name, value };
   }
   if (binding?.kind === "booleanVariable") {
-    const value = lowerConditionExpression(initializer, bindings);
-    if (value === undefined) {
+    const booleanValue = lowerConditionExpression(initializer, bindings);
+    if (booleanValue.kind !== "lowered") {
       return undefined;
     }
-    return { kind: "assignBoolean", name, value };
+    return { kind: "assignBoolean", name, value: booleanValue.operation };
   }
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
     return undefined;
@@ -4559,11 +4554,11 @@ function lowerLetVariableBinding(
   }
 
   const booleanValue = lowerConditionExpression(initializer, bindings);
-  if (booleanValue !== undefined) {
+  if (booleanValue.kind === "lowered") {
     return {
       kind: "letBoolean",
       name,
-      value: booleanValue
+      value: booleanValue.operation
     };
   }
 
@@ -4662,11 +4657,11 @@ function lowerConstVariableBinding(
   }
 
   const booleanCondition = lowerConditionExpression(unwrappedInitializer, bindings);
-  if (booleanCondition !== undefined) {
+  if (booleanCondition.kind === "lowered") {
     return {
       kind: "constBooleanExpression",
       name,
-      value: booleanCondition
+      value: booleanCondition.operation
     };
   }
 
@@ -5959,11 +5954,11 @@ function lowerAssignmentStatement(
 
   if (binding?.kind === "booleanVariable") {
     const value = lowerConditionExpression(expression.right, bindings);
-    if (value === undefined) {
-      return notApplicable;
+    if (value.kind !== "lowered") {
+      return value;
     }
 
-    return produced({ kind: "assignBoolean", name: expression.left.text, value });
+    return produced({ kind: "assignBoolean", name: expression.left.text, value: value.operation });
   }
 
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
@@ -6401,13 +6396,13 @@ function lowerStringRuntimeExpression(
   const condition = lowerConditionExpression(expression.condition, bindings);
   const consequent = lowerStringRuntimeExpression(expression.whenTrue, bindings);
   const alternate = lowerStringRuntimeExpression(expression.whenFalse, bindings);
-  if (condition === undefined || consequent === undefined || alternate === undefined) {
+  if (condition.kind !== "lowered" || consequent === undefined || alternate === undefined) {
     return undefined;
   }
 
   return {
     kind: "ternary",
-    condition,
+    condition: condition.operation,
     consequent,
     alternate
   };
@@ -6761,14 +6756,14 @@ function lowerBooleanExpression(expression: ts.Expression, bindings: ReadonlyMap
 function lowerInstanceOfCondition(
   expression: ts.BinaryExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrCondition | undefined {
+): Lowered<JsIrCondition> {
   const right = unwrapTypeOnlyExpression(expression.right);
   if (ts.isIdentifier(right) && !bindings.has(right.text)) {
     const classInfo = classLoweringState.registry?.get(right.text);
     if (classInfo !== undefined) {
       const instance = lowerClassInstanceExpression(unwrapTypeOnlyExpression(expression.left), bindings);
       if (instance.kind === "unsupported") {
-        throw new ClassLoweringUnsupportedError(instance.reason);
+        return instance;
       }
       let value: JsIrValueExpression | undefined;
       if (instance.kind === "lowered") {
@@ -6777,14 +6772,18 @@ function lowerInstanceOfCondition(
         value = lowerValueExpression(unwrapTypeOnlyExpression(expression.left), bindings);
       }
       if (value !== undefined) {
-        return { kind: "classInstanceOf", value, prototypeName: classPrototypeName(classInfo.name) };
+        return produced({ kind: "classInstanceOf", value, prototypeName: classPrototypeName(classInfo.name) });
       }
     }
   }
   if (!ts.isIdentifier(right) || !errorConstructorNames.has(right.text) || bindings.has(right.text)) {
-    return undefined;
+    return notApplicable;
   }
-  return lowerErrorInstanceOfCondition(expression.left, right.text, bindings);
+  const errorCondition = lowerErrorInstanceOfCondition(expression.left, right.text, bindings);
+  if (errorCondition === undefined) {
+    return notApplicable;
+  }
+  return produced(errorCondition);
 }
 
 function lowerErrorInstanceOfCondition(
@@ -6828,7 +6827,7 @@ function errorInstanceMatches(errorName: string | undefined, constructorName: st
 function lowerConditionExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrCondition | undefined {
+): Lowered<JsIrCondition> {
   const unwrappedExpression = unwrapTypeOnlyExpression(expression);
   if (unwrappedExpression !== expression) {
     return lowerConditionExpression(unwrappedExpression, bindings);
@@ -6836,19 +6835,16 @@ function lowerConditionExpression(
 
   const regexTest = lowerRegexTestCondition(expression, bindings);
   if (regexTest !== undefined) {
-    return regexTest;
+    return produced(regexTest);
   }
 
   if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken) {
-    const condition = lowerConditionExpression(expression.operand, bindings);
-    if (condition === undefined) {
-      return undefined;
+    const operand = lowerConditionExpression(expression.operand, bindings);
+    if (operand.kind !== "lowered") {
+      return operand;
     }
 
-    return {
-      kind: "negate",
-      condition
-    };
+    return produced({ kind: "negate", condition: operand.operation });
   }
 
   if (ts.isBinaryExpression(expression)) {
@@ -6857,91 +6853,92 @@ function lowerConditionExpression(
     }
     const logicalCondition = lowerLogicalConditionExpression(expression, bindings);
     if (logicalCondition !== undefined) {
-      return logicalCondition;
+      return produced(logicalCondition);
     }
     const presenceCondition = lowerPresenceConditionExpression(expression, bindings);
     if (presenceCondition !== undefined) {
-      return presenceCondition;
+      return produced(presenceCondition);
     }
     const collectionIdentity = lowerRuntimeCollectionIdentityCondition(expression, bindings);
     if (collectionIdentity !== undefined) {
-      return collectionIdentity;
+      return produced(collectionIdentity);
     }
   }
 
   const hasOwnCondition = lowerHasOwnConditionExpression(expression, bindings);
   if (hasOwnCondition !== undefined) {
-    return hasOwnCondition;
+    return produced(hasOwnCondition);
   }
 
   const methodSugar = lowerObjectMethodSugarConditionExpression(expression, bindings);
   if (methodSugar !== undefined) {
-    return methodSugar;
+    return produced(methodSugar);
   }
 
   const isArray = lowerArrayIsArrayConditionExpression(expression, bindings);
   if (isArray !== undefined) {
-    return isArray;
+    return produced(isArray);
   }
 
   const everySome = lowerRuntimeArrayEverySomeConditionExpression(expression, bindings);
   if (everySome !== undefined) {
-    return everySome;
+    return produced(everySome);
   }
 
   const objectIsCondition = lowerObjectIsConditionExpression(expression, bindings);
   if (objectIsCondition !== undefined) {
-    return objectIsCondition;
+    return produced(objectIsCondition);
   }
 
   const objectStateCondition = lowerRuntimeObjectStateCondition(expression, bindings);
   if (objectStateCondition !== undefined) {
-    return objectStateCondition;
+    return produced(objectStateCondition);
   }
 
   const numberPredicate = lowerNumberPredicateCondition(expression, bindings);
   if (numberPredicate !== undefined) {
-    return numberPredicate;
+    return produced(numberPredicate);
   }
 
   const stringSearch = lowerRuntimeStringSearchCondition(expression, bindings);
   if (stringSearch !== undefined) {
-    return stringSearch;
+    return produced(stringSearch);
   }
 
   const collectionHas = lowerRuntimeCollectionHasCondition(expression, bindings);
   if (collectionHas !== undefined) {
-    return collectionHas;
+    return produced(collectionHas);
   }
 
   if (ts.isIdentifier(expression)) {
     const binding = bindings.get(expression.text);
     if (binding?.kind === "booleanExpression") {
-      return binding.value;
+      return produced(binding.value);
     }
     if (binding?.kind === "booleanVariable") {
-      return { kind: "booleanVariable", name: binding.name };
+      return produced({ kind: "booleanVariable", name: binding.name });
     }
   }
 
   const booleanValue = lowerBooleanExpression(expression, bindings);
   if (booleanValue !== undefined) {
-    return {
-      kind: "boolean",
-      value: booleanValue
-    };
+    return produced({ kind: "boolean", value: booleanValue });
   }
 
   const truthy = lowerTruthyConditionExpression(expression, bindings);
   if (truthy !== undefined) {
-    return truthy;
+    return produced(truthy);
   }
 
   if (!ts.isBinaryExpression(expression)) {
-    return undefined;
+    return notApplicable;
   }
 
-  return lowerComparisonConditionExpression(expression, bindings);
+  const comparison = lowerComparisonConditionExpression(expression, bindings);
+  if (comparison === undefined) {
+    return notApplicable;
+  }
+  return produced(comparison);
 }
 
 
@@ -7518,8 +7515,8 @@ function lowerValueExpression(
   }
 
   const booleanValue = lowerConditionExpression(expression, bindings);
-  if (booleanValue !== undefined) {
-    return { kind: "boolean", value: booleanValue };
+  if (booleanValue.kind === "lowered") {
+    return { kind: "boolean", value: booleanValue.operation };
   }
 
   if (ts.isCallExpression(expression) && !(ts.isIdentifier(expression.expression) && expression.expression.text === "print")) {
@@ -8433,10 +8430,10 @@ function lowerValueConditionalExpression(
   const condition = lowerConditionExpression(expression.condition, bindings);
   const consequent = lowerValueExpression(expression.whenTrue, bindings);
   const alternate = lowerValueExpression(expression.whenFalse, bindings);
-  if (condition === undefined || consequent === undefined || alternate === undefined) {
+  if (condition.kind !== "lowered" || consequent === undefined || alternate === undefined) {
     return undefined;
   }
-  return { kind: "ternary", condition, consequent, alternate };
+  return { kind: "ternary", condition: condition.operation, consequent, alternate };
 }
 
 function lowerValueCallExpression(
@@ -8890,15 +8887,15 @@ function lowerLogicalConditionExpression(
 
   const left = lowerConditionExpression(expression.left, bindings);
   const right = lowerConditionExpression(expression.right, bindings);
-  if (left === undefined || right === undefined) {
+  if (left.kind !== "lowered" || right.kind !== "lowered") {
     return undefined;
   }
 
   if (expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
-    return { kind: "and", left, right };
+    return { kind: "and", left: left.operation, right: right.operation };
   }
 
-  return { kind: "or", left, right };
+  return { kind: "or", left: left.operation, right: right.operation };
 }
 
 
@@ -9503,13 +9500,13 @@ function lowerNumberConditionalExpression(
   const condition = lowerConditionExpression(expression.condition, bindings);
   const consequent = lowerNumberExpression(expression.whenTrue, bindings);
   const alternate = lowerNumberExpression(expression.whenFalse, bindings);
-  if (condition === undefined || consequent === undefined || alternate === undefined) {
+  if (condition.kind !== "lowered" || consequent === undefined || alternate === undefined) {
     return undefined;
   }
 
   return {
     kind: "ternary",
-    condition,
+    condition: condition.operation,
     consequent,
     alternate
   };
@@ -9593,8 +9590,8 @@ function lowerNumberCoercionExpression(
     return { kind: "nan" };
   }
   const condition = lowerConditionExpression(expression, bindings);
-  if (condition?.kind === "boolean") {
-    if (condition.value) {
+  if (condition.kind === "lowered" && condition.operation.kind === "boolean") {
+    if (condition.operation.value) {
       return { kind: "literal", value: 1 };
     }
     return { kind: "literal", value: 0 };
