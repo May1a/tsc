@@ -206,7 +206,11 @@ describe("erasure forms", () => {
    * output is asserted in `core.test.ts` instead. The set is stated here rather than inferred from a
    * filename so that adding an admitted form cannot silently skip both checks.
    */
-  const notRunnableUnderNode = new Set(["accessor-keyword"]);
+  // Node 22's type stripper rejects both of these before running anything: `accessor` is not valid
+  // JavaScript, and a `namespace` declaration needs transformation rather than erasure. Each is asserted
+  // by its native value in `core.test.ts` instead, which is what backs the manifest's claim that the
+  // form works — a form here that nothing else checks would only be claiming its own existence.
+  const notRunnableUnderNode = new Set(["accessor-keyword", "namespace-declaration"]);
 
   test.each(admitted.map((form) => [form.id, form] as const))(
     "%s is checked somewhere real, not merely present as a file",

@@ -1553,6 +1553,13 @@ function lowerStatementCore(
     return lowerFunctionDeclaration(statement, bindings);
   }
 
+  // A `namespace` is a statement whose value is an object, and the object-literal tier already knows how
+  // to build one. Only the non-module kind reaches here: `declare module` is a `declare` declaration and
+  // `isNonExecutableDeclaration` has already dropped it.
+  if (ts.isModuleDeclaration(statement)) {
+    return lowerNamespaceDeclarationStatement(statement, bindings);
+  }
+
   if (ts.isReturnStatement(statement)) {
     return statementResult(lowerReturnStatement(statement, bindings), statement, bindings);
   }
@@ -3162,8 +3169,116 @@ function lowerRuntimeDataDescriptorMap(
 }
 
 // eslint-disable-next-line max-statements -- Method value lowering keeps parameter, this, and body setup together.
+/**
+ * A namespace lowered to the object its exported members describe.
+ *
+ * A `namespace` declares a name whose value is an object of its exports, which is the shape an object
+ * literal already produces, so the desugaring is that literal rather than a runtime namespace object.
+ * This is the plan's "an object literal" reading; the IIFE wrapper TypeScript emits is the half that has
+ * no representation here, and it is also the half that would let a non-exported declaration stay local.
+ */
+function lowerNamespaceValue(
+  declaration: ts.ModuleDeclaration,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<JsIrRuntimeObjectValue> {
+  const { name: declaredName, body } = declaration;
+  if (!ts.isIdentifier(declaredName)) {
+    return unsupportedIn("A namespace name must be a single identifier");
+  }
+  if (body === undefined || !ts.isModuleBlock(body)) {
+    return unsupportedIn(`\`namespace ${declaredName.text}\` must have a body`);
+  }
+  const fields: JsIrRuntimeObjectField[] = [];
+  for (const statement of body.statements) {
+    if (isNonExecutableDeclaration(statement)) {
+      continue;
+    }
+    const field = lowerNamespaceField(statement, bindings);
+    if (field.kind !== "lowered") {
+      return field;
+    }
+    fields.push(field.operation);
+  }
+  return produced({ fields });
+}
+
+/** One exported namespace member, as the field it contributes to the namespace object. */
+function lowerNamespaceField(
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<JsIrRuntimeObjectField> {
+  if (ts.isModuleDeclaration(statement)) {
+    // A nested namespace is an object *inside* the field, and a runtime object's field takes a value
+    // expression rather than a nested object. The inline form belongs to the fixed-shape object, which
+    // cannot hold a function member, so the two shapes do not combine yet.
+    return unsupportedIn("Nested namespaces are not supported yet; a namespace member must be a value or a function");
+  }
+  let exported = false;
+  if (ts.canHaveModifiers(statement)) {
+    exported = ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
+  }
+  if (!exported) {
+    // The closure that would keep a non-exported declaration local is the IIFE half of the desugaring
+    // this does not perform, so a namespace carrying one is declined rather than given an object that
+    // would be missing it at runtime.
+    return unsupportedIn("A namespace declaration that is not `export`ed is not supported yet");
+  }
+  if (ts.isFunctionDeclaration(statement)) {
+    const { name } = statement;
+    if (name === undefined || !ts.isIdentifier(name)) {
+      return unsupportedIn("An exported namespace function must be named");
+    }
+    const value = lowerObjectMethodFunctionValue(statement, bindings);
+    if (value === undefined) {
+      return unsupportedIn(`\`function ${name.text}\` is not a function value this build can lower`);
+    }
+    return produced({ kind: "field", key: { kind: "literal", value: name.text }, value });
+  }
+  if (!ts.isVariableStatement(statement) || statement.declarationList.declarations.length !== 1) {
+    return unsupportedIn("An exported namespace member must be a single `const`, `let`, `var` or `function` declaration");
+  }
+  const [declaration] = statement.declarationList.declarations;
+  const declaredName = declaration.name;
+  if (!ts.isIdentifier(declaredName) || declaration.initializer === undefined) {
+    return unsupportedIn("An exported namespace variable must be a single named declaration with an initializer");
+  }
+  const value = lowerValueExpression(declaration.initializer, bindings);
+  if (value === undefined) {
+    return unsupportedIn(`\`${declaredName.text}\` is not a value this build can evaluate`);
+  }
+  return produced({ kind: "field", key: { kind: "literal", value: declaredName.text }, value });
+}
+
+/**
+ * `namespace N { .. }` as the object-literal statement that binds `N`.
+ *
+ * The name is bound by the same operation an object literal's own name is bound by, so `N.member`
+ * resolves through exactly the binding it would for the equivalent literal.
+ */
+function lowerNamespaceDeclarationStatement(
+  statement: ts.ModuleDeclaration,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const value = lowerNamespaceValue(statement, bindings);
+  if (value.kind !== "lowered") {
+    return unsupportedIn(value.reason);
+  }
+  const { name } = statement;
+  if (!ts.isIdentifier(name)) {
+    return unsupportedIn("A namespace name must be a single identifier");
+  }
+  return loweredOperation({ kind: "runtimeObjectLiteral", name: name.text, value: value.operation });
+}
+
+/**
+ * The function value an object-literal member contributes.
+ *
+ * Takes a method or a function declaration because both describe a function body with a name, a
+ * parameter list and a body, which is everything read here — an object-literal method and an exported
+ * namespace function differ only in the syntax they are written in.
+ */
 function lowerObjectMethodFunctionValue(
-  method: ts.MethodDeclaration,
+  method: ts.MethodDeclaration | ts.FunctionDeclaration,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
   if (method.asteriskToken !== undefined || method.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true || method.body === undefined) {
@@ -3185,8 +3300,9 @@ function lowerObjectMethodFunctionValue(
     return undefined;
   }
   let displayName = "method";
-  if (ts.isIdentifier(method.name)) {
-    displayName = method.name.text;
+  const declaredName = method.name;
+  if (declaredName !== undefined && ts.isIdentifier(declaredName)) {
+    displayName = declaredName.text;
   }
   const codeName = `__tscn_fnobj_${displayName}_${nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   nextFunctionObjectId += 1;

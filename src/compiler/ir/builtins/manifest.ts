@@ -165,11 +165,9 @@ const declaredForms: readonly TypeScriptForm[] = [
   {
     form: "namespace declaration",
     id: "namespace-declaration",
-    state: "planned",
-    syntax: "namespace N { }",
-    reason: "needs an object literal plus a hoist, and the module tier refuses the declaration outright"
-  },
-  {
+    state: "admitted",
+    syntax: "namespace N { }"
+  },  {
     form: "labeled statement",
     id: "labeled-statement",
     state: "planned",

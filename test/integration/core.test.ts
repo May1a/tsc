@@ -1012,4 +1012,18 @@ describe("tscn erasure forms", () => {
       await result.cleanup();
     }
   });
+
+  test("lowers a namespace to the object of its exports", async () => {
+    // Not in the Node oracle for the same reason as `accessor`: Node's strip-only mode rejects a
+    // `namespace` declaration outright, so there is no Node output to compare against. The expected
+    // values are the ones an equivalent object literal produces under Node, which is exactly what the
+    // desugaring claims to be, and the manifest test still asserts the form is admitted.
+    const result = await expectSuccessfulCompile("form-admitted-namespace-declaration.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\ntext\n42\n3\n15\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
