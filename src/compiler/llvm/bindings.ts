@@ -1,7 +1,7 @@
 import type { JsIrOperation } from "../ir/types.js";
 import { emitNamedValueBinding } from "./conditions.js";
 import type { EmitContext, JsValue } from "./context.js";
-import { stringLengthPointerName, variablePointerName } from "./names.js";
+import { stringLengthPointerName, uniqueLocalName, variablePointerName } from "./names.js";
 import {
   emitRuntimeCollectionPointer,
   emitRuntimeObjectPointer
@@ -41,7 +41,7 @@ export function emitLetNumberOperation(
   context: EmitContext
 ): string[] {
   const result = context.emitNumberExpression(operation.value);
-  const pointer = variablePointerName(operation.name);
+  const pointer = uniqueLocalName(variablePointerName(operation.name), context);
   context.bindings.set(operation.name, { kind: "number", value: { kind: "variable", name: pointer } });
   return [...result.lines, `  ${pointer} = alloca double`, `  store double ${result.value}, ptr ${pointer}`];
 }
@@ -50,8 +50,8 @@ export function emitLetStringOperation(
   context: EmitContext
 ): string[] {
   const result = context.emitStringExpression(operation.value);
-  const pointer = variablePointerName(operation.name);
-  const lengthPointer = stringLengthPointerName(operation.name);
+  const pointer = uniqueLocalName(variablePointerName(operation.name), context);
+  const lengthPointer = uniqueLocalName(stringLengthPointerName(operation.name), context);
   context.bindings.set(operation.name, { kind: "stringVariable", name: operation.name });
   return [
     ...result.lines,

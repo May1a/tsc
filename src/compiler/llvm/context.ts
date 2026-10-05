@@ -90,6 +90,16 @@ export interface Emitter {
 
 export interface EmitContext extends Emitter {
   readonly bindings: Map<string, JsIrBindingValue>;
+  /**
+   * Local LLVM names already used in the function being emitted.
+   *
+   * LLVM requires local names to be unique within a function, and a slot is named after the binding it
+   * holds, so two declarations of one name in the same function — `for (let i = 0;;)` twice — collide.
+   * Reads resolve through the binding map, which is updated as declarations are emitted, so only the
+   * emitted name needs disambiguating. A fresh context per function is what makes this the right scope:
+   * the same name in a different function is not a collision.
+   */
+  readonly declaredLocals: Set<string>;
   readonly stringConstants: string[];
   readonly arrayGlobals: string[];
   readonly objectTypes: string[];

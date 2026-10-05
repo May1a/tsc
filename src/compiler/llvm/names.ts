@@ -19,6 +19,27 @@ export function variablePointerName(name: string): string {
 export function stringLengthPointerName(name: string): string {
   return `%${name}.len.addr`;
 }
+
+/**
+ * A local name that has not been used yet in the function being emitted.
+ *
+ * The preferred name is returned unchanged the first time, so output is unchanged for every program
+ * whose slot names do not repeat. Only a repeat is suffixed, with the lowest free ordinal, which is what
+ * keeps the collision fix from rewriting every emitted name in the corpus.
+ */
+export function uniqueLocalName(preferred: string, context: { readonly declaredLocals: Set<string> }): string {
+  if (!context.declaredLocals.has(preferred)) {
+    context.declaredLocals.add(preferred);
+    return preferred;
+  }
+  let ordinal = 1;
+  while (context.declaredLocals.has(`${preferred}.${ordinal}`)) {
+    ordinal += 1;
+  }
+  const unique = `${preferred}.${ordinal}`;
+  context.declaredLocals.add(unique);
+  return unique;
+}
 /**
  * The slot a loop keeps its current item in.
  *
