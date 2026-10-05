@@ -206,12 +206,17 @@ describe("erasure forms", () => {
    * output is asserted in `core.test.ts` instead. The set is stated here rather than inferred from a
    * filename so that adding an admitted form cannot silently skip both checks.
    */
-  // Node 22's type stripper rejects all three of these before running anything, because none of them is
-  // valid JavaScript and each needs transformation rather than erasure: `accessor` is not a keyword, a
-  // `namespace` declaration is a construct, and a parameter property declares a field. Each is asserted
-  // by its native value in `core.test.ts` instead, which is what backs the manifest's claim that the form
-  // works — a form listed here that nothing else checked would only be claiming its own existence.
-  const notRunnableUnderNode = new Set(["accessor-keyword", "namespace-declaration", "parameter-property"]);
+  // Node 22's type stripper rejects all four of these before running anything, because none of them is
+  // valid JavaScript and each needs transformation rather than erasure: `accessor` is not a keyword, and
+  // an enum, a namespace and a parameter property are all constructs. Each is asserted by its native
+  // value in `core.test.ts` instead, which is what backs the manifest's claim that the form works — a
+  // form listed here that nothing else checked would only be claiming its own existence.
+  const notRunnableUnderNode = new Set([
+    "accessor-keyword",
+    "enum-declaration",
+    "namespace-declaration",
+    "parameter-property"
+  ]);
 
   test.each(admitted.map((form) => [form.id, form] as const))(
     "%s is checked somewhere real, not merely present as a file",

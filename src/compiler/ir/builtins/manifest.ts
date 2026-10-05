@@ -157,9 +157,8 @@ const declaredForms: readonly TypeScriptForm[] = [
   {
     form: "enum declaration",
     id: "enum-declaration",
-    state: "planned",
-    syntax: "enum E { A }",
-    reason: "needs an object literal with the forward and reverse mappings, which the declaration tier does not build"
+    state: "admitted",
+    syntax: "enum E { A }"
   },
   {
     form: "namespace declaration",

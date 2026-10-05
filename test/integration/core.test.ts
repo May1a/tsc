@@ -1027,6 +1027,24 @@ describe("tscn erasure forms", () => {
     }
   });
 
+  test("lowers an enum to the object holding both mappings", async () => {
+    // Not in the Node oracle: its strip-only mode rejects an `enum` with a SyntaxError before running
+    // anything, since an enum is a construct rather than an erasure. The expected values were produced by
+    // compiling this fixture with tsc and running the result under Node, so they are what TypeScript's own
+    // emit produces — including the reverse mappings, the negative value and the shared-value quirk.
+    const result = await expectSuccessfulCompile("form-admitted-enum-declaration.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, {
+        status: 0,
+        stdout: "0\nA\n2\nC\n5\nX\n6\nY\ns\ns\n5\nB\n6\nC\n-1\nDown\n1\n0.5\nHalf\n1\nSecond\n3\na-b\n",
+        stderr: ""
+      });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("stores a constructor parameter property onto the instance", async () => {
     // Not in the Node oracle: its strip-only mode rejects a parameter property with a SyntaxError before
     // running anything, since declaring a field from a parameter needs transformation. The expected values
