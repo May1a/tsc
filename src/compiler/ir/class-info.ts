@@ -538,9 +538,6 @@ export function classCallableParameters(
     if (param.dotDotDotToken !== undefined) {
       return unsupportedIn("Rest parameters are not supported on class members yet");
     }
-    if (param.questionToken !== undefined) {
-      return unsupportedIn("Optional parameters are not supported on class members yet");
-    }
     if (param.initializer !== undefined) {
       return unsupportedIn("Parameters with defaults are not supported on class members yet");
     }
@@ -550,7 +547,14 @@ export function classCallableParameters(
     if (!ts.isIdentifier(param.name)) {
       return unsupportedIn("Destructuring parameters are not supported on class members yet");
     }
-    parameters.push({ name: param.name.text, valueKind: parameterValueKind(param) });
+    // `x?: T` reaches here only without an initializer — the check above refuses those — so it is
+    // omittable, and the call site passes `undefined` into the slot rather than shifting the rest.
+    const valueKind = parameterValueKind(param);
+    if (param.questionToken === undefined) {
+      parameters.push({ name: param.name.text, valueKind });
+    } else {
+      parameters.push({ name: param.name.text, valueKind, isOptional: true });
+    }
   }
   return produced(parameters);
 }

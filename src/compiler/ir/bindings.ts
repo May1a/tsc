@@ -25,6 +25,16 @@ export interface JsIrFunctionParameter {
   readonly valueKind: JsIrValueKind;
   readonly defaultValue?: JsIrNumberExpression;
   readonly isRest?: boolean;
+  /**
+   * A parameter declared `x?: T` with no initializer, which a call may therefore omit. Omitting it
+   * passes `undefined` rather than dropping the argument, so the callee still sees one slot per
+   * declared parameter.
+   *
+   * This is distinct from `defaultValue`: a default is a value the call site substitutes, while this
+   * is the absence of one. The parameter keeps its declared `valueKind` because the IR is monomorphic
+   * — `x ?? 0` tests the slot at runtime, which is what makes an omitted argument safe to read.
+   */
+  readonly isOptional?: boolean;
 }
 
 export interface JsIrFunctionObjectDefinition {
@@ -54,6 +64,10 @@ export type JsIrCallArgument =
   | {
       readonly valueKind: "value";
       readonly value: JsIrValueExpression;
+    }
+  | {
+      /** An omitted optional parameter: the callee receives `undefined` in that slot. */
+      readonly valueKind: "undefined";
     };
 
 

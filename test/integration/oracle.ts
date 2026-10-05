@@ -322,4 +322,5 @@ export const oracleFixtures: readonly string[] = [
   "form-admitted-override-modifier.ts",
   "form-admitted-computed-object-method.ts",
   "form-admitted-satisfies-operator.ts",
+  "form-admitted-optional-parameter.ts",
 ] as const;

@@ -2530,9 +2530,15 @@ function lowerFunctionDeclaration(
       parameter = { name: paramName, valueKind };
     } else {
       paramName = param.name.text;
+      // `x?: T` with no initializer is omittable, which is not the same as having no default: the
+      // call site passes `undefined` rather than refusing the shorter call. A rest parameter is never
+      // omittable — it is always present, possibly empty — and a default already covers omission.
+      const isOptional = param.questionToken !== undefined && defaultValue === undefined && !isRest;
       if (defaultValue === undefined) {
         if (isRest) {
           parameter = { name: paramName, valueKind, isRest: true };
+        } else if (isOptional) {
+          parameter = { name: paramName, valueKind, isOptional: true };
         } else {
           parameter = { name: paramName, valueKind };
         }
@@ -9289,12 +9295,31 @@ function lowerTypedCallArguments(
       lowered.push(value);
       continue;
     }
-    if (parameter.defaultValue === undefined || parameter.valueKind !== "number") {
+    const omitted = omittedParameterArgument(parameter);
+    if (omitted === undefined) {
       return undefined;
     }
-    lowered.push({ valueKind: "number", value: parameter.defaultValue });
+    lowered.push(omitted);
   }
   return lowered;
+}
+
+/**
+ * What to pass for a parameter the call omitted, or `undefined` when it may not be omitted.
+ *
+ * A numeric initializer substitutes a value. `x?: T` with no initializer is omittable, and the
+ * argument is still passed, as `undefined`, so the callee reads its own slot rather than a neighbour's.
+ * The parameter keeps its declared value kind either way because the IR is monomorphic and `??`/`?.`
+ * test the slot at runtime — which is what makes an omitted argument safe to read.
+ */
+function omittedParameterArgument(parameter: JsIrFunctionParameter): JsIrCallArgument | undefined {
+  if (parameter.defaultValue !== undefined && parameter.valueKind === "number") {
+    return { valueKind: "number", value: parameter.defaultValue };
+  }
+  if (parameter.isOptional === true) {
+    return { valueKind: "undefined" };
+  }
+  return undefined;
 }
 
 function lowerTypedCallArgumentsWithRest(
@@ -9318,11 +9343,29 @@ function lowerTypedCallArgumentsWithRest(
       lowered.push(value);
       continue;
     }
-    if (parameter.defaultValue === undefined || parameter.valueKind !== "number") {
+    const omitted = omittedParameterArgument(parameter);
+    if (omitted === undefined) {
       return undefined;
     }
-    lowered.push({ valueKind: "number", value: parameter.defaultValue });
+    lowered.push(omitted);
   }
+  const restValues = lowerRestCallValues(restIndex, args, bindings);
+  if (restValues === undefined) {
+    return undefined;
+  }
+  lowered.push({ valueKind: "value", value: { kind: "runtimeArrayValue", elements: restValues } });
+  return lowered;
+}
+
+/**
+ * The arguments a rest parameter collects, as the array it is passed. A spread argument expands to the
+ * values it names; anything else is one element.
+ */
+function lowerRestCallValues(
+  restIndex: number,
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly JsIrValueExpression[] | undefined {
   const restValues: JsIrValueExpression[] = [];
   for (let i = restIndex; i < args.length; i++) {
     const arg = args[i];
@@ -9340,8 +9383,7 @@ function lowerTypedCallArgumentsWithRest(
     }
     restValues.push(value);
   }
-  lowered.push({ valueKind: "value", value: { kind: "runtimeArrayValue", elements: restValues } });
-  return lowered;
+  return restValues;
 }
 
 function lowerSpreadElementValues(
@@ -9370,6 +9412,12 @@ function lowerTypedCallArgument(
   arg: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrCallArgument | undefined {
+  // `f(undefined)` is the same call as `f()` on an optional parameter, so it lowers to the same
+  // argument rather than failing the parameter's value kind. Tested before the kind dispatch because
+  // `undefined` is a value rather than a number or a string, whichever slot it is passed into.
+  if (arg.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(arg) && arg.text === "undefined")) {
+    return { valueKind: "undefined" };
+  }
   if (parameter.valueKind === "string") {
     const value = lowerStringRuntimeExpression(arg, bindings);
     if (value === undefined) {

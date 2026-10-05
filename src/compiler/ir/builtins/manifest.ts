@@ -113,9 +113,8 @@ const declaredForms: readonly TypeScriptForm[] = [
   {
     form: "optional parameter",
     id: "optional-parameter",
-    state: "planned",
-    syntax: "x?: number",
-    reason: "a parameter with no argument has no runtime slot, so the default has to be materialized"
+    state: "admitted",
+    syntax: "x?: number"
   },
   {
     form: "abstract member",

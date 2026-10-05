@@ -3,6 +3,7 @@ import type { JsIrNumberExpression } from "../ir/expressions.js";
 import { emitGeneratedJsCall } from "./completion.js";
 import type { EmitContext, StringValue } from "./context.js";
 import { llvmDoubleBitcastOperand } from "./numbers.js";
+import { jsValueUndefined } from "./values.js";
 
 /**
  * The argument ABI: how an IR call's arguments become `i64` operands, and how a call's result is
@@ -71,6 +72,10 @@ export function emitCallArguments(args: readonly JsIrCallArgument[], context: Em
       const result = context.emitValue(arg.value);
       lines.push(...result.lines);
       values.push(`i64 ${result.value}`);
+      continue;
+    }
+    if (arg.valueKind === "undefined") {
+      values.push(`i64 ${jsValueUndefined}`);
       continue;
     }
     const result = context.emitNumberExpression(arg.value);
