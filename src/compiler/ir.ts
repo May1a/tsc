@@ -1995,8 +1995,8 @@ function lowerExpressionStatement(
   }
 
   const callOp = lowerCallStatement(expression, bindings);
-  if (callOp !== undefined) {
-    return produced(callOp);
+  if (callOp.kind !== "notApplicable") {
+    return callOp;
   }
 
   if (!ts.isIdentifier(expression.expression)) {
@@ -2938,9 +2938,9 @@ function functionFrameBindings(bindings: ReadonlyMap<string, JsIrBindingValue>):
 function lowerCallStatement(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   if (ts.isIdentifier(expression.expression) && expression.expression.text === "print") {
-    return undefined;
+    return notApplicable;
   }
 
   // A discarded `<instance>.<method>(...)` is still a class method call, and the value path
@@ -2950,22 +2950,19 @@ function lowerCallStatement(
   // does, so both positions agree.
   if (ts.isPropertyAccessExpression(expression.expression)) {
     const methodCall = lowerClassMethodCall(expression, expression.expression, bindings);
-    if (methodCall.kind === "unsupported") {
-      throw new ClassLoweringUnsupportedError(methodCall.reason);
-    }
-    if (methodCall.kind === "lowered") {
-      return methodCall.operation;
+    if (methodCall.kind !== "notApplicable") {
+      return methodCall;
     }
   }
 
   const jsonStatement = lowerJsonStatementCall(expression, bindings);
   if (jsonStatement !== undefined) {
-    return jsonStatement;
+    return produced(jsonStatement);
   }
 
   const spreadCall = lowerSpreadCallValue(expression, bindings);
   if (spreadCall !== undefined) {
-    return spreadCall;
+    return produced(spreadCall);
   }
 
   let identifierBinding: JsIrBindingValue | undefined;
@@ -2973,27 +2970,29 @@ function lowerCallStatement(
     identifierBinding = bindings.get(expression.expression.text);
   }
   if (unlowerableCallee(expression.expression, identifierBinding, bindings)) {
-    return undefined;
+    return notApplicable;
   }
   if (!ts.isIdentifier(expression.expression) || identifierBinding?.kind === "value" || identifierBinding?.kind === "valueVariable") {
     const callee = lowerValueExpression(expression.expression, bindings);
     const args = lowerValueCallArguments(expression.arguments, bindings);
     if (callee === undefined || args === undefined) {
-      return undefined;
+      return notApplicable;
     }
-    return { kind: "callValue", callee, arguments: args, thisValue: lowerCallThisValue(expression.expression, bindings), optionalCallee: optionalStatementCallee(expression) };
+    return produced({
+      kind: "callValue",
+      callee,
+      arguments: args,
+      thisValue: lowerCallThisValue(expression.expression, bindings),
+      optionalCallee: optionalStatementCallee(expression)
+    });
   }
 
   const args = lowerCallArguments(expression.expression.text, expression.arguments, bindings);
   if (args === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
-  return {
-    kind: "call",
-    name: expression.expression.text,
-    arguments: args
-  };
+  return produced({ kind: "call", name: expression.expression.text, arguments: args });
 }
 
 // A call is conditional on its callee exactly when the source wrote `callee?.(...)`. ECMAScript
