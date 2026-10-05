@@ -51,10 +51,16 @@ describe("check-inline-llvm", () => {
   });
 
   it("exempts only the IR emitter modules", () => {
-    expect(isExemptPath(`compiler${sep}llvm.ts`)).toBe(true);
+    // `compiler/llvm.ts` was decomposed into `compiler/llvm/`, so the emitter is exempted by directory
+    // now. Naming the file that no longer exists would exempt nothing and let the moved emitters fail
+    // the check, which is exactly what happened.
+    expect(isExemptPath(`compiler${sep}llvm${sep}module.ts`)).toBe(true);
+    expect(isExemptPath(`compiler${sep}llvm${sep}context.ts`)).toBe(true);
     expect(isExemptPath(`compiler${sep}llvm-ir${sep}builder.ts`)).toBe(true);
     expect(isExemptPath(`compiler${sep}js-value-abi${sep}llvm.ts`)).toBe(true);
     expect(isExemptPath(`compiler${sep}runtime-ir.ts`)).toBe(false);
     expect(isExemptPath(`compiler${sep}toolchain.ts`)).toBe(false);
+    // A sibling whose name merely starts the same must not inherit the exemption.
+    expect(isExemptPath(`compiler${sep}llvm-notes${sep}module.ts`)).toBe(false);
   });
 });

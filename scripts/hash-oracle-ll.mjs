@@ -3,7 +3,7 @@
 // the emission dispatch can be proven byte-identical rather than merely green.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,39 @@ if (fixtures.length === 0) {
   process.exit(1);
 }
 const cli = path.join(repoRoot, "dist/cli/main.js");
+
+// The CLI is read out of `dist/`, so a stale build makes every hash in this report a hash of the same
+// old compiler: comparing two such reports proves nothing while reporting "byte-identical". That is the
+// silent failure this script exists to rule out, so refuse to run rather than print a vacuous report.
+// `npm run oracle:ll-hashes` builds first; invoking this file directly does not.
+function newestMtime(directory) {
+  let newest = 0;
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    let mtime = statSync(entryPath).mtimeMs;
+    if (entry.isDirectory()) {
+      mtime = newestMtime(entryPath);
+    }
+    if (mtime > newest) {
+      newest = mtime;
+    }
+  }
+  return newest;
+}
+
+if (!existsSync(cli)) {
+  process.stderr.write(`${cli} does not exist: run \`npm run build\` first\n`);
+  process.exit(1);
+}
+const millisecondsPerSecond = 1000;
+const staleBySeconds = Math.round((newestMtime(path.join(repoRoot, "src")) - statSync(cli).mtimeMs) / millisecondsPerSecond);
+if (staleBySeconds > 0) {
+  process.stderr.write(
+    `dist is older than src by ${staleBySeconds}s: these hashes would describe the previous compiler, not this one.\n` +
+      "Run `npm run build` first, or use `npm run oracle:ll-hashes` which builds.\n"
+  );
+  process.exit(1);
+}
 
 const hashes = [];
 const scratch = mkdtempSync(path.join(tmpdir(), "tscn-ll-hash-"));
