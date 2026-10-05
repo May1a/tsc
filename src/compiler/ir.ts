@@ -77,6 +77,7 @@ import {
   type Produced,
   loweredOperation,
   loweredOperationList,
+  loweredStatementResult,
   loweredUnsupportedStatementList,
   notApplicable,
   produced,
@@ -1666,7 +1667,7 @@ function lowerStatementCore(
   }
 
   if (ts.isExpressionStatement(statement)) {
-    return statementResult(lowerExpressionStatement(statement.expression, bindings), statement, bindings);
+    return loweredStatementResult(lowerExpressionStatement(statement.expression, bindings), statement, bindings);
   }
 
   return notApplicable;
@@ -1953,69 +1954,66 @@ function lowerErrorMessageValue(
 function lowerExpressionStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const update = lowerUpdateExpressionStatement(expression, bindings);
   if (update !== undefined) {
-    return update;
+    return produced(update);
   }
 
   const assignment = lowerAssignmentStatement(expression, bindings);
-  if (assignment !== undefined) {
+  if (assignment.kind !== "notApplicable") {
     return assignment;
   }
 
   const deletion = lowerDeleteExpression(expression, bindings);
   if (deletion !== undefined) {
-    return deletion;
+    return produced(deletion);
   }
 
   if (ts.isCallExpression(expression)) {
     const runtimeCollectionCall = lowerRuntimeCollectionCallStatement(expression, bindings);
     if (runtimeCollectionCall !== undefined) {
-      return runtimeCollectionCall;
+      return produced(runtimeCollectionCall);
     }
     const runtimeObjectCall = lowerRuntimeObjectCallStatement(expression, bindings);
     if (runtimeObjectCall !== undefined) {
-      return runtimeObjectCall;
+      return produced(runtimeObjectCall);
     }
     const runtimeArrayCall = lowerRuntimeArrayCallStatement(expression, bindings);
     if (runtimeArrayCall !== undefined) {
-      return runtimeArrayCall;
+      return produced(runtimeArrayCall);
     }
   }
 
   const inlineCppValue = lowerInlineCppValueExpression(expression);
   if (inlineCppValue?.kind === "inlineCppValue") {
-    return { kind: "inlineCpp", symbol: inlineCppValue.symbol };
+    return produced({ kind: "inlineCpp", symbol: inlineCppValue.symbol });
   }
 
   if (!ts.isCallExpression(expression)) {
-    return undefined;
+    return notApplicable;
   }
 
   const callOp = lowerCallStatement(expression, bindings);
   if (callOp !== undefined) {
-    return callOp;
+    return produced(callOp);
   }
 
   if (!ts.isIdentifier(expression.expression)) {
-    return undefined;
+    return notApplicable;
   }
 
   if (expression.expression.text !== "print" || expression.arguments.length !== 1) {
-    return undefined;
+    return notApplicable;
   }
 
   const [argument] = expression.arguments;
   const printExpression = lowerPrintExpression(argument, bindings);
   if (printExpression !== undefined) {
-    return {
-      kind: "print",
-      expression: printExpression
-    };
+    return produced({ kind: "print", expression: printExpression });
   }
 
-  return undefined;
+  return notApplicable;
 }
 
 function lowerUpdateExpressionStatement(
@@ -2145,8 +2143,16 @@ function lowerForStatement(
   // `i = i + 1` and `i++` are both incrementors, and the two lower through different recognizers: the
   // second is an update expression, which the expression-statement tier already lowers to the same
   // `assignNumber`. Only routing one of them makes the other look unsupported.
-  const increment = lowerAssignmentStatement(statement.incrementor, forBindings) ??
-    lowerUpdateExpressionStatement(statement.incrementor, forBindings);
+  const incrementor = lowerAssignmentStatement(statement.incrementor, forBindings);
+  if (incrementor.kind === "unsupported") {
+    return undefined;
+  }
+  let increment: JsIrOperation | undefined;
+  if (incrementor.kind === "lowered") {
+    increment = incrementor.operation;
+  } else {
+    increment = lowerUpdateExpressionStatement(statement.incrementor, forBindings);
+  }
   if (increment === undefined) {
     return undefined;
   }
@@ -5912,9 +5918,9 @@ function lowerRuntimeArrayFlatBinding(
 function lowerAssignmentStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   if (!ts.isBinaryExpression(expression)) {
-    return undefined;
+    return notApplicable;
   }
 
   if (expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken) {
@@ -5922,12 +5928,12 @@ function lowerAssignmentStatement(
   }
 
   const compound = lowerCompoundAssignmentStatement(expression, bindings);
-  if (compound !== undefined) {
+  if (compound.kind !== "notApplicable") {
     return compound;
   }
 
   if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
-    return undefined;
+    return notApplicable;
   }
 
   if (ts.isElementAccessExpression(expression.left)) {
@@ -5939,73 +5945,61 @@ function lowerAssignmentStatement(
   }
 
   if (!ts.isIdentifier(expression.left)) {
-    return undefined;
+    return notApplicable;
   }
 
   const binding = bindings.get(expression.left.text);
   if (binding?.kind === "stringVariable") {
     const value = lowerStringRuntimeExpression(expression.right, bindings);
     if (value === undefined) {
-      return undefined;
+      return notApplicable;
     }
 
-    return {
-      kind: "assignString",
-      name: expression.left.text,
-      value
-    };
+    return produced({ kind: "assignString", name: expression.left.text, value });
   }
 
   if (binding?.kind === "booleanVariable") {
     const value = lowerConditionExpression(expression.right, bindings);
     if (value === undefined) {
-      return undefined;
+      return notApplicable;
     }
 
-    return {
-      kind: "assignBoolean",
-      name: expression.left.text,
-      value
-    };
+    return produced({ kind: "assignBoolean", name: expression.left.text, value });
   }
 
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
-    return undefined;
+    return notApplicable;
   }
 
   const value = lowerNumberExpression(expression.right, bindings);
   if (value === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
-  return {
-    kind: "assignNumber",
-    name: expression.left.text,
-    value
-  };
+  return produced({ kind: "assignNumber", name: expression.left.text, value });
 }
 
 function lowerCompoundAssignmentStatement(
   expression: ts.BinaryExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const operator = lowerCompoundAssignmentOperator(expression.operatorToken.kind);
   if (operator === undefined || !ts.isIdentifier(expression.left)) {
-    return undefined;
+    return notApplicable;
   }
   const binding = bindings.get(expression.left.text);
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
-    return undefined;
+    return notApplicable;
   }
   const right = lowerNumberExpression(expression.right, bindings);
   if (right === undefined) {
-    return undefined;
+    return notApplicable;
   }
-  return {
+  return produced({
     kind: "assignNumber",
     name: expression.left.text,
     value: { kind: "binary", operator, left: { kind: "variable", name: expression.left.text }, right }
-  };
+  });
 }
 
 function lowerCompoundAssignmentOperator(kind: ts.SyntaxKind): JsIrNumberOperator | undefined {
@@ -6029,26 +6023,31 @@ function lowerCompoundAssignmentOperator(kind: ts.SyntaxKind): JsIrNumberOperato
 function lowerNullishAssignmentStatement(
   expression: ts.BinaryExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const currentValue = lowerValueExpression(expression.left, bindings);
   if (currentValue === undefined) {
-    return undefined;
+    return notApplicable;
   }
-  let store: JsIrOperation | undefined;
+  let store: Lowered;
   if (ts.isElementAccessExpression(expression.left)) {
     store = lowerElementAssignment(expression.left, expression.right, bindings);
   } else if (ts.isPropertyAccessExpression(expression.left)) {
     store = lowerObjectPropertyAssignment(expression.left, expression.right, bindings);
+  } else {
+    return notApplicable;
   }
-  if (store === undefined) {
-    return undefined;
+  if (store.kind === "unsupported") {
+    return store;
+  }
+  if (store.kind !== "lowered") {
+    return notApplicable;
   }
   const condition: JsIrCondition = {
     kind: "or",
     left: { kind: "valueComparison", operator: "===", left: currentValue, right: { kind: "null" } },
     right: { kind: "valueComparison", operator: "===", left: currentValue, right: { kind: "undefined" } }
   };
-  return { kind: "if", condition, thenOperations: [store], elseOperations: [] };
+  return produced({ kind: "if", condition, thenOperations: [store.operation], elseOperations: [] });
 }
 
 // eslint-disable-next-line complexity, max-statements -- Element assignment handles fixed, runtime, and boxed aggregate targets.
@@ -6056,18 +6055,18 @@ function lowerElementAssignment(
   left: ts.ElementAccessExpression,
   right: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const objectAccess = lowerObjectAccessPath(left, bindings);
   if (objectAccess !== undefined) {
     const objectValue = lowerNumberExpression(right, bindings);
     if (objectValue === undefined) {
-      return undefined;
+      return notApplicable;
     }
-    return { kind: "objectStore", objectName: objectAccess.objectName, path: objectAccess.path, value: objectValue };
+    return produced({ kind: "objectStore", objectName: objectAccess.objectName, path: objectAccess.path, value: objectValue });
   }
 
   if (!ts.isIdentifier(left.expression)) {
-    return undefined;
+    return notApplicable;
   }
 
   const arrayBinding = bindings.get(left.expression.text);
@@ -6077,7 +6076,7 @@ function lowerElementAssignment(
   ) {
     const iteratorMethod = lowerValueExpression(right, bindings);
     if (iteratorMethod !== undefined) {
-      return { kind: "runtimeCollectionSetIterator", collectionName: arrayBinding.name, value: iteratorMethod };
+      return produced({ kind: "runtimeCollectionSetIterator", collectionName: arrayBinding.name, value: iteratorMethod });
     }
   }
   let index = lowerNumberExpression(left.argumentExpression, bindings);
@@ -6089,35 +6088,35 @@ function lowerElementAssignment(
   }
   const value = lowerNumberExpression(right, bindings);
   if (arrayBinding?.kind === "array" && index !== undefined && value !== undefined) {
-    return { kind: "arrayStore", arrayName: left.expression.text, index, value };
+    return produced({ kind: "arrayStore", arrayName: left.expression.text, index, value });
   }
 
   const objectStore = lowerObjectElementAssignment(left, right, arrayBinding, bindings);
   if (objectStore !== undefined) {
-    return objectStore;
+    return produced(objectStore);
   }
 
   const runtimeValue = lowerValueExpression(right, bindings);
   if (arrayBinding?.kind === "runtimeArray" && index !== undefined && runtimeValue !== undefined) {
-    return { kind: "runtimeArrayStore", arrayName: left.expression.text, index, value: runtimeValue };
+    return produced({ kind: "runtimeArrayStore", arrayName: left.expression.text, index, value: runtimeValue });
   }
   if (arrayBinding?.kind === "runtimeArray" && runtimeValue !== undefined) {
     const key = lowerPropertyKeyExpression(left.argumentExpression, bindings);
     if (key !== undefined) {
-      return { kind: "runtimeArrayNamedStore", arrayName: left.expression.text, key, value: runtimeValue };
+      return produced({ kind: "runtimeArrayNamedStore", arrayName: left.expression.text, key, value: runtimeValue });
     }
   }
   if (isProvenBoxedAggregateBinding(arrayBinding) && runtimeValue !== undefined) {
     if (index !== undefined) {
-      return { kind: "valueArrayStore", targetName: left.expression.text, index, value: runtimeValue };
+      return produced({ kind: "valueArrayStore", targetName: left.expression.text, index, value: runtimeValue });
     }
     const key = lowerPropertyKeyExpression(left.argumentExpression, bindings);
     if (key !== undefined) {
-      return { kind: "valueObjectStore", targetName: left.expression.text, key, value: runtimeValue };
+      return produced({ kind: "valueObjectStore", targetName: left.expression.text, key, value: runtimeValue });
     }
   }
 
-  return undefined;
+  return notApplicable;
 }
 
 function lowerObjectElementAssignment(
@@ -6156,29 +6155,20 @@ function lowerObjectPropertyAssignment(
   left: ts.PropertyAccessExpression,
   right: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const privateStore = lowerClassPrivateFieldStore(left, right, bindings);
-  if (privateStore.kind === "unsupported") {
-    throw new ClassLoweringUnsupportedError(privateStore.reason);
-  }
-  if (privateStore.kind === "lowered") {
-    return privateStore.operation;
+  if (privateStore.kind !== "notApplicable") {
+    return privateStore;
   }
 
   const thisStore = lowerThisPropertyAssignment(left, right, bindings);
-  if (thisStore.kind === "unsupported") {
-    throw new ClassLoweringUnsupportedError(thisStore.reason);
-  }
-  if (thisStore.kind === "lowered") {
-    return thisStore.operation;
+  if (thisStore.kind !== "notApplicable") {
+    return thisStore;
   }
 
   const classAssignment = lowerClassPropertyAssignment(left, right, bindings);
-  if (classAssignment.kind === "unsupported") {
-    throw new ClassLoweringUnsupportedError(classAssignment.reason);
-  }
-  if (classAssignment.kind === "lowered") {
-    return classAssignment.operation;
+  if (classAssignment.kind !== "notApplicable") {
+    return classAssignment;
   }
 
   if (ts.isIdentifier(left.expression)) {
@@ -6186,25 +6176,25 @@ function lowerObjectPropertyAssignment(
     if (binding?.kind === "runtimeArray" && left.name.text === "length") {
       const length = lowerNumberExpression(right, bindings);
       if (length !== undefined) {
-        return { kind: "runtimeArraySetLength", arrayName: left.expression.text, length };
+        return produced({ kind: "runtimeArraySetLength", arrayName: left.expression.text, length });
       }
     }
     if (isProvenBoxedAggregateBinding(binding) && left.name.text === "length") {
       const length = lowerNumberExpression(right, bindings);
       if (length !== undefined) {
-        return { kind: "valueArraySetLength", targetName: left.expression.text, length };
+        return produced({ kind: "valueArraySetLength", targetName: left.expression.text, length });
       }
     }
     if (binding?.kind === "runtimeObject") {
       const value = lowerValueExpression(right, bindings);
       if (value !== undefined) {
-        return { kind: "runtimeObjectStore", objectName: left.expression.text, key: { kind: "literal", value: left.name.text }, value };
+        return produced({ kind: "runtimeObjectStore", objectName: left.expression.text, key: { kind: "literal", value: left.name.text }, value });
       }
     }
     if (isProvenBoxedAggregateBinding(binding)) {
       const value = lowerValueExpression(right, bindings);
       if (value !== undefined) {
-        return { kind: "valueObjectStore", targetName: left.expression.text, key: { kind: "literal", value: left.name.text }, value };
+        return produced({ kind: "valueObjectStore", targetName: left.expression.text, key: { kind: "literal", value: left.name.text }, value });
       }
     }
   }
@@ -6212,10 +6202,10 @@ function lowerObjectPropertyAssignment(
   const access = lowerObjectAccessPath(left, bindings);
   const value = lowerNumberExpression(right, bindings);
   if (access === undefined || value === undefined) {
-    return undefined;
+    return notApplicable;
   }
 
-  return { kind: "objectStore", objectName: access.objectName, path: access.path, value };
+  return produced({ kind: "objectStore", objectName: access.objectName, path: access.path, value });
 }
 
 function lowerThisPropertyAssignment(

@@ -45,6 +45,24 @@ export const loweredUnsupportedStatementList = (reason: string): LoweredStatemen
  * the reason stays the reconstructed one; converting a recognizer to return `Lowered` replaces
  * this with the reason the recognizer itself knows.
  */
+/**
+ * A statement whose recognizer returned `Lowered`.
+ *
+ * A recognizer that already carries a reason wins over the generic message: it knows *why* the statement
+ * failed, and reconstructing that from the syntax afterwards is how a diagnostic ends up naming the shape
+ * instead of the feature. Only a `notApplicable` — nothing claimed the statement — falls back.
+ */
+export function loweredStatementResult(
+  result: Lowered,
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (result.kind !== "notApplicable") {
+    return result;
+  }
+  return unsupported(unsupportedStatementMessage(statement, bindings));
+}
+
 export function statementResult(
   operation: JsIrOperation | undefined,
   statement: ts.Statement,
