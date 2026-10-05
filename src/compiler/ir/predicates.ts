@@ -12,8 +12,24 @@ export function isInlineCppTaggedTemplate(expression: ts.Expression): expression
 
 export const errorConstructorNames: ReadonlySet<string> = new Set(["Error", "TypeError", "RangeError", "EvalError", "URIError", "SyntaxError"]);
 
+/**
+ * Erasing every wrapper whose only content is a type.
+ *
+ * `as T`, the angle-bracket form, `!`, parens and `satisfies T` all produce a value identical to the
+ * expression inside them, so a receiver wrapped in one is the same receiver. `satisfies` is the odd one
+ * out: it is an *assertion to the compiler* rather than a cast, and it typechecks by requiring the
+ * expression to already have the annotated type — which is why unwrapping it is erasure and not a
+ * coercion. It belongs here for the same reason `as` does: by the time anything dispatches on the
+ * expression's kind, the type information it carried has no representation.
+ */
 export function unwrapTypeOnlyExpression(expression: ts.Expression): ts.Expression {
-  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression) || ts.isNonNullExpression(expression) || ts.isParenthesizedExpression(expression)) {
+  if (
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isParenthesizedExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
     return unwrapTypeOnlyExpression(expression.expression);
   }
   return expression;

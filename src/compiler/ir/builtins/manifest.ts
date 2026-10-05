@@ -107,9 +107,8 @@ const declaredForms: readonly TypeScriptForm[] = [
   {
     form: "satisfies operator",
     id: "satisfies-operator",
-    state: "planned",
-    syntax: "expr satisfies T",
-    reason: "not yet handled by `unwrapTypeOnlyExpression`, which already erases `as`, `<T>`, `!` and parens"
+    state: "admitted",
+    syntax: "expr satisfies T"
   },
   {
     form: "optional parameter",

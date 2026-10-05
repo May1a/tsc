@@ -321,4 +321,5 @@ export const oracleFixtures: readonly string[] = [
   "form-admitted-private-modifier.ts",
   "form-admitted-override-modifier.ts",
   "form-admitted-computed-object-method.ts",
+  "form-admitted-satisfies-operator.ts",
 ] as const;
