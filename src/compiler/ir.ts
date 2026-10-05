@@ -953,6 +953,21 @@ function lowerClassConstructor(
     if (iteratorStore.kind === "lowered") {
       body.push(iteratorStore.operation);
     }
+    // TypeScript assigns parameter properties after `super(...)` and before the field initializers, so
+    // a field initializer may read one. The order here matches that emit exactly, which is what makes
+    // `class C { x = this.p + 1; constructor(public p: number) {} }` read the argument.
+    for (const name of info.parameterProperties) {
+      const parameter = info.constructorParameters.find((candidate) => candidate.name === name);
+      if (parameter === undefined) {
+        return unsupportedIn(`\`${name}\` is declared as a field by a parameter this build cannot read`);
+      }
+      body.push({
+        kind: "valueObjectStore",
+        targetName: CLASS_THIS_NAME,
+        key: classMemberKeyStringExpression({ kind: "literal", name }),
+        value: parameterPropertyValue(parameter)
+      });
+    }
     for (const field of info.fields) {
       const initializer = lowerClassFieldInitializer(field, fnBindings);
       if (initializer.kind !== "lowered") {
@@ -984,6 +999,23 @@ function lowerClassConstructor(
     activeEnclosingClass = previousClass;
     activeClassMethodStatic = previousStatic;
   }
+}
+
+/**
+ * The value a constructor parameter property stores onto `this`.
+ *
+ * The representation follows the parameter's own kind, the same way `forwardedClassArgument` chooses a
+ * form to pass one along: a number is read as a number expression, and a string or boxed value as the
+ * value it already is.
+ */
+function parameterPropertyValue(parameter: JsIrFunctionParameter): JsIrValueExpression {
+  if (parameter.valueKind === "number") {
+    return { kind: "number", value: { kind: "parameter", name: parameter.name } };
+  }
+  if (parameter.valueKind === "string") {
+    return { kind: "string", value: { kind: "variable", name: parameter.name } };
+  }
+  return { kind: "variable", name: parameter.name };
 }
 
 function forwardedClassArgument(parameter: JsIrFunctionParameter): JsIrCallArgument {

@@ -34,6 +34,14 @@ export interface ClassInfo {
   readonly getters: ReadonlySet<string>;
   readonly setters: ReadonlySet<string>;
   readonly iteratorMethod: ts.MethodDeclaration | undefined;
+  /**
+   * Names this class's own constructor declares as fields, in parameter order.
+   *
+   * A parameter property — `constructor(readonly v: number)` — declares a field rather than only
+   * receiving an argument, so the constructor has to store each one onto `this`. Order matters because
+   * TypeScript assigns them before the field initializers, and a field initializer may read one.
+   */
+  readonly parameterProperties: readonly string[];
   // Source-level private field name (`#x`) → class-mangled storage key on the
   // instance object. Presence of the storage key doubles as the brand check.
   readonly privateFields: ReadonlyMap<string, string>;
@@ -250,6 +258,7 @@ export function buildClassInfo(
     getters: new Set(members.getAccessors.map((entry) => entry.name)),
     setters: new Set(members.setAccessors.map((entry) => entry.name)),
     iteratorMethod: members.iteratorMethod,
+    parameterProperties: members.parameterProperties,
     privateFields: members.privateFields
   });
 }
@@ -388,6 +397,7 @@ export interface CollectedClassMembers {
   readonly getAccessors: readonly ClassAccessorEntry[];
   readonly setAccessors: readonly ClassAccessorEntry[];
   readonly iteratorMethod: ts.MethodDeclaration | undefined;
+  readonly parameterProperties: readonly string[];
   readonly privateFields: ReadonlyMap<string, string>;
 }
 // eslint-disable-next-line complexity, max-statements -- Class member classification keeps mutually exclusive syntax forms in declaration order.
@@ -407,6 +417,7 @@ export function collectClassMembers(
   const setAccessors: ClassAccessorEntry[] = [];
   const privateFields = new Map<string, string>();
   let constructorDeclaration: ts.ConstructorDeclaration | undefined;
+  const parameterProperties: string[] = [];
   let iteratorMethod: ts.MethodDeclaration | undefined;
   for (const member of statement.members) {
     // A method declaration with no body is an overload signature or an `abstract` member: it declares
@@ -438,6 +449,11 @@ export function collectClassMembers(
       target.push({ key, initializer: member.initializer });
     } else if (ts.isConstructorDeclaration(member)) {
       constructorDeclaration = member;
+      for (const parameter of runtimeParameters(member.parameters)) {
+        if (ts.isIdentifier(parameter.name) && isParameterProperty(parameter)) {
+          parameterProperties.push(parameter.name.text);
+        }
+      }
     } else if (ts.isMethodDeclaration(member) && member.body !== undefined && isSymbolIteratorPropertyName(member.name, bindings)) {
       if (classMemberHasStaticModifier(member)) {
         return unsupportedIn("A static [Symbol.iterator] method is not supported yet");
@@ -490,6 +506,7 @@ export function collectClassMembers(
     getAccessors,
     setAccessors,
     iteratorMethod,
+    parameterProperties,
     privateFields
   });
 }
@@ -572,8 +589,11 @@ export function classCallableParameters(
     if (param.initializer !== undefined) {
       return unsupportedIn("Parameters with defaults are not supported on class members yet");
     }
-    if ((ts.getModifiers(param)?.length ?? 0) > 0) {
-      return unsupportedIn("Parameter properties are not supported on class members yet");
+    // An accessibility or `readonly` modifier declares a field, which the constructor stores onto
+    // `this`; it is not an error and it is not a second argv slot. Any other modifier on a parameter
+    // declares no field and is not something this tier knows.
+    if ((ts.getModifiers(param)?.length ?? 0) > 0 && !isParameterProperty(param)) {
+      return unsupportedIn("This modifier on a class member parameter is not supported yet");
     }
     if (!ts.isIdentifier(param.name)) {
       return unsupportedIn("Destructuring parameters are not supported on class members yet");
@@ -718,7 +738,14 @@ export function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValu
   if (parameter.type?.kind === ts.SyntaxKind.StringKeyword) {
     return "string";
   }
-  if (parameter.type?.kind === ts.SyntaxKind.UnknownKeyword || parameter.type?.kind === ts.SyntaxKind.AnyKeyword) {
+  // `boolean` is a concrete annotation the argument ABI has no scalar form for, and the number fallback
+  // is worse than useless for it: `new C(true)` then failed as an argument this build cannot evaluate.
+  // A boxed value is what `unknown` already uses for an annotation it cannot represent.
+  if (
+    parameter.type?.kind === ts.SyntaxKind.UnknownKeyword ||
+    parameter.type?.kind === ts.SyntaxKind.AnyKeyword ||
+    parameter.type?.kind === ts.SyntaxKind.BooleanKeyword
+  ) {
     return "value";
   }
   if (hasUnconstrainedTypeParameter(parameter)) {
@@ -726,6 +753,26 @@ export function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValu
   }
   return "number";
 }
+/**
+ * True for a constructor parameter that also declares a field — `constructor(readonly v: number)`.
+ *
+ * Only the modifiers TypeScript treats as declaring the field count. `declare` and `export` on a
+ * parameter are errors rather than field declarations, so a parameter carrying one is not this.
+ */
+function isParameterProperty(parameter: ts.ParameterDeclaration): boolean {
+  const modifiers = ts.getModifiers(parameter);
+  return (
+    modifiers?.some(
+      (modifier) =>
+        modifier.kind === ts.SyntaxKind.PublicKeyword ||
+        modifier.kind === ts.SyntaxKind.PrivateKeyword ||
+        modifier.kind === ts.SyntaxKind.ProtectedKeyword ||
+        modifier.kind === ts.SyntaxKind.ReadonlyKeyword ||
+        modifier.kind === ts.SyntaxKind.OverrideKeyword
+    ) === true
+  );
+}
+
 /** True for TypeScript's type-only `this: T` parameter (not a runtime argv slot). */
 export function isTypeOnlyThisParameter(parameter: ts.ParameterDeclaration): boolean {
   return ts.isIdentifier(parameter.name) && parameter.name.text === "this";

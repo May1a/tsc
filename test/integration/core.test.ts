@@ -1026,4 +1026,17 @@ describe("tscn erasure forms", () => {
       await result.cleanup();
     }
   });
+
+  test("stores a constructor parameter property onto the instance", async () => {
+    // Not in the Node oracle: its strip-only mode rejects a parameter property with a SyntaxError before
+    // running anything, since declaring a field from a parameter needs transformation. The expected values
+    // are what the equivalent hand-written constructor produces under Node, which is the desugaring.
+    const result = await expectSuccessfulCompile("form-admitted-parameter-property.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n1xtrue\n7\n8\n101\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
 });
