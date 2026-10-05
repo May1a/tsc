@@ -155,24 +155,34 @@ export function resolveClassNames(
     // A named class expression binds its inner name inside its own body, per JS class scope.
     innerName = statement.name.text;
   }
-  if (statement.heritageClauses === undefined || statement.heritageClauses.length === 0) {
+  const extended = resolveExtendedClassName(statement.heritageClauses, classes);
+  if (extended === undefined) {
+    // No usable `extends` is not itself a failure: a class may extend nothing, and a class may
+    // implement interfaces while extending nothing. Only an `extends` clause that is present and
+    // unusable is a refusal.
+    const extendsClauses = (statement.heritageClauses ?? []).filter(isExtendsClause);
+    if (extendsClauses.length > 0) {
+      return unsupportedIn(classHeritageRefusal(extendsClauses));
+    }
     return produced({ infoName, innerName, baseName: undefined });
   }
-  const baseName = resolveExtendedClassName(statement.heritageClauses, classes);
-  if (baseName === undefined) {
-    return unsupportedIn(classHeritageRefusal(statement.heritageClauses));
-  }
-  return produced({ infoName, innerName, baseName });
+  return produced({ infoName, innerName, baseName: extended });
 }
-/** Why a heritage clause produced no usable base class. */
-export function classHeritageRefusal(heritageClauses: ts.NodeArray<ts.HeritageClause>): string {
+
+/**
+ * Whether a heritage clause is the one that names a base class. The other kind, `implements`, is
+ * erased: it asserts a shape the class already has and produces no runtime base, so it is not a
+ * heritage clause this lowering has to resolve. A class may carry several of them at once.
+ */
+function isExtendsClause(heritage: ts.HeritageClause): boolean {
+  return heritage.token === ts.SyntaxKind.ExtendsKeyword;
+}
+/** Why an `extends` clause produced no usable base class. */
+export function classHeritageRefusal(heritageClauses: readonly ts.HeritageClause[]): string {
   if (heritageClauses.length !== 1) {
-    return "A class may have at most one heritage clause";
+    return "A class may extend at most one class";
   }
   const [heritage] = heritageClauses;
-  if (heritage.token !== ts.SyntaxKind.ExtendsKeyword) {
-    return "Class `implements` clauses are not supported yet; only `extends` is lowered";
-  }
   if (heritage.types.length === 1 && ts.isIdentifier(heritage.types[0].expression)) {
     return `\`extends ${heritage.types[0].expression.text}\` does not name a class declared in this module`;
   }
@@ -180,14 +190,15 @@ export function classHeritageRefusal(heritageClauses: ts.NodeArray<ts.HeritageCl
 }
 /** The base class a heritage clause names, or `undefined` when it names something unusable. */
 export function resolveExtendedClassName(
-  heritageClauses: ts.NodeArray<ts.HeritageClause>,
+  heritageClauses: ts.NodeArray<ts.HeritageClause> | undefined,
   classes: ReadonlyMap<string, ClassInfo>
 ): string | undefined {
-  if (heritageClauses.length !== 1) {
+  const extendsClauses = (heritageClauses ?? []).filter(isExtendsClause);
+  if (extendsClauses.length !== 1) {
     return undefined;
   }
-  const [heritage] = heritageClauses;
-  if (heritage.token !== ts.SyntaxKind.ExtendsKeyword || heritage.types.length !== 1) {
+  const [heritage] = extendsClauses;
+  if (heritage.types.length !== 1) {
     return undefined;
   }
   const [type] = heritage.types;

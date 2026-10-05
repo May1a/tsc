@@ -126,9 +126,8 @@ const declaredForms: readonly TypeScriptForm[] = [
   {
     form: "implements clause",
     id: "implements-clause",
-    state: "planned",
-    syntax: "class A implements I",
-    reason: "the class tier does not erase the clause, and the members it would erase are the ones it refuses"
+    state: "admitted",
+    syntax: "class A implements I"
   },
   {
     form: "declare modifier on a class member",
