@@ -815,8 +815,11 @@ function lowerClassMethod(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<JsIrOperation> {
   const { declaration } = entry;
+  // `collectClassMembers` drops a method with no body, so this cannot be reached from a class this
+  // compiler collected. The guard turns a regression in that filter into a named diagnostic instead of
+  // an `undefined` block somewhere in emission, and it is the only narrowing of `body` in the tier.
   if (declaration.body === undefined) {
-    return unsupportedIn("Method overload signatures are not supported yet; only the implementation is lowered");
+    return unsupportedIn("A method with no body reached emission; the class tier should have dropped it as an overload signature");
   }
   const methodName = entry.name;
   const parameters = classCallableParameters(declaration);

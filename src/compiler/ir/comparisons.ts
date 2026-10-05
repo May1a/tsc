@@ -56,6 +56,12 @@ export function isNonExecutableDeclaration(statement: ts.Statement): boolean {
   ) {
     return true;
   }
+  // An overload signature is a function declaration with no body: it declares a type the compiler
+  // checks calls against and emits nothing. Only the implementation signature is executable, so the
+  // signature must be dropped here rather than refused as a function with no body.
+  if (ts.isFunctionDeclaration(statement) && statement.body === undefined) {
+    return true;
+  }
 
   let modifiers: readonly ts.Modifier[] | undefined;
   if (ts.canHaveModifiers(statement)) {

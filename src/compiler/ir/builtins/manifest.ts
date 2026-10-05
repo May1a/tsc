@@ -119,9 +119,8 @@ const declaredForms: readonly TypeScriptForm[] = [
   {
     form: "abstract member",
     id: "abstract-member",
-    state: "planned",
-    syntax: "abstract m(): void",
-    reason: "the class tier refuses on any member it cannot place, and an abstract member has no body to place"
+    state: "admitted",
+    syntax: "abstract m(): void"
   },
   {
     form: "implements clause",
@@ -152,9 +151,8 @@ const declaredForms: readonly TypeScriptForm[] = [
   {
     form: "function overload signature",
     id: "function-overload-signature",
-    state: "planned",
-    syntax: "function f(x: number): number;",
-    reason: "a signature without a body is lowered as a declaration, which emits nothing and declares nothing"
+    state: "admitted",
+    syntax: "function f(x: number): number;"
   },
 
   // Batch 2, desugaring to shapes that already work.

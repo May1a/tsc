@@ -409,6 +409,13 @@ export function collectClassMembers(
   let constructorDeclaration: ts.ConstructorDeclaration | undefined;
   let iteratorMethod: ts.MethodDeclaration | undefined;
   for (const member of statement.members) {
+    // A method declaration with no body is an overload signature or an `abstract` member: it declares
+    // a type the compiler checks calls against and emits nothing at runtime, which is also true of the
+    // abstract method it is written as. Only the implementation signature is executable, so these are
+    // dropped here rather than refused as a method with no body.
+    if (ts.isMethodDeclaration(member) && member.body === undefined) {
+      continue;
+    }
     if (ts.isPropertyDeclaration(member) && ts.isPrivateIdentifier(member.name)) {
       // Instance private fields join the ordinary field list (under a
       // class-mangled key) so they initialize in declaration order. Static
@@ -502,9 +509,6 @@ export function classMemberRefusalReason(member: ts.ClassElement): string {
   }
   if (ts.isPrivateIdentifier(member.name)) {
     return "Private class methods and accessors are not supported yet";
-  }
-  if (ts.isMethodDeclaration(member) && member.body === undefined) {
-    return "Method overload signatures are not supported yet; only the implementation is lowered";
   }
   if ((ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) && classMemberHasStaticModifier(member)) {
     return "Static accessors are not supported yet";
