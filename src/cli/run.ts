@@ -34,6 +34,18 @@ const describeError = (error: unknown): string => {
   return String(error);
 };
 
+/**
+ * A distinct code so this cannot be mistaken for a complaint about the source.
+ *
+ * `TSCN1001` is "NPM package imports are not supported yet" and `TSCN1002` is every diagnostic about a
+ * program. An internal error is neither: nothing about the program is wrong, and a user who sees
+ * `TSCN1001` here would go looking for an import.
+ */
+const internalErrorCode = "TSCN1000";
+
+/** A defect arrives wrapped in a `Cause`, so the message has to be dug out rather than read off the top. */
+const describeDefect = (defect: unknown): string => describeError(defect);
+
 export const tscnCommand = Command.make(
   "tscn",
   {
@@ -77,6 +89,25 @@ export const tscnCommand = Command.make(
           }
           yield* Console.error(`error: ${describeError(error)}`);
           return yield* Effect.fail(error);
+        })
+      ),
+      // A *defect* — an exception thrown rather than a typed failure — is what the compiler does when
+      // lowering admits a shape the emitter cannot back, and `runMain` is configured with error
+      // reporting off. Without this it left the process with nothing to say: exit status 1 and no output
+      // at all, which is the one failure a user cannot act on and which hides the fact that the compiler
+      // produced an internal error rather than a diagnostic.
+      Effect.catchAllDefect((defect) =>
+        Effect.gen(function* reportDefect() {
+          const message = describeDefect(defect);
+          yield* Console.error(`error: ${message}`);
+          // Failing rather than returning is what makes the exit status non-zero. Reporting alone left
+          // the process exiting 0 on an internal error, which is worse than the silence it replaced: a
+          // build step would treat a compiler crash as a success.
+          return yield* Effect.fail(
+            new CompilationFailed({
+              diagnostics: [{ code: internalErrorCode, category: "error", message: `internal compiler error: ${message}` }]
+            })
+          );
         })
       )
     )

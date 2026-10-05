@@ -34,6 +34,40 @@ describe("tscn CLI", () => {
     }
   });
 
+  // A compiler failure that says nothing is the one failure a user cannot act on, and this one was
+  // silent: exit status 1 with empty stdout *and* empty stderr. `runMain` is configured with
+  // `disableErrorReporting`, and a defect — an exception thrown rather than a typed failure — does not
+  // pass through the typed handlers, so it left the process mute. `run.ts` now reports defects the same
+  // way it reports typed errors.
+  //
+  // The fixture triggers a real one rather than a synthetic fault: reading a field of an object literal
+  // from inside a function needs a layout that `@main` registers after the function definitions are
+  // emitted, so the emitter cannot resolve it. The ordering is documented in the fixture; fixing it
+  // reorders emission and changes every `main.ll`, so it is not done here.
+  test("reports a compiler defect instead of exiting silently", async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), "tscn-defect-"));
+    const run = await Effect.runPromise(
+      captureCommand("bun", [
+        "src/cli/main.ts",
+        "test/fixtures/defect-closure-over-object-literal.ts",
+        "--out-dir",
+        outDir
+      ], { cwd: repoRoot }).pipe(Effect.provide(commandExecutorLayer))
+    );
+
+    try {
+      expect(run.status).not.toBe(0);
+      expect(run.stdout).toBe("");
+      expect(run.stderr, "a defect must not be silent").not.toBe("");
+      expect(run.stderr).toContain("error:");
+      // It is an internal error rather than a diagnostic about the program, and saying so is the point:
+      // the user needs to know the compiler broke, not that their source was rejected.
+      expect(run.stderr).toContain("Unhandled JsIrNumberExpression");
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  }, roadmapIntegrationTimeoutMs);
+
   test("runs emitted native executable when clang is available", async () => {
     const result = await expectSuccessfulCompile("hello.ts", { link: true });
 
