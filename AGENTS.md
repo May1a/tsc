@@ -42,8 +42,11 @@ pass does not rediscover them:
   condition and number/string tiers are still if-chains and still decline with `return undefined`;
   the same table shape is the fix for them. The two points that are checked in the type system are
   `jsIrLeafOperationKinds` and the delegation parameter of `emitTernaryStringExpression`.
-- **`max-len` (140).** Violations are concentrated in `ir.ts` and `llvm.ts`. Worth enabling as
-  `warn` once those two files are decomposed.
+- **`max-len` (140) is not an enforceable rule with the pinned oxlint.** oxlint 1.66 does not ship it —
+  configuring it reports `Rule 'max-len' not found in plugin 'eslint'`. This replaces an earlier note here
+  that called it worth enabling once the two god-files were decomposed; `llvm.ts` is decomposed and `ir.ts`
+  is not, and neither fact would have made the rule exist. It needs a rule that ships before a threshold
+  for it means anything.
 
 - **No lint, but worth stating: the single narrowing assertion in `src/compiler/llvm.ts`.**
   `operationEmitterFor` asserts a `Record` lookup to a wide function type. TypeScript cannot

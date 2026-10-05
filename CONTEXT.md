@@ -27,11 +27,13 @@ Linking               clang / clang++ → native executable
 
 **IR Operation** (`JsIrOperation`) — one statement-level form in the IR. A closed union of 110
 kinds. 19 of them are *containers*: they hold nested operations. The rest are leaves. The
-container/leaf split is enumerated in `jsIrLeafOperationKinds` (`src/compiler/ir.ts`) and is
+container/leaf split is enumerated in `jsIrLeafOperationKinds` (`src/compiler/ir/visit.ts`) and is
 checked for completeness by the compiler, so a new operation must be classified before it can be
-emitted.
+emitted. Walking the tree — `jsIrOperationChildren` and `visitJsIrOperations` — lives beside that
+classification rather than in `types.ts`, so the union file states the IR's shape and `visit.ts`
+describes the traversal over it.
 
-**Operation Emitter Table** (`operationEmittersByKind`, `src/compiler/llvm.ts`) — the one place
+**Operation Emitter Table** (`operationEmittersByKind`, `src/compiler/llvm/operations.ts`) — the one place
 an operation is turned into LLVM IR text. It is a `Record` keyed by the operation union, so the
 compiler rejects a new kind until something emits it, and `Extract` gives each handler its own
 narrowed operation so it cannot read a field its kind does not have. Dispatch is a table lookup,
@@ -57,7 +59,7 @@ them anywhere. Each source file is traversed once: a statement no recognizer cla
 TSCN1002 where it failed, and there is no strict re-run to tell "unrecognized" from "recognized and
 gave up".
 
-**Lowered** (`Lowered`, `src/compiler/ir.ts`) — the result of trying to recognize one AST shape:
+**Lowered** (`Lowered`, `src/compiler/ir/lowered.ts`) — the result of trying to recognize one AST shape:
 `lowered` carries the operation, `notApplicable` continues the recognizer chain, and `unsupported`
 stops it with the reason the diagnostic will quote. A recognizer that returns `undefined` for both
 of the latter two cannot say which happened; the support tables are what make a recognizer's
@@ -101,9 +103,13 @@ rewritten to a companion `.cpp` file linked alongside the LLVM module.
   exists to enforce.
 - **Effect is confined to two boundaries**: CLI parsing/help (`src/cli/**`, `@effect/cli`) and
   scoped process spawning (`toolchain.ts`, `linker.ts`, `test262/process.ts`, `@effect/platform`).
-  The compiler core — `ir.ts`, `llvm.ts`, `runtime-ir.ts`, `llvm-ir/**`, `js-value-abi/**` —
-  is pure and synchronous. This is enforced by the `no-restricted-imports` override in
+  The compiler core — `ir.ts`, `ir/**`, `llvm/**`, `runtime-ir.ts`, `llvm-ir/**`,
+  `js-value-abi/**` — is pure and synchronous. This is enforced by the `no-restricted-imports` override in
   `oxlint.config.ts`, not by convention.
 - The correctness oracle (`test/integration/oracle.ts`) compiles a fixture with `tscn`, runs the
-  native binary, runs the same fixture under Node, and asserts the two agree. 120 fixtures go
-  through it. Prefer adding a fixture over asserting on emitted text.
+  native binary, runs the same fixture under Node, and asserts the two agree. 163 fixtures go
+  through it. Four admitted forms cannot be: Node 22's strip-only mode rejects `accessor`, an `enum`,
+  a `namespace` and a parameter property outright, because each needs transformation rather than
+  erasure. Those are asserted by native value in `test/integration/core.test.ts` instead, which is
+  what backs the manifest's claim that they work. Prefer adding a fixture over asserting on emitted
+  text.
