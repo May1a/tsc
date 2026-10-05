@@ -129,11 +129,10 @@ const declaredForms: readonly TypeScriptForm[] = [
     syntax: "class A implements I"
   },
   {
-    form: "declare modifier on a class member",
+    form: "declare modifier",
     id: "declare-member",
-    state: "planned",
-    syntax: "declare class A { x: number }",
-    reason: "a declared field has no initializer to lower, and the class tier requires one"
+    state: "admitted",
+    syntax: "declare class A { x: number }"
   },
   {
     form: "type parameters on a class",
