@@ -316,11 +316,11 @@ Each step ends green and is separately revertable.
 5. The double-lower removed. `strict`, `tryLowerStatementsWithClasses` and
    `ClassLoweringUnsupportedError` go. **[PARTIALLY DONE. `strict`,
    `tryLowerStatementsWithClasses` and `sourceFileContainsClass` are deleted and each file is
-   traversed once. Nine `throw new ClassLoweringUnsupportedError` sites existed; five remain, all
-   in the value and condition tiers — three in `lowerClassValueExpression`, one in
-   `lowerInstanceReceiverValue`, one in `lowerInstanceOfCondition`. Each needs the graph below it
-   converted, not one recognizer, and the file-level `try` in `lowerStatements` cannot go until
-   the last one does.]**
+   traversed once. Nine `throw new ClassLoweringUnsupportedError` sites existed; four remain, all
+   in the value tier — three in `lowerClassValueExpression` and one in
+   `lowerInstanceReceiverValue`. The condition tier and the whole assignment and call-statement paths
+   are converted. The file-level `try` in `lowerStatements` cannot go until
+   the last one does, and `lowerValueExpression` — 127 call sites — is what remains.]**
 6. The builtin tables, one owner at a time, `array` first because it has the most entries.
    **[DONE — 12 owners under `src/compiler/ir/builtins/`.]**
 7. The manifest and `support-manifest.test.ts`. **[DONE]**
