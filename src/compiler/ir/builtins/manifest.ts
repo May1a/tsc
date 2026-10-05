@@ -139,9 +139,15 @@ const declaredForms: readonly TypeScriptForm[] = [
   {
     form: "type parameters on a class",
     id: "class-type-parameters",
+    state: "admitted",
+    syntax: "class Box<T>"
+  },
+  {
+    form: "parameter property",
+    id: "parameter-property",
     state: "planned",
-    syntax: "class Box<T>",
-    reason: "the class tier does not erase the type parameter list"
+    syntax: "constructor(readonly v: T)",
+    reason: "the class tier declares a field from the modifier, and it writes no field initializer"
   },
   {
     form: "function overload signature",

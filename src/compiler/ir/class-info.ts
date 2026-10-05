@@ -533,6 +533,22 @@ export function classMethodInfoMap(
   return produced(map);
 }
 /**
+ * True when a parameter is annotated with a bare type parameter.
+ *
+ * A type parameter names no representation, so it is opaque in exactly the way `unknown` is and is
+ * encoded the same way: as a boxed value. The alternative is falling through to a number, which is
+ * how a type parameter used to read — and a number is a guess, so `function f<T>(x: T)` accepted an
+ * integer argument by accident and rejected every other one at the call site, a long way from the
+ * declaration that decided it.
+ *
+ * A generic such as `Array<T>` or `Box<T>` is not this: its name still says what it is, and the
+ * existing rules for that name apply.
+ */
+export function hasUnconstrainedTypeParameter(parameter: ts.ParameterDeclaration): boolean {
+  const { type } = parameter;
+  return type !== undefined && ts.isTypeReferenceNode(type) && ts.isIdentifier(type.typeName);
+}
+/**
  * The runtime parameters of a class member, or the reason it has none this build can place.
  *
  * A class member's parameter list becomes an LLVM function signature with one slot per parameter, so
@@ -699,6 +715,9 @@ export function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValu
     return "string";
   }
   if (parameter.type?.kind === ts.SyntaxKind.UnknownKeyword || parameter.type?.kind === ts.SyntaxKind.AnyKeyword) {
+    return "value";
+  }
+  if (hasUnconstrainedTypeParameter(parameter)) {
     return "value";
   }
   return "number";
