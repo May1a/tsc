@@ -1,3 +1,4 @@
+import { unsupportedFormMessage } from "./builtins/manifest.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import { callTargetMessage, isRecognizedGlobalCallee, plannedMemberReadMessage } from "./builtins/owners.js";
@@ -87,6 +88,10 @@ function unsupportedExpressionMessage(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): string | undefined {
+  if (ts.isNewExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "Date" && !bindings.has("Date")) {
+    return unsupportedFormMessage("date-constructor");
+  }
+
   if (isUnsupportedSymbolExpression(expression, new Map())) {
     return "General Symbol values are not supported; only the well-known Symbol.iterator key is available";
   }
@@ -230,7 +235,6 @@ function unsupportedRuntimeBoundaryMessage(
   }
   return callTargetMessage(callee, bindings);
 }
-
 
 function unsupportedJsonMessage(callee: ts.PropertyAccessExpression): string | undefined {
   if (!ts.isIdentifier(callee.expression) || callee.expression.text !== "JSON") {

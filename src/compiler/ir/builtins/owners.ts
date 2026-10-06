@@ -1,25 +1,20 @@
 import ts from "typescript";
 import type { JsIrBindingValue } from "../bindings.js";
 import type { JsIrNumberExpression, JsIrValueExpression } from "../expressions.js";
-import type { BuiltinOwner } from "./support.js";
-import {
-  builtinEntryForOwnerAndName,
-  knownBuiltinMessage,
-  numberGlobalNames,
-  plannedArrayBuiltinMessage,
-  plannedCollectionBuiltinMessage,
-  plannedDateBuiltinMessage,
-  plannedErrorBuiltinMessage,
-  plannedFunctionBuiltinMessage,
-  plannedIteratorBuiltinMessage,
-  plannedJsonBuiltinMessage,
-  plannedMathBuiltinMessage,
-  plannedNumberBuiltinMessage,
-  plannedNumberGlobalMessage,
-  plannedObjectBuiltinMessage,
-  plannedRegexpBuiltinMessage,
-  plannedStringBuiltinMessage
-} from "./index.js";
+import { builtinEntryForOwnerAndName } from "./manifest.js";
+import { type BuiltinOwner, knownBuiltinMessage } from "./support.js";
+import { numberGlobalNames, plannedNumberBuiltinMessage, plannedNumberGlobalMessage } from "./number.js";
+import { plannedArrayBuiltinMessage } from "./array.js";
+import { plannedCollectionBuiltinMessage } from "./collection.js";
+import { plannedDateBuiltinMessage } from "./date.js";
+import { plannedErrorBuiltinMessage } from "./error.js";
+import { plannedFunctionBuiltinMessage } from "./function.js";
+import { plannedIteratorBuiltinMessage } from "./iterator.js";
+import { plannedJsonBuiltinMessage } from "./json.js";
+import { plannedMathBuiltinMessage } from "./math.js";
+import { plannedObjectBuiltinMessage } from "./object.js";
+import { plannedRegexpBuiltinMessage } from "./regexp.js";
+import { plannedStringBuiltinMessage } from "./string.js";
 
 /**
  * Which support table answers for a call target, and what that table says when it has not been

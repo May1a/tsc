@@ -1,21 +1,11 @@
-// The dependency graph of `src/compiler/ir.ts`, so its decomposition is measured rather than guessed.
-//
-// `PLAN.md` step 8 splits `ir.ts` by concept. Which concept can be cut first is not a judgement call:
-// a declaration can leave only if nothing that stays behind needs it, and a group of mutually recursive
-// declarations cannot be split at all without first moving the recursion somewhere every callee can
-// reach. Both questions are answered here, exactly once, by the compiler's own symbol resolution.
+// Measure the declaration graph of a compiler module with TypeScript's symbol resolver.
+// Prints strongly connected components and the external callers of the largest component.
+// Declaration extents exclude the comments and blank lines between declarations.
 //
 //   node scripts/ir-cut-graph.mjs [file]
-//
-// Prints the strongly connected components largest-first, and for the root component the declarations
-// reachable from outside it -- the entries the recursion has to be broken through.
-//
-// The line counts are declaration extents, not file lines: comments and the blank lines between
-// declarations are not attributed to anything, so they read lower than `wc -l` on the same file. They
-// are the right number for "how big is this concept", which is what a cut needs.
 import ts from "typescript";
 
-const file = process.argv[2] ?? "src/compiler/ir.ts";
+const file = process.argv[2] ?? "src/compiler/ir/value-expressions.ts";
 
 const program = ts.createProgram([file], {
   target: ts.ScriptTarget.ESNext,
@@ -40,6 +30,11 @@ for (const statement of sourceFile.statements) {
     }
   }
 }
+if (declarations.size === 0) {
+  console.log(`${file}: no local declarations`);
+  process.exit(0);
+}
+
 /** @type {Map<ts.Declaration, string>} */
 const nameOf = new Map([...declarations].map(([name, declaration]) => [declaration, name]));
 

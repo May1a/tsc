@@ -18,7 +18,7 @@ import {
   stringBuiltinSupport,
   supportManifest
 } from "../../src/compiler/ir/builtins/index.js";
-import { expectUnsupportedDiagnostic, expectUnsupportedMessage } from "../integration/helpers.js";
+import { expectUnsupportedMessage } from "../integration/helpers.js";
 import { oracleFixtures } from "../integration/oracle.js";
 
 /**
@@ -238,10 +238,10 @@ describe("erasure forms", () => {
   test.each(planned.map((form) => [form.id, form] as const))(
     "%s has a fixture the compiler refuses today",
     async (_id, form) => {
-      // The refusal is asserted as *a* TSCN1002 and not as the reason above: the reason says what
-      // the work is, and today's message is the generic one. Pinning the generic message would make
-      // the test fail the moment the diagnostic improves, which is the opposite of what it is for.
-      await expectUnsupportedDiagnostic(`form-planned-${form.id}.ts`);
+      await expectUnsupportedMessage(
+        `form-planned-${form.id}.ts`,
+        `${form.form} is not supported yet [support: ${form.id}]`
+      );
     },
     60_000
   );

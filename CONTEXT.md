@@ -53,17 +53,27 @@ use a narrower runtime ABI than the general value tier.
 **Binding Value** (`JsIrBindingValue`) — what a name currently holds. Emission consults these to
 decide between direct registers and boxed runtime cells.
 
-**Lowering** (`lowerToJsIr`) — TypeScript AST → JsIrModule. Pure and synchronous, but **not
-fiber-safe**: it keeps module-level lowering state. It *returns* diagnostics rather than pushing
+**Lowering** (`lowerToJsIr`, `src/compiler/ir/source-module.ts`) — TypeScript AST → JsIrModule.
+Pure and synchronous, but **not fiber-safe**: it keeps module-level lowering state. It *returns* diagnostics rather than pushing
 them anywhere. Each source file is traversed once: a statement no recognizer claims becomes a
 TSCN1002 where it failed, and there is no strict re-run to tell "unrecognized" from "recognized and
 gave up".
 
+**Lowering Context** (`LoweringContext`, `src/compiler/ir/context.ts`) holds the recursive entries
+shared by lowering domains and the counters and scope flags for the current compilation. The
+composition root in `lowering-context.ts` connects ten entries. Domain modules import the context
+type instead of importing a recursive caller. `ir.ts` only re-exports the public IR types and
+`lowerToJsIr`. Module envelopes live in `ir/module.ts`; `source-module.ts` owns source traversal
+and trace finalization.
+
 **Lowered** (`Lowered`, `src/compiler/ir/lowered.ts`) — the result of trying to recognize one AST shape:
 `lowered` carries the operation, `notApplicable` continues the recognizer chain, and `unsupported`
-stops it with the reason the diagnostic will quote. A recognizer that returns `undefined` for both
-of the latter two cannot say which happened; the support tables are what make a recognizer's
-choice explicit.
+stops it with the reason the diagnostic will quote. Expression, scalar, argument, binding and
+statement recognizers return this union.
+`Produced<T>` omits `notApplicable` for steps below a matched shape. A refusal travels through
+function bodies, class members, branches, loops and catch blocks in its return value.
+`loweredPayload` accepts only a result already narrowed away from `unsupported`, so it cannot
+discard a refusal. The old class refusal holder and statement adapter are gone.
 
 **Emission** (`emitLlvmModule`) — JsIrModule → LLVM IR text. Pure. Operations dispatch through the
 Operation Emitter Table; the value, condition and number/string tiers are still `if` chains, which
@@ -96,6 +106,11 @@ operation emitted. Serialized to `trace-map.json` for the debugger and for the c
 **Inline C++** (`--fcpp`, `JsIrInlineCppBlock`) — tagged template literals in the source that are
 rewritten to a companion `.cpp` file linked alongside the LLVM module.
 
+**Compiler boundaries check** (`scripts/check-compiler-boundaries.mjs`) builds the runtime import
+graph for `ir/**` and `llvm/**` after TypeScript erases type-only imports. `npm run lint` rejects
+cycles in that graph. The same command enforces 800 nonblank, noncomment lines per source file
+and 400 per function, and bans Effect imports throughout both compiler directories.
+
 ## Invariants worth knowing
 
 - The IR is a **closed world**. Every union is meant to enumerate every form the lowering pass can
@@ -107,7 +122,7 @@ rewritten to a companion `.cpp` file linked alongside the LLVM module.
   `js-value-abi/**` — is pure and synchronous. This is enforced by the `no-restricted-imports` override in
   `oxlint.config.ts`, not by convention.
 - The correctness oracle (`test/integration/oracle.ts`) compiles a fixture with `tscn`, runs the
-  native binary, runs the same fixture under Node, and asserts the two agree. 163 fixtures go
+  native binary, runs the same fixture under Node, and asserts the two agree. 164 fixtures go
   through it. Four admitted forms cannot be: Node 22's strip-only mode rejects `accessor`, an `enum`,
   a `namespace` and a parameter property outright, because each needs transformation rather than
   erasure. Those are asserted by native value in `test/integration/core.test.ts` instead, which is

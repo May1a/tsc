@@ -1,3 +1,4 @@
+import { type Lowered, notApplicable, produced } from "../lowered.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "../bindings.js";
 import type {
@@ -8,7 +9,6 @@ import type {
   JsIrStringExpression,
   JsIrValueExpression
 } from "../expressions.js";
-import type { JsIrOperation } from "../types.js";
 
 /**
  * The `Object` and `Object.prototype` lowering producers.
@@ -123,74 +123,74 @@ export function lowerRuntimeObjectKeysBinding(
   name: string,
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const target = lowerUnaryObjectAggregateCall(initializer, bindings, "keys");
   if (target === undefined) {
-    return undefined;
+    return notApplicable;
   }
-  return { kind: "runtimeObjectKeys", name, targetName: target.name, targetKind: target.kind };
+  return produced({ kind: "runtimeObjectKeys", name, targetName: target.name, targetKind: target.kind });
 }
 export function lowerRuntimeObjectValuesBinding(
   name: string,
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const target = lowerUnaryObjectAggregateCall(initializer, bindings, "values");
   if (target === undefined) {
-    return undefined;
+    return notApplicable;
   }
-  return { kind: "runtimeObjectValues", name, targetName: target.name, targetKind: target.kind };
+  return produced({ kind: "runtimeObjectValues", name, targetName: target.name, targetKind: target.kind });
 }
 export function lowerRuntimeObjectEntriesBinding(
   name: string,
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const target = lowerUnaryObjectAggregateCall(initializer, bindings, "entries");
   if (target === undefined) {
-    return undefined;
+    return notApplicable;
   }
-  return { kind: "runtimeObjectEntries", name, targetName: target.name, targetKind: target.kind };
+  return produced({ kind: "runtimeObjectEntries", name, targetName: target.name, targetKind: target.kind });
 }
 export function lowerRuntimeObjectFromEntriesBinding(
   name: string,
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   if (!ts.isCallExpression(initializer) || initializer.arguments.length !== 1) {
-    return undefined;
+    return notApplicable;
   }
   const callee = initializer.expression;
   if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression) || callee.expression.text !== "Object" || callee.name.text !== "fromEntries") {
-    return undefined;
+    return notApplicable;
   }
   const [entries] = initializer.arguments;
   if (!ts.isIdentifier(entries) || bindings.get(entries.text)?.kind !== "runtimeArray") {
-    return undefined;
+    return notApplicable;
   }
-  return { kind: "runtimeObjectFromEntries", name, entriesName: entries.text };
+  return produced({ kind: "runtimeObjectFromEntries", name, entriesName: entries.text });
 }
 export function lowerRuntimeObjectOwnPropertyNamesBinding(
   name: string,
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const target = lowerUnaryObjectAggregateCall(initializer, bindings, "getOwnPropertyNames");
   if (target === undefined) {
-    return undefined;
+    return notApplicable;
   }
-  return { kind: "runtimeObjectOwnPropertyNames", name, targetName: target.name, targetKind: target.kind };
+  return produced({ kind: "runtimeObjectOwnPropertyNames", name, targetName: target.name, targetKind: target.kind });
 }
 export function lowerRuntimeObjectOwnPropertyDescriptorsBinding(
   name: string,
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   const target = lowerUnaryObjectAggregateCall(initializer, bindings, "getOwnPropertyDescriptors");
   if (target === undefined) {
-    return undefined;
+    return notApplicable;
   }
-  return { kind: "runtimeObjectOwnPropertyDescriptors", name, targetName: target.name, targetKind: target.kind };
+  return produced({ kind: "runtimeObjectOwnPropertyDescriptors", name, targetName: target.name, targetKind: target.kind });
 }
 export function lowerUnaryObjectAggregateCall(
   expression: ts.Expression,
@@ -224,51 +224,51 @@ export function lowerRuntimeObjectGetPrototypeBinding(
   name: string,
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   if (!ts.isCallExpression(initializer) || initializer.arguments.length !== 1) {
-    return undefined;
+    return notApplicable;
   }
   const callee = initializer.expression;
   if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression) || callee.expression.text !== "Object" || callee.name.text !== "getPrototypeOf") {
-    return undefined;
+    return notApplicable;
   }
   const [target] = initializer.arguments;
   if (!ts.isIdentifier(target)) {
-    return undefined;
+    return notApplicable;
   }
   const binding = bindings.get(target.text);
   if (binding?.kind === "runtimeObject") {
-    return { kind: "runtimeObjectGetPrototype", name, targetName: target.text, targetKind: "object" };
+    return produced({ kind: "runtimeObjectGetPrototype", name, targetName: target.text, targetKind: "object" });
   }
   if (binding?.kind === "runtimeArray") {
-    return { kind: "runtimeObjectGetPrototype", name, targetName: target.text, targetKind: "array" };
+    return produced({ kind: "runtimeObjectGetPrototype", name, targetName: target.text, targetKind: "array" });
   }
-  return undefined;
+  return notApplicable;
 }
 export function lowerRuntimeObjectCreateBinding(
   name: string,
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrOperation | undefined {
+): Lowered {
   if (!ts.isCallExpression(initializer) || initializer.arguments.length !== 1) {
-    return undefined;
+    return notApplicable;
   }
   const callee = initializer.expression;
   if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression) || callee.expression.text !== "Object" || callee.name.text !== "create") {
-    return undefined;
+    return notApplicable;
   }
   const [prototype] = initializer.arguments;
   if (prototype.kind === ts.SyntaxKind.NullKeyword) {
-    return { kind: "runtimeObjectCreate", name };
+    return produced({ kind: "runtimeObjectCreate", name });
   }
   if (!ts.isIdentifier(prototype)) {
-    return undefined;
+    return notApplicable;
   }
   const binding = bindings.get(prototype.text);
   if (binding?.kind !== "runtimeObject") {
-    return undefined;
+    return notApplicable;
   }
-  return { kind: "runtimeObjectCreate", name, prototypeName: prototype.text };
+  return produced({ kind: "runtimeObjectCreate", name, prototypeName: prototype.text });
 }
 export function lowerRuntimeObjectStateCondition(
   expression: ts.Expression,

@@ -1,3 +1,4 @@
+import { type Lowered, notApplicable, produced } from "./lowered.js";
 import ts from "typescript";
 import type { JsIrInlineCppBlock } from "./module.js";
 import type { CompilerDiagnostic } from "../diagnostics.js";
@@ -55,16 +56,16 @@ export function inlineCppDisabledDiagnostic(sourceFile: ts.SourceFile): Compiler
     span: sourceSpan(sourceFile, node.getStart(sourceFile))
   };
 }
-export function lowerInlineCppValueExpression(expression: ts.Expression): JsIrValueExpression | undefined {
+export function lowerInlineCppValueExpression(expression: ts.Expression): Lowered<JsIrValueExpression> {
   if (!isInlineCppTaggedTemplate(expression) || !ts.isNoSubstitutionTemplateLiteral(expression.template)) {
-    return undefined;
+    return notApplicable;
   }
   if (!inlineCppState.enabled || inlineCppState.blocks === undefined) {
-    return undefined;
+    return notApplicable;
   }
   const symbol = `__tscn_cpp_${inlineCppState.blocks.length}`;
   inlineCppState.blocks.push({ symbol, code: rawNoSubstitutionTemplateText(expression.template) });
-  return { kind: "inlineCppValue", symbol };
+  return produced({ kind: "inlineCppValue", symbol });
 }
 export function rawNoSubstitutionTemplateText(template: ts.NoSubstitutionTemplateLiteral): string {
   const sourceFile = template.getSourceFile();

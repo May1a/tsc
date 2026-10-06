@@ -149,18 +149,10 @@ export default defineConfig({
                         variables: true,
                     },
                 ],
-                // C-6: file-size guard — warn at 800 LOC (skip blanks/comments).
-                //
-                // `src/compiler/llvm.ts` is gone, decomposed into 34 modules under `src/compiler/llvm/`,
-                // so of the two god-files this was written for only `src/compiler/ir.ts` still warns, at
-                // roughly 8.4k lines. Both stay `warn` until that one is cut up too; `max-lines` then
-                // becomes an `error` and `max-len` at 140 joins them.
-                //
-                // `max-len` is not configured because oxlint 1.66 does not ship it — enabling it reports
-                // "Rule 'max-len' not found in plugin 'eslint'" — so it is not a matter of waiting for
-                // the decomposition to finish. It needs a rule that exists.
-                "max-lines": ["warn", { max: 800, skipBlankLines: true, skipComments: true }],
-                "max-lines-per-function": ["warn", { max: 400, skipBlankLines: true, skipComments: true }],
+                // Keep compiler domains small enough to read and review as one unit.
+                // max-len needs a JS plugin and formatting pass. See docs/max-len.md.
+                "max-lines": ["error", { max: 800, skipBlankLines: true, skipComments: true }],
+                "max-lines-per-function": ["error", { max: 400, skipBlankLines: true, skipComments: true }],
             },
         },
         // C-7: only the CLI boundary and build scripts should use console /
@@ -219,6 +211,8 @@ export default defineConfig({
             // that way.
             files: [
                 "src/compiler/{ir,llvm,types,trace,diagnostics,inline-cpp-rewriter}.ts",
+                "src/compiler/ir/**/*.ts",
+                "src/compiler/llvm/**/*.ts",
                 "src/compiler/llvm-ir/**/*.ts",
                 "src/compiler/js-value-abi/**/*.ts",
                 "src/testing/**/*.ts",

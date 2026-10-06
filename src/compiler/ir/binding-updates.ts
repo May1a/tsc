@@ -417,7 +417,8 @@ export function collectOperationValueExpressions(operation: JsIrOperation, names
     collectRuntimeShadowObjectNames(operation.increment, names);
   }
 }
-export function collectValueExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {  if (expression.kind === "objectDynamicAccess") {
+export function collectValueExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {
+  if (expression.kind === "objectDynamicAccess") {
     names.add(expression.objectName);
   }
   if (expression.kind === "ternary") {

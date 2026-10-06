@@ -40,12 +40,6 @@ export const unsupported = (reason: string): Lowered => ({ kind: "unsupported", 
 export const loweredOperationList = (operations: readonly JsIrOperation[]): LoweredStatementList => produced(operations);
 export const loweredUnsupportedStatementList = (reason: string): LoweredStatementList => unsupportedIn(reason);
 /**
- * Adapts a recognizer that still returns `JsIrOperation | undefined`, which is the ambiguous
- * pair `Lowered` exists to separate. At the statement tier the two are diagnosed identically, so
- * the reason stays the reconstructed one; converting a recognizer to return `Lowered` replaces
- * this with the reason the recognizer itself knows.
- */
-/**
  * A statement whose recognizer returned `Lowered`.
  *
  * A recognizer that already carries a reason wins over the generic message: it knows *why* the statement
@@ -63,13 +57,37 @@ export function loweredStatementResult(
   return unsupported(unsupportedStatementMessage(statement, bindings));
 }
 
-export function statementResult(
-  operation: JsIrOperation | undefined,
-  statement: ts.Statement,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): Lowered {
-  if (operation !== undefined) {
-    return loweredOperation(operation);
+/** A leaf recognizer's optional payload becomes an explicit chain result. */
+export function loweredOptional<T>(operation: T | undefined): Lowered<T> {
+  if (operation === undefined) {
+    return notApplicable;
   }
-  return unsupported(unsupportedStatementMessage(statement, bindings));
+  return produced(operation);
+}
+
+/** After a refusal has propagated, a chain can still decline this variant. */
+export function loweredPayload<T>(result: Exclude<Lowered<T>, { readonly kind: "unsupported" }>): T | undefined {
+  if (result.kind === "lowered") {
+    return result.operation;
+  }
+  return undefined;
+}
+
+/** Keep a producer's refusal when its caller has a more general decline. */
+export function withRefusal<T>(
+  result: Exclude<Lowered<unknown>, { readonly kind: "lowered" }>,
+  fallback: Produced<T>
+): Produced<T>;
+export function withRefusal<T>(
+  result: Exclude<Lowered<unknown>, { readonly kind: "lowered" }>,
+  fallback: Lowered<T>
+): Lowered<T>;
+export function withRefusal<T>(
+  result: Exclude<Lowered<unknown>, { readonly kind: "lowered" }>,
+  fallback: Lowered<T>
+): Lowered<T> {
+  if (result.kind === "unsupported") {
+    return result;
+  }
+  return fallback;
 }

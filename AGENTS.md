@@ -21,7 +21,7 @@ If there is a problem with code quality suggest new lints.
 
 ## Open lint proposals
 
-None of these are enforceable with the rules oxlint ships today. Raised here so the next quality
+These proposals need additional tooling or a cleanup pass. Raised here so the next quality
 pass does not rediscover them:
 
 - **`no-dead-export`.** Would immediately have flagged `src/runtime/effect.ts` (an orphan
@@ -42,11 +42,11 @@ pass does not rediscover them:
   condition and number/string tiers are still if-chains and still decline with `return undefined`;
   the same table shape is the fix for them. The two points that are checked in the type system are
   `jsIrLeafOperationKinds` and the delegation parameter of `emitTernaryStringExpression`.
-- **`max-len` (140) is not an enforceable rule with the pinned oxlint.** oxlint 1.66 does not ship it —
-  configuring it reports `Rule 'max-len' not found in plugin 'eslint'`. This replaces an earlier note here
-  that called it worth enabling once the two god-files were decomposed; `llvm.ts` is decomposed and `ir.ts`
-  is not, and neither fact would have made the rule exist. It needs a rule that ships before a threshold
-  for it means anything.
+- **`max-len` (140) needs a JavaScript plugin and a formatting pass.** oxlint 1.66 does not ship a
+  native rule: configuring it reports `Rule 'max-len' not found in plugin 'eslint'`.
+  Its JavaScript plugin API does enforce `@stylistic/eslint-plugin` 5.10.0's `max-len` rule.
+  A strict 140-character limit currently reports 361 violations in `src/`.
+  See [the investigation](./docs/max-len.md) for the tested configuration and adoption options.
 
 - **No lint, but worth stating: the single narrowing assertion in `src/compiler/llvm.ts`.**
   `operationEmitterFor` asserts a `Record` lookup to a wide function type. TypeScript cannot
@@ -55,4 +55,3 @@ pass does not rediscover them:
   because the table's totality and every handler's own kind are both checked at the table; the
   check that would be equivalent to it cannot be expressed. If the value tiers ever reach the same
   table shape, the same single assertion per table is the cost.
-

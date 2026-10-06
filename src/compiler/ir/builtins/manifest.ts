@@ -66,7 +66,7 @@ const ownerTables: readonly OwnerTable[] = [
  * The forms are listed in the order of the plan's three batches, so the list reads as the remaining
  * work rather than as an alphabet.
  */
-const declaredForms: readonly TypeScriptForm[] = [
+const declaredForms = [
   // Batch 1, pure erasure.
   {
     form: "this parameter",
@@ -223,7 +223,7 @@ const declaredForms: readonly TypeScriptForm[] = [
     syntax: "new Date(0)",
     reason: "no date value can exist, so `Date.prototype`'s members are unreachable and their table entries would never fire"
   }
-];
+] as const satisfies readonly TypeScriptForm[];
 
 export function supportManifest(): SupportManifest {
   return {
@@ -270,4 +270,12 @@ const entriesByOwner: ReadonlyMap<BuiltinOwner, ReadonlyMap<string, BuiltinEntry
 /** The entry for `owner`.`name`, or `undefined` if the owner has no entry by that name. */
 export function builtinEntryForOwnerAndName(owner: BuiltinOwner, name: string): BuiltinEntry | undefined {
   return entriesByOwner.get(owner)?.get(name);
+}
+
+type PlannedFormId = Extract<(typeof declaredForms)[number], { readonly state: "planned" }>["id"];
+
+/** Name the refused form using the same declaration the manifest publishes. */
+export function unsupportedFormMessage(id: PlannedFormId): string {
+  const form = declaredForms.find((entry) => entry.id === id);
+  return `${form?.form ?? id} is not supported yet [support: ${id}]`;
 }
