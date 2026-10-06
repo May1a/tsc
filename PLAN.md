@@ -510,31 +510,48 @@ Rewriting the annotations was compiler-directed and total — 174 return types, 
 so were 463 guard rewrites and 235 payload wraps. Those four passes are the easy half and they compose;
 running them repeatedly converges, with nothing left that they can reach.
 
-**The residue is a judgement, and it is the interesting finding here.** There are 204 guards of the
-shape
+**The residue is a judgement, and working it out produced the one result worth keeping.** There are 204
+guards of the shape
 
 ```ts
-if (x.kind !== "notApplicable") { return x; }
+if (x === undefined) { ...decline... }
 ```
 
-and the next line decides what the guard means, not the guard itself:
+and they mean two different things:
 
-- In a **chain step**, `notApplicable` means *try the next recogniser*, so the guard must stay
-  `!== "notApplicable"` — it returns for `lowered` and for `unsupported`, and falls through for neither.
-- At a **use site**, where the value is final, the guard has to become `!== "lowered"` so that `x`
-  narrows to the single `lowered` variant and `x.operation` exists. Changing it to `!== "notApplicable"`
-  there is the same edit and the opposite meaning: it would return `notApplicable` instead of continuing.
+- In a **chain step**, `undefined` means *try the next recogniser*, so the guard becomes
+  `x.kind === "notApplicable"` and the value is dead afterwards.
+- At a **use site**, the value is final and gets read as the payload, so `unsupported` has to be returned
+  first and the guard becomes `x.kind === "notApplicable"` *after* an early
+  `if (x.kind === "unsupported") return x;`. Without that second guard `x.operation` does not exist.
 
-147 of the 204 are the first kind and 57 are the second. Nothing in the text distinguishes them — a
-recogniser call within the next dozen lines is a heuristic, not a fact — and getting it wrong does not
-fail to compile, it silently changes which recogniser claims a shape. So this is the part that has to be
-decided per site by reading the surrounding chain, and it is why the cut is a sequence of reviewed
-commits rather than a codemod.
+The tempting test for which kind a guard is -- *is the next statement another recogniser call?* -- is
+wrong, and it is worth recording why. It fires whenever the next statement merely **uses** `x`, because
+that use is itself a call: `if (method === undefined)` followed by
+`lowerTypedCallArguments(method.parameters, ...)` is a use site, and the test says chain. It classified
+147 guards as chain steps; auditing the first five found genuine use sites among them.
 
-What is left after the four mechanical passes is therefore about 596 diagnostics across four shapes:
-420 already guarded, 89 declaration-then-use, 66 assorted, 21 guard-then-use. The first group is
-mechanical *once the chain/use distinction has been made by a human*, and the mechanical passes will
-finish the rest immediately afterwards.
+The test that works is the opposite one, and it is a proof rather than a heuristic: **a guard is a use
+site only when the value it guards is referenced again after it.** Referenced means use site, and that is
+checkable. Not referenced means chain step, and a wrong guess in *that* direction does not compile,
+because `.operation` is then absent. The default is the safe one to get wrong, and both branches are
+decidable from the AST.
+
+With that rule the mechanical half is complete and correct -- 176 return types, 28 locals, 343 guards, 337
+inserted `unsupported` early-returns, 507 payload wraps -- and it runs to a fixed point. **The fixed point
+is 1,177 diagnostics, not zero, and that is the actual finding.**
+
+The reason is not the remaining guards. It is that the conversion does not stop at the 174. Roughly 200 of
+the call sites live in functions that were *not* in the closure -- `lowerClassMethodBody`,
+`lowerTopLevelStatements`, the class-constructor paths -- and those now hold a `Lowered<T>` in a variable
+annotated `T | undefined`, or pass one where a `T` is wanted. So the value tier cannot land without the
+callers converting too, and the callers are the statement and class tiers. The 174 were never the unit of
+work: the unit is the 185-declaration strongly connected component the cut graph found, and it has to land
+as one change or not at all.
+
+That is why this is a sequence of reviewed commits and not a codemod, and it is the honest reason the tier
+is still `| undefined`: not an undecided judgement, but a conversion whose unit of work is larger than the
+tier it is named after.
 
 ## Known gap: a function body referring to an outer object binding
 
