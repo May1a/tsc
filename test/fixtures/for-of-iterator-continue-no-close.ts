@@ -1,6 +1,5 @@
 declare function print(value: unknown): void;
 
-let closed = 0;
 const iterable = {
   [Symbol.iterator]() {
     return {
@@ -14,7 +13,7 @@ const iterable = {
         return { value: undefined, done: true };
       },
       return() {
-        closed = closed + 1;
+        print("unexpected close");
         return { value: undefined, done: true };
       }
     };
@@ -25,4 +24,4 @@ for (const value of iterable) {
   print(value);
   continue;
 }
-print(closed);
+print("done");
