@@ -25,11 +25,20 @@ Linking               clang / clang++ → native executable
 
 ## Terms
 
-**IR Operation** (`JsIrOperation`) — one statement-level form in the IR. A closed union of 120
+**IR Operation** (`JsIrOperation`) — one statement-level form in the IR. A closed union of 110
 kinds. 19 of them are *containers*: they hold nested operations. The rest are leaves. The
-container/leaf split is enumerated in `jsIrLeafOperationKinds` (`src/compiler/ir.ts`) and is
+container/leaf split is enumerated in `jsIrLeafOperationKinds` (`src/compiler/ir/visit.ts`) and is
 checked for completeness by the compiler, so a new operation must be classified before it can be
-emitted.
+emitted. Walking the tree — `jsIrOperationChildren` and `visitJsIrOperations` — lives beside that
+classification rather than in `types.ts`, so the union file states the IR's shape and `visit.ts`
+describes the traversal over it.
+
+**Operation Emitter Table** (`operationEmittersByKind`, `src/compiler/llvm/operations.ts`) — the one place
+an operation is turned into LLVM IR text. It is a `Record` keyed by the operation union, so the
+compiler rejects a new kind until something emits it, and `Extract` gives each handler its own
+narrowed operation so it cannot read a field its kind does not have. Dispatch is a table lookup,
+not an `if` chain; the `Record`'s totality is what replaces the exhaustiveness check the chain
+could not express.
 
 **IR Value Expression** (`JsIrValueExpression`) — an expression producing a JSValue. Emitted by
 `emitValueExpression`.
@@ -44,12 +53,31 @@ use a narrower runtime ABI than the general value tier.
 **Binding Value** (`JsIrBindingValue`) — what a name currently holds. Emission consults these to
 decide between direct registers and boxed runtime cells.
 
-**Lowering** (`lowerToJsIr`) — TypeScript AST → JsIrModule. Pure and synchronous, but **not
-fiber-safe**: it keeps module-level lowering state. It *returns* diagnostics rather than pushing
-them anywhere.
+**Lowering** (`lowerToJsIr`, `src/compiler/ir/source-module.ts`) — TypeScript AST → JsIrModule.
+Pure and synchronous, but **not fiber-safe**: it keeps module-level lowering state. It *returns* diagnostics rather than pushing
+them anywhere. Each source file is traversed once: a statement no recognizer claims becomes a
+TSCN1002 where it failed, and there is no strict re-run to tell "unrecognized" from "recognized and
+gave up".
 
-**Emission** (`emitLlvmModule`) — JsIrModule → LLVM IR text. Pure. Dispatch is by `if (kind === …)`
-chains, not `switch`, which is why `switch-exhaustiveness-check` does not apply to it.
+**Lowering Context** (`LoweringContext`, `src/compiler/ir/context.ts`) holds the recursive entries
+shared by lowering domains and the counters and scope flags for the current compilation. The
+composition root in `lowering-context.ts` connects ten entries. Domain modules import the context
+type instead of importing a recursive caller. `ir.ts` only re-exports the public IR types and
+`lowerToJsIr`. Module envelopes live in `ir/module.ts`; `source-module.ts` owns source traversal
+and trace finalization.
+
+**Lowered** (`Lowered`, `src/compiler/ir/lowered.ts`) — the result of trying to recognize one AST shape:
+`lowered` carries the operation, `notApplicable` continues the recognizer chain, and `unsupported`
+stops it with the reason the diagnostic will quote. Expression, scalar, argument, binding and
+statement recognizers return this union.
+`Produced<T>` omits `notApplicable` for steps below a matched shape. A refusal travels through
+function bodies, class members, branches, loops and catch blocks in its return value.
+`loweredPayload` accepts only a result already narrowed away from `unsupported`, so it cannot
+discard a refusal. The old class refusal holder and statement adapter are gone.
+
+**Emission** (`emitLlvmModule`) — JsIrModule → LLVM IR text. Pure. Operations dispatch through the
+Operation Emitter Table; the value, condition and number/string tiers are still `if` chains, which
+is why `switch-exhaustiveness-check` does not apply to them.
 
 **Static Runtime IR** (`src/compiler/runtime/*.ll`) — the fixed body of the generated JS runtime, held
 as LLVM IR text in one file per domain (`gc`, `values`, `numbers`, `strings`, `regex`, `arrays`,
@@ -78,6 +106,11 @@ operation emitted. Serialized to `trace-map.json` for the debugger and for the c
 **Inline C++** (`--fcpp`, `JsIrInlineCppBlock`) — tagged template literals in the source that are
 rewritten to a companion `.cpp` file linked alongside the LLVM module.
 
+**Compiler boundaries check** (`scripts/check-compiler-boundaries.mjs`) builds the runtime import
+graph for `ir/**` and `llvm/**` after TypeScript erases type-only imports. `npm run lint` rejects
+cycles in that graph. The same command enforces 800 nonblank, noncomment lines per source file
+and 400 per function, and bans Effect imports throughout both compiler directories.
+
 ## Invariants worth knowing
 
 - The IR is a **closed world**. Every union is meant to enumerate every form the lowering pass can
@@ -85,9 +118,13 @@ rewritten to a companion `.cpp` file linked alongside the LLVM module.
   exists to enforce.
 - **Effect is confined to two boundaries**: CLI parsing/help (`src/cli/**`, `@effect/cli`) and
   scoped process spawning (`toolchain.ts`, `linker.ts`, `test262/process.ts`, `@effect/platform`).
-  The compiler core — `ir.ts`, `llvm.ts`, `runtime-ir.ts`, `llvm-ir/**`, `js-value-abi/**` —
-  is pure and synchronous. This is enforced by the `no-restricted-imports` override in
+  The compiler core — `ir.ts`, `ir/**`, `llvm/**`, `runtime-ir.ts`, `llvm-ir/**`,
+  `js-value-abi/**` — is pure and synchronous. This is enforced by the `no-restricted-imports` override in
   `oxlint.config.ts`, not by convention.
 - The correctness oracle (`test/integration/oracle.ts`) compiles a fixture with `tscn`, runs the
-  native binary, runs the same fixture under Node, and asserts the two agree. 120 fixtures go
-  through it. Prefer adding a fixture over asserting on emitted text.
+  native binary, runs the same fixture under Node, and asserts the two agree. 164 fixtures go
+  through it. Four admitted forms cannot be: Node 22's strip-only mode rejects `accessor`, an `enum`,
+  a `namespace` and a parameter property outright, because each needs transformation rather than
+  erasure. Those are asserted by native value in `test/integration/core.test.ts` instead, which is
+  what backs the manifest's claim that they work. Prefer adding a fixture over asserting on emitted
+  text.

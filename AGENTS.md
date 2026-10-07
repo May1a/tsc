@@ -21,7 +21,7 @@ If there is a problem with code quality suggest new lints.
 
 ## Open lint proposals
 
-None of these are enforceable with the rules oxlint ships today. Raised here so the next quality
+These proposals need additional tooling or a cleanup pass. Raised here so the next quality
 pass does not rediscover them:
 
 - **`no-dead-export`.** Would immediately have flagged `src/runtime/effect.ts` (an orphan
@@ -36,11 +36,22 @@ pass does not rediscover them:
 - **`no-shadowed-global-type-parameter`.** Catches a type parameter named `Error`.
 - **`no-open-union-narrowing`.** Requires a terminal exhaustiveness check after an `if`-chain
   narrowing one of the IR unions. This is aspirational: `typescript/switch-exhaustiveness-check`
-  cannot see if-chains, and the IR dispatches entirely by `if`. The two points that *can* be
-  checked in the type system are now checked — `jsIrLeafOperationKinds` and the delegation
-  parameter of `emitTernaryStringExpression`. The operation tier's remaining five dispatchers
-  decline with `return undefined`, so their coverage is a property of the chain as a whole and
-  needs the `Record<JsIrOperation["kind"], Handler>` table to become checkable.
-- **`max-len` (140).** 282 violations, effectively all in `ir.ts` and `llvm.ts`. Worth enabling
-  as `warn` once those two files are decomposed.
+  cannot see if-chains. The operation tier no longer has one — it dispatches through
+  `operationEmittersByKind`, a `Record<JsIrOperation["kind"], Handler>` whose totality the
+  compiler enforces, so a new kind is a compile error until something emits it. The value,
+  condition and number/string tiers are still if-chains and still decline with `return undefined`;
+  the same table shape is the fix for them. The two points that are checked in the type system are
+  `jsIrLeafOperationKinds` and the delegation parameter of `emitTernaryStringExpression`.
+- **`max-len` (140) needs a JavaScript plugin and a formatting pass.** oxlint 1.66 does not ship a
+  native rule: configuring it reports `Rule 'max-len' not found in plugin 'eslint'`.
+  Its JavaScript plugin API does enforce `@stylistic/eslint-plugin` 5.10.0's `max-len` rule.
+  A strict 140-character limit currently reports 361 violations in `src/`.
+  See [the investigation](./docs/max-len.md) for the tested configuration and adoption options.
 
+- **No lint, but worth stating: the single narrowing assertion in `src/compiler/llvm.ts`.**
+  `operationEmitterFor` asserts a `Record` lookup to a wide function type. TypeScript cannot
+  correlate a union-typed discriminant with the per-variant handler it selects, because the
+  parameters of the resulting union of function types intersect to `never`. The assertion is safe
+  because the table's totality and every handler's own kind are both checked at the table; the
+  check that would be equivalent to it cannot be expressed. If the value tiers ever reach the same
+  table shape, the same single assertion per table is the cost.

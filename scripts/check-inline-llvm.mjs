@@ -28,11 +28,8 @@ const repoRoot = join(import.meta.dirname, "..");
 const sourceRoot = join(repoRoot, "src");
 
 // Modules whose purpose is assembling LLVM IR text programmatically.
-const exemptFiles = new Set([
-  join("compiler", "llvm.ts"),
-  join("compiler", "js-value-abi", "llvm.ts")
-]);
-const exemptDirectories = [join("compiler", "llvm-ir")];
+const exemptFiles = new Set([join("compiler", "js-value-abi", "llvm.ts")]);
+const exemptDirectories = [join("compiler", "llvm"), join("compiler", "llvm-ir")];
 
 const llvmShapes = [
   {

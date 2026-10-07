@@ -34,6 +34,90 @@ describe("tscn CLI", () => {
     }
   });
 
+  // A compiler failure that says nothing is the one failure a user cannot act on, and this one was
+  // silent: exit status 1 with empty stdout *and* empty stderr. `runMain` is configured with
+  // `disableErrorReporting`, and a defect — an exception thrown rather than a typed failure — does not
+  // pass through the typed handlers, so it left the process mute. `run.ts` now reports defects the same
+  // way it reports typed errors.
+  //
+  // The fixture triggers a real one rather than a synthetic fault: reading a field of an object literal
+  // from inside a function needs a layout that `@main` registers after the function definitions are
+  // emitted, so the emitter cannot resolve it. The ordering is documented in the fixture; fixing it
+  // reorders emission and changes every `main.ll`, so it is not done here.
+  // A class refusal used to reach the diagnostic by throwing, and the throw unwound the whole file: one
+  // class failure discarded every operation lowered before it and reported a single message at position 0.
+  // It now travels with the statement that caused it, and lowering continues — so the reason is reported
+  // *and* the statement after it is still looked at, which is what every other refusal here has done
+  // since the statement tier became `Lowered`.
+  test("a class refusal reports its own reason and lowering continues", async () => {
+    const result = await compileFixture("class-refusal-reason-survives.ts");
+
+    try {
+      expect(result.status).not.toBe(0);
+      // The reason names the class, not the syntax: it is the class tier's own words.
+      expect(result.stderr).toContain("error TSCN1002");
+      expect(result.stderr).toContain("`extends B` does not name a class declared in this module");
+      // Continuing past it means the consequence is reported too. That is the plan's stated alternative
+      // to aborting the file — one diagnostic per refused statement — and it is the behaviour a
+      // statement-tier refusal already had.
+      expect(result.stderr).toContain("Unrecognized call target: new A().m()");
+      // Reported against the statement that caused it, not at position 0 as the file-level catch did.
+      expect(result.stderr).toMatch(/class-refusal-reason-survives\.ts:6:1: error TSCN1002/);
+    } finally {
+      await result.cleanup();
+    }
+  }, roadmapIntegrationTimeoutMs);
+
+  test("reports a compiler defect instead of exiting silently", async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), "tscn-defect-"));
+    const run = await Effect.runPromise(
+      captureCommand("bun", [
+        "src/cli/main.ts",
+        "test/fixtures/defect-closure-over-object-literal.ts",
+        "--out-dir",
+        outDir
+      ], { cwd: repoRoot }).pipe(Effect.provide(commandExecutorLayer))
+    );
+
+    try {
+      expect(run.status).not.toBe(0);
+      expect(run.stdout).toBe("");
+      expect(run.stderr, "a defect must not be silent").not.toBe("");
+      expect(run.stderr).toContain("error:");
+      // It is an internal error rather than a diagnostic about the program, and saying so is the point:
+      // the user needs to know the compiler broke, not that their source was rejected.
+      expect(run.stderr).toContain("Unhandled JsIrNumberExpression");
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  }, roadmapIntegrationTimeoutMs);
+
+  // The same capture gap reached clang instead of dying in the emitter, which is worse than being
+  // silent: a program that is correct TypeScript and correct JavaScript fails at link time, through a
+  // namespace — a form this project admits.
+  test("names a capture gap that reaches the linker rather than dying in the emitter", async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), "tscn-capture-"));
+    const run = await Effect.runPromise(
+      captureCommand("bun", [
+        "src/cli/main.ts",
+        "test/fixtures/defect-closure-over-namespace.ts",
+        "--out-dir",
+        outDir
+      ], { cwd: repoRoot }).pipe(Effect.provide(commandExecutorLayer))
+    );
+
+    try {
+      expect(run.status).not.toBe(0);
+      expect(run.stdout).toBe("");
+      expect(run.stderr, "a failed compile must say what it could not emit").not.toBe("");
+      // The diagnostic is a link failure rather than a complaint about the source, and it is what the
+      // user sees. Both fixtures record the same cause from the two sides the compiler can fail on.
+      expect(run.stderr).toContain("%Config.addr");
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  }, roadmapIntegrationTimeoutMs);
+
   test("runs emitted native executable when clang is available", async () => {
     const result = await expectSuccessfulCompile("hello.ts", { link: true });
 

@@ -1,0 +1,281 @@
+import { arrayBuiltinSupport } from "./array.js";
+import { collectionBuiltinSupport } from "./collection.js";
+import { dateBuiltinSupport } from "./date.js";
+import { errorBuiltinSupport } from "./error.js";
+import { functionBuiltinSupport } from "./function.js";
+import { iteratorBuiltinSupport } from "./iterator.js";
+import { jsonBuiltinSupport } from "./json.js";
+import { regexpBuiltinSupport } from "./regexp.js";
+import { objectBuiltinSupport } from "./object.js";
+import { mathBuiltinSupport } from "./math.js";
+import { numberBuiltinSupport, numberGlobalBuiltinSupport } from "./number.js";
+import { stringBuiltinSupport } from "./string.js";
+import {
+  type BuiltinDeclaration,
+  type BuiltinEntry,
+  type BuiltinOwner,
+  type SupportManifest,
+  type TypeScriptForm,
+  builtinEntries
+} from "./support.js";
+
+/**
+ * Every builtin the compiler knows about, derived from the support tables.
+ *
+ * This is derived, never written by hand. A manifest written by hand is a list that drifts the
+ * first time a builtin is added and nobody updates it, which is worse than no manifest at all
+ * because it looks authoritative. Here a builtin cannot be in a table and missing from the
+ * manifest, or in the manifest and missing from a table.
+ */
+interface OwnerTable {
+  readonly owner: BuiltinOwner;
+  readonly support: Readonly<Record<string, BuiltinDeclaration<BuiltinOwner>>>;
+}
+
+/**
+ * Every owner's table, in the order the manifest lists them. Adding an owner is one line here and
+ * the manifest picks it up; the manifest test asserts the count so a table cannot be left out.
+ */
+const ownerTables: readonly OwnerTable[] = [
+  { owner: "array", support: arrayBuiltinSupport },
+  { owner: "object", support: objectBuiltinSupport },
+  { owner: "string", support: stringBuiltinSupport },
+  { owner: "number", support: numberBuiltinSupport },
+  { owner: "number", support: numberGlobalBuiltinSupport },
+  { owner: "math", support: mathBuiltinSupport },
+  { owner: "collection", support: collectionBuiltinSupport },
+  { owner: "json", support: jsonBuiltinSupport },
+  { owner: "regexp", support: regexpBuiltinSupport },
+  { owner: "date", support: dateBuiltinSupport },
+  { owner: "function", support: functionBuiltinSupport },
+  { owner: "error", support: errorBuiltinSupport },
+  { owner: "iterator", support: iteratorBuiltinSupport }
+];
+
+/**
+ * Every TypeScript form the compiler has to answer for, with whether it admits it.
+ *
+ * This half is written by hand because a form is not derivable from anything: the builtins half can
+ * be derived from the tables because a table entry *is* the claim. A form is a claim about syntax the
+ * compiler either erases or refuses, and nothing in the source states it, which is why the state here
+ * was measured — each entry says whether `tscn` compiles the form and agrees with Node, or refuses
+ * it. `form-admitted-*.ts` and `form-planned-*.ts` are the evidence, and the manifest test asserts
+ * both directions: an `"admitted"` entry without a passing fixture, or a `"planned"` entry without a
+ * reason, fails.
+ *
+ * The forms are listed in the order of the plan's three batches, so the list reads as the remaining
+ * work rather than as an alphabet.
+ */
+const declaredForms = [
+  // Batch 1, pure erasure.
+  {
+    form: "this parameter",
+    id: "this-parameter",
+    state: "admitted",
+    syntax: "this: void"
+  },
+  {
+    form: "readonly modifier on a field",
+    id: "readonly-modifier",
+    state: "admitted",
+    syntax: "readonly x: number = 1"
+  },
+  {
+    form: "public modifier on a field",
+    id: "public-modifier",
+    state: "admitted",
+    syntax: "public x: number = 1"
+  },
+  {
+    form: "private modifier on a field",
+    id: "private-modifier",
+    state: "admitted",
+    syntax: "private x: number = 1"
+  },
+  {
+    form: "override modifier on a method",
+    id: "override-modifier",
+    state: "admitted",
+    syntax: "override m(): number"
+  },
+  {
+    form: "accessor keyword on a field",
+    id: "accessor-keyword",
+    state: "admitted",
+    syntax: "accessor x = 1"
+  },
+  {
+    form: "satisfies operator",
+    id: "satisfies-operator",
+    state: "admitted",
+    syntax: "expr satisfies T"
+  },
+  {
+    form: "optional parameter",
+    id: "optional-parameter",
+    state: "admitted",
+    syntax: "x?: number"
+  },
+  {
+    form: "abstract member",
+    id: "abstract-member",
+    state: "admitted",
+    syntax: "abstract m(): void"
+  },
+  {
+    form: "implements clause",
+    id: "implements-clause",
+    state: "admitted",
+    syntax: "class A implements I"
+  },
+  {
+    form: "declare modifier",
+    id: "declare-member",
+    state: "admitted",
+    syntax: "declare class A { x: number }"
+  },
+  {
+    form: "type parameters on a class",
+    id: "class-type-parameters",
+    state: "admitted",
+    syntax: "class Box<T>"
+  },
+  {
+    form: "parameter property",
+    id: "parameter-property",
+    state: "admitted",
+    syntax: "constructor(readonly v: T)"
+  },
+  {
+    form: "function overload signature",
+    id: "function-overload-signature",
+    state: "admitted",
+    syntax: "function f(x: number): number;"
+  },
+
+  // Batch 2, desugaring to shapes that already work.
+  {
+    form: "enum declaration",
+    id: "enum-declaration",
+    state: "admitted",
+    syntax: "enum E { A }"
+  },
+  {
+    form: "namespace declaration",
+    id: "namespace-declaration",
+    state: "admitted",
+    syntax: "namespace N { }"
+  },
+  {
+    form: "labeled statement",
+    id: "labeled-statement",
+    state: "admitted",
+    syntax: "outer: for (;;) { break outer; }"
+  },
+  {
+    form: "comma declarators in a for initializer",
+    id: "for-comma-declarators",
+    state: "admitted",
+    syntax: "for (let i = 0, j = 1;;)"
+  },
+  {
+    form: "computed method name in an object literal",
+    id: "computed-method-name",
+    state: "admitted",
+    syntax: "{ [Symbol.iterator]() {} }"
+  },
+  {
+    form: "generator method in an object literal",
+    id: "object-literal-generator-method",
+    state: "planned",
+    syntax: "{ *[Symbol.iterator]() { yield 1; } }",
+    reason:
+      "a generator needs a suspendable frame the runtime has no representation for, and `for ... of` over a non-array needs the iterator protocol driven from the loop; both are runtime breadth this plan defers"
+  },
+  {
+    form: "get or set accessor in an object literal",
+    id: "object-literal-accessor",
+    state: "planned",
+    syntax: "{ get v(): number {} }",
+    reason:
+      "an accessor is a property descriptor, and the runtime has only `objectDefineDataProperty`, so an accessor would have to be simulated at each access site — which reads correctly through `o.v` and silently wrong through every dynamic read: object rest, spread, `Object.keys` and `JSON.stringify` all see a property that is not there. `obj-ptrn-rest-getter.js` in Test262 is exactly that case, and simulating it moves that test from rejected to compiled-and-wrong. Defining a real accessor property is runtime breadth, which this plan defers."
+  },
+  {
+    form: "new.target",
+    id: "new-target",
+    state: "planned",
+    syntax: "new.target",
+    reason:
+      "inside a constructor it is the constructor itself, and this compiler has no value for a class: `C.tag()` lowers because static member access is special-cased, but `const ref = C` is refused. Binding `new.target` needs a class as a boxed value, which is a runtime concept. In a plain function it is `undefined` unless the function was called with `new`, and this compiler has no way to call one that way."
+  },
+
+  // Batch 3, narrowing a shape the compiler accepts and lowers wrongly.
+  {
+    form: "computed method name in an object literal",
+    id: "computed-object-method",
+    state: "admitted",
+    syntax: "{ [key]() {} }"
+  },
+  {
+    form: "Date constructor",
+    id: "date-constructor",
+    state: "planned",
+    syntax: "new Date(0)",
+    reason: "no date value can exist, so `Date.prototype`'s members are unreachable and their table entries would never fire"
+  }
+] as const satisfies readonly TypeScriptForm[];
+
+export function supportManifest(): SupportManifest {
+  return {
+    builtins: ownerTables.flatMap((table) => builtinEntries(table.support, table.owner)),
+    forms: declaredForms
+  };
+}
+
+/** The manifest ids of every TypeScript form this build does not admit. */
+export function plannedFormIds(): readonly string[] {
+  return supportManifest().forms.filter((form) => form.state === "planned").map((form) => form.id);
+}
+
+/** The manifest ids of every builtin this build has not written, for the tests to cross-check. */
+export function plannedBuiltinIds(): readonly string[] {
+  return supportManifest().builtins.filter((entry) => entry.state === "planned").map((entry) => entry.id);
+}
+
+/** The manifest ids of every builtin this build lowers to something JavaScript does not compute. */
+export function stubbedBuiltinIds(): readonly string[] {
+  return supportManifest().builtins.filter((entry) => entry.state === "stubbed").map((entry) => entry.id);
+}
+
+/** The manifest entry with this id, or `undefined` if no table declares one. */
+export function builtinById(id: string): BuiltinEntry | undefined {
+  return supportManifest().builtins.find((entry) => entry.id === id);
+}
+
+/**
+ * Every owner's entries, keyed by owner then by name.
+ *
+ * A diagnostic sometimes needs the entry rather than the message — a member read has to ask "is this
+ * name in this owner's table at all" before it claims the member is a known builtin, or every
+ * unrecognized property read on a known object would be reported as a builtin the compiler has never
+ * heard of. Deriving this from the manifest means the answer cannot disagree with the tables.
+ */
+const entriesByOwner: ReadonlyMap<BuiltinOwner, ReadonlyMap<string, BuiltinEntry>> = new Map(
+  ownerTables.map((table) => [
+    table.owner,
+    new Map(builtinEntries(table.support, table.owner).map((entry) => [entry.name, entry]))
+  ])
+);
+
+/** The entry for `owner`.`name`, or `undefined` if the owner has no entry by that name. */
+export function builtinEntryForOwnerAndName(owner: BuiltinOwner, name: string): BuiltinEntry | undefined {
+  return entriesByOwner.get(owner)?.get(name);
+}
+
+type PlannedFormId = Extract<(typeof declaredForms)[number], { readonly state: "planned" }>["id"];
+
+/** Name the refused form using the same declaration the manifest publishes. */
+export function unsupportedFormMessage(id: PlannedFormId): string {
+  const form = declaredForms.find((entry) => entry.id === id);
+  return `${form?.form ?? id} is not supported yet [support: ${id}]`;
+}

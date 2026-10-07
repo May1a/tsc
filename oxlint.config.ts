@@ -131,8 +131,8 @@ export default defineConfig({
                 curly: ["error", "multi-line"],
                 eqeqeq: ["error", "always"],
                 // C-5: cap at 30 statements per function. Phase 2 will tighten to 20 once
-                // ir.ts / llvm.ts / runtime-helpers.ts are decomposed and the 89
-                // eslint-disable suppressions are removed.
+                // ir.ts and llvm.ts are decomposed and the eslint-disable suppressions on the
+                // remaining recognizers are removed.
                 "max-statements": ["error", { max: 30 }],
                 // C-3: single source of truth for no-else-return (was duplicated in stricterRules).
                 "no-else-return": [
@@ -149,12 +149,10 @@ export default defineConfig({
                         variables: true,
                     },
                 ],
-                // C-6: file-size guard — warn at 800 LOC (skip blanks/comments). The three
-                // god-files (ir.ts 12K, runtime-helpers.ts 11K, llvm.ts 8.5K) will warn until
-                // Phase 2 decomposition; warn (not error) keeps the build green while
-                // making the debt visible.
-                "max-lines": ["warn", { max: 800, skipBlankLines: true, skipComments: true }],
-                "max-lines-per-function": ["warn", { max: 400, skipBlankLines: true, skipComments: true }],
+                // Keep compiler domains small enough to read and review as one unit.
+                // max-len needs a JS plugin and formatting pass. See docs/max-len.md.
+                "max-lines": ["error", { max: 800, skipBlankLines: true, skipComments: true }],
+                "max-lines-per-function": ["error", { max: 400, skipBlankLines: true, skipComments: true }],
             },
         },
         // C-7: only the CLI boundary and build scripts should use console /
@@ -207,16 +205,17 @@ export default defineConfig({
             // deterministic; letting `effect` in there is how Chunk round-trips and
             // Effect<_, never, _> signatures over throwing code crept in.
             //
-            // Allowed: the composition roots, the four modules that talk to fs/processes, and
+            // Allowed: the composition roots, the modules that talk to fs/processes, and
             // the errors module. Everything else in src/compiler — ir.ts, llvm.ts,
-            // runtime-helpers.ts, llvm-ir/**, js-value-abi/**, trace.ts, diagnostics.ts — is
-            // pure and must stay that way.
+            // llvm-ir/**, js-value-abi/**, trace.ts, diagnostics.ts — is pure and must stay
+            // that way.
             files: [
-                "src/compiler/{ir,llvm,runtime-helpers,types,trace,diagnostics,inline-cpp-rewriter}.ts",
+                "src/compiler/{ir,llvm,types,trace,diagnostics,inline-cpp-rewriter}.ts",
+                "src/compiler/ir/**/*.ts",
+                "src/compiler/llvm/**/*.ts",
                 "src/compiler/llvm-ir/**/*.ts",
                 "src/compiler/js-value-abi/**/*.ts",
                 "src/testing/**/*.ts",
-                "src/runtime/**/*.ts",
             ],
             rules: {
                 "no-restricted-imports": [

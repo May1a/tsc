@@ -981,3 +981,80 @@ describe("tscn runtime strings", () => {
     }
   });
 });
+
+describe("tscn call targets", () => {
+  test("throws a TypeError instead of dereferencing a non-function property", async () => {
+    const result = await expectSuccessfulCompile("call-non-function-property-throws.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, {
+        status: 1,
+        stdout: "TypeError: value is not a function\n",
+        stderr: ""
+      });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});
+
+describe("tscn erasure forms", () => {
+  test("lowers an accessor field to a readable value", async () => {
+    // Not in the Node oracle: Node 22's type stripper rejects the `accessor` keyword with a
+    // `SyntaxError` before running anything, so there is no Node output to compare against. The
+    // expected value is what the specification says the field reads back as, and the manifest test
+    // still asserts the form is admitted — this is the check that backs it.
+    const result = await expectSuccessfulCompile("form-admitted-accessor-keyword.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers a namespace to the object of its exports", async () => {
+    // Not in the Node oracle for the same reason as `accessor`: Node's strip-only mode rejects a
+    // `namespace` declaration outright, so there is no Node output to compare against. The expected
+    // values are the ones an equivalent object literal produces under Node, which is exactly what the
+    // desugaring claims to be, and the manifest test still asserts the form is admitted.
+    const result = await expectSuccessfulCompile("form-admitted-namespace-declaration.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\ntext\n42\n3\n15\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("lowers an enum to the object holding both mappings", async () => {
+    // Not in the Node oracle: its strip-only mode rejects an `enum` with a SyntaxError before running
+    // anything, since an enum is a construct rather than an erasure. The expected values were produced by
+    // compiling this fixture with tsc and running the result under Node, so they are what TypeScript's own
+    // emit produces — including the reverse mappings, the negative value and the shared-value quirk.
+    const result = await expectSuccessfulCompile("form-admitted-enum-declaration.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, {
+        status: 0,
+        stdout: "0\nA\n2\nC\n5\nX\n6\nY\ns\ns\n5\nB\n6\nC\n-1\nDown\n1\n0.5\nHalf\n1\nSecond\n3\na-b\n",
+        stderr: ""
+      });
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  test("stores a constructor parameter property onto the instance", async () => {
+    // Not in the Node oracle: its strip-only mode rejects a parameter property with a SyntaxError before
+    // running anything, since declaring a field from a parameter needs transformation. The expected values
+    // are what the equivalent hand-written constructor produces under Node, which is the desugaring.
+    const result = await expectSuccessfulCompile("form-admitted-parameter-property.ts", { link: true });
+
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n1xtrue\n7\n8\n101\n", stderr: "" });
+    } finally {
+      await result.cleanup();
+    }
+  });
+});

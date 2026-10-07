@@ -186,7 +186,10 @@ describe("operation trace maps", () => {
     try {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("error TSCN1002");
-      expect(result.stderr).toContain("class lowering unsupported");
+      // The reason the class tier now gives, rather than the blanket string it used to: the
+      // recognizer that refused knows it was the missing `super(...)` call, and a diagnostic that
+      // says so is the point of threading a reason through.
+      expect(result.stderr).toContain("A derived constructor must call `super(...)` as its first statement");
     } finally {
       await result.cleanup();
     }
