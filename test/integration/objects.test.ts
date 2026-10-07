@@ -6,7 +6,8 @@ import {
   expectLlvmAsVerificationIfAvailable,
   expectNativeBehaviorIfAvailable,
   expectSuccessfulCompile,
-  expectToolBehaviorIfAvailable
+  expectToolBehaviorIfAvailable,
+  expectUnsupportedDiagnostic
 } from "./helpers.js";
 
 describe("tscn objects", () => {
@@ -517,5 +518,21 @@ describe("tscn JSValue ABI", () => {
     } finally {
       await result.cleanup();
     }
+  });
+});
+
+describe("object method function frames", () => {
+  test.each([
+    "object-method-capture-let-number-unsupported.ts",
+    "object-method-capture-let-string-unsupported.ts",
+    "object-method-capture-let-boolean-unsupported.ts",
+    "object-method-capture-var-number-unsupported.ts",
+    "object-method-capture-var-string-unsupported.ts",
+    "object-method-capture-var-boolean-unsupported.ts",
+    "object-method-read-number-unsupported.ts",
+    "object-method-read-string-unsupported.ts",
+    "object-method-read-boolean-unsupported.ts"
+  ])("rejects an enclosing mutable binding in %s", async (fixture) => {
+    await expectUnsupportedDiagnostic(fixture);
   });
 });

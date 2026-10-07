@@ -244,6 +244,7 @@ export const oracleFixtures: readonly string[] = [
   "array-runtime-arrow-lexical-this.ts",
   "class-basic-method.ts",
   "class-method-discarded-call.ts",
+  "object-method-local-shadowing.ts",
   "this-parameter-declaration.ts",
   "this-parameter-method.ts",
   "optional-call-absent-member.ts",

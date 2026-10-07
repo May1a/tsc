@@ -6,7 +6,7 @@ import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
 import { parameterValueKind, runtimeParameters } from "./class-info.js";
-import { bindFunctionParameter } from "./function-parameters.js";
+import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { functionReturnKind } from "./binding-updates.js";
 
@@ -33,7 +33,7 @@ export function lowerObjectMethodFunctionValue(
     return notApplicable;
   }
   const parameters: JsIrFunctionParameter[] = [];
-  const methodBindings = new Map(bindings);
+  const methodBindings = functionFrameBindings(bindings);
   methodBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
   for (const parameter of runtimeParameters(method.parameters)) {
     if (!ts.isIdentifier(parameter.name) || parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined) {

@@ -45,7 +45,8 @@ export function bindFunctionParameter(
   fnBindings.set(name, { kind: "number", value: { kind: "parameter", name } });
 }
 
-// parameters.
+// Mutable scalar slots belong to the enclosing function frame. Until they have a capture
+// representation, omit them so references in a new frame are refused during lowering.
 export function functionFrameBindings(bindings: ReadonlyMap<string, JsIrBindingValue>): Map<string, JsIrBindingValue> {
   const frameBindings = new Map(bindings);
   for (const [name, binding] of frameBindings) {

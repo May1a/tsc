@@ -829,7 +829,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["for-of-iterator-break-close.ts", "1\n2\nclose\n"],
       ["for-of-iterator-return-close.ts", "1\nclose\n99\n"],
       ["for-of-iterator-throw-close.ts", "1\nclose\nboom\n"],
-      ["for-of-iterator-continue-no-close.ts", "1\n2\n0\n"],
+      ["for-of-iterator-continue-no-close.ts", "1\n2\ndone\n"],
       ["for-of-iterator-close-order.ts", "1\nclose\nfinally\n1\ninner-finally\nclose\n"],
       ["for-of-iterator-return-throws.ts", "1\nclose\nfrom-return\n1\nclose\nfrom-body\n"],
       ["for-of-iterator-return-non-callable.ts", "1\nTypeError\nnumber 5 is not a function\n"],
