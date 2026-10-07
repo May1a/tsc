@@ -240,8 +240,17 @@ function lowerLogicalConditionExpression(
     return notApplicable;
   }
 
+  // A refusal on either operand is this function's answer, not a decline: `true && Boolean(new.target)`
+  // matched the `&&` shape, so folding it to `notApplicable` made the statement tier reconstruct a
+  // generic message and the reason that said which form was unsupported never reached the user.
   const left = context.lowerConditionExpression(context, expression.left, bindings);
+  if (left.kind === "unsupported") {
+    return left;
+  }
   const right = context.lowerConditionExpression(context, expression.right, bindings);
+  if (right.kind === "unsupported") {
+    return right;
+  }
   if (left.kind !== "lowered" || right.kind !== "lowered") {
     return notApplicable;
   }

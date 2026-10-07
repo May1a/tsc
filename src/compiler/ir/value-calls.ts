@@ -15,6 +15,9 @@ export function lowerValueConditionalExpression(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
   const condition = context.lowerConditionExpression(context, expression.condition, bindings);
+  if (condition.kind === "unsupported") {
+    return condition;
+  }
   const consequentResult = context.lowerValueExpression(context, expression.whenTrue, bindings);
   if (consequentResult.kind === "unsupported") {
     return consequentResult;

@@ -44,8 +44,14 @@ export function lowerClassConstructor(
         superArguments = info.constructorParameters.map(forwardedClassArgument);
       } else {
         const statements = constructorDeclaration.body?.statements ?? ts.factory.createNodeArray<ts.Statement>();
-        const [first, ...rest] = statements;
+        // Destructuring an empty array yields `undefined` for `first`, which is not the `ts.Statement` the
+        // type claims — hence the widening. `ts.isExpressionStatement` reads `node.kind`, so without the
+        // guard below this threw on the undefined instead of refusing the shape, and a defect is a crash
+        // with no diagnostic. TypeScript already rejects an empty derived constructor (TS2377) before
+        // lowering runs, so this is only ever the defensive branch.
+        const [first, ...rest] = statements as readonly (ts.Statement | undefined)[];
         if (
+          first === undefined ||
           !ts.isExpressionStatement(first) ||
           !ts.isCallExpression(first.expression) ||
           first.expression.expression.kind !== ts.SyntaxKind.SuperKeyword
@@ -57,7 +63,8 @@ export function lowerClassConstructor(
           return typedCallArgumentsResult;
         }
         superArguments = loweredPayload(typedCallArgumentsResult);
-        remainingStatements = rest;
+        // `rest` holds only what follows `first`, which the guard above established is a statement.
+        remainingStatements = rest.filter((statement): statement is ts.Statement => statement !== undefined);
       }
       if (superArguments === undefined) {
         return unsupportedIn("`super(...)` arguments must be expressions this build can evaluate");

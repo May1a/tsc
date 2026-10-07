@@ -2,8 +2,8 @@ import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { arrayCopyWithinArgumentCount, lowerRuntimeArrayFillCallStatement } from "./array-mutations.js";
-import type { JsIrNumberExpression, JsIrRuntimeArrayConcatElement, JsIrValueExpression } from "./expressions.js";
+import { arrayCopyWithinArgumentCount, lowerCopyWithinArguments, lowerRuntimeArrayFillCallStatement, lowerSpliceArguments } from "./array-mutations.js";
+import type { JsIrNumberExpression, JsIrRuntimeArrayConcatElement } from "./expressions.js";
 import { lowerArrayLiteralExpression } from "./array-literals.js";
 
 export function lowerRuntimeArrayMutatorResultBinding(
@@ -131,35 +131,12 @@ export function lowerRuntimeArraySpliceBinding(
   if (initializer.expression.name.text !== "splice" || bindings.get(arrayName)?.kind !== "runtimeArray") {
     return notApplicable;
   }
-  if (initializer.arguments.length === 0) {
-    return notApplicable;
+  const loweredArguments = lowerSpliceArguments(context, initializer.arguments, bindings);
+  if (loweredArguments.kind !== "lowered") {
+    return loweredArguments;
   }
-  const start = context.lowerNumberExpression(context, initializer.arguments[0], bindings);
-  if (start.kind !== "lowered") {
-    return start;
-  }
-  let deleteCount: JsIrNumberExpression | undefined;
-  const items: JsIrValueExpression[] = [];
-  for (let index = 1; index < initializer.arguments.length; index += 1) {
-    const argument = initializer.arguments[index];
-    if (deleteCount === undefined) {
-      const numberExpressionResult3 = context.lowerNumberExpression(context, argument, bindings);
-      if (numberExpressionResult3.kind === "unsupported") {
-        return numberExpressionResult3;
-      }
-      deleteCount = loweredPayload(numberExpressionResult3);
-      if (deleteCount === undefined) {
-        return notApplicable;
-      }
-      continue;
-    }
-    const value = context.lowerValueExpression(context, argument, bindings);
-    if (value.kind !== "lowered") {
-      return value;
-    }
-    items.push(value.operation);
-  }
-  return produced({ kind: "runtimeArraySplice", name, arrayName, start: start.operation, deleteCount, items });
+  const { start, deleteCount, items } = loweredArguments.operation;
+  return produced({ kind: "runtimeArraySplice", name, arrayName, start, deleteCount, items });
 }
 
 export function lowerRuntimeArrayFlatBinding(
@@ -196,25 +173,12 @@ function lowerCopyWithinResultBinding(
   initializer: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  const targetResult = context.lowerNumberExpression(context, initializer.arguments[0], bindings);
-  if (targetResult.kind === "unsupported") {
-    return targetResult;
+  const loweredArguments = lowerCopyWithinArguments(context, initializer.arguments, bindings);
+  if (loweredArguments.kind === "unsupported") {
+    return loweredArguments;
   }
-  const target = loweredPayload(targetResult);
-  const startResult = context.lowerNumberExpression(context, initializer.arguments[1], bindings);
-  if (startResult.kind === "unsupported") {
-    return startResult;
-  }
-  const start = loweredPayload(startResult);
-  let end: JsIrNumberExpression | undefined;
-  if (initializer.arguments.length === arrayCopyWithinArgumentCount) {
-    const numberExpressionResult4 = context.lowerNumberExpression(context, initializer.arguments[2], bindings);
-    if (numberExpressionResult4.kind === "unsupported") {
-      return numberExpressionResult4;
-    }
-    end = loweredPayload(numberExpressionResult4);
-  }
-  if (target !== undefined && start !== undefined && (initializer.arguments.length === 2 || end !== undefined)) {
+  if (loweredArguments.kind === "lowered") {
+    const { target, start, end } = loweredArguments.operation;
     return produced({ kind: "runtimeArrayMutatorResult", name, arrayName, mutation: { kind: "copyWithin", target, start, end } });
   }
   return notApplicable;

@@ -244,6 +244,9 @@ function lowerNumberConditionalExpression(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrNumberExpression> {
   const condition = context.lowerConditionExpression(context, expression.condition, bindings);
+  if (condition.kind === "unsupported") {
+    return condition;
+  }
   const consequentResult = context.lowerNumberExpression(context, expression.whenTrue, bindings);
   if (consequentResult.kind === "unsupported") {
     return consequentResult;

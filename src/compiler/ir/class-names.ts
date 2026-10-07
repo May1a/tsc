@@ -13,8 +13,7 @@ export function classAbortReason(result: Lowered): string {
   return "A statement in a class member body could not be lowered";
 }
 
-// tier reports against the statement that caused it as a TSCN1002.
-
+/** The generated constructor function name for `className`. */
 export function classConstructorName(className: string): string {
   return `${className}$constructor`;
 }
@@ -43,6 +42,7 @@ export function classSetterFunctionName(className: string, propertyName: string)
   return `${className}$set$${propertyName}`;
 }
 
+// Node-compatible TypeError messages for private field access on an instance
 // that does not own the declaring class's brand.
 export function classPrivateFieldReadMessage(fieldName: string): string {
   return `Cannot read private member ${fieldName} from an object whose class did not declare it`;

@@ -53,6 +53,7 @@ export function lowerClassValueExpression(
   return notApplicable;
 }
 
+// Lowers a property access on a class-related receiver: private field reads,
 // `C.prototype`, getter dispatch, and plain instance field reads.
 function lowerClassPropertyValueAccess(
   context: LoweringContext,
@@ -104,6 +105,8 @@ function lowerClassPropertyValueAccess(
   });
 }
 
+// Lowers a private field read `recv.#x` inside a class body. The lexically
+// enclosing class must declare the private name; ownership of the brand is
 // enforced by a runtime check on the receiver.
 function lowerClassPrivateFieldAccess(
   context: LoweringContext,
@@ -127,6 +130,7 @@ function lowerClassPrivateFieldAccess(
   });
 }
 
+// Resolves the receiver of a private field access to a stable instance value:
 // `this`, `new C(...)`, or a named value variable (e.g. a method parameter).
 function lowerClassPrivateFieldReceiver(
   context: LoweringContext,
@@ -143,6 +147,7 @@ function lowerClassPrivateFieldReceiver(
   return unsupportedIn("The receiver of a private field access must be `this`, an instance, or a value variable");
 }
 
+// Lowers a private field write `recv.#x = value` inside a class body, with the
 // same lexical scoping and runtime brand check as reads.
 export function lowerClassPrivateFieldStore(
   context: LoweringContext,

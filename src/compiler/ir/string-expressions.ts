@@ -132,6 +132,9 @@ export function lowerStringRuntimeExpression(
   }
 
   const condition = context.lowerConditionExpression(context, expression.condition, bindings);
+  if (condition.kind === "unsupported") {
+    return condition;
+  }
   const consequentResult = context.lowerStringRuntimeExpression(context, expression.whenTrue, bindings);
   if (consequentResult.kind === "unsupported") {
     return consequentResult;

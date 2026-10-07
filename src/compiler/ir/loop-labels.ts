@@ -1,8 +1,7 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
-import type { JsIrOperation } from "./types.js";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, unsupportedIn } from "./lowered.js";
+import { type Lowered, loweredOperation, unsupportedIn } from "./lowered.js";
 
 /**
  * Lower a loop's body with `pendingLoopLabel` adopted as the label of the loop being entered.
@@ -42,17 +41,22 @@ function loopDepthForLabel(context: LoweringContext,
  *
  * An unlabelled jump is the innermost loop, which is depth zero and therefore carries no field at all — so
  * every existing jump lowers to the same operation it did before.
+ *
+ * A label that resolves to nothing is refused rather than treated as unlabelled. Falling back to `{ kind }`
+ * silently retargets the jump at the innermost loop, which compiles and computes the wrong answer; the only
+ * way to reach it is a label stack that is out of step with the loops actually being lowered, so the honest
+ * answer is to say the label named no enclosing loop rather than to compile a jump to the wrong target.
  */
 export function lowerLabelledJump(context: LoweringContext,
-  kind: "break" | "continue", label: ts.Identifier | undefined): JsIrOperation {
+  kind: "break" | "continue", label: ts.Identifier | undefined): Lowered {
   if (label === undefined) {
-    return { kind };
+    return loweredOperation({ kind });
   }
   const targetDepth = loopDepthForLabel(context, label.text);
   if (targetDepth === undefined) {
-    return { kind };
+    return unsupportedIn(`\`${kind} ${label.text}\` does not name an enclosing loop this build lowered`);
   }
-  return { kind, targetDepth };
+  return loweredOperation({ kind, targetDepth });
 }
 
 /**

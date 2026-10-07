@@ -93,6 +93,9 @@ function lowerVarRedeclaration(
   }
   if (binding?.kind === "booleanVariable") {
     const booleanValue = context.lowerConditionExpression(context, initializer, bindings);
+    if (booleanValue.kind === "unsupported") {
+      return booleanValue;
+    }
     if (booleanValue.kind !== "lowered") {
       return notApplicable;
     }
@@ -144,6 +147,9 @@ function lowerLetVariableBinding(
   }
 
   const booleanValue = context.lowerConditionExpression(context, initializer, bindings);
+  if (booleanValue.kind === "unsupported") {
+    return booleanValue;
+  }
   if (booleanValue.kind === "lowered") {
     return produced({
       kind: "letBoolean",
@@ -263,6 +269,9 @@ export function lowerConstVariableBinding(
   }
 
   const booleanCondition = context.lowerConditionExpression(context, unwrappedInitializer, bindings);
+  if (booleanCondition.kind === "unsupported") {
+    return booleanCondition;
+  }
   if (booleanCondition.kind === "lowered") {
     return produced({
       kind: "constBooleanExpression",

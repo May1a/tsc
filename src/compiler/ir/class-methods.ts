@@ -107,6 +107,7 @@ export function lowerClassMethod(
   }
 }
 
+// Lowers a constructor-or-method body, normalizing every `return` to a JSValue
 // result so method calls are uniformly value-typed at their call sites.
 function lowerClassMethodBody(
   context: LoweringContext,

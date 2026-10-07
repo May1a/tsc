@@ -10,6 +10,24 @@ import { lowerStatementBody } from "./statement-lists.js";
 import { iteratorErrorSubject } from "./iterator-subject.js";
 import { updateBindings } from "./binding-updates.js";
 
+/**
+ * Lower one loop's body, taking a label frame for the loop being entered.
+ *
+ * Every loop form goes through here rather than calling `lowerStatementBody` itself, because the frame
+ * is what makes `break label` resolve: the depth it carries counts *loops* between the jump and the one
+ * the label named, so a loop that does not take one makes every enclosing count short. That is not a
+ * hypothetical — an unlabelled `for…of` inside a labelled `while` used to make `break outer` exit the
+ * `for…of`, and a label on a `for…of` used to be adopted by the first nested `for`, both silently.
+ * Wrapping the two steps together is what keeps the next loop form from reintroducing it.
+ */
+function lowerLoopBody(
+  context: LoweringContext,
+  bodyStatement: ts.Statement,
+  bodyBindings: ReadonlyMap<string, JsIrBindingValue>
+): ReturnType<typeof lowerStatementBody> {
+  return withinLoopLabel(context, () => lowerStatementBody(context, bodyStatement, bodyBindings));
+}
+
 export function lowerForStatement(
   context: LoweringContext,
   statement: ts.ForStatement,
@@ -55,7 +73,7 @@ export function lowerForStatement(
     return notApplicable;
   }
 
-  const bodyResult = withinLoopLabel(context, () => lowerStatementBody(context, statement.statement, forBindings));
+  const bodyResult = lowerLoopBody(context, statement.statement, forBindings);
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
@@ -96,7 +114,7 @@ export function lowerForOfStatement(
   }
   const bodyBindings = new Map(bindings);
   bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-  const bodyResult = lowerStatementBody(context, bodyStatement, bodyBindings);
+  const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
@@ -126,7 +144,7 @@ function lowerSpecializedForOf(
   if (sourceString.kind === "lowered") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
-    const bodyResult = lowerStatementBody(context, bodyStatement, bodyBindings);
+    const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
     if (bodyResult.kind === "unsupported") {
       return bodyResult;
     }
@@ -142,7 +160,7 @@ function lowerSpecializedForOf(
   if (sourceBinding?.kind === "runtimeSet") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-    const bodyResult = lowerStatementBody(context, bodyStatement, bodyBindings);
+    const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
     if (bodyResult.kind === "unsupported") {
       return bodyResult;
     }
@@ -153,7 +171,7 @@ function lowerSpecializedForOf(
   if (sourceBinding?.kind === "runtimeMap") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(itemName, { kind: "runtimeArray", name: itemName });
-    const bodyResult = lowerStatementBody(context, bodyStatement, bodyBindings);
+    const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
     if (bodyResult.kind === "unsupported") {
       return bodyResult;
     }
@@ -166,7 +184,7 @@ function lowerSpecializedForOf(
   }
   const bodyBindings = new Map(bindings);
   bodyBindings.set(itemName, { kind: "number", value: { kind: "variable", name: itemName } });
-  const bodyResult = lowerStatementBody(context, bodyStatement, bodyBindings);
+  const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
@@ -196,7 +214,7 @@ export function lowerForInStatement(
   if (sourceBinding?.kind === "runtimeObject") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const bodyResult = lowerStatementBody(context, statement.statement, bodyBindings);
+    const bodyResult = lowerLoopBody(context, statement.statement, bodyBindings);
     if (bodyResult.kind === "unsupported") {
       return bodyResult;
     }
@@ -207,7 +225,7 @@ export function lowerForInStatement(
   if (sourceBinding?.kind === "runtimeArray") {
     const bodyBindings = new Map(bindings);
     bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const bodyResult = lowerStatementBody(context, statement.statement, bodyBindings);
+    const bodyResult = lowerLoopBody(context, statement.statement, bodyBindings);
     if (bodyResult.kind === "unsupported") {
       return bodyResult;
     }
@@ -268,7 +286,7 @@ export function lowerWhileStatement(
     return condition;
   }
 
-  const bodyResult = withinLoopLabel(context, () => lowerStatementBody(context, statement.statement, bindings));
+  const bodyResult = lowerLoopBody(context, statement.statement, bindings);
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
@@ -291,7 +309,7 @@ export function lowerDoWhileStatement(
     return condition;
   }
 
-  const bodyResult = withinLoopLabel(context, () => lowerStatementBody(context, statement.statement, bindings));
+  const bodyResult = lowerLoopBody(context, statement.statement, bindings);
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }

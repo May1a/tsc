@@ -6,6 +6,8 @@ import { classLoweringState, classStaticStorageName, findClassInChain, resolveRe
 import { lowerInstanceReceiverValue } from "./class-calls.js";
 import { classSetterFunctionName } from "./class-names.js";
 
+// Lowers `recv.prop = value` when `recv` is a class instance: setter members
+// dispatch to the generated setter function; plain instance fields store onto
 // the instance object.
 export function lowerClassPropertyAssignment(
   context: LoweringContext,
@@ -21,7 +23,17 @@ export function lowerClassPropertyAssignment(
     return notApplicable;
   }
   const propertyName = left.name.text;
-  if (findClassInChain(receiverClass, (candidate) => candidate.staticFields.has(propertyName)) !== undefined) {
+  // The static branch has to be gated on the receiver being the class itself, not merely on the name
+  // being a static field: `resolveReceiverClass` resolves both `C` and an instance `c` to the same
+  // `ClassInfo`, so a bare `staticFields` test sends an instance write to the class's static storage and
+  // the program silently computes the wrong answer. An unbound identifier that names a registered class
+  // is the class; anything in `bindings` is a local that shadows the name and therefore an instance.
+  // This is the same guard `lowerClassStaticFieldAccess` uses on the read side.
+  const isClassReceiver =
+    ts.isIdentifier(left.expression) &&
+    !bindings.has(left.expression.text) &&
+    classLoweringState.registry.get(left.expression.text) !== undefined;
+  if (isClassReceiver && findClassInChain(receiverClass, (candidate) => candidate.staticFields.has(propertyName)) !== undefined) {
     const value = context.lowerValueExpression(context, right, bindings);
     if (value.kind !== "lowered") {
       return withRefusal(value, unsupportedIn(`The value written to the static field \`${propertyName}\` is not an expression this build can evaluate`));

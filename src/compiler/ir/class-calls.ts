@@ -53,7 +53,11 @@ export function lowerClassMethodCall(
   }
   const receiverValue = lowerInstanceReceiverValue(context, callee.expression, bindings);
   if (receiverValue.kind !== "lowered") {
-    return receiverValue;
+    // The method resolved in the chain above, so the receiver *is* one this build recognises as a class
+    // instance — it is the pass-as-value step that declined. Returning the bare `notApplicable` let the
+    // generic call lowering claim the call and report it as an unrecognised target, naming neither the
+    // method nor the receiver.
+    return withRefusal(receiverValue, unsupportedIn(`The receiver of the method \`${methodName}\` is not an instance this build can pass`));
   }
   const args = context.lowerTypedCallArguments(context, method.parameters, call.arguments, bindings);
   if (args.kind !== "lowered") {
@@ -141,6 +145,8 @@ function baseClassOf(
   return registry.get(enclosing.baseName);
 }
 
+// Lowers a method-call receiver to a stable instance value. Only inline
+// receivers (`this`, `new C()`) are supported; named-variable instances require
 // stable value storage and are reported as unsupported for now.
 export function lowerInstanceReceiverValue(
   context: LoweringContext,
@@ -157,6 +163,7 @@ export function lowerInstanceReceiverValue(
   return notApplicable;
 }
 
+// Lowers an expression that evaluates to a class instance value (`this` or a
 // `new C(...)`), or returns undefined when it is not one.
 export function lowerClassInstanceExpression(
   context: LoweringContext,

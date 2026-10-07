@@ -48,25 +48,12 @@ export function lowerRuntimeArrayCallStatement(
     return lowerRuntimeArrayForEachCallbackStatement(context, arrayName, expression.arguments, bindings);
   }
   if (method === "copyWithin" && (expression.arguments.length === 2 || expression.arguments.length === arrayCopyWithinArgumentCount)) {
-    const targetResult = context.lowerNumberExpression(context, expression.arguments[0], bindings);
-    if (targetResult.kind === "unsupported") {
-      return targetResult;
+    const loweredArguments = lowerCopyWithinArguments(context, expression.arguments, bindings);
+    if (loweredArguments.kind === "unsupported") {
+      return loweredArguments;
     }
-    const target = loweredPayload(targetResult);
-    const startResult = context.lowerNumberExpression(context, expression.arguments[1], bindings);
-    if (startResult.kind === "unsupported") {
-      return startResult;
-    }
-    const start = loweredPayload(startResult);
-    let end: JsIrNumberExpression | undefined;
-    if (expression.arguments.length === arrayCopyWithinArgumentCount) {
-      const numberExpressionResult = context.lowerNumberExpression(context, expression.arguments[2], bindings);
-      if (numberExpressionResult.kind === "unsupported") {
-        return numberExpressionResult;
-      }
-      end = loweredPayload(numberExpressionResult);
-    }
-    if (target !== undefined && start !== undefined && (expression.arguments.length === 2 || end !== undefined)) {
+    if (loweredArguments.kind === "lowered") {
+      const { target, start, end } = loweredArguments.operation;
       return produced({ kind: "runtimeArrayCopyWithin", arrayName, target, start, end });
     }
   }
@@ -123,39 +110,118 @@ function runtimeArrayRemoveOperationKind(method: "pop" | "shift"): "runtimeArray
   return "runtimeArrayShift";
 }
 
-function lowerRuntimeArraySpliceStatement(
+/**
+ * `splice`'s argument list: the start, the optional delete count, and the items to insert.
+ *
+ * Both `splice` forms lower the same way — the statement form and the binding form differ only in the
+ * operation they produce — so the reading of the arguments lives here once. Keeping two copies meant a
+ * change to how one of them read an argument left the other reading it differently, which is the kind of
+ * divergence that shows up as `x.splice(0, 1)` and `const r = x.splice(0, 1)` disagreeing.
+ */
+export interface LoweredSpliceArguments {
+  readonly start: JsIrNumberExpression;
+  readonly deleteCount: JsIrNumberExpression | undefined;
+  readonly items: readonly JsIrValueExpression[];
+}
+
+/**
+ * Reads `args` as a `splice` argument list, or declines when the shape is not one.
+ *
+ * The second argument is the delete count and every one after it is an item, which is what makes the
+ * interpretation positional: there is no separate arity to check beyond "at least a start".
+ */
+export function lowerSpliceArguments(
   context: LoweringContext,
-  arrayName: string,
   args: ts.NodeArray<ts.Expression>,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): Lowered {
+): Lowered<LoweredSpliceArguments> {
   if (args.length === 0) {
     return notApplicable;
   }
   const start = context.lowerNumberExpression(context, args[0], bindings);
-  if (start.kind !== "lowered") {
+  if (start.kind === "unsupported") {
     return start;
+  }
+  if (start.kind !== "lowered") {
+    return notApplicable;
   }
   let deleteCount: JsIrNumberExpression | undefined;
   const items: JsIrValueExpression[] = [];
   for (let index = 1; index < args.length; index += 1) {
     const argument = args[index];
     if (deleteCount === undefined) {
-      const numberExpressionResult3 = context.lowerNumberExpression(context, argument, bindings);
-      if (numberExpressionResult3.kind === "unsupported") {
-        return numberExpressionResult3;
+      const count = context.lowerNumberExpression(context, argument, bindings);
+      if (count.kind === "unsupported") {
+        return count;
       }
-      deleteCount = loweredPayload(numberExpressionResult3);
+      deleteCount = loweredPayload(count);
       if (deleteCount === undefined) {
         return notApplicable;
       }
       continue;
     }
     const value = context.lowerValueExpression(context, argument, bindings);
-    if (value.kind !== "lowered") {
+    if (value.kind === "unsupported") {
       return value;
+    }
+    if (value.kind !== "lowered") {
+      return notApplicable;
     }
     items.push(value.operation);
   }
-  return produced({ kind: "runtimeArraySpliceStatement", arrayName, start: start.operation, deleteCount, items });
+  return produced({ start: start.operation, deleteCount, items });
+}
+
+/** `copyWithin`'s target/start/optional-end triple, read the same way from both call sites. */
+export interface LoweredCopyWithinArguments {
+  readonly target: JsIrNumberExpression;
+  readonly start: JsIrNumberExpression;
+  readonly end: JsIrNumberExpression | undefined;
+}
+
+/**
+ * Reads `args` as a `copyWithin` argument list: a target and a start, plus an end that is only present in
+ * the three-argument form. The caller has already checked the arity, so this only reads.
+ */
+export function lowerCopyWithinArguments(
+  context: LoweringContext,
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<LoweredCopyWithinArguments> {
+  const targetResult = context.lowerNumberExpression(context, args[0], bindings);
+  if (targetResult.kind === "unsupported") {
+    return targetResult;
+  }
+  const startResult = context.lowerNumberExpression(context, args[1], bindings);
+  if (startResult.kind === "unsupported") {
+    return startResult;
+  }
+  let end: JsIrNumberExpression | undefined;
+  if (args.length === arrayCopyWithinArgumentCount) {
+    const endResult = context.lowerNumberExpression(context, args[2], bindings);
+    if (endResult.kind === "unsupported") {
+      return endResult;
+    }
+    end = loweredPayload(endResult);
+  }
+  const target = loweredPayload(targetResult);
+  const start = loweredPayload(startResult);
+  if (target === undefined || start === undefined) {
+    return notApplicable;
+  }
+  return produced({ target, start, end });
+}
+
+function lowerRuntimeArraySpliceStatement(
+  context: LoweringContext,
+  arrayName: string,
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const loweredArguments = lowerSpliceArguments(context, args, bindings);
+  if (loweredArguments.kind !== "lowered") {
+    return loweredArguments;
+  }
+  const { start, deleteCount, items } = loweredArguments.operation;
+  return produced({ kind: "runtimeArraySpliceStatement", arrayName, start, deleteCount, items });
 }

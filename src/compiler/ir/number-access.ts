@@ -8,6 +8,9 @@ import { lowerClassValueExpression } from "./class-values.js";
 import { isBoxedAggregateCandidateBinding, lowerObjectAccessPath } from "./builtins/object-producers.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
 
+// Reads a class instance member (field or getter) as a number by unboxing the
+// JSValue it lowers to, so numeric instance members participate in arithmetic.
+// Gated on the member's static type so string/other members are left to the
 // value path (otherwise number-first contexts like `print` would coerce to NaN).
 export function lowerClassNumberAccess(
   context: LoweringContext,

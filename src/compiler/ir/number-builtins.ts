@@ -253,6 +253,9 @@ export function lowerNumberCoercionExpression(
     return produced({ kind: "nan" });
   }
   const condition = context.lowerConditionExpression(context, expression, bindings);
+  if (condition.kind === "unsupported") {
+    return condition;
+  }
   if (condition.kind === "lowered" && condition.operation.kind === "boolean") {
     if (condition.operation.value) {
       return produced({ kind: "literal", value: 1 });

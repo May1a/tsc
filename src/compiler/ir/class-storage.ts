@@ -7,6 +7,7 @@ import type { JsIrRuntimeObjectField, JsIrValueExpression } from "./expressions.
 import { lowerClassFieldInitializer } from "./class-constructors.js";
 import { classMemberKeyStringExpression } from "./class-names.js";
 
+// Emits the module-init slot holding a runtime-computed member name: the name
 // expression is evaluated exactly once, at class-definition time.
 export function lowerClassComputedKeySlot(
   context: LoweringContext,
@@ -27,6 +28,9 @@ function classComputedMethodTargetName(info: ClassInfo, isStatic: boolean): stri
   return classPrototypeName(info.name);
 }
 
+// Stores a method whose name is only known at runtime as a function value on
+// the prototype (or statics slot) under the evaluated key. Calls to it resolve
+// through the ordinary dynamic property path, since static dispatch requires a
 // compile-time name.
 export function lowerClassComputedMethodStore(
   context: LoweringContext,
@@ -64,6 +68,8 @@ export function lowerClassComputedMethodStore(
   });
 }
 
+// Emits the module-init slot that backs a class's prototype object: an empty
+// object that serves as the prototype for all instances. Accessible as `C.prototype`
 // and automatically set on instances via the class-id slot (future work).
 export function lowerClassPrototypeStorage(info: ClassInfo): JsIrOperation {
   return {
@@ -74,6 +80,9 @@ export function lowerClassPrototypeStorage(info: ClassInfo): JsIrOperation {
   };
 }
 
+// Emits the module-init slot that backs a class's static fields: a single object
+// whose properties are the static fields, initialized in declaration order. Each
+// `C.x` read/write resolves to a property access on this slot. Returns undefined
 // for classes without static fields.
 export function lowerClassStaticStorage(
   context: LoweringContext,

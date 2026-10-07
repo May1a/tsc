@@ -67,11 +67,11 @@ function lowerStatementCore(
   }
 
   if (ts.isBreakStatement(statement)) {
-    return loweredOperation(lowerLabelledJump(context, "break", statement.label));
+    return lowerLabelledJump(context, "break", statement.label);
   }
 
   if (ts.isContinueStatement(statement)) {
-    return loweredOperation(lowerLabelledJump(context, "continue", statement.label));
+    return lowerLabelledJump(context, "continue", statement.label);
   }
 
   if (ts.isLabeledStatement(statement)) {
