@@ -1,6 +1,8 @@
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
+import ts from "typescript";
+import { lowerToJsIr } from "../../src/compiler/ir.js";
 import {
   arrayBuiltinSupport,
   builtinDisplay,
@@ -46,6 +48,27 @@ function kebab(name: string): string {
 
 function fixtureFamily(entry: { readonly owner: string; readonly name: string; readonly fixture?: string }): string {
   return `${entry.owner}-runtime-${entry.fixture ?? kebab(entry.name)}`;
+}
+
+function plannedFormFixtureId(fixture: string, formIds: readonly string[]): string | undefined {
+  if (!fixture.startsWith("form-planned-") || !fixture.endsWith(".ts")) {
+    return undefined;
+  }
+  const stem = fixture.slice("form-planned-".length, -".ts".length);
+  if (formIds.includes(stem)) {
+    return stem;
+  }
+  // The longest known id owns a variant, so a shorter id cannot claim its fixtures.
+  let id: string | undefined;
+  for (const candidate of formIds) {
+    if (stem.startsWith(`${candidate}-`) && (id === undefined || candidate.length > id.length)) {
+      id = candidate;
+    }
+  }
+  if (id === undefined || stem.length <= id.length + 1) {
+    return undefined;
+  }
+  return id;
 }
 
 const { builtins, forms } = supportManifest();
@@ -174,6 +197,40 @@ describe("planned builtins", () => {
 describe("erasure forms", () => {
   const admitted = forms.filter((form) => form.state === "admitted");
   const planned = forms.filter((form) => form.state === "planned");
+  const plannedIds = planned.map((form) => form.id);
+
+  test.each(["", "async "])("erases %soverload signatures before checking runtime forms", (modifier) => {
+    const source = ts.createSourceFile(
+      "overload.ts",
+      `declare function print(value: unknown): void;
+       class C { ${modifier}m(): void; m(): void { print(1); } }
+       new C().m();`,
+      ts.ScriptTarget.Latest,
+      true
+    );
+    const result = lowerToJsIr(source.fileName, [source]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  test.each([
+    "constructor(@d value: number) { print(value); }",
+    "method(@d value: number) { print(value); }",
+    "static method(@d value: number) { print(value); }",
+    "set value(@d value: number) { print(value); }"
+  ])("refuses legacy parameter decorators on %s", (member) => {
+    const source = ts.createSourceFile(
+      "parameter-decorator.ts",
+      `declare function print(value: unknown): void;
+       declare function d(...args: unknown[]): void;
+       class C { ${member} }`,
+      ts.ScriptTarget.Latest,
+      true
+    );
+    const result = lowerToJsIr(source.fileName, [source]);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      "decorator on a class or class member is not supported yet [support: decorator]"
+    ]);
+  });
 
   test("every one has a unique id and a syntax to search for", () => {
     // The id is what a diagnostic would quote and what a fixture is keyed on, so a duplicate would
@@ -235,11 +292,39 @@ describe("erasure forms", () => {
     60_000
   );
 
-  test.each(planned.map((form) => [form.id, form] as const))(
+  test("planned fixtures and manifest entries cover each other", () => {
+    for (const form of planned) {
+      expect(fixtureNames.has(`form-planned-${form.id}.ts`)).toBe(true);
+    }
+    for (const fixture of fixtureNames) {
+      if (!fixture.startsWith("form-planned-")) {
+        continue;
+      }
+      const matches = planned.filter((form) => form.id === plannedFormFixtureId(fixture, plannedIds));
+      expect(matches.length, `${fixture} must name one planned form`).toBe(1);
+    }
+  });
+
+  test.each([
+    ["form-planned-async.ts", "async"],
+    ["form-planned-async-function.ts", "async-function"],
+    ["form-planned-async-function-arrow.ts", "async-function"],
+    ["form-planned-decorator-legacy.ts", "decorator-legacy"],
+    ["form-planned-decorator-legacy-member.ts", "decorator-legacy"],
+    ["form-planned-async-.ts", undefined],
+    ["form-planned-async-function-.ts", undefined],
+    ["form-planned-unknown.ts", undefined]
+  ] as const)("%s resolves to one form even when ids share prefixes", (fixture, expected) => {
+    expect(plannedFormFixtureId(fixture, ["async", "async-function", "decorator", "decorator-legacy"])).toBe(expected);
+  });
+
+  test.each(planned.flatMap((form) => [...fixtureNames]
+    .filter((fixture) => form.id === plannedFormFixtureId(fixture, plannedIds))
+    .map((fixture) => [fixture, form] as const)))(
     "%s has a fixture the compiler refuses today",
-    async (_id, form) => {
+    async (fixture, form) => {
       await expectUnsupportedMessage(
-        `form-planned-${form.id}.ts`,
+        fixture,
         `${form.form} is not supported yet [support: ${form.id}]`
       );
     },

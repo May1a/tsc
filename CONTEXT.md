@@ -25,7 +25,7 @@ Linking               clang / clang++ → native executable
 
 ## Terms
 
-**IR Operation** (`JsIrOperation`) — one statement-level form in the IR. A closed union of 110
+**IR Operation** (`JsIrOperation`) — one statement-level form in the IR. A closed union of 121
 kinds. 19 of them are *containers*: they hold nested operations. The rest are leaves. The
 container/leaf split is enumerated in `jsIrLeafOperationKinds` (`src/compiler/ir/visit.ts`) and is
 checked for completeness by the compiler, so a new operation must be classified before it can be
@@ -42,6 +42,13 @@ could not express.
 
 **IR Value Expression** (`JsIrValueExpression`) — an expression producing a JSValue. Emitted by
 `emitValueExpression`.
+
+Object destructuring of a general value starts with the `requireObjectCoercible` IR Operation,
+including an empty binding pattern. It throws a TypeError for null or undefined through the
+generated completion protocol, so enclosing IteratorClose and finally frames still run. General
+property reads use `checkedValuePropertyGet`, which checks nullish receivers and dispatches by
+value kind. `valueObjectGet` assumes an object layout and belongs only in Static Runtime IR;
+`scripts/check-unchecked-object-access.mjs` rejects that helper in emission templates.
 
 **IR Condition** (`JsIrCondition`) — an expression producing an i1, used by branches and loops.
 Emitted by `emitCondition`.
@@ -122,8 +129,8 @@ and 400 per function, and bans Effect imports throughout both compiler directori
   `js-value-abi/**` — is pure and synchronous. This is enforced by the `no-restricted-imports` override in
   `oxlint.config.ts`, not by convention.
 - The correctness oracle (`test/integration/oracle.ts`) compiles a fixture with `tscn`, runs the
-  native binary, runs the same fixture under Node, and asserts the two agree. 164 fixtures go
-  through it. Four admitted forms cannot be: Node 22's strip-only mode rejects `accessor`, an `enum`,
+  native binary, runs the same fixture under Node, and asserts the two agree. The fixtures are
+  registered in `oracleFixtures`. Four admitted forms cannot be: Node 22's strip-only mode rejects `accessor`, an `enum`,
   a `namespace` and a parameter property outright, because each needs transformation rather than
   erasure. Those are asserted by native value in `test/integration/core.test.ts` instead, which is
   what backs the manifest's claim that they work. Prefer adding a fixture over asserting on emitted

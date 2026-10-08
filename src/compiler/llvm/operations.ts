@@ -61,7 +61,7 @@ import {
   emitRuntimeCollectionNewOperation,
   emitRuntimeCollectionResultOperation,
 } from "./collections.js";
-import { emitNormalGeneratedReturn } from "./completion.js";
+import { emitGeneratedJsCall, emitNormalGeneratedReturn } from "./completion.js";
 import { emitObjectLiteralOperation, emitValueObjectSetPrototypeOperation } from "./known-shape-objects.js";
 import {
   emitDoWhileOperation,
@@ -185,6 +185,10 @@ const operationEmittersByKind = operationEmitters({
     return [];
   },
   letValue: emitLetValueOperation,
+  requireObjectCoercible: (operation, context) => {
+    const value = context.emitValue(operation.value);
+    return [...value.lines, ...emitGeneratedJsCall("requireObjectCoercible", [`i64 ${value.value}`], context).lines];
+  },
   constClosure: (operation, context) => {
     context.bindings.set(operation.name, { kind: "closure", value: operation.value });
     return [];

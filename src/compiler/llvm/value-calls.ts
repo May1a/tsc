@@ -70,11 +70,11 @@ export function emitIterableAppend(
     `${bodyLabel}:`,
     `  ${iterator} = load i64, ptr ${iteratorSlot}`,
     ...nextCall.lines,
-    `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
+    `  ${doneValue} = call i64 @valuePropertyGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
     `  ${done} = call i1 @valueTruthy(i64 ${doneValue})`,
     `  br i1 ${done}, label %${normalLabel}, label %${valueLabel}`,
     `${valueLabel}:`,
-    `  ${value} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+    `  ${value} = call i64 @valuePropertyGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
     `  call void @gcRootPush(i64 ${value})`,
     `  call i64 @arrayPush(ptr ${destination}, i64 ${value})`,
     `  call void @gcSafepoint()`,
@@ -374,7 +374,7 @@ export function emitPrivateFieldAccessExpression(
       `${throwLabel}:`,
       ...emitPrivateFieldBrandThrow(expression.message, `priv.read.${index}`, context),
       `${okLabel}:`,
-      `  ${value} = call i64 @valueObjectGet(i64 ${receiver.value}, i64 ${keyLength}, ptr ${keyConstant})`
+      `  ${value} = call i64 @valuePropertyGet(i64 ${receiver.value}, i64 ${keyLength}, ptr ${keyConstant})`
     ],
     value
   };

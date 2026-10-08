@@ -13,6 +13,8 @@ If there is a problem with code quality suggest new lints.
 ## Commands
 
 - Run the linter with `npm run lint`.
+  This includes `no-unchecked-object-access`: emission must use a value-kind-aware property
+  getter, never the object-layout-only `valueObjectGet` runtime helper.
 - Run typechecking with `npm run check` (typechecks `src/` and `test/`; see `tsconfig.json` and
   `tsconfig.test.json`).
 - Run Vitest tests with `npm test`.

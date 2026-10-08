@@ -725,3 +725,136 @@ emit:
 exit:
   ret ptr %array
 }
+
+define i64 @stringUtf16Length(ptr %bytes, i64 %byte.offset) {
+entry:
+  br label %loop
+loop:
+  %position = phi i64 [ 0, %entry ], [ %next.position, %step ]
+  %units = phi i64 [ 0, %entry ], [ %next.units, %step ]
+  %done = icmp uge i64 %position, %byte.offset
+  br i1 %done, label %return, label %decode
+decode:
+  %pointer = getelementptr i8, ptr %bytes, i64 %position
+  %byte = load i8, ptr %pointer
+  %wide = zext i8 %byte to i64
+  %ascii.bits = and i64 %wide, 128
+  %ascii = icmp eq i64 %ascii.bits, 0
+  %four.bits = and i64 %wide, 240
+  %four = icmp eq i64 %four.bits, 240
+  %three.bits = and i64 %wide, 224
+  %three = icmp eq i64 %three.bits, 224
+  %non.ascii.step = select i1 %three, i64 3, i64 2
+  %encoded.step = select i1 %four, i64 4, i64 %non.ascii.step
+  %byte.step = select i1 %ascii, i64 1, i64 %encoded.step
+  %unit.step = select i1 %four, i64 2, i64 1
+  br label %step
+step:
+  %next.position = add i64 %position, %byte.step
+  %next.units = add i64 %units, %unit.step
+  br label %loop
+return:
+  ret i64 %units
+}
+
+; Object-coerced strings expose their UTF-16 length and indexed code units.
+define i64 @stringPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %bytes = call ptr @valueStringPtr(i64 %value)
+  %byte.length = call i64 @valueStringLength(i64 %value)
+  %maybe.length = icmp eq i64 %key.len, 6
+  br i1 %maybe.length, label %length.compare, label %parse.index
+length.compare:
+  %comparison = call i32 @memcmp(ptr %key.ptr, ptr @.valuelength.key, i64 6)
+  %is.length = icmp eq i32 %comparison, 0
+  br i1 %is.length, label %length, label %parse.index
+length:
+  %units = call i64 @stringUtf16Length(ptr %bytes, i64 %byte.length)
+  %number = uitofp i64 %units to double
+  %boxed = call i64 @valueBoxNumber(double %number)
+  ret i64 %boxed
+parse.index:
+  %index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %valid.index = icmp sge i64 %index, 0
+  br i1 %valid.index, label %loop, label %missing
+loop:
+  %position = phi i64 [ 0, %parse.index ], [ %next.position, %advance ]
+  %unit = phi i64 [ 0, %parse.index ], [ %next.unit, %advance ]
+  %done = icmp uge i64 %position, %byte.length
+  br i1 %done, label %missing, label %decode
+decode:
+  %pointer = getelementptr i8, ptr %bytes, i64 %position
+  %byte = load i8, ptr %pointer
+  %ascii = icmp ult i8 %byte, 128
+  %four = icmp uge i8 %byte, 240
+  %three = icmp uge i8 %byte, 224
+  %non.ascii.width = select i1 %three, i64 3, i64 2
+  %encoded.width = select i1 %four, i64 4, i64 %non.ascii.width
+  %width = select i1 %ascii, i64 1, i64 %encoded.width
+  %unit.width = select i1 %four, i64 2, i64 1
+  %next.unit = add i64 %unit, %unit.width
+  %contains = icmp ult i64 %index, %next.unit
+  br i1 %contains, label %found, label %advance
+advance:
+  %next.position = add i64 %position, %width
+  br label %loop
+found:
+  br i1 %four, label %surrogate, label %copy
+copy:
+  %copy.result = call { ptr, i64 } @stringSliceCopy(ptr %bytes, i64 %position, i64 %width)
+  %copy.ptr = extractvalue { ptr, i64 } %copy.result, 0
+  %copy.len = extractvalue { ptr, i64 } %copy.result, 1
+  %copy.value = call i64 @valueBoxString(ptr %copy.ptr, i64 %copy.len)
+  ret i64 %copy.value
+surrogate:
+  %b0 = zext i8 %byte to i32
+  %p1 = getelementptr i8, ptr %pointer, i64 1
+  %p2 = getelementptr i8, ptr %pointer, i64 2
+  %p3 = getelementptr i8, ptr %pointer, i64 3
+  %byte1 = load i8, ptr %p1
+  %byte2 = load i8, ptr %p2
+  %byte3 = load i8, ptr %p3
+  %b1 = zext i8 %byte1 to i32
+  %b2 = zext i8 %byte2 to i32
+  %b3 = zext i8 %byte3 to i32
+  %v0 = and i32 %b0, 7
+  %v1 = and i32 %b1, 63
+  %v2 = and i32 %b2, 63
+  %v3 = and i32 %b3, 63
+  %s0 = shl i32 %v0, 18
+  %s1 = shl i32 %v1, 12
+  %s2 = shl i32 %v2, 6
+  %c0 = or i32 %s0, %s1
+  %c1 = or i32 %s2, %v3
+  %codepoint = or i32 %c0, %c1
+  %offset = sub i32 %codepoint, 65536
+  %high.bits = lshr i32 %offset, 10
+  %low.bits = and i32 %offset, 1023
+  %high = add i32 %high.bits, 55296
+  %low = add i32 %low.bits, 56320
+  %is.high = icmp eq i64 %index, %unit
+  %codeunit = select i1 %is.high, i32 %high, i32 %low
+  ; Keep lone surrogate code units in WTF-8, so indexing never combines them.
+  %out = call ptr @malloc(i64 4)
+  %out1 = getelementptr i8, ptr %out, i64 1
+  %out2 = getelementptr i8, ptr %out, i64 2
+  %out3 = getelementptr i8, ptr %out, i64 3
+  %head.bits = lshr i32 %codeunit, 12
+  %middle.shift = lshr i32 %codeunit, 6
+  %middle.bits = and i32 %middle.shift, 63
+  %tail.bits = and i32 %codeunit, 63
+  %head = or i32 %head.bits, 224
+  %middle = or i32 %middle.bits, 128
+  %tail = or i32 %tail.bits, 128
+  %head.byte = trunc i32 %head to i8
+  %middle.byte = trunc i32 %middle to i8
+  %tail.byte = trunc i32 %tail to i8
+  store i8 %head.byte, ptr %out
+  store i8 %middle.byte, ptr %out1
+  store i8 %tail.byte, ptr %out2
+  store i8 0, ptr %out3
+  %surrogate.value = call i64 @valueBoxString(ptr %out, i64 3)
+  ret i64 %surrogate.value
+missing:
+  ret i64 9222246136947933184
+}

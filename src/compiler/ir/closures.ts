@@ -1,4 +1,5 @@
-import { type Lowered, notApplicable, produced } from "./lowered.js";
+import { unsupportedFormMessage } from "./builtins/manifest.js";
+import { type Lowered, notApplicable, produced, unsupportedIn } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionParameter } from "./bindings.js";
@@ -117,8 +118,11 @@ export function lowerFunctionObjectValue(
   if (!ts.isArrowFunction(expression) && !ts.isFunctionExpression(expression)) {
     return notApplicable;
   }
-  if ((ts.isFunctionExpression(expression) && expression.asteriskToken !== undefined) || expression.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
-    return notApplicable;
+  if (expression.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
+    return unsupportedIn(unsupportedFormMessage("async-function"));
+  }
+  if (ts.isFunctionExpression(expression) && expression.asteriskToken !== undefined) {
+    return unsupportedIn(unsupportedFormMessage("generator-function"));
   }
 
   const functionKind = functionExpressionKind(expression);

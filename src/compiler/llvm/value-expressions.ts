@@ -737,6 +737,8 @@ export function emitLogicalValueExpression(
   const index = context.logicIndex;
   context.logicIndex += 1;
   const leftLabel = `value.logic.left.${index}`;
+  const leftJoinLabel = `value.logic.left.join.${index}`;
+  const rightJoinLabel = `value.logic.rhs.join.${index}`;
   const rhsLabel = `value.logic.rhs.${index}`;
   const endLabel = `value.logic.end.${index}`;
   const left = context.emitValue(expression.left);
@@ -756,13 +758,17 @@ export function emitLogicalValueExpression(
       `  br label %${leftLabel}`,
       `${leftLabel}:`,
       ...left.lines,
+      `  br label %${leftJoinLabel}`,
+      `${leftJoinLabel}:`,
       `  ${leftTruthy} = call i1 @valueTruthy(i64 ${left.value})`,
       `  br i1 ${leftTruthy}, label %${leftTrueLabel}, label %${leftFalseLabel}`,
       `${rhsLabel}:`,
       ...right.lines,
+      `  br label %${rightJoinLabel}`,
+      `${rightJoinLabel}:`,
       `  br label %${endLabel}`,
       `${endLabel}:`,
-      `  ${value} = phi i64 [ ${left.value}, %${leftLabel} ], [ ${right.value}, %${rhsLabel} ]`
+      `  ${value} = phi i64 [ ${left.value}, %${leftJoinLabel} ], [ ${right.value}, %${rightJoinLabel} ]`
     ],
     value
   };

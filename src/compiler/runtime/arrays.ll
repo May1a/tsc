@@ -298,7 +298,7 @@ check.prototype:
   %properties.slot = getelementptr i8, ptr %array, i64 32
   %properties = load ptr, ptr %properties.slot
   %named = call i64 @objectGet(ptr %properties, i64 %key.len, ptr %key.ptr)
-  %has.named = icmp ne i64 %named, 9222246136947933184
+  %has.named = call i1 @objectHasOwn(ptr %properties, i64 %key.len, ptr %key.ptr)
   br i1 %has.named, label %array.named, label %prototype.check
 array.named:
   ret i64 %named

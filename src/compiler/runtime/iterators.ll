@@ -70,11 +70,21 @@ alloc:
   store i64 0, ptr %done.slot
   %next.fn = call i64 @functionObjectNew(ptr @builtinIteratorNext, ptr %state, i64 9222246136947933184, i64 9222246136947933184, i64 0)
   call void @gcRootPush(i64 %next.fn)
-  %object = call ptr @objectNew(i64 1)
+  %self.fn = call i64 @functionObjectNew(ptr @iteratorSelfMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  call void @gcRootPush(i64 %self.fn)
+  %object = call ptr @objectNew(i64 2)
   call void @objectSet(ptr %object, i64 4, ptr @.iter.key.next, i64 %next.fn)
+  call void @objectSet(ptr %object, i64 18, ptr @.symbol.iterator.key, i64 %self.fn)
   %boxed = call i64 @valueBoxObject(ptr %object)
   call void @gcRootRestore(i64 %frame)
   ret i64 %boxed
+}
+
+define { i64, i1 } @iteratorSelfMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %this.value, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok.1
 }
 
 define i64 @createArrayIterator(i64 %array.value) {
@@ -98,6 +108,27 @@ entry:
 define { i64, i1 } @arrayIteratorMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
 entry:
   %iterator = call i64 @createArrayIterator(i64 %this.value)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %iterator, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok.1
+}
+define { i64, i1 } @arrayKeysMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %iterator = call i64 @createIteratorObject(i64 %this.value, i64 0, i64 0)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %iterator, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok.1
+}
+define { i64, i1 } @arrayValuesMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %iterator = call i64 @createIteratorObject(i64 %this.value, i64 0, i64 1)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %iterator, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok.1
+}
+define { i64, i1 } @arrayEntriesMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %iterator = call i64 @createIteratorObject(i64 %this.value, i64 0, i64 2)
   %ok.0 = insertvalue { i64, i1 } undef, i64 %iterator, 0
   %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
   ret { i64, i1 } %ok.1
@@ -135,11 +166,32 @@ array:
   %array.done = icmp uge i64 %index, %array.len
   br i1 %array.done, label %mark.done, label %array.yield
 array.yield:
-  %array.value = call i64 @arrayGet(ptr %array.ptr, i64 %index)
-  call void @gcRootPush(i64 %array.value)
   %array.next = add i64 %index, 1
   store i64 %array.next, ptr %env
+  %array.is.keys = icmp eq i64 %iteration.kind, 0
+  br i1 %array.is.keys, label %array.keys, label %array.not.keys
+array.keys:
+  %array.index.number = uitofp i64 %index to double
+  %array.index.value = bitcast double %array.index.number to i64
+  %array.keys.result = call i64 @iteratorResultObject(i64 %array.index.value, i1 false)
+  br label %success
+array.not.keys:
+  %array.value = call i64 @arrayGet(ptr %array.ptr, i64 %index)
+  call void @gcRootPush(i64 %array.value)
+  %array.is.values = icmp eq i64 %iteration.kind, 1
+  br i1 %array.is.values, label %array.values, label %array.entries
+array.values:
   %array.result = call i64 @iteratorResultObject(i64 %array.value, i1 false)
+  br label %success
+array.entries:
+  %array.entry.index.number = uitofp i64 %index to double
+  %array.entry.index.value = bitcast double %array.entry.index.number to i64
+  %array.pair = call ptr @arrayNew(i64 2)
+  call void @arraySet(ptr %array.pair, i64 0, i64 %array.entry.index.value)
+  call void @arraySet(ptr %array.pair, i64 1, i64 %array.value)
+  %array.pair.boxed = call i64 @valueBoxArray(ptr %array.pair)
+  call void @gcRootPush(i64 %array.pair.boxed)
+  %array.entries.result = call i64 @iteratorResultObject(i64 %array.pair.boxed, i1 false)
   br label %success
 string:
   %str.ptr = call ptr @valueStringPtr(i64 %source.bits)
@@ -267,7 +319,7 @@ exhausted:
   %exhausted.result = call i64 @iteratorResultObject(i64 9222246136947933184, i1 true)
   br label %success
 success:
-  %result.value = phi i64 [ %array.result, %array.yield ], [ %ascii.result, %string.ascii ], [ %seq.result, %string.copy ], [ %keys.result, %collection.keys ], [ %values.map.result, %collection.values.map ], [ %values.set.result, %collection.values.set ], [ %entries.map.result, %collection.entries.map ], [ %entries.set.result, %collection.entries.set ], [ %exhausted.result, %exhausted ]
+  %result.value = phi i64 [ %array.keys.result, %array.keys ], [ %array.result, %array.values ], [ %array.entries.result, %array.entries ], [ %ascii.result, %string.ascii ], [ %seq.result, %string.copy ], [ %keys.result, %collection.keys ], [ %values.map.result, %collection.values.map ], [ %values.set.result, %collection.values.set ], [ %entries.map.result, %collection.entries.map ], [ %entries.set.result, %collection.entries.set ], [ %exhausted.result, %exhausted ]
   %ok.0 = insertvalue { i64, i1 } undef, i64 %result.value, 0
   %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
   call void @gcRootRestore(i64 %frame)

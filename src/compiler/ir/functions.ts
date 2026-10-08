@@ -1,3 +1,4 @@
+import { unsupportedFormMessage } from "./builtins/manifest.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrFunctionParameter, JsIrValueKind } from "./bindings.js";
@@ -18,6 +19,12 @@ export function lowerFunctionDeclaration(
   statement: ts.FunctionDeclaration,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
+  if (statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
+    return unsupported(unsupportedFormMessage("async-function"));
+  }
+  if (statement.asteriskToken !== undefined) {
+    return unsupported(unsupportedFormMessage("generator-function"));
+  }
   const reason = unsupportedStatementMessage(statement, bindings);
   if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
     return unsupported(reason);

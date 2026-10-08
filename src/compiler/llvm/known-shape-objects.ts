@@ -4,6 +4,7 @@ import { emitObjectIndexedPointer } from "./paths.js";
 import type { JsIrObjectValue, JsIrValueExpression } from "../ir/expressions.js";
 import type { JsIrOperation } from "../ir/types.js";
 import { emitNamedValueBinding } from "./conditions.js";
+import { emitGeneratedJsCall } from "./completion.js";
 import { emitRuntimeObjectLiteralStorage, knownShapeObjectToRuntimeValue } from "./objects.js";
 
 /**
@@ -69,12 +70,12 @@ export function emitValueObjectValueExpression(
 ): JsValue {
   const receiver = context.emitValue(expression.value);
   const key = context.emitStringExpression(expression.key);
-  const valueIndex = context.numIndex;
-  context.numIndex += 1;
-  const value = `%value.${valueIndex}`;
+  const access = emitGeneratedJsCall(
+    "checkedValuePropertyGet", [`i64 ${receiver.value}`, `i64 ${key.length}`, `ptr ${key.value}`], context
+  );
   return {
-    lines: [...receiver.lines, ...key.lines, `  ${value} = call i64 @valueObjectGet(i64 ${receiver.value}, i64 ${key.length}, ptr ${key.value})`],
-    value
+    lines: [...receiver.lines, ...key.lines, ...access.lines],
+    value: access.value
   };
 }
 export function defineObjectType(value: JsIrObjectValue, context: EmitContext): string {

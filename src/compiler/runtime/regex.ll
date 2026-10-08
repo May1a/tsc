@@ -1291,36 +1291,6 @@ return:
 failure:
   ret i64 -1
 }
-define i64 @regexUtf16Index(ptr %bytes, i64 %byte.offset) {
-entry:
-  br label %loop
-loop:
-  %position = phi i64 [ 0, %entry ], [ %next.position, %step ]
-  %units = phi i64 [ 0, %entry ], [ %next.units, %step ]
-  %done = icmp uge i64 %position, %byte.offset
-  br i1 %done, label %return, label %decode
-decode:
-  %pointer = getelementptr i8, ptr %bytes, i64 %position
-  %byte = load i8, ptr %pointer
-  %wide = zext i8 %byte to i64
-  %ascii.bits = and i64 %wide, 128
-  %ascii = icmp eq i64 %ascii.bits, 0
-  %four.bits = and i64 %wide, 240
-  %four = icmp eq i64 %four.bits, 240
-  %three.bits = and i64 %wide, 224
-  %three = icmp eq i64 %three.bits, 224
-  %non.ascii.step = select i1 %three, i64 3, i64 2
-  %encoded.step = select i1 %four, i64 4, i64 %non.ascii.step
-  %byte.step = select i1 %ascii, i64 1, i64 %encoded.step
-  %unit.step = select i1 %four, i64 2, i64 1
-  br label %step
-step:
-  %next.position = add i64 %position, %byte.step
-  %next.units = add i64 %units, %unit.step
-  br label %loop
-return:
-  ret i64 %units
-}
 define i64 @regexByteOffset(ptr %bytes, i64 %byte.length, i64 %unit.offset) {
 entry:
   br label %loop
@@ -1443,7 +1413,7 @@ advance:
 found:
   br i1 %uses.last, label %update.success, label %pack
 update.success:
-  %end.units = call i64 @regexUtf16Index(ptr %input.ptr, i64 %end)
+  %end.units = call i64 @stringUtf16Length(ptr %input.ptr, i64 %end)
   %end.number = uitofp i64 %end.units to double
   %end.value = call i64 @valueBoxNumber(double %end.number)
   call void @objectSet(ptr %object, i64 9, ptr @.regex.last.index, i64 %end.value)
@@ -1526,7 +1496,7 @@ capture.store:
   br label %captures
 properties:
   %input.ptr = call ptr @valueStringPtr(i64 %input)
-  %start.units = call i64 @regexUtf16Index(ptr %input.ptr, i64 %start)
+  %start.units = call i64 @stringUtf16Length(ptr %input.ptr, i64 %start)
   %start.number = uitofp i64 %start.units to double
   %start.value = call i64 @valueBoxNumber(double %start.number)
   call void @arraySetNamed(ptr %array, i64 5, ptr @.regex.index, i64 %start.value)
@@ -1572,7 +1542,7 @@ advance.empty:
   %empty.at.input.end = icmp uge i64 %end, %input.len
   br i1 %empty.at.input.end, label %empty.complete, label %empty.update
 empty.update:
-  %end.units = call i64 @regexUtf16Index(ptr %input.ptr, i64 %end)
+  %end.units = call i64 @stringUtf16Length(ptr %input.ptr, i64 %end)
   %next.units = add i64 %end.units, 1
   %next.number = uitofp i64 %next.units to double
   %next.value = call i64 @valueBoxNumber(double %next.number)
@@ -1609,7 +1579,7 @@ entry:
 matched:
   %start = lshr i64 %match, 32
   %input.ptr = call ptr @valueStringPtr(i64 %input)
-  %start.units = call i64 @regexUtf16Index(ptr %input.ptr, i64 %start)
+  %start.units = call i64 @stringUtf16Length(ptr %input.ptr, i64 %start)
   %start.number = uitofp i64 %start.units to double
   br label %box
 missing:
@@ -1651,7 +1621,7 @@ limit.check:
   %can.push = or i1 %unlimited, %below.limit
   br i1 %can.push, label %find, label %restore
 find:
-  %search.units = call i64 @regexUtf16Index(ptr %input.ptr, i64 %search)
+  %search.units = call i64 @stringUtf16Length(ptr %input.ptr, i64 %search)
   %search.number = uitofp i64 %search.units to double
   %search.value = call i64 @valueBoxNumber(double %search.number)
   call void @objectSet(ptr %object, i64 9, ptr @.regex.last.index, i64 %search.value)
@@ -1885,7 +1855,7 @@ empty.advance:
   %at.end = icmp uge i64 %end, %input.len
   br i1 %at.end, label %finish, label %empty.update
 empty.update:
-  %end.units = call i64 @regexUtf16Index(ptr %input.ptr, i64 %end)
+  %end.units = call i64 @stringUtf16Length(ptr %input.ptr, i64 %end)
   %next.units = add i64 %end.units, 1
   %next.number = uitofp i64 %next.units to double
   %next.value = call i64 @valueBoxNumber(double %next.number)

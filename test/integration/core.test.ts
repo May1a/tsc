@@ -6,6 +6,7 @@ import {
   expectSuccessfulCompile,
   expectUnsupportedDiagnostic
 } from "./helpers.js";
+import { expectNativeMatchesNodeIfAvailable } from "./oracle.js";
 
 describe("tscn numeric conditions and bindings", () => {
   test("lowers numeric strict equality in if conditions", async () => {
@@ -761,17 +762,8 @@ describe("tscn rich expressions", () => {
     }
   });
 
-  test("lowers runtime string ternary expressions through pointer and length phis", async () => {
-    const result = await expectSuccessfulCompile("runtime-string-ternary.ts");
-
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("phi ptr [ %str.2, %str.then.0 ], [ @.str.2, %str.else.0 ]");
-      expect(llvmIr).toContain("phi i64 [ %str.len.2, %str.then.0 ], [ 7, %str.else.0 ]");
-      expect(llvmIr).toContain("call i32 @puts(ptr %str.0)");
-    } finally {
-      await result.cleanup();
-    }
+  test("preserves runtime string ternary output", async () => {
+    await expectNativeMatchesNodeIfAvailable("runtime-string-ternary.ts", { verifyLlvm: true });
   });
 
   test("folds const string strict equality in if conditions", async () => {

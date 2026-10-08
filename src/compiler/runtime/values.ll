@@ -1,3 +1,6 @@
+@.value.array.key.entries = private unnamed_addr constant [8 x i8] c"entries\00"
+@.value.array.key.keys = private unnamed_addr constant [5 x i8] c"keys\00"
+@.value.array.key.values = private unnamed_addr constant [7 x i8] c"values\00"
 define i1 @valueStrictEquals(i64 %left, i64 %right) {
 entry:
   %left.number = call i1 @valueIsNumberForSameValueZero(i64 %left)
@@ -351,34 +354,80 @@ check.array:
   br i1 %is.array, label %array, label %check.string
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %value)
-  %array.result = call i64 @arrayGetWithKey(ptr %array.ptr, i64 -1, i64 %key.len, ptr %key.ptr)
-  %array.missing = icmp eq i64 %array.result, 9222246136947933184
-  br i1 %array.missing, label %array.builtin, label %array.hit
+  %array.key.is.length = icmp eq i64 %key.len, 6
+  br i1 %array.key.is.length, label %array.length.cmp, label %array.lookup
+array.length.cmp:
+  %array.length.comparison = call i32 @memcmp(ptr %key.ptr, ptr @.valuelength.key, i64 6)
+  %array.is.length = icmp eq i32 %array.length.comparison, 0
+  br i1 %array.is.length, label %array.length, label %array.lookup
+array.length:
+  %array.length.raw = call i64 @arrayLength(ptr %array.ptr)
+  %array.length.number = uitofp i64 %array.length.raw to double
+  %array.length.value = call i64 @valueBoxNumber(double %array.length.number)
+  ret i64 %array.length.value
+array.lookup:
+  %array.index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %array.result = call i64 @arrayGetWithKey(ptr %array.ptr, i64 %array.index, i64 %key.len, ptr %key.ptr)
+  %array.has = call i1 @arrayHas(ptr %array.ptr, i64 %array.index, i64 %key.len, ptr %key.ptr)
+  br i1 %array.has, label %array.hit, label %array.builtin
 array.hit:
   ret i64 %array.result
 array.builtin:
   %array.is.iter = icmp eq i64 %key.len, 18
-  br i1 %array.is.iter, label %array.iter.cmp, label %missing
+  br i1 %array.is.iter, label %array.iter.cmp, label %array.check.entries
 array.iter.cmp:
   %array.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.symbol.iterator.key, i64 18)
   %array.key.same = icmp eq i32 %array.key.cmp, 0
-  br i1 %array.key.same, label %array.iter, label %missing
+  br i1 %array.key.same, label %array.iter, label %array.check.entries
 array.iter:
   %array.method = call i64 @functionObjectNew(ptr @arrayIteratorMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
   ret i64 %array.method
+array.check.entries:
+  %array.is.entries = icmp eq i64 %key.len, 7
+  br i1 %array.is.entries, label %array.entries.cmp, label %array.check.keys
+array.entries.cmp:
+  %array.entries.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.array.key.entries, i64 7)
+  %array.entries.same = icmp eq i32 %array.entries.key.cmp, 0
+  br i1 %array.entries.same, label %array.entries, label %array.check.keys
+array.entries:
+  %array.entries.method = call i64 @functionObjectNew(ptr @arrayEntriesMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  ret i64 %array.entries.method
+array.check.keys:
+  %array.is.keys = icmp eq i64 %key.len, 4
+  br i1 %array.is.keys, label %array.keys.cmp, label %array.check.values
+array.keys.cmp:
+  %array.keys.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.array.key.keys, i64 4)
+  %array.keys.same = icmp eq i32 %array.keys.key.cmp, 0
+  br i1 %array.keys.same, label %array.keys, label %array.check.values
+array.keys:
+  %array.keys.method = call i64 @functionObjectNew(ptr @arrayKeysMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  ret i64 %array.keys.method
+array.check.values:
+  %array.is.values = icmp eq i64 %key.len, 6
+  br i1 %array.is.values, label %array.values.cmp, label %missing
+array.values.cmp:
+  %array.values.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.array.key.values, i64 6)
+  %array.values.same = icmp eq i32 %array.values.key.cmp, 0
+  br i1 %array.values.same, label %array.values, label %missing
+array.values:
+  %array.values.method = call i64 @functionObjectNew(ptr @arrayValuesMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  ret i64 %array.values.method
 check.string:
   %is.string = call i1 @valueIsString(i64 %value)
   br i1 %is.string, label %string.builtin, label %missing
 string.builtin:
   %string.is.iter = icmp eq i64 %key.len, 18
-  br i1 %string.is.iter, label %string.iter.cmp, label %missing
+  br i1 %string.is.iter, label %string.iter.cmp, label %string.property
 string.iter.cmp:
   %string.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.symbol.iterator.key, i64 18)
   %string.key.same = icmp eq i32 %string.key.cmp, 0
-  br i1 %string.key.same, label %string.iter, label %missing
+  br i1 %string.key.same, label %string.iter, label %string.property
 string.iter:
   %string.method = call i64 @functionObjectNew(ptr @stringIteratorMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
   ret i64 %string.method
+string.property:
+  %string.property.value = call i64 @stringPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  ret i64 %string.property.value
 missing:
   ret i64 9222246136947933184
 }
@@ -734,4 +783,78 @@ load:
   ret { ptr, i64 } %raw
 miss:
   ret { ptr, i64 } { ptr null, i64 0 }
+}
+
+@.value.coercible.error = private unnamed_addr constant [43 x i8] c"Cannot convert undefined or null to object\00"
+
+define { i64, i1 } @requireObjectCoercible(i64 %value) {
+entry:
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  %is.null = icmp eq i64 %value, 9222246136947933187
+  %is.nullish = or i1 %is.undefined, %is.null
+  br i1 %is.nullish, label %error, label %success
+error:
+  %message = call i64 @valueBoxString(ptr @.value.coercible.error, i64 42)
+  %error.result = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error.result
+success:
+  %result.0 = insertvalue { i64, i1 } undef, i64 %value, 0
+  %result.1 = insertvalue { i64, i1 } %result.0, i1 false, 1
+  ret { i64, i1 } %result.1
+}
+
+define { i64, i1 } @checkedValuePropertyGet(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %coercible = call { i64, i1 } @requireObjectCoercible(i64 %value)
+  %exception = extractvalue { i64, i1 } %coercible, 1
+  br i1 %exception, label %error, label %read
+error:
+  ret { i64, i1 } %coercible
+read:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %value)
+  %property = call i64 @valuePropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  %result.0 = insertvalue { i64, i1 } undef, i64 %property, 0
+  %result.1 = insertvalue { i64, i1 } %result.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %result.1
+}
+
+; Parse a canonical nonnegative integer property key. Other keys return -1.
+define i64 @propertyKeyIndex(i64 %length, ptr %key) {
+entry:
+  %empty = icmp eq i64 %length, 0
+  %too.long = icmp ugt i64 %length, 16
+  %invalid.length = or i1 %empty, %too.long
+  br i1 %invalid.length, label %invalid, label %first
+first:
+  %first.byte = load i8, ptr %key
+  %leading.zero = icmp eq i8 %first.byte, 48
+  %multiple = icmp ugt i64 %length, 1
+  %invalid.zero = and i1 %leading.zero, %multiple
+  br i1 %invalid.zero, label %invalid, label %loop
+loop:
+  %position = phi i64 [ 0, %first ], [ %next.position, %advance ]
+  %index = phi i64 [ 0, %first ], [ %next.index, %advance ]
+  %done = icmp eq i64 %position, %length
+  br i1 %done, label %success, label %digit
+digit:
+  %pointer = getelementptr i8, ptr %key, i64 %position
+  %byte = load i8, ptr %pointer
+  %number = sub i8 %byte, 48
+  %is.digit = icmp ule i8 %number, 9
+  br i1 %is.digit, label %accumulate, label %invalid
+accumulate:
+  %wide = zext i8 %number to i64
+  %scaled = mul i64 %index, 10
+  %next.index = add i64 %scaled, %wide
+  %overflow = icmp ugt i64 %next.index, 9007199254740991
+  br i1 %overflow, label %invalid, label %advance
+advance:
+  %next.position = add i64 %position, 1
+  br label %loop
+success:
+  ret i64 %index
+invalid:
+  ret i64 -1
 }

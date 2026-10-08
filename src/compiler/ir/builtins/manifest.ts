@@ -64,7 +64,7 @@ const ownerTables: readonly OwnerTable[] = [
  * reason, fails.
  *
  * The forms are listed in the order of the plan's three batches, so the list reads as the remaining
- * work rather than as an alphabet.
+ * work rather than as an alphabet. Additional runtime forms follow the existing batches.
  */
 const declaredForms = [
   // Batch 1, pure erasure.
@@ -222,6 +222,49 @@ const declaredForms = [
     state: "planned",
     syntax: "new Date(0)",
     reason: "no date value can exist, so `Date.prototype`'s members are unreachable and their table entries would never fire"
+  },
+
+  {
+    form: "destructuring for-of binding over a string source",
+    id: "for-of-string-destructuring",
+    state: "planned",
+    syntax: 'for (const [c] of "ab") {}',
+    reason:
+      "JavaScript permits destructuring each character yielded by a string. The specialized string for-of path binds a stringVariable per character and has no general value to destructure; supporting this form needs a boxed character value and string iteration in the destructuring iterator protocol."
+  },
+
+  // Additional runtime forms, outside the plan's three batches.
+  {
+    form: "async function",
+    id: "async-function",
+    state: "planned",
+    syntax: "async function f() {}",
+    reason:
+      "an async call returns a Promise even when its body never awaits, and a thrown exception rejects that Promise instead of escaping the call. The runtime has no Promise value or job queue. Supporting async functions needs Promise settlement and reaction scheduling, plus a suspendable frame that resumes after each await. Lowering the body as an ordinary function loses all of these semantics."
+  },
+  {
+    form: "decorator on a class or class member",
+    id: "decorator",
+    state: "planned",
+    syntax: "@d class C { @d m() {} }",
+    reason:
+      "a decorator is an evaluated function call that can replace a class or member and register initialization work; it is not a modifier that can be erased. Class decoration needs a class as a boxed value, and member decoration needs callable member values, decorator context and initializer ordering. The lowering has no decorator application or initialization pipeline, so dropping decorators skips their side effects and replacements."
+  },
+  {
+    form: "generator function",
+    id: "generator-function",
+    state: "planned",
+    syntax: "function* g() { yield 1; }",
+    reason:
+      "calling a generator creates an iterator without executing the body. Each next, return or throw call resumes a suspendable frame that retains local bindings and pending finally blocks. The runtime has no representation for that frame or its completion state; supporting generator functions needs that representation and iterator operations that drive it. Lowering yield as an ordinary statement cannot preserve the call or resumption semantics."
+  },
+  {
+    form: "generator method in a class",
+    id: "class-generator-method",
+    state: "planned",
+    syntax: "class C { *g() { yield 1; } }",
+    reason:
+      "calling a generator method creates an iterator without executing the body. Each next, return or throw call resumes a suspendable frame that retains local bindings and pending finally blocks. The runtime has no representation for that frame or its completion state; supporting generator methods needs that representation and iterator operations that drive it. Lowering the body as an ordinary method loses the call and resumption semantics."
   }
 ] as const satisfies readonly TypeScriptForm[];
 

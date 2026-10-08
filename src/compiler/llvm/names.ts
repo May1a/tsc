@@ -26,6 +26,8 @@ export function stringLengthPointerName(name: string): string {
  * The preferred name is returned unchanged the first time, so output is unchanged for every program
  * whose slot names do not repeat. Only a repeat is suffixed, with the lowest free ordinal, which is what
  * keeps the collision fix from rewriting every emitted name in the corpus.
+ * This helper reserves the supplied string itself; callers naming value slots use
+ * `uniqueValueSlotName` to reserve the emitted pointer while retaining the binding slot name.
  */
 export function uniqueLocalName(preferred: string, context: { readonly declaredLocals: Set<string> }): string {
   if (!context.declaredLocals.has(preferred)) {
@@ -39,6 +41,23 @@ export function uniqueLocalName(preferred: string, context: { readonly declaredL
   const unique = `${preferred}.${ordinal}`;
   context.declaredLocals.add(unique);
   return unique;
+}
+/**
+ * Reserve a value slot by its emitted LLVM pointer name, returning the unsuffixed binding name
+ * unless that pointer is already reserved. Unlike `uniqueLocalName`, this returns a slot name
+ * for `bindingSlotName` and reserves `variablePointerName(slotName)`, not the bare name.
+ * Runtime object loads in `layout.ts` derive pointers without registering bare names, so checking
+ * a bare name would miss a pointer reserved by another emitter.
+ */
+export function uniqueValueSlotName(name: string, context: { readonly declaredLocals: Set<string> }): string {
+  let slotName = name;
+  let ordinal = 0;
+  while (context.declaredLocals.has(variablePointerName(slotName))) {
+    ordinal += 1;
+    slotName = `${name}.${ordinal}`;
+  }
+  context.declaredLocals.add(variablePointerName(slotName));
+  return slotName;
 }
 /**
  * The slot a loop keeps its current item in.
