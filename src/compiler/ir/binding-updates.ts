@@ -315,7 +315,7 @@ export function collectRuntimeShadowObjectNames(operation: JsIrOperation, names:
 }
 // eslint-disable-next-line complexity, max-statements -- Transitional aggregate JSValue tracking centralizes all operation variants.
 export function collectOperationValueExpressions(operation: JsIrOperation, names: Set<string>): void {
-  if (operation.kind === "constValue" || operation.kind === "throwValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore" || operation.kind === "privateFieldStore") {
+  if (operation.kind === "constValue" || operation.kind === "requireObjectCoercible" || operation.kind === "throwValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore" || operation.kind === "privateFieldStore") {
     collectValueExpressionObjectNames(operation.value, names);
   }
   if (operation.kind === "arrayDestructureProtocol") {

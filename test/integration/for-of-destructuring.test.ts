@@ -13,6 +13,8 @@ describe("for-of destructuring", () => {
     "for-of-destructure-nested-array-default.ts",
     "for-of-destructure-nested-object-default.ts",
     "for-of-destructure-slot-collisions.ts",
+    "for-of-destructure-value-kinds.ts",
+    "for-of-destructure-nullish.ts",
     "for-of-array.ts",
     "for-of-string.ts",
     "for-of-set.ts",

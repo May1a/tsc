@@ -322,11 +322,11 @@ export function emitArrayDestructureProtocolOperation(
         `${restCall}:`,
         `  ${iterator} = load i64, ptr ${iteratorSlot}`,
         ...nextCall.lines,
-        `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
+        `  ${doneValue} = call i64 @valuePropertyGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
         `  ${isDone} = call i1 @valueTruthy(i64 ${doneValue})`,
         `  br i1 ${isDone}, label %${restDone}, label %${restValue}`,
         `${restValue}:`,
-        `  ${value} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+        `  ${value} = call i64 @valuePropertyGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
         `  call void @gcRootPush(i64 ${value})`,
         `  call i64 @arrayPush(ptr ${restArray}, i64 ${value})`,
         `  call void @gcSafepoint()`,
@@ -357,14 +357,14 @@ export function emitArrayDestructureProtocolOperation(
       `${callLabel}:`,
       `  ${iterator} = load i64, ptr ${iteratorSlot}`,
       ...nextCall.lines,
-      `  ${doneValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
+      `  ${doneValue} = call i64 @valuePropertyGet(i64 ${nextCall.value}, i64 4, ptr ${doneKey})`,
       `  ${isDone} = call i1 @valueTruthy(i64 ${doneValue})`,
       `  br i1 ${isDone}, label %${exhaustedLabel}, label %${yieldedLabel}`,
       `${yieldedLabel}:`
     );
     const yieldedValue = `%destructure.proto.item.${index}.${elementIndex}`;
     lines.push(
-      `  ${yieldedValue} = call i64 @valueObjectGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
+      `  ${yieldedValue} = call i64 @valuePropertyGet(i64 ${nextCall.value}, i64 5, ptr ${valueKey})`,
       `  store i64 ${yieldedValue}, ptr ${incomingSlot}`,
       `  br label %${bindLabel}`,
       `${exhaustedLabel}:`,

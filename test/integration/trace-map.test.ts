@@ -4,7 +4,7 @@ import { compileFixture, expectLlvmAsVerificationIfAvailable, expectSuccessfulCo
 
 const functionDeclarationLine = 4;
 const functionBodyPrintLine = 5;
-const destructuringChildEndOffset = 3;
+const destructuringChildEndOffset = 5;
 
 async function readTraceMap(result: Awaited<ReturnType<typeof expectSuccessfulCompile>>): Promise<TraceMapV1> {
   return JSON.parse(await result.readArtifact("trace-map.json")) as TraceMapV1;
@@ -129,7 +129,7 @@ describe("operation trace maps", () => {
       const group = traceMap.operations[groupIndex];
       const children = traceMap.operations.slice(groupIndex + 1, groupIndex + destructuringChildEndOffset);
       expect(group.origin).toBe("source");
-      expect(children.map((operation) => operation.kind)).toEqual(["constValue", "constValue"]);
+      expect(children.map((operation) => operation.kind)).toEqual(["constValue", "requireObjectCoercible", "constValue", "constValue"]);
       expect(children.every((operation) => operation.origin === "synthesized")).toBe(true);
       expect(children.every((operation) => operation.source?.line === group.source?.line)).toBe(true);
     } finally {

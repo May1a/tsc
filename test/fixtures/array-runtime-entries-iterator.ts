@@ -41,3 +41,17 @@ shadowed["entries"] = function replacement() {
 const overridden = shadowed.entries();
 const overriddenResult = overridden.next();
 print(overriddenResult.value);
+
+// An own undefined value still shadows the builtin. Deleting it restores lookup.
+shadowed["entries"] = undefined;
+print(shadowed["entries"]);
+try {
+  const invalid = shadowed.entries();
+  print(invalid);
+} catch (error) {
+  print(error instanceof TypeError);
+}
+delete shadowed["entries"];
+const restored = shadowed.entries();
+const restoredResult = restored.next();
+print(restoredResult.done);

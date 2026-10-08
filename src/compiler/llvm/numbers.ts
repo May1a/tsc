@@ -400,7 +400,7 @@ export function emitAggregateNumberExpression(
     const value = `%num.${index}`;
     const lengthKey = addStringConstant("length", context);
     return {
-      lines: [...receiver.lines, `  ${raw} = call i64 @valueObjectGet(i64 ${receiver.value}, i64 6, ptr ${lengthKey})`, `  ${value} = sitofp i64 ${raw} to double`],
+      lines: [...receiver.lines, `  ${raw} = call i64 @valuePropertyGet(i64 ${receiver.value}, i64 6, ptr ${lengthKey})`, `  ${value} = sitofp i64 ${raw} to double`],
       value
     };
   }

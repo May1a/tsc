@@ -28,6 +28,10 @@ import type { JsIrOperationTrace } from "./module.js";
  */
 export type JsIrOperationNode =
   | {
+      readonly kind: "requireObjectCoercible";
+      readonly value: JsIrValueExpression;
+    }
+  | {
       readonly kind: "constNumber";
       readonly name: string;
       readonly value: JsIrNumberExpression;

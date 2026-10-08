@@ -21,6 +21,9 @@ export function lowerObjectDestructuringElements(
   if (sourceBinding.kind !== "runtimeObject" && sourceBinding.kind !== "object" && sourceBinding.kind !== "valueVariable") {
     return produced(false);
   }
+  if (sourceBinding.kind === "valueVariable") {
+    operations.push({ kind: "requireObjectCoercible", value: { kind: "variable", name: source.name } });
+  }
   const extractedKeys: string[] = [];
   for (const element of pattern.elements) {
     if (element.dotDotDotToken !== undefined) {

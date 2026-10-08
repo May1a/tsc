@@ -43,7 +43,7 @@ type JsIrContainerOperationKind =
 /** Every operation kind that is not a container, keyed so the set is checked for completeness. */
 export const jsIrLeafOperationKinds: Readonly<Record<Exclude<JsIrOperation["kind"], JsIrContainerOperationKind>, true>> = {
   "constNumber": true, "constString": true, "constStringExpression": true, "constBoolean": true, "constBooleanExpression": true,
-  "constValue": true, "letValue": true, "constClosure": true, "letNumber": true, "letString": true,
+  "constValue": true, "letValue": true, "requireObjectCoercible": true, "constClosure": true, "letNumber": true, "letString": true,
   "letBoolean": true, "arrayLiteral": true, "runtimeArrayLiteral": true, "objectLiteral": true, "runtimeObjectLiteral": true,
   "runtimeObjectCreate": true, "runtimeErrorLiteral": true, "runtimeObjectKeys": true, "runtimeObjectValues": true, "runtimeObjectEntries": true,
   "runtimeObjectFromEntries": true, "runtimeObjectOwnPropertyDescriptor": true, "runtimeObjectOwnPropertyNames": true, "runtimeObjectOwnPropertyDescriptors": true, "runtimeArraySlice": true,

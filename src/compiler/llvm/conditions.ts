@@ -481,6 +481,8 @@ export function emitLogicalCondition(
   const index = context.logicIndex;
   context.logicIndex += 1;
   const leftLabel = `logic.left.${index}`;
+  const leftJoinLabel = `logic.left.join.${index}`;
+  const rightJoinLabel = `logic.rhs.join.${index}`;
   const rhsLabel = `logic.rhs.${index}`;
   const endLabel = `logic.end.${index}`;
   const left = context.emitCondition(condition.left);
@@ -500,12 +502,16 @@ export function emitLogicalCondition(
       `  br label %${leftLabel}`,
       `${leftLabel}:`,
       ...left.lines,
+      `  br label %${leftJoinLabel}`,
+      `${leftJoinLabel}:`,
       `  br i1 ${left.value}, label %${leftTrueLabel}, label %${leftFalseLabel}`,
       `${rhsLabel}:`,
       ...right.lines,
+      `  br label %${rightJoinLabel}`,
+      `${rightJoinLabel}:`,
       `  br label %${endLabel}`,
       `${endLabel}:`,
-      `  ${value} = phi i1 [ ${shortCircuitValue}, %${leftLabel} ], [ ${right.value}, %${rhsLabel} ]`
+      `  ${value} = phi i1 [ ${shortCircuitValue}, %${leftJoinLabel} ], [ ${right.value}, %${rightJoinLabel} ]`
     ],
     value
   };

@@ -439,6 +439,8 @@ export function emitTernaryStringExpression(
   context.stringIndex += 1;
   const thenLabel = `str.then.${index}`;
   const elseLabel = `str.else.${index}`;
+  const thenJoinLabel = `str.then.join.${index}`;
+  const elseJoinLabel = `str.else.join.${index}`;
   const endLabel = `str.end.${index}`;
   const value = `%str.${index}`;
   const length = `%str.len.${index}`;
@@ -452,13 +454,17 @@ export function emitTernaryStringExpression(
       `  br i1 ${condition.value}, label %${thenLabel}, label %${elseLabel}`,
       `${thenLabel}:`,
       ...consequent.lines,
+      `  br label %${thenJoinLabel}`,
+      `${thenJoinLabel}:`,
       `  br label %${endLabel}`,
       `${elseLabel}:`,
       ...alternate.lines,
+      `  br label %${elseJoinLabel}`,
+      `${elseJoinLabel}:`,
       `  br label %${endLabel}`,
       `${endLabel}:`,
-      `  ${value} = phi ptr [ ${consequent.value}, %${thenLabel} ], [ ${alternate.value}, %${elseLabel} ]`,
-      `  ${length} = phi i64 [ ${consequent.length}, %${thenLabel} ], [ ${alternate.length}, %${elseLabel} ]`
+      `  ${value} = phi ptr [ ${consequent.value}, %${thenJoinLabel} ], [ ${alternate.value}, %${elseJoinLabel} ]`,
+      `  ${length} = phi i64 [ ${consequent.length}, %${thenJoinLabel} ], [ ${alternate.length}, %${elseJoinLabel} ]`
     ],
     value,
     length
