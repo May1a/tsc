@@ -55,6 +55,21 @@ function lowerClassExpressionStatement(
   return lowerClassDeclaration(context, initializer, bindings, classes, declaration.name.text);
 }
 
+function hasDecorators(node: ts.Node): boolean {
+  return ts.canHaveDecorators(node) && (ts.getDecorators(node)?.length ?? 0) > 0;
+}
+
+function hasMemberDecorators(member: ts.ClassElement): boolean {
+  if (hasDecorators(member)) {
+    return true;
+  }
+  if (ts.isConstructorDeclaration(member) || ts.isMethodDeclaration(member)
+    || ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
+    return member.parameters.some(hasDecorators);
+  }
+  return false;
+}
+
 // eslint-disable-next-line complexity, max-statements -- Class declaration lowering assembles all generated class artifacts in source order.
 function lowerClassDeclaration(
   context: LoweringContext,
@@ -63,8 +78,7 @@ function lowerClassDeclaration(
   classes: Map<string, ClassInfo>,
   expressionBindingName?: string
 ): LoweredStatementList {
-  if ((ts.canHaveDecorators(statement) && (ts.getDecorators(statement)?.length ?? 0) > 0)
-    || statement.members.some((member) => ts.canHaveDecorators(member) && (ts.getDecorators(member)?.length ?? 0) > 0)) {
+  if (hasDecorators(statement) || statement.members.some(hasMemberDecorators)) {
     return unsupportedIn(unsupportedFormMessage("decorator"));
   }
   if (statement.members.some((member) => ts.isMethodDeclaration(member) && member.body !== undefined

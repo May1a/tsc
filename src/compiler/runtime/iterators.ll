@@ -70,11 +70,21 @@ alloc:
   store i64 0, ptr %done.slot
   %next.fn = call i64 @functionObjectNew(ptr @builtinIteratorNext, ptr %state, i64 9222246136947933184, i64 9222246136947933184, i64 0)
   call void @gcRootPush(i64 %next.fn)
-  %object = call ptr @objectNew(i64 1)
+  %self.fn = call i64 @functionObjectNew(ptr @iteratorSelfMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  call void @gcRootPush(i64 %self.fn)
+  %object = call ptr @objectNew(i64 2)
   call void @objectSet(ptr %object, i64 4, ptr @.iter.key.next, i64 %next.fn)
+  call void @objectSet(ptr %object, i64 18, ptr @.symbol.iterator.key, i64 %self.fn)
   %boxed = call i64 @valueBoxObject(ptr %object)
   call void @gcRootRestore(i64 %frame)
   ret i64 %boxed
+}
+
+define { i64, i1 } @iteratorSelfMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %this.value, 0
+  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok.1
 }
 
 define i64 @createArrayIterator(i64 %array.value) {

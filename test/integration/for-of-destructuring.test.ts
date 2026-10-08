@@ -5,6 +5,9 @@ import { expectNativeMatchesNodeIfAvailable } from "./oracle.js";
 describe("for-of destructuring", () => {
   test.each([
     "for-of-destructure-map.ts",
+    "for-of-destructure-map-object.ts",
+    "for-of-destructure-empty-close.ts",
+    "array-runtime-iterable-iterators.ts",
     "for-of-destructure-patterns.ts",
     "for-of-destructure-scope-defaults.ts",
     "for-of-destructure-close.ts",

@@ -212,6 +212,26 @@ describe("erasure forms", () => {
     expect(result.diagnostics).toEqual([]);
   });
 
+  test.each([
+    "constructor(@d value: number) { print(value); }",
+    "method(@d value: number) { print(value); }",
+    "static method(@d value: number) { print(value); }",
+    "set value(@d value: number) { print(value); }"
+  ])("refuses legacy parameter decorators on %s", (member) => {
+    const source = ts.createSourceFile(
+      "parameter-decorator.ts",
+      `declare function print(value: unknown): void;
+       declare function d(...args: unknown[]): void;
+       class C { ${member} }`,
+      ts.ScriptTarget.Latest,
+      true
+    );
+    const result = lowerToJsIr(source.fileName, [source]);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      "decorator on a class or class member is not supported yet [support: decorator]"
+    ]);
+  });
+
   test("every one has a unique id and a syntax to search for", () => {
     // The id is what a diagnostic would quote and what a fixture is keyed on, so a duplicate would
     // let one form's fixture stand in for another's.

@@ -278,10 +278,6 @@ export function emitArrayDestructureProtocolOperation(
       context.bindings.set(element.temporaryName, { kind: "valueVariable", name: slotName });
     }
   }
-  if (operation.elements.length === 0) {
-    return lines;
-  }
-
   const closeFrame = createCleanupFrame(context, "iteratorClose", { iteratorSlot });
   context.cleanupStack.push(closeFrame);
   const outerException = context.exceptionTarget;
@@ -410,7 +406,16 @@ export function emitArrayDestructureProtocolOperation(
   }
   context.cleanupStack.pop();
   context.exceptionTarget = outerException;
+  const isDone = `%destructure.proto.finished.${index}`;
+  const closeLabel = `destructure.proto.close.${index}`;
+  const iterator = `%destructure.proto.close.iter.${index}`;
+  const closeCall = emitGeneratedJsCall("iteratorClose", [`i64 ${iterator}`], context);
   lines.push(
+    `  ${isDone} = load i1, ptr ${doneSlot}`,
+    `  br i1 ${isDone}, label %${normalLabel}, label %${closeLabel}`,
+    `${closeLabel}:`,
+    `  ${iterator} = load i64, ptr ${iteratorSlot}`,
+    ...closeCall.lines,
     `  br label %${normalLabel}`,
     `${closeFrame.entryLabel}:`,
     `  ${closeFrame.rootFrameName} = call i64 @gcRootSave()`,

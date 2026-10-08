@@ -18,7 +18,8 @@ export function lowerObjectDestructuringElements(
   lazyDefaults = false
 ): Produced<boolean> {
   const sourceBinding = source.binding;
-  if (sourceBinding.kind !== "runtimeObject" && sourceBinding.kind !== "object" && sourceBinding.kind !== "valueVariable") {
+  if (sourceBinding.kind !== "runtimeObject" && sourceBinding.kind !== "object"
+    && sourceBinding.kind !== "valueVariable" && sourceBinding.kind !== "runtimeArray") {
     return produced(false);
   }
   if (sourceBinding.kind === "valueVariable") {
@@ -135,6 +136,9 @@ function lowerFixedObjectDestructuredElement(
 function destructuredPropertyAccess(source: DestructuringSource, key: string): JsIrValueExpression {
   if (source.binding.kind === "valueVariable") {
     return { kind: "valueObjectDynamicAccess", value: { kind: "variable", name: source.name }, key: { kind: "literal", value: key } };
+  }
+  if (source.binding.kind === "runtimeArray") {
+    return { kind: "valueObjectDynamicAccess", value: { kind: "arrayRef", name: source.name }, key: { kind: "literal", value: key } };
   }
   return { kind: "objectDynamicAccess", objectName: source.name, key: { kind: "literal", value: key } };
 }
