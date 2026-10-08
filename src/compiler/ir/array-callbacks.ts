@@ -1,4 +1,5 @@
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { unsupportedFormMessage } from "./builtins/manifest.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrFunctionParameter, JsIrValueKind } from "./bindings.js";
@@ -188,8 +189,11 @@ function lowerInlineArrayCallbackFunctionObject(
   if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
     return lowerArrayCallbackValueWrapper(context, name, arrayName, callback, thisArgExpression, bindings, maxParameters, method);
   }
-  if ((ts.isFunctionExpression(callback) && callback.asteriskToken !== undefined) || callback.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
-    return notApplicable;
+  if (callback.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
+    return unsupportedIn(unsupportedFormMessage("async-function"));
+  }
+  if (ts.isFunctionExpression(callback) && callback.asteriskToken !== undefined) {
+    return unsupportedIn(unsupportedFormMessage("generator-function"));
   }
   let callbackKind: "arrow" | "ordinary" = "ordinary";
   if (ts.isArrowFunction(callback)) {

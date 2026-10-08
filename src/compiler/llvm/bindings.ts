@@ -1,7 +1,7 @@
 import type { JsIrOperation } from "../ir/types.js";
 import { emitNamedValueBinding } from "./conditions.js";
 import type { EmitContext, JsValue } from "./context.js";
-import { stringLengthPointerName, uniqueLocalName, variablePointerName } from "./names.js";
+import { stringLengthPointerName, uniqueLocalName, uniqueValueSlotName, variablePointerName } from "./names.js";
 import {
   emitRuntimeCollectionPointer,
   emitRuntimeObjectPointer
@@ -77,9 +77,8 @@ export function emitLetValueOperation(
   context: EmitContext
 ): string[] {
   const value = context.emitValue(operation.value);
-  const pointer = variablePointerName(operation.name);
-  context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
   if (operation.moduleGlobal === true) {
+    context.bindings.set(operation.name, { kind: "valueVariable", name: operation.name });
     context.valueGlobals.add(operation.name);
     return [
       ...value.lines,
@@ -87,6 +86,9 @@ export function emitLetValueOperation(
       `  call void @gcRootPush(i64 ${value.value})`
     ];
   }
+  const slotName = uniqueValueSlotName(operation.name, context);
+  const pointer = variablePointerName(slotName);
+  context.bindings.set(operation.name, { kind: "valueVariable", name: slotName });
   return [...value.lines, `  ${pointer} = alloca i64`, `  store i64 ${value.value}, ptr ${pointer}`];
 }
 export function emitAssignNumberOperation(
@@ -263,14 +265,17 @@ export function emitArrayDestructureProtocolOperation(
 
   for (const element of operation.elements) {
     if (element.kind === "binding") {
-      lines.push(`  ${variablePointerName(element.name)} = alloca i64`);
-      context.bindings.set(element.name, { kind: "valueVariable", name: element.name });
+      const slotName = `${element.name}.destructure.${index}`;
+      lines.push(`  ${variablePointerName(slotName)} = alloca i64`);
+      context.bindings.set(element.name, { kind: "valueVariable", name: slotName });
     } else if (element.kind === "rest") {
-      lines.push(`  ${variablePointerName(element.name)} = alloca ptr`);
-      context.bindings.set(element.name, { kind: "runtimeArray", name: element.name });
+      const slotName = `${element.name}.destructure.${index}`;
+      lines.push(`  ${variablePointerName(slotName)} = alloca ptr`);
+      context.bindings.set(element.name, { kind: "runtimeArray", name: slotName });
     } else if (element.kind === "nested") {
-      lines.push(`  ${variablePointerName(element.temporaryName)} = alloca i64`);
-      context.bindings.set(element.temporaryName, { kind: "valueVariable", name: element.temporaryName });
+      const slotName = `${element.temporaryName}.destructure.${index}`;
+      lines.push(`  ${variablePointerName(slotName)} = alloca i64`);
+      context.bindings.set(element.temporaryName, { kind: "valueVariable", name: slotName });
     }
   }
   if (operation.elements.length === 0) {
@@ -309,7 +314,7 @@ export function emitArrayDestructureProtocolOperation(
         // (same shape as the iterable-spread destination rooting).
         `  ${restBoxed} = call i64 @valueBoxArray(ptr ${restArray})`,
         `  call void @gcRootPush(i64 ${restBoxed})`,
-        `  store ptr ${restArray}, ptr ${variablePointerName(element.name)}`,
+        `  store ptr ${restArray}, ptr ${variablePointerName(`${element.name}.destructure.${index}`)}`,
         `  br label %${restCond}`,
         `${restCond}:`,
         `  ${alreadyDone} = load i1, ptr ${doneSlot}`,
@@ -375,7 +380,7 @@ export function emitArrayDestructureProtocolOperation(
     lines.push(`  ${incoming} = load i64, ptr ${incomingSlot}`, `  call void @gcRootPush(i64 ${incoming})`);
     if (element.kind === "binding") {
       if (element.defaultValue === undefined) {
-        lines.push(`  store i64 ${incoming}, ptr ${variablePointerName(element.name)}`);
+        lines.push(`  store i64 ${incoming}, ptr ${variablePointerName(`${element.name}.destructure.${index}`)}`);
       } else {
         const defaultLabel = `destructure.proto.default.${index}.${elementIndex}`;
         const storeLabel = `destructure.proto.store.${index}.${elementIndex}`;
@@ -388,16 +393,16 @@ export function emitArrayDestructureProtocolOperation(
           `  br i1 ${useDefault}, label %${defaultLabel}, label %${storeLabel}`,
           `${defaultLabel}:`,
           ...defaultValue.lines,
-          `  store i64 ${defaultValue.value}, ptr ${variablePointerName(element.name)}`,
+          `  store i64 ${defaultValue.value}, ptr ${variablePointerName(`${element.name}.destructure.${index}`)}`,
           `  br label %${storeLabel}.done`,
           `${storeLabel}:`,
-          `  store i64 ${incoming}, ptr ${variablePointerName(element.name)}`,
+          `  store i64 ${incoming}, ptr ${variablePointerName(`${element.name}.destructure.${index}`)}`,
           `  br label %${storeLabel}.done`,
           `${storeLabel}.done:`
         );
       }
     } else {
-      lines.push(`  store i64 ${incoming}, ptr ${variablePointerName(element.temporaryName)}`);
+      lines.push(`  store i64 ${incoming}, ptr ${variablePointerName(`${element.temporaryName}.destructure.${index}`)}`);
       context.exceptionTarget = closeFrame.throwEntryLabel;
       lines.push(...context.emitOperations(element.operations));
       context.exceptionTarget = outerException;

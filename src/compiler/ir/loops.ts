@@ -1,14 +1,17 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, type LoweredStatementList, type Produced, loweredPayload, notApplicable, produced, unsupported } from "./lowered.js";
 import { lowerAssignmentStatement } from "./assignments.js";
+import type { JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 import { lowerUpdateExpressionStatement } from "./expression-statements.js";
 import { withinLoopLabel } from "./loop-labels.js";
 import { lowerStatementBody } from "./statement-lists.js";
 import { iteratorErrorSubject } from "./iterator-subject.js";
+import { unsupportedFormMessage } from "./builtins/manifest.js";
 import { updateBindings } from "./binding-updates.js";
+import { lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
 
 /**
  * Lower one loop's body, taking a label frame for the loop being entered.
@@ -24,7 +27,7 @@ function lowerLoopBody(
   context: LoweringContext,
   bodyStatement: ts.Statement,
   bodyBindings: ReadonlyMap<string, JsIrBindingValue>
-): ReturnType<typeof lowerStatementBody> {
+): LoweredStatementList {
   return withinLoopLabel(context, () => lowerStatementBody(context, bodyStatement, bodyBindings));
 }
 
@@ -98,12 +101,12 @@ export function lowerForOfStatement(
     return notApplicable;
   }
   const [declaration] = statement.initializer.declarations;
-  if (!ts.isIdentifier(declaration.name) || declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
+  if (declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
     return notApplicable;
   }
-  const itemName = declaration.name.text;
+  const itemName = forOfItemName(declaration.name);
   const bodyStatement = statement.statement;
-  const specialized = lowerSpecializedForOf(context, statement.expression, itemName, bodyStatement, bindings);
+  const specialized = lowerSpecializedForOf(context, statement.expression, declaration.name, bodyStatement, bindings);
   if (specialized.kind !== "notApplicable") {
     return specialized;
   }
@@ -112,9 +115,7 @@ export function lowerForOfStatement(
   if (iterable.kind !== "lowered") {
     return iterable;
   }
-  const bodyBindings = new Map(bindings);
-  bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-  const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
+  const bodyResult = lowerForOfBody(context, declaration.name, bodyStatement, bindings, { kind: "valueVariable", name: itemName });
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
@@ -133,18 +134,20 @@ export function lowerForOfStatement(
 function lowerSpecializedForOf(
   context: LoweringContext,
   sourceExpression: ts.Expression,
-  itemName: string,
+  itemPattern: ts.BindingName,
   bodyStatement: ts.Statement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
+  const itemName = forOfItemName(itemPattern);
   const sourceString = context.lowerStringRuntimeExpression(context, sourceExpression, bindings);
   if (sourceString.kind === "unsupported") {
     return sourceString;
   }
   if (sourceString.kind === "lowered") {
-    const bodyBindings = new Map(bindings);
-    bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
-    const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
+    if (!ts.isIdentifier(itemPattern)) {
+      return unsupported(unsupportedFormMessage("for-of-string-destructuring"));
+    }
+    const bodyResult = lowerForOfBody(context, itemPattern, bodyStatement, bindings, { kind: "stringVariable", name: itemName });
     if (bodyResult.kind === "unsupported") {
       return bodyResult;
     }
@@ -158,9 +161,7 @@ function lowerSpecializedForOf(
   const sourceName = sourceExpression.text;
   const sourceBinding = bindings.get(sourceName);
   if (sourceBinding?.kind === "runtimeSet") {
-    const bodyBindings = new Map(bindings);
-    bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
-    const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
+    const bodyResult = lowerForOfBody(context, itemPattern, bodyStatement, bindings, { kind: "valueVariable", name: itemName });
     if (bodyResult.kind === "unsupported") {
       return bodyResult;
     }
@@ -169,9 +170,7 @@ function lowerSpecializedForOf(
     return produced({ kind: "forOfSet", itemName, setName: sourceBinding.name, body });
   }
   if (sourceBinding?.kind === "runtimeMap") {
-    const bodyBindings = new Map(bindings);
-    bodyBindings.set(itemName, { kind: "runtimeArray", name: itemName });
-    const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
+    const bodyResult = lowerForOfBody(context, itemPattern, bodyStatement, bindings, { kind: "runtimeArray", name: itemName });
     if (bodyResult.kind === "unsupported") {
       return bodyResult;
     }
@@ -182,15 +181,75 @@ function lowerSpecializedForOf(
   if (sourceBinding?.kind !== "array") {
     return notApplicable;
   }
-  const bodyBindings = new Map(bindings);
-  bodyBindings.set(itemName, { kind: "number", value: { kind: "variable", name: itemName } });
-  const bodyResult = lowerLoopBody(context, bodyStatement, bodyBindings);
+  const bodyResult = lowerForOfBody(context, itemPattern, bodyStatement, bindings, { kind: "number", value: { kind: "variable", name: itemName } });
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
   const body = bodyResult.operation;
 
   return produced({ kind: "forOfArray", itemName, arrayName: sourceName, body });
+}
+
+function forOfItemName(pattern: ts.BindingName): string {
+  if (ts.isIdentifier(pattern)) {
+    return pattern.text;
+  }
+  // Every phase derives the same private name without advancing a counter on recognizer retries.
+  // A source position is unique within the current source file; the prefix cannot be a TS identifier.
+  return `for.of.item.${pattern.pos}`;
+}
+
+function lowerForOfBody(
+  context: LoweringContext,
+  pattern: ts.BindingName,
+  bodyStatement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  itemBinding: JsIrBindingValue
+): LoweredStatementList {
+  const operations: JsIrOperation[] = [];
+  const itemName = forOfItemName(pattern);
+  const bodyBindings = new Map(bindings);
+  bodyBindings.set(itemName, itemBinding);
+  if (!ts.isIdentifier(pattern)) {
+    const itemValue = context.lowerValueExpression(context, ts.factory.createIdentifier(itemName), bodyBindings);
+    if (itemValue.kind === "unsupported") {
+      return itemValue;
+    }
+    if (itemValue.kind === "notApplicable") {
+      return { kind: "unsupported", reason: "Unsupported for-of item value in destructuring binding" };
+    }
+    const result = lowerForOfPattern(context, pattern, itemName, itemBinding, itemValue.operation, bodyBindings, operations);
+    if (result.kind === "unsupported") {
+      return result;
+    }
+    if (!result.operation) {
+      return { kind: "unsupported", reason: "Unsupported destructuring pattern in for-of binding" };
+    }
+  }
+  const body = lowerLoopBody(context, bodyStatement, bodyBindings);
+  if (body.kind === "unsupported") {
+    return body;
+  }
+  return produced([...operations, ...body.operation]);
+}
+
+function lowerForOfPattern(
+  context: LoweringContext,
+  pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern,
+  itemName: string,
+  itemBinding: JsIrBindingValue,
+  itemValue: JsIrValueExpression,
+  bindings: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): Produced<boolean> {
+  if (ts.isArrayBindingPattern(pattern)) {
+    return lowerArrayProtocolDestructuringFromSource(
+      context, pattern, { kind: "value", value: itemValue }, "For-of item is not iterable", bindings, operations
+    );
+  }
+  return context.lowerObjectDestructuringElements(
+    context, pattern, { name: itemName, binding: itemBinding }, bindings, operations, true
+  );
 }
 
 // eslint-disable-next-line max-statements -- for...in lowering dispatches supported source kinds explicitly while unsupported iterables stay diagnostic-only.

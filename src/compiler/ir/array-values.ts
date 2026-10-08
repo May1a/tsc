@@ -17,6 +17,10 @@ export function lowerArrayValueMethodCall(
     return notApplicable;
   }
   const method = expression.expression.name.text;
+  const iteratorCall = lowerArrayIteratorMethodCall(arrayName, method, expression.arguments.length);
+  if (iteratorCall.kind !== "notApplicable") {
+    return iteratorCall;
+  }
   if (method === "pop" || method === "shift") {
     return produced({ kind: arrayRemoveValueExpressionKind(method), arrayName });
   }
@@ -45,6 +49,28 @@ export function lowerArrayValueMethodCall(
     return produced({ kind: "arrayForEach", arrayName });
   }
   return notApplicable;
+}
+
+function lowerArrayIteratorMethodCall(
+  arrayName: string,
+  method: string,
+  argumentCount: number
+): Lowered<Extract<JsIrValueExpression, { kind: "callValue" }>> {
+  if ((method !== "entries" && method !== "keys" && method !== "values") || argumentCount !== 0) {
+    return notApplicable;
+  }
+  const receiver: JsIrValueExpression = { kind: "arrayRef", name: arrayName };
+  return produced({
+    kind: "callValue",
+    callee: {
+      kind: "valueArrayAccess",
+      value: receiver,
+      index: { kind: "literal", value: -1 },
+      key: { kind: "literal", value: method }
+    },
+    arguments: [],
+    thisValue: receiver
+  });
 }
 
 function arrayRemoveValueExpressionKind(method: "pop" | "shift"): "arrayPop" | "arrayShift" {

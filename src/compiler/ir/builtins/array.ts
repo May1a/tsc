@@ -117,6 +117,10 @@ export const arrayBuiltinSupport: BuiltinSupport<"array", ArrayBuiltin> = {
     reason: "only the zero-argument slice is lowered; the callback form is not"
   },
 
+  entries: { arity: 0, state: "supported", id: "array.entries" },
+  keys: { arity: 0, state: "supported", id: "array.keys" },
+  values: { arity: 0, state: "supported", id: "array.values" },
+
   // Members of the array API this build has not written. Calling one of these says so by name.
   with: { arity: 2, state: "planned", id: "array.with" },
   findLast: { arity: 1, state: "planned", id: "array.findLast" },
@@ -124,10 +128,7 @@ export const arrayBuiltinSupport: BuiltinSupport<"array", ArrayBuiltin> = {
   toSorted: { arity: 1, state: "planned", id: "array.toSorted" },
   toReversed: { arity: 0, state: "planned", id: "array.toReversed" },
   toSpliced: { arity: { from: 2, to: 3 }, state: "planned", id: "array.toSpliced" },
-  group: { arity: 1, state: "planned", id: "array.group" },
-  entries: { arity: 0, state: "planned", id: "array.entries" },
-  keys: { arity: 0, state: "planned", id: "array.keys" },
-  values: { arity: 0, state: "planned", id: "array.values" }
+  group: { arity: 1, state: "planned", id: "array.group" }
 };
 
 /** The `Array` member with this name, or `undefined` if the name is not one of them. */

@@ -26,10 +26,16 @@ export function lowerObjectMethodFunctionValue(
     if (ts.isMethodDeclaration(method) && ts.isObjectLiteralExpression(method.parent)) {
       return unsupportedIn(unsupportedFormMessage("object-literal-generator-method"));
     }
-    return unsupportedIn("Generator functions and class methods are not supported yet");
+    if (ts.isFunctionDeclaration(method)) {
+      return unsupportedIn(unsupportedFormMessage("generator-function"));
+    }
+    return unsupportedIn(unsupportedFormMessage("class-generator-method"));
   }
 
-  if (method.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true || method.body === undefined) {
+  if (method.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
+    return unsupportedIn(unsupportedFormMessage("async-function"));
+  }
+  if (method.body === undefined) {
     return notApplicable;
   }
   const parameters: JsIrFunctionParameter[] = [];

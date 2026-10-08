@@ -1,3 +1,6 @@
+@.value.array.key.entries = private unnamed_addr constant [8 x i8] c"entries\00"
+@.value.array.key.keys = private unnamed_addr constant [5 x i8] c"keys\00"
+@.value.array.key.values = private unnamed_addr constant [7 x i8] c"values\00"
 define i1 @valueStrictEquals(i64 %left, i64 %right) {
 entry:
   %left.number = call i1 @valueIsNumberForSameValueZero(i64 %left)
@@ -358,14 +361,44 @@ array.hit:
   ret i64 %array.result
 array.builtin:
   %array.is.iter = icmp eq i64 %key.len, 18
-  br i1 %array.is.iter, label %array.iter.cmp, label %missing
+  br i1 %array.is.iter, label %array.iter.cmp, label %array.check.entries
 array.iter.cmp:
   %array.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.symbol.iterator.key, i64 18)
   %array.key.same = icmp eq i32 %array.key.cmp, 0
-  br i1 %array.key.same, label %array.iter, label %missing
+  br i1 %array.key.same, label %array.iter, label %array.check.entries
 array.iter:
   %array.method = call i64 @functionObjectNew(ptr @arrayIteratorMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
   ret i64 %array.method
+array.check.entries:
+  %array.is.entries = icmp eq i64 %key.len, 7
+  br i1 %array.is.entries, label %array.entries.cmp, label %array.check.keys
+array.entries.cmp:
+  %array.entries.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.array.key.entries, i64 7)
+  %array.entries.same = icmp eq i32 %array.entries.key.cmp, 0
+  br i1 %array.entries.same, label %array.entries, label %array.check.keys
+array.entries:
+  %array.entries.method = call i64 @functionObjectNew(ptr @arrayEntriesMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  ret i64 %array.entries.method
+array.check.keys:
+  %array.is.keys = icmp eq i64 %key.len, 4
+  br i1 %array.is.keys, label %array.keys.cmp, label %array.check.values
+array.keys.cmp:
+  %array.keys.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.array.key.keys, i64 4)
+  %array.keys.same = icmp eq i32 %array.keys.key.cmp, 0
+  br i1 %array.keys.same, label %array.keys, label %array.check.values
+array.keys:
+  %array.keys.method = call i64 @functionObjectNew(ptr @arrayKeysMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  ret i64 %array.keys.method
+array.check.values:
+  %array.is.values = icmp eq i64 %key.len, 6
+  br i1 %array.is.values, label %array.values.cmp, label %missing
+array.values.cmp:
+  %array.values.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.array.key.values, i64 6)
+  %array.values.same = icmp eq i32 %array.values.key.cmp, 0
+  br i1 %array.values.same, label %array.values, label %missing
+array.values:
+  %array.values.method = call i64 @functionObjectNew(ptr @arrayValuesMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  ret i64 %array.values.method
 check.string:
   %is.string = call i1 @valueIsString(i64 %value)
   br i1 %is.string, label %string.builtin, label %missing

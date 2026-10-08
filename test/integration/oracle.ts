@@ -115,7 +115,7 @@ export async function expectNativeMatchesNodeIfAvailable(
   let node: ObservedBehavior | undefined;
 
   try {
-    if (!compilerIsAvailable(result, formatFailure(fixture, result.outDir, native, node))) {
+    if (!compilerIsAvailable(result, `${formatFailure(fixture, result.outDir, native, node)}\nCompiler diagnostics:\n${result.stderr}`)) {
       succeeded = true;
       return;
     }
@@ -242,6 +242,18 @@ export const oracleFixtures: readonly string[] = [
   "array-runtime-map-thisarg-in-function.ts",
   "array-runtime-property-thisarg.ts",
   "array-runtime-arrow-lexical-this.ts",
+  "array-runtime-entries-iterator.ts",
+  "array-runtime-keys-iterator.ts",
+  "array-runtime-values-iterator.ts",
+  "for-of-destructure-map.ts",
+  "for-of-destructure-patterns.ts",
+  "for-of-destructure-scope-defaults.ts",
+  "for-of-destructure-close.ts",
+  "for-of-destructure-object-array.ts",
+  "for-of-destructure-array-object.ts",
+  "for-of-destructure-nested-array-default.ts",
+  "for-of-destructure-nested-object-default.ts",
+  "for-of-destructure-slot-collisions.ts",
   "class-basic-method.ts",
   "class-method-discarded-call.ts",
   "object-method-local-shadowing.ts",

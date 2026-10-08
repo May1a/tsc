@@ -145,9 +145,6 @@ export function lowerArrayProtocolDestructuringFromSource(
       working.set(element.name.text, { kind: "valueVariable", name: element.name.text });
       continue;
     }
-    if (element.initializer !== undefined) {
-      return produced(false);
-    }
     const nestedElement = lowerNestedProtocolDestructuring(context, element, working);
     if (nestedElement.kind === "unsupported") {
       return nestedElement;
@@ -338,7 +335,7 @@ export function lowerDestructuredValueBinding(
     }
   }
   if (
-    lazyDefault ||
+    (lazyDefault && defaultInitializer !== undefined) ||
     (defaultInitializer !== undefined && ts.isCallExpression(unwrapTypeOnlyExpression(defaultInitializer))) ||
     defaultIsFunction
   ) {
@@ -381,32 +378,13 @@ function lowerNestedProtocolDestructuring(
   const nestedWorking = new Map(working);
   nestedWorking.set(temporaryName, { kind: "valueVariable", name: temporaryName });
   const nestedOperations: JsIrOperation[] = [];
-  let lowered = false;
-  if (ts.isArrayBindingPattern(element.name)) {
-    const arrayProtocolDestructuringFromSourceResult = lowerArrayProtocolDestructuringFromSource(
-      context, element.name,
-      { kind: "value", value: { kind: "variable", name: temporaryName } },
-      `${temporaryName} is not iterable`,
-      nestedWorking,
-      nestedOperations
-    );
-    if (arrayProtocolDestructuringFromSourceResult.kind === "unsupported") {
-      return arrayProtocolDestructuringFromSourceResult;
-    }
-    lowered = arrayProtocolDestructuringFromSourceResult.operation;
-  } else if (ts.isObjectBindingPattern(element.name)) {
-    const objectDestructuringElementsResult2 = context.lowerObjectDestructuringElements(
-      context, element.name,
-      { name: temporaryName, binding: { kind: "valueVariable", name: temporaryName } },
-      nestedWorking,
-      nestedOperations,
-      true
-    );
-    if (objectDestructuringElementsResult2.kind === "unsupported") {
-      return objectDestructuringElementsResult2;
-    }
-    lowered = objectDestructuringElementsResult2.operation;
+  const nestedResult = lowerNestedBindingFromValue(
+    context, element, temporaryName, { kind: "variable", name: temporaryName }, nestedWorking, nestedOperations
+  );
+  if (nestedResult.kind === "unsupported") {
+    return nestedResult;
   }
+  const lowered = nestedResult.operation;
   if (!lowered) {
     return notApplicable;
   }
@@ -415,4 +393,40 @@ function lowerNestedProtocolDestructuring(
     working.set(name, value);
   }
   return produced(nestedElement);
+}
+
+/** Materialize an extracted value once, apply its lazy default, then recurse through the binding name. */
+export function lowerNestedBindingFromValue(
+  context: LoweringContext,
+  element: ts.BindingElement,
+  temporaryName: string,
+  value: JsIrValueExpression,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[]
+): Produced<boolean> {
+  // Protocol elements already have a stable incoming slot. Only property extraction or a default
+  // needs another binding operation before recursion.
+  if (value.kind !== "variable" || value.name !== temporaryName || element.initializer !== undefined) {
+    const binding = lowerDestructuredValueBinding(
+      context, temporaryName, value, element.initializer, working, element.initializer !== undefined
+    );
+    if (binding.kind !== "lowered") {
+      return withRefusal(binding, produced(false));
+    }
+    operations.push(binding.operation);
+    updateBindings(binding.operation, working);
+  }
+  if (ts.isArrayBindingPattern(element.name)) {
+    return lowerArrayProtocolDestructuringFromSource(
+      context, element.name, { kind: "value", value: { kind: "variable", name: temporaryName } },
+      "Nested destructuring value is not iterable", working, operations
+    );
+  }
+  if (ts.isObjectBindingPattern(element.name)) {
+    return context.lowerObjectDestructuringElements(
+      context, element.name, { name: temporaryName, binding: { kind: "valueVariable", name: temporaryName } },
+      working, operations, true
+    );
+  }
+  return produced(false);
 }

@@ -1,3 +1,4 @@
+import { unsupportedFormMessage } from "./builtins/manifest.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
@@ -62,6 +63,18 @@ function lowerClassDeclaration(
   classes: Map<string, ClassInfo>,
   expressionBindingName?: string
 ): LoweredStatementList {
+  if ((ts.canHaveDecorators(statement) && (ts.getDecorators(statement)?.length ?? 0) > 0)
+    || statement.members.some((member) => ts.canHaveDecorators(member) && (ts.getDecorators(member)?.length ?? 0) > 0)) {
+    return unsupportedIn(unsupportedFormMessage("decorator"));
+  }
+  if (statement.members.some((member) => ts.isMethodDeclaration(member) && member.body !== undefined
+    && ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true)) {
+    return unsupportedIn(unsupportedFormMessage("async-function"));
+  }
+  if (statement.members.some((member) => ts.isMethodDeclaration(member) && member.body !== undefined
+    && member.asteriskToken !== undefined)) {
+    return unsupportedIn(unsupportedFormMessage("class-generator-method"));
+  }
   const before = new Map(classes);
   const result = lowerRegisteredClassDeclaration(context, statement, bindings, classes, expressionBindingName);
   if (result.kind === "unsupported") {

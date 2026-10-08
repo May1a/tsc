@@ -1,7 +1,7 @@
 import { type Produced, produced, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
-import { type DestructuringSource, lowerDestructuredFallbackOperation, lowerDestructuredValueBinding } from "./destructuring.js";
+import { type DestructuringSource, lowerDestructuredFallbackOperation, lowerDestructuredValueBinding, lowerNestedBindingFromValue } from "./destructuring.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrOperation } from "./types.js";
 import type { JsIrObjectValue, JsIrValueExpression } from "./expressions.js";
@@ -35,22 +35,22 @@ export function lowerObjectDestructuringElements(
       return produced(false);
     }
     extractedKeys.push(key);
-    if (ts.isObjectBindingPattern(element.name)) {
-      if (sourceBinding.kind !== "runtimeObject") {
+    if (!ts.isIdentifier(element.name)) {
+      // Static numeric object layouts have no boxed property value to recurse through.
+      if (sourceBinding.kind === "object") {
         return produced(false);
       }
-      const nestedResult = lowerNestedObjectDestructuring(context, element.name, source.name, key, working, operations);
+      const nestedResult = lowerNestedBindingFromValue(
+        context, element, `destructure.property.${element.pos}`,
+        destructuredPropertyAccess(source, key), working, operations
+      );
       if (nestedResult.kind === "unsupported") {
         return nestedResult;
       }
-      const nested = nestedResult.operation;
-      if (!nested) {
+      if (!nestedResult.operation) {
         return produced(false);
       }
       continue;
-    }
-    if (!ts.isIdentifier(element.name)) {
-      return produced(false);
     }
     if (sourceBinding.kind === "object") {
       const fixedElementResult = lowerFixedObjectDestructuredElement(context, element.name.text, source.name, sourceBinding.value, key, element.initializer, working, operations);
@@ -63,13 +63,9 @@ export function lowerObjectDestructuringElements(
       }
       continue;
     }
-    let access: JsIrValueExpression;
-    if (sourceBinding.kind === "valueVariable") {
-      access = { kind: "valueObjectDynamicAccess", value: { kind: "variable", name: source.name }, key: { kind: "literal", value: key } };
-    } else {
-      access = { kind: "objectDynamicAccess", objectName: source.name, key: { kind: "literal", value: key } };
-    }
-    const operation = lowerDestructuredValueBinding(context, element.name.text, access, element.initializer, working, lazyDefaults);
+    const operation = lowerDestructuredValueBinding(
+      context, element.name.text, destructuredPropertyAccess(source, key), element.initializer, working, lazyDefaults
+    );
     if (operation.kind !== "lowered") {
       return withRefusal(operation, produced(false));
     }
@@ -133,30 +129,9 @@ function lowerFixedObjectDestructuredElement(
   return produced(true);
 }
 
-function lowerNestedObjectDestructuring(
-  context: LoweringContext,
-  pattern: ts.ObjectBindingPattern,
-  sourceName: string,
-  parentKey: string,
-  working: Map<string, JsIrBindingValue>,
-  operations: JsIrOperation[]
-): Produced<boolean> {
-  const parentAccess: JsIrValueExpression = { kind: "objectDynamicAccess", objectName: sourceName, key: { kind: "literal", value: parentKey } };
-  for (const element of pattern.elements) {
-    if (element.dotDotDotToken !== undefined || !ts.isIdentifier(element.name)) {
-      return produced(false);
-    }
-    const key = destructuredPropertyKey(element);
-    if (key === undefined) {
-      return produced(false);
-    }
-    const access: JsIrValueExpression = { kind: "valueObjectDynamicAccess", value: parentAccess, key: { kind: "literal", value: key } };
-    const operation = lowerDestructuredValueBinding(context, element.name.text, access, element.initializer, working);
-    if (operation.kind !== "lowered") {
-      return withRefusal(operation, produced(false));
-    }
-    operations.push(operation.operation);
-    updateBindings(operation.operation, working);
+function destructuredPropertyAccess(source: DestructuringSource, key: string): JsIrValueExpression {
+  if (source.binding.kind === "valueVariable") {
+    return { kind: "valueObjectDynamicAccess", value: { kind: "variable", name: source.name }, key: { kind: "literal", value: key } };
   }
-  return produced(true);
+  return { kind: "objectDynamicAccess", objectName: source.name, key: { kind: "literal", value: key } };
 }
