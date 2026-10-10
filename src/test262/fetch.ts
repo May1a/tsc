@@ -80,12 +80,7 @@ export const ensureSuiteFetched = async (pin: SuitePin, cacheDir: string): Promi
 const main = async (): Promise<number> => {
   const pin = await loadPin();
   const outcome = await ensureSuiteFetched(pin, defaultCacheDir);
-  let message: string;
-  if (outcome.status === "already-present") {
-    message = `Test262 ${outcome.revision} already present at ${outcome.checkoutDir}`;
-  } else {
-    message = `Fetched Test262 ${outcome.revision} into ${outcome.checkoutDir}`;
-  }
+  const message: string = outcome.status === "already-present" ? `Test262 ${outcome.revision} already present at ${outcome.checkoutDir}` : `Fetched Test262 ${outcome.revision} into ${outcome.checkoutDir}`;
   process.stdout.write(`${message}\n`);
   return 0;
 };

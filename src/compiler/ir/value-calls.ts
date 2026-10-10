@@ -44,17 +44,13 @@ export function lowerValueCallExpression(
     return spreadCall;
   }
   if (ts.isIdentifier(expression.expression)) {
-    const callee = bindings.get(expression.expression.text);
-    if (callee?.kind === "function" && callee.returnKind === "value") {
-      const args = lowerCallArguments(context, expression.expression.text, expression.arguments, bindings);
-      if (args.kind !== "lowered") {
-        return args;
-      }
-      return produced({ kind: "call", name: expression.expression.text, arguments: args.operation });
+    const directCall = lowerNamedValueCall(context, expression.expression, expression.arguments, bindings);
+    if (directCall.kind !== "notApplicable") {
+      return directCall;
     }
     // See `lowerCallStatement`: an unbound global has no definition behind it, while an unbound
     // cross-module function does.
-    if (callee === undefined && isKnownGlobalCallee(expression.expression)) {
+    if (bindings.get(expression.expression.text) === undefined && isKnownGlobalCallee(expression.expression)) {
       return notApplicable;
     }
   }
@@ -86,6 +82,28 @@ export function lowerValueCallExpression(
     thisValue: loweredPayload(callThisValueResult),
     optionalCallee: optionalStatementCallee(expression)
   });
+}
+
+function lowerNamedValueCall(
+  context: LoweringContext,
+  target: ts.Identifier,
+  arguments_: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrValueExpression> {
+  const callee = bindings.get(target.text);
+  if (callee?.kind === "function" && callee.returnKind === "value") {
+    const args = lowerCallArguments(context, target.text, arguments_, bindings);
+    return args.kind === "lowered" ? produced({ kind: "call", name: target.text, arguments: args.operation }) : args;
+  }
+  if (callee !== undefined) {
+    return notApplicable;
+  }
+  const symbol = context.typeChecker?.getSymbolAtLocation(target);
+  if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Alias) === 0) {
+    return notApplicable;
+  }
+  const args = lowerValueCallArguments(context, arguments_, bindings);
+  return args.kind === "lowered" ? produced({ kind: "call", name: target.text, arguments: args.operation }) : args;
 }
 
 export function lowerCallThisValue(

@@ -50,7 +50,7 @@ export function lowerExpressionStatement(
     }
   }
 
-  const inlineCppValueResult = lowerInlineCppValueExpression(expression);
+  const inlineCppValueResult = lowerInlineCppValueExpression(context.inlineCpp, expression);
   if (inlineCppValueResult.kind === "unsupported") {
     return inlineCppValueResult;
   }
@@ -97,10 +97,7 @@ export function lowerUpdateExpressionStatement(
     return notApplicable;
   }
   const step: JsIrNumberExpression = { kind: "literal", value: 1 };
-  let operator: JsIrNumberOperator = "add";
-  if (update.operator === "decrement") {
-    operator = "subtract";
-  }
+  const operator: JsIrNumberOperator = update.operator === "decrement" ? "subtract" : "add";
   return produced({ kind: "assignNumber", name: update.name, value: { kind: "binary", operator, left: { kind: "variable", name: update.name }, right: step } });
 }
 

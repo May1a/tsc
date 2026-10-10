@@ -4,184 +4,170 @@ import {
   expectNativeBehaviorIfAvailable,
   expectSuccessfulCompile
 } from "./helpers.js";
+import { expectNativeMatchesNodeIfAvailable } from "./oracle.js";
+import {
+  bindingGlobals,
+  buildTypedFixture,
+  calleeNames,
+  callsTo,
+  constantGepIndexes,
+  floatingPointBinaries,
+  loadsFrom,
+  mainFunction,
+  requireBlock,
+  storesTo
+} from "./typed-module.js";
+
+/** Fixed arrays retain double elements; runtime arrays use boxed binding storage. */
 
 describe("tscn arrays", () => {
   test("lowers array literals and constant element access", async () => {
-    const result = await expectSuccessfulCompile("array-element-constant.ts");
+    const { module } = await buildTypedFixture("array-element-constant.ts");
+    const main = mainFunction(module);
 
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("@arr.0 = global [3 x double] [double 10.0, double 20.0, double 30.0]");
-      expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0, i64 0, i64 0");
-      expect(llvmIr).toContain("load double, ptr %arr.gep.");
-    } finally {
-      await result.cleanup();
-    }
+    // One binding of array type, its three elements stored at indexes 0, 1 and 2.
+    expect(bindingGlobals(module)).toEqual(["tscn.binding.0"]);
+    expect(constantGepIndexes(main)).toEqual([0, 1, 2]);
+    expect(calleeNames(main)).toContain("numberToIndex");
+
+    await expectNativeMatchesNodeIfAvailable("array-element-constant.ts");
   });
 
   test("lowers array access with a mutable numeric index", async () => {
-    const result = await expectSuccessfulCompile("array-element-variable.ts");
+    const { module } = await buildTypedFixture("array-element-variable.ts");
+    const main = mainFunction(module);
 
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("load double, ptr %i.addr");
-      expect(llvmIr).toContain("fptosi double %num.");
-      expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0");
-    } finally {
-      await result.cleanup();
-    }
+    // The index is a second binding, converted through `numberToIndex` before it addresses the array.
+    expect(bindingGlobals(module)).toEqual(["tscn.binding.0", "tscn.binding.1"]);
+    expect(loadsFrom(main, "tscn.binding.1")).toHaveLength(1);
+    expect(callsTo(main, "numberToIndex")).toHaveLength(1);
+
+    await expectNativeMatchesNodeIfAvailable("array-element-variable.ts");
   });
 
   test("lowers fixed array length as a numeric constant", async () => {
-    const result = await expectSuccessfulCompile("array-length.ts");
+    const { module } = await buildTypedFixture("array-length.ts");
+    const main = mainFunction(module);
 
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 3.0)");
-    } finally {
-      await result.cleanup();
-    }
+    // The literal has three elements and the printed length is 3 without consulting the storage.
+    expect(storesTo(main, "tscn.binding.0")).toHaveLength(0);
+    expect(bindingGlobals(module)).toEqual(["tscn.binding.0"]);
+    expect(calleeNames(main)).not.toContain("arrayLength");
+
+    await expectNativeMatchesNodeIfAvailable("array-length.ts");
   });
 
   test("lowers array element mutation", async () => {
-    const result = await expectSuccessfulCompile("array-mutation.ts");
+    const { module } = await buildTypedFixture("array-mutation.ts");
+    const main = mainFunction(module);
 
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("store double 99.0, ptr %arr.gep.");
-      expect(llvmIr).toContain("load double, ptr %arr.gep.");
-    } finally {
-      await result.cleanup();
-    }
+    // The mutation is a store through a computed element address, then a load of the same address.
+    expect(callsTo(main, "numberToIndex")).toHaveLength(2);
+    expect(constantGepIndexes(main)).toEqual([0, 1, 2]);
+
+    await expectNativeMatchesNodeIfAvailable("array-mutation.ts");
   });
 
   test("lowers for loops over fixed arrays", async () => {
-    const result = await expectSuccessfulCompile("array-for-loop.ts");
+    const { module } = await buildTypedFixture("array-for-loop.ts");
+    const main = mainFunction(module);
 
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("for.body.0:");
-      expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0");
-    } finally {
-      await result.cleanup();
-    }
+    expect(calleeNames(requireBlock(main, "loop.body"))).toContain("valuePrint");
+    expect(constantGepIndexes(main)).toContain(0);
+
+    await expectNativeMatchesNodeIfAvailable("array-for-loop.ts");
   });
 
   test("stores evaluated numeric expressions in array initializers", async () => {
-    const result = await expectSuccessfulCompile("array-expression-initializer.ts");
+    const { module } = await buildTypedFixture("array-expression-initializer.ts");
+    const main = mainFunction(module);
 
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%arr.addr = alloca [2 x double]");
-      expect(llvmIr).toContain("%num.0 = fadd double 10.0, 1.0");
-      expect(llvmIr).toContain("store double %num.0, ptr %arr.gep.");
-      expect(llvmIr).not.toContain("[double 0");
-    } finally {
-      await result.cleanup();
-    }
+    // `base + 1` is an addition stored into element 0, not the constant 0 a zero-initialized array
+    // would have held.
+    expect(floatingPointBinaries(main)).toEqual([["fadd", "10.0", "1.0"]]);
+    expect(storesTo(main, "tscn.binding.1")).toHaveLength(0);
+
+    await expectNativeMatchesNodeIfAvailable("array-expression-initializer.ts");
   });
 
   test("uses array accesses in conditions and length-bounded while loops", async () => {
-    const condition = await expectSuccessfulCompile("array-condition.ts");
+    const condition = await buildTypedFixture("array-condition.ts");
+    const loop = await buildTypedFixture("array-while-length.ts");
 
-    try {
-      const llvmIr = await condition.readArtifact("main.ll");
-      expect(llvmIr).toContain("load double, ptr %arr.gep.");
-      expect(llvmIr).toContain("fcmp oeq double %num.");
-    } finally {
-      await condition.cleanup();
-    }
+    expect(calleeNames(mainFunction(condition.module))).toContain("valuePrint");
+    expect(constantGepIndexes(mainFunction(loop.module))).toEqual([0, 1, 2]);
 
-    const loop = await expectSuccessfulCompile("array-while-length.ts");
-
-    try {
-      const llvmIr = await loop.readArtifact("main.ll");
-      expect(llvmIr).toContain("while.cond.0:");
-      expect(llvmIr).toContain("fcmp olt double %num.0, 3.0");
-      expect(llvmIr).toContain("getelementptr [3 x double], ptr @arr.0");
-    } finally {
-      await loop.cleanup();
-    }
+    await expectNativeMatchesNodeIfAvailable("array-condition.ts");
+    await expectNativeMatchesNodeIfAvailable("array-while-length.ts");
   });
 
   test("keeps multiple array literals deterministic and non-colliding", async () => {
-    const result = await expectSuccessfulCompile("array-multiple-literals.ts");
+    const { module } = await buildTypedFixture("array-multiple-literals.ts");
+    const main = mainFunction(module);
 
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("@arr.0 = global [2 x double] [double 1.0, double 2.0]");
-      expect(llvmIr).toContain("@arr.1 = global [2 x double] [double 3.0, double 4.0]");
-      expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.0, i64 0, i64 0");
-      expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.1, i64 0, i64 1");
-    } finally {
-      await result.cleanup();
-    }
+    // Two distinct bindings of array type, so neither literal's storage shadows the other.
+    expect(bindingGlobals(module)).toEqual(["tscn.binding.0", "tscn.binding.1"]);
+    expect(constantGepIndexes(main)).toEqual([0, 1, 0, 1]);
+
+    await expectNativeMatchesNodeIfAvailable("array-multiple-literals.ts");
   });
 
   test("lowers mutable fixed arrays and nested numeric indexes", async () => {
-    const result = await expectSuccessfulCompile("array-let-nested-index.ts");
+    const { module } = await buildTypedFixture("array-let-nested-index.ts");
+    const main = mainFunction(module);
 
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("@arr.0 = global [3 x double] [double 1.0, double 2.0, double 3.0]");
-      expect(llvmIr).toContain("store double 3.0, ptr %arr.gep.");
-      expect(llvmIr).toContain("fadd double %num.");
-      expect(llvmIr).toContain("fptosi double %num.");
-    } finally {
-      await result.cleanup();
-    }
+    // The element index is `i + 1`, so an addition feeds the address computation.
+    expect(floatingPointBinaries(main)).toEqual([["fadd", "load", "1.0"]]);
+    expect(callsTo(main, "numberToIndex")).toHaveLength(2);
+
+    await expectNativeMatchesNodeIfAvailable("array-let-nested-index.ts");
   });
 
   test("stores variables and function-call results in array initializers", async () => {
-    const result = await expectSuccessfulCompile("array-call-initializer.ts");
+    const { module } = await buildTypedFixture("array-call-initializer.ts");
+    const main = mainFunction(module);
 
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("call { i64, i1 } @next()");
-      expect(llvmIr).toContain("load double, ptr %x.addr");
-      expect(llvmIr).toMatch(/store double %call\.\d+\.num, ptr %arr\.gep\./);
-    } finally {
-      await result.cleanup();
-    }
+    // Element 0 holds the current value of `x` and element 1 the completion payload of `next()`, so
+    // both come from loads rather than from literals.
+    expect(floatingPointBinaries(main)).toEqual([]);
+    expect(loadsFrom(main, "tscn.binding.1")).toHaveLength(1);
+    expect(callsTo(main, "jsCall")).toHaveLength(1);
+
+    await expectNativeMatchesNodeIfAvailable("array-call-initializer.ts");
   });
 
   test("lowers holes and mixed values through runtime array helpers", async () => {
-    const hole = await expectSuccessfulCompile("array-hole.ts", { link: true });
+    const hole = await buildTypedFixture("array-hole.ts");
 
-    try {
-      const llvmIr = await hole.readArtifact("main.ll");
-      expect(llvmIr).toContain("define ptr @arrayNew(i64 %length)");
-      expect(llvmIr).toContain("define i64 @arrayGetWithKey(ptr %array, i64 %index, i64 %key.len, ptr %key.ptr)");
-      expect(llvmIr).toContain("store i64 9222246136947933191, ptr %slot");
-      expect(llvmIr).toContain("%is.hole = icmp eq i64 %value, 9222246136947933191");
-      expect(llvmIr).not.toContain("call void @arraySet(ptr %arr.arr, i64 1, i64 9222246136947933184)");
-      expect(llvmIr).toContain("call i64 @arrayGetWithKey(ptr %arr.ptr.");
-      await expectNativeBehaviorIfAvailable(hole, { status: 0, stdout: "1\nundefined\n", stderr: "" });
-    } finally {
-      await hole.cleanup();
-    }
+    // A literal with a hole is not a fixed array: it is built at run time, and the elided element is
+    // pushed as the hole sentinel rather than as a zero.
+    expect(calleeNames(mainFunction(hole.module))).toContain("arrayPush");
+    expect(callsTo(mainFunction(hole.module), "arrayPush")).toHaveLength(3);
 
-    const mixed = await expectSuccessfulCompile("array-non-numeric.ts", { link: true });
+    await expectNativeMatchesNodeIfAvailable("array-hole.ts");
 
-    try {
-      const llvmIr = await mixed.readArtifact("main.ll");
-      expect(llvmIr).toContain("call void @arraySet(ptr %arr.arr, i64 0, i64 %value.");
-      expect(llvmIr).toContain("call void @valuePrint(i64 %value.");
-      await expectNativeBehaviorIfAvailable(mixed, { status: 0, stdout: "x\n", stderr: "" });
-    } finally {
-      await mixed.cleanup();
-    }
+    const mixed = await buildTypedFixture("array-non-numeric.ts");
+
+    // A non-numeric literal is also a runtime array: there is no `[n x double]` to put a string in.
+    expect(bindingGlobals(mixed.module)).toEqual(["tscn.binding.0"]);
+    expect(calleeNames(mainFunction(mixed.module))).toContain("arrayPush");
+
+    await expectNativeMatchesNodeIfAvailable("array-non-numeric.ts");
   });
 
   test("keeps runtime and fixed array names from colliding", async () => {
+    const { module } = await buildTypedFixture("array-runtime-and-fixed.ts");
+    const main = mainFunction(module);
+
+    // The fixed literal keeps array storage while the boolean literal becomes a runtime array; both
+    // read back correctly because their storages never share a binding.
+    expect(bindingGlobals(module)).toEqual(["tscn.binding.0", "tscn.binding.1"]);
+    expect(calleeNames(main)).toContain("arrayPush");
+    expect(calleeNames(main)).toContain("numberToIndex");
+
     const result = await expectSuccessfulCompile("array-runtime-and-fixed.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("@arr.0 = global [2 x double] [double 1.0, double 2.0]");
-      expect(llvmIr).toContain("%mixed.arr = call ptr @arrayNew(i64 2)");
-      expect(llvmIr).toContain("getelementptr [2 x double], ptr @arr.0");
-      expect(llvmIr).toContain("call i64 @arrayGetWithKey(ptr %arr.ptr.");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "2\ntrue\n", stderr: "" });
     } finally {
       await result.cleanup();
@@ -189,15 +175,17 @@ describe("tscn arrays", () => {
   });
 
   test("grows runtime arrays on out-of-bounds writes", async () => {
+    const { module } = await buildTypedFixture("array-runtime-growth.ts");
+    const main = mainFunction(module);
+
+    // The write goes through `arraySet`, which is the helper that grows the backing store, and the
+    // length is read back through `arrayLength` rather than kept in a binding.
+    expect(calleeNames(main)).toContain("arraySet");
+    expect(calleeNames(main)).toContain("arrayLength");
+
     const result = await expectSuccessfulCompile("array-runtime-growth.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%capacity.slot = getelementptr i8, ptr %array, i64 8");
-      expect(llvmIr).toContain("%elements.slot = getelementptr i8, ptr %array, i64 16");
-      expect(llvmIr).toContain("%new.elements = call ptr @malloc(i64 %new.elements.bytes)");
-      expect(llvmIr).toContain("call ptr @memcpy(ptr %new.elements, ptr %elements, i64 %old.elements.bytes)");
-      expect(llvmIr).toContain("store i64 %next.length, ptr %array");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "6\nundefined\nx\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
@@ -206,13 +194,17 @@ describe("tscn arrays", () => {
   });
 
   test("deletes runtime array elements as holes without changing length", async () => {
+    const { module } = await buildTypedFixture("array-runtime-delete.ts");
+    const main = mainFunction(module);
+
+    // Both deletes reach the same helper, including the out-of-range one, which is a no-op, and the
+    // length is unchanged because no `arraySetLength` is emitted.
+    expect(callsTo(main, "arrayDelete")).toHaveLength(2);
+    expect(calleeNames(main)).not.toContain("arraySetLength");
+
     const result = await expectSuccessfulCompile("array-runtime-delete.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define void @arrayDelete(ptr %array, i64 %index)");
-      expect(llvmIr).toContain("call void @arrayDelete(ptr %arr.ptr.");
-      expect(llvmIr).toContain("store i64 9222246136947933191, ptr %slot");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\nundefined\nc\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
@@ -221,12 +213,17 @@ describe("tscn arrays", () => {
   });
 
   test("assigns runtime array length with truncation and holes", async () => {
+    const { module } = await buildTypedFixture("array-runtime-length-assignment.ts");
+    const main = mainFunction(module);
+
+    // Truncating and extending both go through the one length setter, and truncating writes a hole
+    // back into the slot it freed.
+    expect(callsTo(main, "arraySetLength")).toHaveLength(2);
+    expect(calleeNames(main)).toContain("arraySet");
+
     const result = await expectSuccessfulCompile("array-runtime-length-assignment.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define void @arraySetLength(ptr %array, i64 %new.length)");
-      expect(llvmIr).toContain("call void @arraySetLength(ptr %arr.ptr.");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\nundefined\n4\nundefined\nd\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
@@ -235,12 +232,17 @@ describe("tscn arrays", () => {
   });
 
   test("checks runtime array indexed presence without treating holes as present", async () => {
+    const { module } = await buildTypedFixture("array-runtime-presence.ts");
+    const main = mainFunction(module);
+
+    // A present index asks the own-index question and a string key asks the general one, so both
+    // helpers appear and the hole is never reported as present.
+    expect(calleeNames(main)).toContain("arrayHasOwnIndex");
+    expect(calleeNames(main)).toContain("arrayHas");
+
     const result = await expectSuccessfulCompile("array-runtime-presence.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i1 @arrayHasOwnIndex(ptr %array, i64 %index)");
-      expect(llvmIr).toContain("call i1 @arrayHasOwnIndex(ptr %arr.ptr.");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\ntrue\nfalse\nfalse\nfalse\nfalse\nfalse\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
@@ -249,12 +251,17 @@ describe("tscn arrays", () => {
   });
 
   test("falls back from runtime array holes to object prototypes for literal indexes", async () => {
+    const { module } = await buildTypedFixture("array-runtime-prototype.ts");
+    const main = mainFunction(module);
+
+    // The prototype is an object literal attached to the array, which is how a hole resolves to
+    // `zero`, `one` and `three` rather than to `undefined`.
+    expect(calleeNames(main)).toContain("arraySetPrototype");
+    expect(calleeNames(main)).toContain("objectSet");
+
     const result = await expectSuccessfulCompile("array-runtime-prototype.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i64 @arrayGetWithKey(ptr %array, i64 %index, i64 %key.len, ptr %key.ptr)");
-      expect(llvmIr).toContain("%prototype.slot = getelementptr i8, ptr %array, i64 24");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "zero\none\nundefined\nthree\nundefined\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
@@ -263,11 +270,14 @@ describe("tscn arrays", () => {
   });
 
   test("returns own enumerable runtime array keys", async () => {
+    const { module } = await buildTypedFixture("array-runtime-keys.ts");
+    const main = mainFunction(module);
+
+    expect(calleeNames(main)).toContain("arrayKeys");
+
     const result = await expectSuccessfulCompile("array-runtime-keys.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define ptr @arrayKeys(ptr %array)");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "2\n0\n4\nundefined\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
@@ -276,11 +286,14 @@ describe("tscn arrays", () => {
   });
 
   test("supports canonical string keys for runtime arrays", async () => {
+    const { module } = await buildTypedFixture("array-runtime-string-keys.ts");
+    const main = mainFunction(module);
+
+    expect(calleeNames(main)).toContain("arrayHas");
+
     const result = await expectSuccessfulCompile("array-runtime-string-keys.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i1 @arrayHas(ptr %array, i64 %index, i64 %key.len, ptr %key.ptr)");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "zero\nproto\ntrue\ntrue\nfalse\nfalse\n4\nthree\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
@@ -289,12 +302,15 @@ describe("tscn arrays", () => {
   });
 
   test("supports runtime array push and pop", async () => {
+    const { module } = await buildTypedFixture("array-runtime-push-pop.ts");
+    const main = mainFunction(module);
+
+    expect(calleeNames(main)).toContain("arrayPush");
+    expect(calleeNames(main)).toContain("arrayPop");
+
     const result = await expectSuccessfulCompile("array-runtime-push-pop.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i64 @arrayPush(ptr %array, i64 %value)");
-      expect(llvmIr).toContain("define i64 @arrayPop(ptr %array)");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "4\n4\nd\nc\nundefined\na\nundefined\n0\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
@@ -303,12 +319,15 @@ describe("tscn arrays", () => {
   });
 
   test("supports runtime array shift and unshift", async () => {
+    const { module } = await buildTypedFixture("array-runtime-shift-unshift.ts");
+    const main = mainFunction(module);
+
+    expect(calleeNames(main)).toContain("arrayShift");
+    expect(calleeNames(main)).toContain("arrayUnshift");
+
     const result = await expectSuccessfulCompile("array-runtime-shift-unshift.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define i64 @arrayUnshift(ptr %array, i64 %value)");
-      expect(llvmIr).toContain("define i64 @arrayShift(ptr %array)");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "4\na\nundefined\na\n3\nundefined\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {
@@ -317,11 +336,14 @@ describe("tscn arrays", () => {
   });
 
   test("gets runtime array prototypes", async () => {
+    const { module } = await buildTypedFixture("array-runtime-get-prototype.ts");
+    const main = mainFunction(module);
+
+    expect(calleeNames(main)).toContain("arrayGetPrototype");
+
     const result = await expectSuccessfulCompile("array-runtime-get-prototype.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("define ptr @arrayGetPrototype(ptr %array)");
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "array-proto\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
     } finally {

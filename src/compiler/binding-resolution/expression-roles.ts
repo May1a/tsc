@@ -1,0 +1,150 @@
+import type { JsIrCondition, JsIrExpression, JsIrNumberExpression, JsIrStringExpression, JsIrValueExpression } from "../ir/expressions.js";
+import { preserved, preservedList, reference } from "./field-roles.js";
+import type { RoleTable } from "./role-tables.js";
+
+export const valueExpressionRoles = {
+  number: {},
+  boolean: {},
+  undefined: {},
+  null: {},
+  string: {},
+
+  variable: { name: reference },
+  call: { name: reference },
+  callValue: {},
+  functionObject: {},
+  regexCompile: {},
+  regexExec: {},
+  regexMatch: {},
+  inlineCppValue: { symbol: preserved("generatedSymbol") },
+  ternary: {},
+  lazyDefault: {},
+  arrayAccess: { arrayName: reference },
+  arrayPop: { arrayName: reference },
+  arrayShift: { arrayName: reference },
+  arrayIncludes: { arrayName: reference },
+  arrayAt: { arrayName: reference },
+  valuePlus: {},
+  logicalValue: {},
+  arrayFind: { arrayName: reference },
+  arrayForEach: { arrayName: reference },
+  objectRef: { name: reference },
+  arrayRef: { name: reference },
+  objectLiteralValue: {},
+  objectDynamicAccess: { objectName: reference },
+  valueObjectDynamicAccess: {},
+  privateFieldAccess: { key: preserved("privateKey"), message: preserved("message") },
+  valueArrayAccess: {},
+  nullishCoalesce: {},
+  // The replacer is a binding the source named, not a property key on JSON.
+  jsonStringify: { replacerName: reference },
+  jsonParse: {},
+  runtimeMapGet: { mapName: reference },
+  optionalChain: {},
+  optionalTarget: {},
+  void: {},
+  sequence: {},
+  stringStartsWith: {},
+  stringEndsWith: {},
+  stringCharCodeAt: {},
+  stringCodePointAt: {},
+  stringLocaleCompare: {},
+  stringIndexOf: {},
+  stringLastIndexOf: {},
+  runtimeArrayValue: {},
+  taggedTemplateValue: { tag: reference, head: preserved("templateText"), middleTexts: preservedList("templateText") },
+  boxedPrimitive: {},
+  boxedMethodCall: {},
+  // The constructor and prototype are declarations created by class lowering.
+  newInstance: { className: preserved("generatedSymbol"), prototypeName: reference, constructorName: reference }
+} satisfies RoleTable<JsIrValueExpression>;
+
+export const numberExpressionRoles = {
+  regexSearch: {},
+  literal: {},
+  nan: {},
+  negatedZero: {},
+  unary: {},
+  // `update` reads and writes the binding in one node, so it is a reference that is also an assignment.
+  update: { name: reference },
+  binary: {},
+  parameter: { name: reference },
+  variable: { name: reference },
+  call: { name: reference },
+  ternary: {},
+  arrayAccess: { arrayName: reference },
+  arrayLength: { arrayName: reference },
+  valueArrayLength: {},
+  valueLength: {},
+  valueObjectLength: {},
+  arrayPush: { arrayName: reference },
+  arrayUnshift: { arrayName: reference },
+  arrayIndexOf: { arrayName: reference },
+  arrayFindIndex: { arrayName: reference },
+  runtimeCollectionSize: { collectionName: reference },
+  objectAccess: { objectName: reference, path: preservedList("propertyKey") },
+  valueToNumber: {},
+  mathCall: {},
+  parseInt: {},
+  parseFloat: {}
+} satisfies RoleTable<JsIrNumberExpression>;
+
+export const stringExpressionRoles = {
+  literal: { value: preserved("stringData") },
+  variable: { name: reference },
+  ternary: {},
+  concat: {},
+  call: { name: reference },
+  arrayJoin: { arrayName: reference },
+  // `typeof.value` is the name of a type the source asked about, not a binding.
+  typeof: { value: preserved("typeofOperand") },
+  stringConversion: {},
+  stringMethod: {},
+  stringFromCharCode: {},
+  taggedTemplate: { tag: reference, head: preserved("templateText"), middleTexts: preservedList("templateText") },
+  numberFormat: {},
+  errorToString: { objectName: reference },
+  regexReplace: {}
+} satisfies RoleTable<JsIrStringExpression>;
+
+export const conditionRoles = {
+  boolean: {},
+  // The prototype is a binding the class declared; the error class name is a runtime class identity.
+  classInstanceOf: { prototypeName: reference },
+  errorInstanceOf: { errorName: preserved("errorName") },
+  regexTest: {},
+  numberComparison: {},
+  negate: {},
+  and: {},
+  or: {},
+  booleanVariable: { name: reference },
+  stringComparison: {},
+  booleanComparison: {},
+  valueComparison: {},
+  runtimeObjectHas: { objectName: reference },
+  runtimeArrayHas: { arrayName: reference },
+  runtimeObjectPropertyIsEnumerable: { objectName: reference },
+  runtimeArrayIsArray: {},
+  runtimeArrayEvery: { arrayName: reference },
+  runtimeArraySome: { arrayName: reference },
+  objectIs: {},
+  runtimeCollectionHas: { collectionName: reference },
+  runtimeCollectionDelete: { collectionName: reference },
+  runtimeCollectionIdentity: { leftName: reference, rightName: reference },
+  valueTruthy: {},
+  valueLooseComparison: {},
+  valueRelationalComparison: {},
+  numberPredicate: {},
+  stringSearch: {},
+  runtimeObjectState: { objectName: reference }
+} satisfies RoleTable<JsIrCondition>;
+
+export const expressionRoles = {
+  string: { value: preserved("stringData") },
+  stringExpression: {},
+  number: {},
+  boolean: {},
+  identifier: { name: reference },
+  call: { name: reference },
+  value: {}
+} satisfies RoleTable<JsIrExpression>;

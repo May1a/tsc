@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { buildTypedFixture, callsTo, functionInstructions } from "./typed-module.js";
 import {
   countOccurrences,
   expectLlvmAsVerificationIfAvailable,
@@ -6,18 +7,7 @@ import {
   expectSuccessfulCompile
 } from "./helpers.js";
 
-// Phase A coverage for the GC scaffolding. The test confirms that:
-//   - the runtime helpers emit the gcInit definition
-//   - @main's entry block calls gcInit exactly once
-//   - the gcInit call lands before any user statement
-//   - the LLVM IR still verifies with llvm-as when present
-//   - hello.ts continues to run end-to-end through the GC initializer
-//
-// Phase B extends this with:
-//   - the valueBoxString -> gcAlloc migration + 8-byte header offset
-//   - balanced gcRootPush/gcRootPop at every allocating call site
-//   - a 100-iteration string concat stress fixture that runs end-to-end
-describe("tscn GC scaffolding (phase A)", () => {
+describe("GC initialization", () => {
   test("emits the gcInit definition and a single call from @main", async () => {
     const result = await expectSuccessfulCompile("hello.ts");
 
@@ -53,11 +43,9 @@ describe("tscn GC scaffolding (phase A)", () => {
       expect(llvmIr).toMatch(/^define void @gcMarkValue\(i64 [^)]+\) \{/m);
       expect(llvmIr).toMatch(/^define void @gcSweep\(\) \{/m);
       expect(llvmIr).toMatch(/^define void @gcCollect\(\) \{/m);
-      // hello.ts's @main never calls @gcAlloc directly (gcAlloc only appears
-      // inside always-emitted helper definitions like valueBoxString).  hello.ts
-      // does not call user-defined functions, so no gcRootPush appears in @main.
       expect(mainBody).not.toMatch(/call.+@gcAlloc/);
-      expect(mainBody).not.toMatch(/call void @gcRootPush\(/);
+      expect(mainBody).toContain("call i64 @gcRootSave()");
+      expect(mainBody).toContain("call void @gcRootRestore(");
     } finally {
       await result.cleanup();
     }
@@ -84,12 +72,7 @@ describe("tscn GC scaffolding (phase A)", () => {
   });
 });
 
-// Phase B coverage: valueBoxString now allocates through @gcAlloc (8-byte
-// header + 16-byte payload), roots are pinned with gcRootPush and released by
-// the depth-based gcRootSave/gcRootRestore protocol, collection only runs at
-// gcSafepoint boundaries, and the GC survives a 70k-iteration string
-// concatenation loop that crosses the initial collection threshold.
-describe("tscn GC strings (phase B)", () => {
+describe("GC strings", () => {
   test("emits depth-based root instrumentation and boxes strings through gcAlloc", async () => {
     const result = await expectSuccessfulCompile("gc-stress-strings.ts");
 
@@ -120,9 +103,19 @@ describe("tscn GC strings (phase B)", () => {
       expect(allocMatch, "expected @gcAlloc definition").not.toBeNull();
       expect(allocMatch?.[0] ?? "", "gcAlloc must not call gcCollect inline").not.toMatch(/call void @gcCollect\(/);
       expect(allocMatch?.[0] ?? "", "gcAlloc must flag a pending collection").toMatch(/@gcCollectPending/);
-      // Each loop body opens with a frame restore immediately followed by a
-      // safepoint, so prior-iteration temporaries are dropped and collected.
-      expect(llvmIr).toMatch(/call void @gcRootRestore\(i64 %gc\.loop\.\d+\)\n\s*call void @gcSafepoint\(\)/);
+      const { module } = await buildTypedFixture("gc-stress-strings.ts");
+      const safepointBlocks = module.functions.flatMap((fn) => fn.blocks.filter((block) =>
+        block.instructions.some((instruction) => instruction.kind === "call" && instruction.callee.kind === "symbol" &&
+          instruction.callee.name === "gcSafepoint")));
+      expect(safepointBlocks.length).toBeGreaterThan(0);
+      for (const block of safepointBlocks) {
+        const safepoint = block.instructions.findIndex((instruction) => instruction.kind === "call" &&
+          instruction.callee.kind === "symbol" && instruction.callee.name === "gcSafepoint");
+        const restore = block.instructions.findIndex((instruction) => instruction.kind === "call" &&
+          instruction.callee.kind === "symbol" && instruction.callee.name === "gcRootRestore");
+        expect(restore).toBeGreaterThan(safepoint);
+        expect(block.instructions.at(-1)?.kind).toBe("branch");
+      }
     } finally {
       await result.cleanup();
     }
@@ -138,7 +131,7 @@ describe("tscn GC strings (phase B)", () => {
     }
   });
 
-  test("runs gc-stress-strings through 100 concatenations", async () => {
+  test("runs gc-stress-strings through 70,000 concatenations", async () => {
     const result = await expectSuccessfulCompile("gc-stress-strings.ts", { link: true });
 
     try {
@@ -153,20 +146,14 @@ describe("tscn GC strings (phase B)", () => {
   });
 });
 
-// Phase C coverage: object/array/collection/error helpers now allocate through
-// gcAlloc (8-byte header + payload at +8), the class-instance call site is
-// bracketed by gcRootPush/gcRootPop, and every other allocating helper
-// (objectSet's entries-buffer grow path, arraySet's element grow path, the
-// spread into arrayConcat) is similarly bracketed. The three new stress
-// fixtures exercise the end-to-end instrumentation on real-shape programs.
-describe("tscn GC objects/arrays/collections (phase C)", () => {
+describe("GC aggregates", () => {
   // Per-fixture shape assertions: every fixture should compile, verify with
   // llvm-as, allocate at least one non-string GC cell, and balance
   // gcRootPush/gcRootPop. The fixtures are listed together so a single failing
   // case localizes the regression to one input.
-  const phaseCFixtures = ["gc-stress-objects.ts", "gc-class-fields.ts", "gc-drop-and-reuse.ts"] as const;
+  const aggregateFixtures = ["gc-stress-objects.ts", "gc-class-fields.ts", "gc-drop-and-reuse.ts"] as const;
 
-  for (const fixture of phaseCFixtures) {
+  for (const fixture of aggregateFixtures) {
     test(`${fixture} emits balanced root-stack instrumentation and uses gcAlloc`, async () => {
       const result = await expectSuccessfulCompile(fixture);
 
@@ -176,7 +163,7 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
         expect(countOccurrences(llvmIr, "call void @gcRootPush("), `${fixture}: expected at least one gcRootPush`).toBeGreaterThan(0);
         expect(countOccurrences(llvmIr, "call i64 @gcRootSave("), `${fixture}: expected gcRootSave frames`).toBeGreaterThan(0);
         expect(countOccurrences(llvmIr, "call void @gcRootRestore("), `${fixture}: expected gcRootRestore frame resets`).toBeGreaterThan(0);
-        // Every Phase C fixture allocates at least one object cell
+        // Every aggregate fixture allocates at least one object cell
         // (GC_TAG_OBJECT = 2), and the class-field / drop-and-reuse fixtures
         // additionally exercise string boxes (GC_TAG_STRING = 1).
         const objectAllocs = (llvmIr.match(/@gcAlloc\(i64 2,/g) ?? []).length;
@@ -253,69 +240,50 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
     }
   });
 
-  test("valueBoxObject call site pins the new instance with gcRootPush before the constructor", async () => {
-    // The class-field fixture exercises newInstance: a valueBoxObject call
-    // followed by the constructor call inside `build()`. The instance cell is
-    // gcAlloc-managed, so we expect a gcRootPush between valueBoxObject and the
-    // constructor call. The instance stays pinned on the frame afterwards (no
-    // immediate pop) and is released by the function's gcRootRestore, so a later
-    // allocation in the consumer cannot collect the freshly-built object. We look
-    // for this pattern specifically inside @build (where `new Greeter(...)`
-    // lowers to) and skip the prototype construction in @main.
-    const result = await expectSuccessfulCompile("gc-class-fields.ts");
-
-    try {
-      const llvmIr = await result.readArtifact("main.ll");
-      const buildDef = /define .* @build\(/.exec(llvmIr);
-      expect(buildDef, "expected @build definition in emitted IR").not.toBeNull();
-      const buildDefStart = buildDef?.index ?? 0;
-      // Find @build's terminator (the next closing brace at column 0).
-      let buildEnd = llvmIr.length;
-      const linesAfterBuild = llvmIr.slice(buildDefStart);
-      const retMatch = /\n\}/.exec(linesAfterBuild);
-      if (retMatch !== null) {
-        buildEnd = buildDefStart + retMatch.index + 2;
-      }
-      const buildSlice = llvmIr.slice(buildDefStart, buildEnd);
-      const buildLines = buildSlice.split("\n");
-      const boxObjectIndices: number[] = [];
-      for (let i = 0; i < buildLines.length; i += 1) {
-        if (buildLines[i]?.includes("= call i64 @valueBoxObject(")) {
-          boxObjectIndices.push(i);
-        }
-      }
-      expect(boxObjectIndices.length, "expected a valueBoxObject call inside @build").toBe(1);
-      const callIndex = boxObjectIndices[0] ?? -1;
-      if (callIndex < 0) {
-        throw new Error("expected valueBoxObject call index to be defined");
-      }
-      const windowRadius = 6;
-      const window = buildLines.slice(callIndex, callIndex + windowRadius).join("\n");
-      expect(
-        window,
-        `valueBoxObject at @build line ${callIndex + 1} not followed by a constructor call within ${windowRadius} lines`
-      ).toMatch(/call \{ i64, i1 \} @Greeter\$constructor\(/);
-      const pushWindowRadius = 3;
-      const pushWindow = buildLines.slice(callIndex, callIndex + pushWindowRadius).join("\n");
-      expect(
-        pushWindow,
-        `valueBoxObject at @build line ${callIndex + 1} not followed by a gcRootPush within ${pushWindowRadius} lines`
-      ).toMatch(/call void @gcRootPush\(/);
-    } finally {
-      await result.cleanup();
-    }
+  test("roots new class instances before publishing constructor arguments", async () => {
+    const { module } = await buildTypedFixture("gc-class-fields.ts");
+    const constructions = module.functions.flatMap((fn) => callsTo(fn, "objectNew").map((allocation) => ({
+      instructions: functionInstructions(fn), allocation
+    })));
+    const instances = constructions.filter(({ instructions, allocation }) => {
+      const bits = instructions.find((instruction) => instruction.kind === "cast" && instruction.opcode === "ptrtoint" &&
+        instruction.operand === allocation.result);
+      if (bits?.kind !== "cast") return false;
+      const payload = instructions.find((instruction) => instruction.kind === "integerBinary" && instruction.opcode === "and" &&
+        instruction.left === bits.result);
+      if (payload?.kind !== "integerBinary") return false;
+      const boxed = instructions.find((instruction) => instruction.kind === "integerBinary" && instruction.opcode === "or" &&
+        instruction.left === payload.result);
+      if (boxed?.kind !== "integerBinary") return false;
+      const publication = instructions.findIndex((instruction) => instruction.kind === "store" && instruction.value === boxed.result);
+      if (publication === -1) return false;
+      const root = instructions.findIndex((instruction) => instruction.kind === "call" && instruction.callee.kind === "symbol" &&
+        instruction.callee.name === "gcRootPush" && instruction.arguments[0] === boxed.result);
+      expect(root).toBeGreaterThanOrEqual(0);
+      expect(root).toBeLessThan(publication);
+      return true;
+    });
+    expect(instances.length).toBeGreaterThan(0);
   });
 
-  test("keeps an array callback receiver alive across collection", async () => {
+  test("keeps a map source, result and callback receiver alive across collection", async () => {
     const result = await expectSuccessfulCompile("gc-function-thisarg.ts", { link: true });
 
     try {
       const llvmIr = await result.readArtifact("main.ll");
-      const callback = /define \{ i64, i1 \} @__tscn_fnobj_[^(]+\([^)]*i64 %this\.value\) \{[\s\S]*?\n\}/.exec(llvmIr)?.[0] ?? "";
-      expect(callback, "expected an emitted function-object callback").not.toBe("");
-      expect(callback).toContain("call void @gcRootPush(i64 %this.value)");
+      const { module } = await buildTypedFixture("gc-function-thisarg.ts");
+      const invocations = module.functions.flatMap((fn) => callsTo(fn, "arrayMapCallback").map((call) => ({ fn, call })));
+      expect(invocations.length).toBe(1);
+      for (const { fn, call } of invocations) {
+        const instructions = functionInstructions(fn);
+        const invocation = instructions.indexOf(call);
+        for (const argument of call.arguments) {
+          expect(instructions.slice(0, invocation).some((instruction) => instruction.kind === "call" &&
+            instruction.callee.kind === "symbol" && instruction.callee.name === "gcRootPush" &&
+            instruction.arguments[0] === argument)).toBe(true);
+        }
+      }
       expect(llvmIr).toContain("call void @gcMarkValue(i64 %fn.this)");
-      expect(llvmIr).toMatch(/call i64 @functionObjectNew\([^\n]+\)\n\s*call void @gcRootRestore\([^\n]+\)\n\s*call void @gcRootPush\(/);
       await expectLlvmAsVerificationIfAvailable(result);
       await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n", stderr: "" });
     } finally {
@@ -350,39 +318,33 @@ describe("tscn GC objects/arrays/collections (phase C)", () => {
     }
   });
 
-  test("evaluates but does not bind thisArg for an arrow callback", async () => {
-    const result = await expectSuccessfulCompile("array-runtime-arrow-thisarg-evaluation.ts");
-
+  test("evaluates an arrow callback's thisArg expression", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-arrow-thisarg-evaluation.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      // Runtime bodies also create function objects, so ordering is checked
-      // from the receiver call onwards (generated code only).
-      const receiverCall = llvmIr.indexOf("call { i64, i1 } @receiver(");
-      const functionObjectCall = llvmIr.indexOf("call i64 @functionObjectNew(", receiverCall);
-      expect(receiverCall).toBeGreaterThanOrEqual(0);
-      expect(functionObjectCall).toBeGreaterThan(receiverCall);
-      expect(llvmIr).toMatch(/call i64 @functionObjectNew\(ptr @[^,]+, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 \d+\)/);
-    } finally {
-      await result.cleanup();
-    }
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "receiver\n2\n", stderr: "" });
+    } finally { await result.cleanup(); }
+  });
+
+  test("keeps lexical this in an arrow callback despite its thisArg", async () => {
+    const result = await expectSuccessfulCompile("array-runtime-arrow-lexical-this.ts", { link: true });
+    try {
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "6\n", stderr: "" });
+    } finally { await result.cleanup(); }
   });
 });
 
 describe("completion cleanup rooting", () => {
-  test("restores every cleanup-specific root frame", async () => {
-    const result = await expectSuccessfulCompile("for-of-iterator-close-order.ts");
+  test("restores cleanup frames while preserving IteratorClose and finally order", async () => {
+    const result = await expectSuccessfulCompile("for-of-iterator-close-order.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      const cleanupFrames = [...llvmIr.matchAll(/(%gc\.cleanup\.\d+) = call i64 @gcRootSave\(\)/g)]
-        .map((match) => match[1]);
-      expect(cleanupFrames.length).toBeGreaterThan(0);
-      for (const frame of cleanupFrames) {
-        expect(llvmIr).toContain(`call void @gcRootRestore(i64 ${frame})`);
-      }
+      const { module } = await buildTypedFixture("for-of-iterator-close-order.ts");
+      const frames = module.functions.flatMap((fn) => callsTo(fn, "gcRootSave"));
+      const restored = new Set(module.functions.flatMap((fn) => callsTo(fn, "gcRootRestore")).map((call) => call.arguments[0]));
+      expect(frames.length).toBeGreaterThan(0);
+      expect(frames.every((frame) => frame.result !== undefined && restored.has(frame.result))).toBe(true);
       await expectLlvmAsVerificationIfAvailable(result);
-    } finally {
-      await result.cleanup();
-    }
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1\nclose\nfinally\n1\ninner-finally\nclose\n", stderr: "" });
+    } finally { await result.cleanup(); }
   });
 });
 
@@ -418,12 +380,8 @@ describe("tscn GC constrained heap", () => {
     const result = await expectSuccessfulCompile("gc-destructure-rest-stress.ts", { link: true });
 
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toMatch(
-        /%destructure\.proto\.rest\.\d+\.\d+ = call ptr @arrayNew\(i64 0\)\n\s*%destructure\.proto\.rest\.boxed\.\d+\.\d+ = call i64 @valueBoxArray\(ptr %destructure\.proto\.rest\.\d+\.\d+\)\n\s*call void @gcRootPush\(i64 %destructure\.proto\.rest\.boxed\.\d+\.\d+\)/
-      );
-      // The consumption loop carries a safepoint right after each push.
-      expect(llvmIr).toMatch(/call i64 @arrayPush\(ptr %destructure\.proto\.rest\.\d+\.\d+, i64 %destructure\.proto\.rest\.item\.\d+\.\d+\)\n\s*call void @gcSafepoint\(\)/);
+      const { module } = await buildTypedFixture("gc-destructure-rest-stress.ts");
+      expect(module.functions.flatMap((fn) => callsTo(fn, "arrayFromIterator")).length).toBeGreaterThan(0);
       await expectLlvmAsVerificationIfAvailable(result);
       await expectNativeBehaviorIfAvailable(
         result,

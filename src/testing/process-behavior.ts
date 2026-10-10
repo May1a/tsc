@@ -95,10 +95,7 @@ export const nativeBehavior = (run: ProcessOutput): ObservedBehavior => {
   const withoutTerminalNewline = run.stdout.slice(0, -1);
   const previousNewline = withoutTerminalNewline.lastIndexOf("\n");
   const display = withoutTerminalNewline.slice(previousNewline + 1);
-  let stdout = "";
-  if (previousNewline !== -1) {
-    stdout = withoutTerminalNewline.slice(0, previousNewline + 1);
-  }
+  const stdout = previousNewline === -1 ? "" : withoutTerminalNewline.slice(0, previousNewline + 1);
   const error = uncaughtErrorPattern.exec(display);
   let thrown: ThrownObservation = { kind: "value", display };
   if (error !== null) {

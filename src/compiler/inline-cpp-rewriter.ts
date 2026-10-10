@@ -102,22 +102,14 @@ class Scanner {
   private emitLineComment(): void {
     const start = this.pos;
     const nl = this.source.indexOf("\n", this.pos + 2);
-    if (nl === -1) {
-      this.pos = this.length;
-    } else {
-      this.pos = nl;
-    }
+    this.pos = nl === -1 ? this.length : nl;
     this.out.push(this.source.slice(start, this.pos));
   }
 
   private emitBlockComment(): void {
     const start = this.pos;
     const end = this.source.indexOf("*/", this.pos + 2);
-    if (end === -1) {
-      this.pos = this.length;
-    } else {
-      this.pos = end + 2;
-    }
+    this.pos = end === -1 ? this.length : end + 2;
     this.out.push(this.source.slice(start, this.pos));
   }
 

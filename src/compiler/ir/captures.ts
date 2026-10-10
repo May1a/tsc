@@ -1,7 +1,6 @@
 import ts from "typescript";
 import type { JsIrValueExpression } from "./expressions.js";
 import type { JsIrBindingValue, JsIrFunctionObjectDefinition, JsIrValueKind } from "./bindings.js";
-import { classLoweringState } from "./class-info.js";
 import type { JsIrOperation } from "./types.js";
 
 /**
@@ -48,6 +47,7 @@ export function collectPromotedAggregateNames(statements: ts.NodeArray<ts.Statem
   return names;
 }
 export function collectFunctionDeclarationEnclosingCaptureNames(
+  typeChecker: ts.TypeChecker | undefined,
   declaration: ts.FunctionDeclaration,
   outerBindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly string[] {
@@ -62,7 +62,7 @@ export function collectFunctionDeclarationEnclosingCaptureNames(
       outerBindings.has(node.text) &&
       !seen.has(node.text) &&
       isRuntimeIdentifierReference(node) &&
-      identifierResolvesInEnclosingFunction(node, declaration)
+      identifierResolvesInEnclosingFunction(typeChecker, node, declaration)
     ) {
       seen.add(node.text);
       captures.push(node.text);
@@ -80,8 +80,18 @@ export function collectFunctionDeclarationEnclosingCaptureNames(
   }
   return captures;
 }
-export function identifierResolvesInEnclosingFunction(identifier: ts.Identifier, declaration: ts.FunctionDeclaration): boolean {
-  const symbol = classLoweringState.typeChecker?.getSymbolAtLocation(identifier);
+/**
+ * Whether an identifier inside a function body reads an outer binding rather than a local one.
+ *
+ * The checker answers this; without one the walk can only guess, and a name it wrongly captures costs
+ * an environment slot rather than a wrong answer, so the guess is the safe direction.
+ */
+export function identifierResolvesInEnclosingFunction(
+  typeChecker: ts.TypeChecker | undefined,
+  identifier: ts.Identifier,
+  declaration: ts.FunctionDeclaration
+): boolean {
+  const symbol = typeChecker?.getSymbolAtLocation(identifier);
   if (symbol?.declarations === undefined) {
     return true;
   }

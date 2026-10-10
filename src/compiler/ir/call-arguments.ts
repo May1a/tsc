@@ -75,17 +75,10 @@ export function lowerTypedCallArguments(
   return produced(lowered);
 }
 
-/**
- * What to pass for a parameter the call omitted, or `undefined` when it may not be omitted.
- *
- * A numeric initializer substitutes a value. `x?: T` with no initializer is omittable, and the
- * argument is still passed, as `undefined`, so the callee reads its own slot rather than a neighbour's.
- * The parameter keeps its declared value kind either way because the IR is monomorphic and `??`/`?.`
- * test the slot at runtime — which is what makes an omitted argument safe to read.
- */
+// The callee applies defaults to undefined arguments. Optional parameters retain boxed storage.
 function omittedParameterArgument(parameter: JsIrFunctionParameter): JsIrCallArgument | undefined {
   if (parameter.defaultValue !== undefined && parameter.valueKind === "number") {
-    return { valueKind: "number", value: parameter.defaultValue };
+    return { valueKind: "undefined" };
   }
   if (parameter.isOptional === true) {
     return { valueKind: "undefined" };
@@ -125,13 +118,12 @@ function lowerTypedCallArgumentsWithRest(
   if (restValues.kind !== "lowered") {
     return restValues;
   }
-  lowered.push({ valueKind: "value", value: { kind: "runtimeArrayValue", elements: restValues.operation } });
-  return produced(lowered);
+  return produced([...lowered, ...restValues.operation.map((value): JsIrCallArgument => ({ valueKind: "value", value }))]);
 }
 
 /**
- * The arguments a rest parameter collects, as the array it is passed. A spread argument expands to the
- * values it names; anything else is one element.
+ * The arguments after the fixed parameters. A fixed-array spread expands to its elements.
+ * The native function constructs its rest array from these ordinary call arguments.
  */
 function lowerRestCallValues(
   context: LoweringContext,

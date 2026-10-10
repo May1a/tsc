@@ -1,8 +1,5 @@
-import { type Lowered, notApplicable } from "./lowered.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrValueKind } from "./bindings.js";
-import type { LoweringContext } from "./context.js";
-import type { JsIrNumberExpression } from "./expressions.js";
 
 export function declaredFunctionReturnKind(type: ts.TypeNode | undefined): JsIrValueKind | "void" {
   if (type?.kind === ts.SyntaxKind.NumberKeyword) {
@@ -15,17 +12,6 @@ export function declaredFunctionReturnKind(type: ts.TypeNode | undefined): JsIrV
     return "void";
   }
   return "value";
-}
-
-export function lowerNumericDefaultValue(
-  context: LoweringContext,
-  param: ts.ParameterDeclaration,
-  fnBindings: ReadonlyMap<string, JsIrBindingValue>
-): Lowered<JsIrNumberExpression> {
-  if (param.initializer === undefined || param.initializer.kind === ts.SyntaxKind.UndefinedKeyword) {
-    return notApplicable;
-  }
-  return context.lowerNumberExpression(context, param.initializer, fnBindings);
 }
 
 export function bindFunctionParameter(

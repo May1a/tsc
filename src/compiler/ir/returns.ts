@@ -117,10 +117,7 @@ function lowerReturnedFunctionExpression(
     }
     captures.push({ name, ...capture });
   }
-  let displayName = "arrow";
-  if (ts.isFunctionExpression(expression)) {
-    displayName = expression.name?.text ?? "anonymous";
-  }
+  const displayName = ts.isFunctionExpression(expression) ? expression.name?.text ?? "anonymous" : "arrow";
   const codeName = `__tscn_fnobj_${displayName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   context.nextFunctionObjectId += 1;
   return produced({

@@ -1,5 +1,5 @@
 import type { CompilerDiagnostic } from "../diagnostics.js";
-import type { TargetFacts } from "../toolchain.js";
+import type { TargetFacts } from "../target.js";
 import { jsValueLayout } from "./layout.js";
 
 function displayFact(value: number | string | undefined): string {

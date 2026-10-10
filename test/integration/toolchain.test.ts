@@ -1,3 +1,4 @@
+import { normalizeHostTargetFacts } from "../../src/compiler/target.js";
 import { describe, expect, test } from "vitest";
 import { Cause, Effect, Exit, Layer, Option } from "effect";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -6,7 +7,7 @@ import path from "node:path";
 import { CompilationFailed } from "../../src/compiler/errors.js";
 import { compilerLiveLayer } from "../../src/compiler/live-layer.js";
 import { compile } from "../../src/compiler/pipeline.js";
-import { Toolchain, type Toolchain as ToolchainService, normalizeHostTargetFacts } from "../../src/compiler/toolchain.js";
+import { Toolchain, type Toolchain as ToolchainService } from "../../src/compiler/toolchain.js";
 
 describe("toolchain target facts", () => {
   test("normalizes supported x86-64 hosts", () => {

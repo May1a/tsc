@@ -1,5 +1,6 @@
 import { unsupportedFormMessage } from "./builtins/manifest.js";
 import ts from "typescript";
+import { type Lowered, unsupported } from "./lowered.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import { callTargetMessage, isRecognizedGlobalCallee, plannedMemberReadMessage } from "./builtins/owners.js";
 import {
@@ -28,10 +29,6 @@ import {
  * It depends on the shape predicates and the support-table owner lookup and on nothing else, which is
  * what makes it readable on its own: a reader looking for "why did my program not compile" arrives
  * here and is not reading the lowering.
- *
- * Only `unsupportedStatementMessage` is exported. The rest compose into it — each one answers for one
- * shape and the statement-level function decides the order — so exporting them would be a surface
- * without a caller.
  */
 export function unsupportedStatementMessage(statement: ts.Statement, bindings: ReadonlyMap<string, JsIrBindingValue>): string {
   if (ts.isVariableStatement(statement)) {
@@ -58,6 +55,18 @@ export function unsupportedStatementMessage(statement: ts.Statement, bindings: R
   }
 
   return `Unsupported statement in the current lowering slice: ${syntaxKindName(statement.kind)}`;
+}
+
+/** Supply a fallback diagnostic only when no recognizer claimed the statement. */
+export function loweredStatementResult(
+  result: Lowered,
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (result.kind !== "notApplicable") {
+    return result;
+  }
+  return unsupported(unsupportedStatementMessage(statement, bindings));
 }
 
 /**

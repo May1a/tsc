@@ -1,7 +1,8 @@
+import { loweredStatementResult } from "./diagnostics.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, loweredOperation, loweredStatementResult, notApplicable } from "./lowered.js";
+import { type Lowered, loweredOperation, notApplicable } from "./lowered.js";
 import { traceOperationFromNode } from "./class-info.js";
 import { lowerVariableBinding } from "./variable-bindings.js";
 import { lowerIfStatement, lowerSwitchStatement } from "./branches.js";

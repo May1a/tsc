@@ -62,10 +62,7 @@ export function lowerDirectValueExpression(
       }
       const right = loweredPayload(rightResult2);
       if (left !== undefined && right !== undefined) {
-        let operator: "&&" | "||" = "||";
-        if (expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
-          operator = "&&";
-        }
+        const operator: "&&" | "||" = expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ? "&&" : "||";
         return produced({ kind: "logicalValue", operator, left, right });
       }
     }
@@ -133,7 +130,7 @@ export function lowerDirectValueExpression(
     // Object.getPrototypeOf(instance) where instance is a class instance returns the prototype
     if (ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "Object" && expression.expression.name.text === "getPrototypeOf" && expression.arguments.length === 1) {
       const [target] = expression.arguments;
-      const receiverClass = resolveReceiverClass(target, bindings);
+      const receiverClass = resolveReceiverClass(context, target, bindings);
       if (receiverClass !== undefined) {
         return produced({ kind: "variable", name: classPrototypeName(receiverClass.name) });
       }
@@ -181,14 +178,12 @@ export function lowerDirectValueExpression(
         }
         middleExpressions.push(exprValue.operation);
       }
-      const hasRest = tagBinding.parameters.some((parameter) => parameter.isRest === true);
       return produced({
         kind: "taggedTemplateValue",
         tag: expression.tag.text,
         head: headText,
         middleTexts,
-        expressions: middleExpressions,
-        wrapValuesInRest: hasRest
+        expressions: middleExpressions
       });
     }
   }

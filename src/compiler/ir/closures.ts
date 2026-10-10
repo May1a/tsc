@@ -77,7 +77,7 @@ export function lowerPlainConstructorArguments(
     } else if (parameter.valueKind === "value") {
       lowered.push({ valueKind: "value", value: { kind: "undefined" } });
     } else if (parameter.valueKind === "number" && parameter.defaultValue !== undefined) {
-      lowered.push({ valueKind: "number", value: parameter.defaultValue });
+      lowered.push({ valueKind: "undefined" });
     } else {
       return notApplicable;
     }

@@ -1,4 +1,9 @@
-import type { JsIrCallArgument, JsIrFunctionObjectDefinition, JsIrFunctionParameter, JsIrValueKind } from "./bindings.js";
+import type {
+  JsIrCallArgument,
+  JsIrFunctionObjectCapture,
+  JsIrFunctionParameter,
+  JsIrValueKind
+} from "./bindings.js";
 import type {
   JsIrArrayDestructureElement,
   JsIrClosureValue,
@@ -16,6 +21,27 @@ import type {
   JsIrValueExpression
 } from "./expressions.js";
 import type { JsIrOperationTrace } from "./module.js";
+
+/**
+ * The mutation a `runtimeArrayMutatorResult` applied to its array.
+ *
+ * Named rather than written inline because the resolved model maps it like any other payload, and an
+ * mapping keyed by name has nothing to key on for an anonymous union.
+ */
+export type JsIrArrayMutation =
+  | { readonly kind: "reverse" }
+  | { readonly kind: "fill"; readonly value: JsIrValueExpression; readonly start?: JsIrNumberExpression; readonly end?: JsIrNumberExpression }
+  | { readonly kind: "copyWithin"; readonly target: JsIrNumberExpression; readonly start: JsIrNumberExpression; readonly end?: JsIrNumberExpression };
+
+/**
+ * What an array-destructuring protocol reads.
+ *
+ * Named for the same reason as `JsIrArrayMutation`: a `collection` source names a binding the
+ * enclosing scope declared, and the resolved model has to be able to say so.
+ */
+export type JsIrDestructureSource =
+  | { readonly kind: "value"; readonly value: JsIrValueExpression }
+  | { readonly kind: "collection"; readonly name: string; readonly sourceKind: "map" | "set" };
 
 /**
  * The IR's operation union, and the two traversals that enumerate it.
@@ -223,7 +249,7 @@ export type JsIrOperationNode =
       readonly callbackReturnKind: JsIrValueKind | "void";
       readonly callbackBody: readonly JsIrOperation[];
       readonly callbackKind: "arrow" | "ordinary";
-      readonly captures?: JsIrFunctionObjectDefinition["captures"];
+      readonly captures?: readonly JsIrFunctionObjectCapture[];
       readonly initialValue?: JsIrValueExpression;
       readonly direction?: "left" | "right";
       readonly thisArg?: JsIrValueExpression;
@@ -284,10 +310,7 @@ export type JsIrOperationNode =
       readonly kind: "runtimeArrayMutatorResult";
       readonly name: string;
       readonly arrayName: string;
-      readonly mutation:
-        | { readonly kind: "reverse" }
-        | { readonly kind: "fill"; readonly value: JsIrValueExpression; readonly start?: JsIrNumberExpression; readonly end?: JsIrNumberExpression }
-        | { readonly kind: "copyWithin"; readonly target: JsIrNumberExpression; readonly start: JsIrNumberExpression; readonly end?: JsIrNumberExpression };
+      readonly mutation: JsIrArrayMutation;
     }
   | {
       readonly kind: "runtimeObjectGetPrototype";
@@ -635,9 +658,7 @@ export type JsIrOperationNode =
     }
   | {
       readonly kind: "arrayDestructureProtocol";
-      readonly source:
-        | { readonly kind: "value"; readonly value: JsIrValueExpression }
-        | { readonly kind: "collection"; readonly name: string; readonly sourceKind: "map" | "set" };
+      readonly source: JsIrDestructureSource;
       readonly elements: readonly JsIrArrayDestructureElement[];
       readonly notIterableMessage: string;
     }
@@ -685,6 +706,9 @@ export type JsIrOperationNode =
       readonly callee: JsIrValueExpression;
       readonly arguments: readonly JsIrCallArgument[];
       readonly thisValue?: JsIrValueExpression;
+      readonly methodReceiver?: JsIrValueExpression;
+      readonly methodKey?: JsIrStringExpression;
+      readonly spreadArguments?: readonly JsIrRuntimeArrayElement[];
       /** An ECMAScript optional call, `callee?.(...)`. See the value-expression form. */
       readonly optionalCallee?: true;
     }

@@ -2,7 +2,7 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
-import { type ClassInfo, classLoweringState, classPrototypeName, findClassInChain, lowerClassStaticFieldAccess, resolveReceiverClass } from "./class-info.js";
+import { type ClassInfo, classPrototypeName, findClassInChain, lowerClassStaticFieldAccess, resolveReceiverClass } from "./class-info.js";
 import { CLASS_THIS_NAME, classGetterFunctionName, classPrivateFieldReadMessage, classPrivateFieldWriteMessage } from "./class-names.js";
 import { lowerClassInstanceExpression, lowerClassMethodCall } from "./class-calls.js";
 import { type Lowered, type Produced, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
@@ -12,10 +12,6 @@ export function lowerClassValueExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  if (classLoweringState.registry === undefined) {
-    return notApplicable;
-  }
-
   if (context.classThisInScope && expression.kind === ts.SyntaxKind.ThisKeyword) {
     return produced({ kind: "variable", name: CLASS_THIS_NAME });
   }
@@ -38,7 +34,7 @@ export function lowerClassValueExpression(
     }
   }
 
-  const staticField = lowerClassStaticFieldAccess(expression, bindings);
+  const staticField = lowerClassStaticFieldAccess(context, expression, bindings);
   if (staticField !== undefined) {
     return produced(staticField);
   }
@@ -60,7 +56,7 @@ function lowerClassPropertyValueAccess(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  if (classLoweringState.registry === undefined || !ts.isPropertyAccessExpression(expression)) {
+  if (!ts.isPropertyAccessExpression(expression)) {
     return notApplicable;
   }
   if (ts.isPrivateIdentifier(expression.name)) {
@@ -73,7 +69,7 @@ function lowerClassPropertyValueAccess(
 
   // C.prototype where C is a class name (not in bindings) gives the prototype object
   if (ts.isIdentifier(expression.expression) && !bindings.has(expression.expression.text) && expression.name.text === "prototype") {
-    const classInfo = classLoweringState.registry.get(expression.expression.text);
+    const classInfo = context.classes.get(expression.expression.text);
     if (classInfo !== undefined) {
       return produced({ kind: "variable", name: classPrototypeName(classInfo.name) } as JsIrValueExpression);
     }
@@ -86,10 +82,10 @@ function lowerClassPropertyValueAccess(
   if (receiver.kind === "notApplicable") {
     return notApplicable;
   }
-  const receiverClass = resolveReceiverClass(expression.expression, bindings);
+  const receiverClass = resolveReceiverClass(context, expression.expression, bindings);
   let getterClass: ClassInfo | undefined;
   if (receiverClass !== undefined) {
-    getterClass = findClassInChain(receiverClass, (candidate) => candidate.getters.has(expression.name.text));
+    getterClass = findClassInChain(context, receiverClass, (candidate) => candidate.getters.has(expression.name.text));
   }
   if (getterClass !== undefined) {
     return produced({

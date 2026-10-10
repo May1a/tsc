@@ -1,5 +1,5 @@
 import type { LoweringContext } from "./context.js";
-import { type ClassFieldInfo, type ClassInfo, classLoweringState } from "./class-info.js";
+import type { ClassFieldInfo, ClassInfo } from "./class-info.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionParameter } from "./bindings.js";
 import { type Lowered, type Produced, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
@@ -9,7 +9,7 @@ import { bindFunctionParameter, functionFrameBindings } from "./function-paramet
 import { isNonExecutableDeclaration } from "./comparisons.js";
 import { updateBindings } from "./binding-updates.js";
 import type { JsIrValueExpression } from "./expressions.js";
-import { SYMBOL_ITERATOR_SENTINEL } from "../runtime-ir.js";
+import { SYMBOL_ITERATOR_SENTINEL } from "../symbols.js";
 
 // eslint-disable-next-line complexity, max-statements -- Constructor lowering owns super ordering, instance initialization, and body scope restoration.
 export function lowerClassConstructor(
@@ -35,7 +35,7 @@ export function lowerClassConstructor(
     const body: JsIrOperation[] = [];
     let remainingStatements: readonly ts.Statement[] = constructorDeclaration?.body?.statements ?? [];
     if (info.baseName !== undefined) {
-      const base = classLoweringState.registry?.get(info.baseName);
+      const base = context.classes.get(info.baseName);
       if (base === undefined) {
         return unsupportedIn(`\`extends ${info.baseName ?? "that class"}\` names a class this module did not lower`);
       }

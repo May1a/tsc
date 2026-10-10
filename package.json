@@ -15,8 +15,9 @@
     "test262:fetch": "npm run build && node dist/test262/fetch.js",
     "test262:run": "npm run build && node dist/test262/run.js",
     "test262:baseline": "npm run build && node dist/test262/run.js --classification fail --baseline test262/baseline.json",
-    "lint": "npx oxlint --type-aware && node scripts/check-inline-llvm.mjs && node scripts/check-compiler-boundaries.mjs && node scripts/check-unchecked-object-access.mjs",
-    "oracle:ll-hashes": "npm run build && node scripts/hash-oracle-ll.mjs"
+    "lint": "npx oxlint --type-aware && node scripts/check-inline-llvm.mjs && node scripts/check-compiler-boundaries.mjs && node scripts/check-unchecked-object-access.mjs && node scripts/check-emission-architecture.mjs && node scripts/check-expression-dispatch.mjs && node scripts/check-resolution-metadata.mjs && node scripts/check-lowering-state.mjs && node scripts/generate-runtime-contracts.mjs --check",
+    "oracle:ll-hashes": "npm run build && node scripts/hash-oracle-ll.mjs",
+    "runtime:contracts": "node scripts/generate-runtime-contracts.mjs"
   },
   "dependencies": {
     "@effect/cli": "^0.75.2",

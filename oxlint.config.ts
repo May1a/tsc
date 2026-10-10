@@ -42,8 +42,8 @@ const disabledRules: DummyRuleMap = {
     "oxc/no-async-await": "off",
     // Scoped to src/cli/** via override below; only the CLI should call process.exit.
     // "unicorn/no-process-exit": handled in overrides — see C-7.
-    // Lowering prefers explicit `if` for exhaustiveness over ternaries.
-    "unicorn/prefer-ternary": "off",
+    // Conditional expressions keep simple value selection immutable.
+    "no-ternary": "off",
     // Effect `Data.TaggedError` requires capitalized call without `new`.
     "eslint/new-cap": "off",
     // `void` is used intentionally for Effect discards.
@@ -51,6 +51,7 @@ const disabledRules: DummyRuleMap = {
 };
 
 const stricterRules: DummyRuleMap = {
+    "unicorn/prefer-ternary": ["error", "only-single-line"],
     // Deduplicated: ban-ts-comment is configured in `rules` with minimumDescriptionLength — see C-3.
     "no-deprecated": "error",
     "unicorn/no-instanceof-array": "error",
@@ -99,6 +100,7 @@ const categoriesEnable: RuleCategories = {
 };
 
 export default defineConfig({
+    jsPlugins: ["./scripts/procedural-style-plugin.mjs"],
     categories: categoriesEnable,
     env: {
         builtin: true,
@@ -120,6 +122,14 @@ export default defineConfig({
     ],
     overrides: [
         {
+            files: ["src/**/*.ts"],
+            rules: {
+                "max-depth": ["error", 4],
+                "tscn/prefer-const-initialization": "error",
+                "tscn/prefer-array-transform": "error",
+            },
+        },
+        {
             env: {
                 node: true,
             },
@@ -127,6 +137,8 @@ export default defineConfig({
             rules: {
                 ...disabledRules,
                 ...stricterRules,
+                "tscn/no-shadowed-global-type-parameter": "error",
+                "tscn/no-assertion-on-error-cause": "error",
                 "constructor-super": "error",
                 curly: ["error", "multi-line"],
                 eqeqeq: ["error", "always"],
@@ -175,6 +187,13 @@ export default defineConfig({
                 "typescript/no-unsafe-member-access": "off",
                 "typescript/no-unsafe-return": "off",
                 "typescript/restrict-template-expressions": "off",
+            },
+        },
+        {
+            files: ["scripts/check-compiler-boundaries.mjs", "scripts/check-lowering-state.mjs", "scripts/check-emission-architecture.mjs", "scripts/procedural-style-plugin.mjs"],
+            rules: {
+                // Optional results in these untyped AST helpers use a bare return for no match.
+                "typescript/consistent-return": "off",
             },
         },
         {

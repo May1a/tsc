@@ -15,9 +15,9 @@ type ExitObservation =
   | { readonly kind: "terminated"; readonly message: string }
   | { readonly kind: "timed-out" };
 
-const collectText = <Error, Requirements>(
-  stream: Stream.Stream<Uint8Array, Error, Requirements>
-): Effect.Effect<string, Error, Requirements> =>
+const collectText = <TFailure, Requirements>(
+  stream: Stream.Stream<Uint8Array, TFailure, Requirements>
+): Effect.Effect<string, TFailure, Requirements> =>
   Stream.runFold(Stream.decodeText(stream, "utf8"), "", (accumulated, chunk) => accumulated + chunk);
 
 /**

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import type { LoweringContext } from "./context.js";
 import type { JsIrBindingValue, JsIrFunctionParameter, JsIrValueKind } from "./bindings.js";
 import type { JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
@@ -6,7 +7,7 @@ import { updateBindings } from "./binding-updates.js";
 import type { JsIrTraceOrigin } from "./module.js";
 import { errorConstructorNames, unwrapTypeOnlyExpression } from "./predicates.js";
 import { type Produced, produced, unsupportedIn } from "./lowered.js";
-import { SYMBOL_ITERATOR_SENTINEL } from "../runtime-ir.js";
+import { SYMBOL_ITERATOR_SENTINEL } from "../symbols.js";
 
 // Key of a class member. Literal keys are known at compile time; computed keys
 // are evaluated once at class-definition time into a module-level slot and read
@@ -25,7 +26,6 @@ export interface ClassInfo {
   readonly name: string;
   readonly baseName?: string;
   readonly fields: readonly ClassFieldInfo[];
-  readonly classId: number;
   readonly constructorParameters: readonly JsIrFunctionParameter[];
   readonly methods: ReadonlyMap<string, ClassMethodInfo>;
   readonly staticMethods: ReadonlyMap<string, ClassMethodInfo>;
@@ -115,25 +115,7 @@ export function classMemberHasStaticModifier(member: ts.ClassElement): boolean {
   }
   return ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ?? false;
 }
-/**
- * The class lowering's mutable state for the file being lowered.
- *
- * Three of these were loose module-level `let`s. They are one object because they are one thing: the
- * registry a `new C(...)` resolves against, the checker the class expressions ask, and the id counter
- * they share. An ES module binding cannot be assigned from outside its module, so they could not be cut
- * out of `ir.ts` as bindings — and three loose `let`s with `undefined` sentinels is exactly the shape
- * that becomes an accidental global. One named holder makes the scope the thing you read.
- *
- * `registry` is scoped per file by `lowerTopLevelStatements`, which saves and restores it around the
- * statement list; `typeChecker` is set by `lowerToJsIr` and cleared afterwards.
- */
-export const classLoweringState: {
-  typeChecker: ts.TypeChecker | undefined;
-  registry: Map<string, ClassInfo> | undefined;
-  nextId: number;
-} = { typeChecker: undefined, registry: undefined, nextId: 1 };
 
-/** `lowerClassDeclaration` with the registry rollback left to its caller. */
 /**
  * The names a class body is lowered under: the one its generated functions are named after, the inner
  * name a named class expression binds inside its own body, and the base it extends.
@@ -249,7 +231,6 @@ export function buildClassInfo(
     name: names.infoName,
     baseName: names.baseName,
     fields: members.fields,
-    classId: classLoweringState.nextId++,
     constructorParameters,
     methods: ownMethods.operation,
     staticMethods: staticMethods.operation,
@@ -612,18 +593,19 @@ export function classCallableParameters(
 // module-level static storage slot. Returns undefined when the receiver is not a
 // class name or the property is not a declared static field.
 export function lowerClassStaticFieldAccess(
+  context: LoweringContext,
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrValueExpression | undefined {
-  if (classLoweringState.registry === undefined || !ts.isPropertyAccessExpression(expression)) {
+  if (!ts.isPropertyAccessExpression(expression)) {
     return undefined;
   }
   const receiver = expression.expression;
   if (!ts.isIdentifier(receiver) || bindings.has(receiver.text)) {
     return undefined;
   }
-  const info = classLoweringState.registry.get(receiver.text);
-  if (info === undefined || findClassInChain(info, (candidate) => candidate.staticFields.has(expression.name.text)) === undefined) {
+  const info = context.classes.get(receiver.text);
+  if (info === undefined || findClassInChain(context, info, (candidate) => candidate.staticFields.has(expression.name.text)) === undefined) {
     return undefined;
   }
   return {
@@ -632,7 +614,11 @@ export function lowerClassStaticFieldAccess(
     key: { kind: "literal", value: expression.name.text }
   };
 }
-export function findClassInChain(info: ClassInfo, predicate: (candidate: ClassInfo) => boolean): ClassInfo | undefined {
+export function findClassInChain(
+  context: LoweringContext,
+  info: ClassInfo,
+  predicate: (candidate: ClassInfo) => boolean
+): ClassInfo | undefined {
   let current: ClassInfo | undefined = info;
   while (current !== undefined) {
     if (predicate(current)) {
@@ -641,7 +627,7 @@ export function findClassInChain(info: ClassInfo, predicate: (candidate: ClassIn
     if (current.baseName === undefined) {
       return undefined;
     }
-    current = classLoweringState.registry?.get(current.baseName);
+    current = context.classes.get(current.baseName);
   }
   return undefined;
 }
@@ -649,14 +635,12 @@ export function findClassInChain(info: ClassInfo, predicate: (candidate: ClassIn
 // (`new C()`) resolve via the registry; named-variable receivers resolve through
 // the TypeScript checker.
 export function resolveReceiverClass(
+  context: LoweringContext,
   receiver: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): ClassInfo | undefined {
-  if (classLoweringState.registry === undefined) {
-    return undefined;
-  }
   if (ts.isNewExpression(receiver) && ts.isIdentifier(receiver.expression) && !bindings.has(receiver.expression.text)) {
-    return classLoweringState.registry.get(receiver.expression.text);
+    return context.classes.get(receiver.expression.text);
   }
   if (ts.isIdentifier(receiver)) {
     // A variable initialized with `new C(...)` resolves through its binding,
@@ -664,16 +648,17 @@ export function resolveReceiverClass(
     // expressions).
     const binding = bindings.get(receiver.text);
     if (binding?.kind === "value" && binding.value.kind === "newInstance") {
-      return classLoweringState.registry.get(binding.value.className);
+      return context.classes.get(binding.value.className);
     }
     if (binding?.kind === "valueVariable" && binding.className !== undefined) {
-      return classLoweringState.registry.get(binding.className);
+      return context.classes.get(binding.className);
     }
   }
-  if (ts.isIdentifier(receiver) && classLoweringState.typeChecker !== undefined) {
-    const symbol = classLoweringState.typeChecker.getTypeAtLocation(receiver).getSymbol();
+  const { typeChecker } = context;
+  if (ts.isIdentifier(receiver) && typeChecker !== undefined) {
+    const symbol = typeChecker.getTypeAtLocation(receiver).getSymbol();
     if (symbol !== undefined) {
-      return classLoweringState.registry.get(symbol.getName());
+      return context.classes.get(symbol.getName());
     }
   }
   return undefined;
@@ -734,6 +719,7 @@ export function containsReturnStatement(node: ts.Node): boolean {
   return found;
 }
 export function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValueKind {
+  if (parameter.questionToken !== undefined) { return "value"; }
   if (parameter.type?.kind === ts.SyntaxKind.StringKeyword) {
     return "string";
   }
@@ -750,7 +736,7 @@ export function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValu
   if (hasUnconstrainedTypeParameter(parameter)) {
     return "value";
   }
-  return "number";
+  return parameter.type?.kind === ts.SyntaxKind.NumberKeyword ? "number" : "value";
 }
 /**
  * True for a constructor parameter that also declares a field — `constructor(readonly v: number)`.

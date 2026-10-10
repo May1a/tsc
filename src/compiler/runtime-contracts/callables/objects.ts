@@ -1,0 +1,52 @@
+// Generated from Static Runtime IR. Run npm run runtime:contracts to regenerate.
+import type { LlvmModuleBuilder } from "../../llvm-ir/index.js";
+import { objectsContracts } from "../objects.js";
+import { type RuntimeCalleeTable, registerRuntimeContract } from "../register.js";
+
+export function createObjectsCallees(module: LlvmModuleBuilder): RuntimeCalleeTable<typeof objectsContracts> {
+  return {
+    "environmentNew": registerRuntimeContract(module, objectsContracts.environmentNew),
+    "environmentGet": registerRuntimeContract(module, objectsContracts.environmentGet),
+    "environmentSet": registerRuntimeContract(module, objectsContracts.environmentSet),
+    "valueObjectGet": registerRuntimeContract(module, objectsContracts.valueObjectGet),
+    "valueObjectSet": registerRuntimeContract(module, objectsContracts.valueObjectSet),
+    "valueObjectDelete": registerRuntimeContract(module, objectsContracts.valueObjectDelete),
+    "valueObjectHasOwn": registerRuntimeContract(module, objectsContracts.valueObjectHasOwn),
+    "valueObjectKeys": registerRuntimeContract(module, objectsContracts.valueObjectKeys),
+    "valueObjectValues": registerRuntimeContract(module, objectsContracts.valueObjectValues),
+    "valueObjectEntries": registerRuntimeContract(module, objectsContracts.valueObjectEntries),
+    "valueObjectOwnPropertyDescriptor": registerRuntimeContract(module, objectsContracts.valueObjectOwnPropertyDescriptor),
+    "valueObjectOwnPropertyNames": registerRuntimeContract(module, objectsContracts.valueObjectOwnPropertyNames),
+    "valueObjectOwnPropertyDescriptors": registerRuntimeContract(module, objectsContracts.valueObjectOwnPropertyDescriptors),
+    "objectNew": registerRuntimeContract(module, objectsContracts.objectNew),
+    "objectCreate": registerRuntimeContract(module, objectsContracts.objectCreate),
+    "objectGetOwn": registerRuntimeContract(module, objectsContracts.objectGetOwn),
+    "objectGet": registerRuntimeContract(module, objectsContracts.objectGet),
+    "objectHasOwn": registerRuntimeContract(module, objectsContracts.objectHasOwn),
+    "objectHas": registerRuntimeContract(module, objectsContracts.objectHas),
+    "objectSetPrototype": registerRuntimeContract(module, objectsContracts.objectSetPrototype),
+    "objectWouldCreateCycle": registerRuntimeContract(module, objectsContracts.objectWouldCreateCycle),
+    "objectGetPrototype": registerRuntimeContract(module, objectsContracts.objectGetPrototype),
+    "objectPreventExtensions": registerRuntimeContract(module, objectsContracts.objectPreventExtensions),
+    "objectIsExtensible": registerRuntimeContract(module, objectsContracts.objectIsExtensible),
+    "objectSeal": registerRuntimeContract(module, objectsContracts.objectSeal),
+    "objectFreeze": registerRuntimeContract(module, objectsContracts.objectFreeze),
+    "objectIsSealed": registerRuntimeContract(module, objectsContracts.objectIsSealed),
+    "objectIsFrozen": registerRuntimeContract(module, objectsContracts.objectIsFrozen),
+    "objectDefineDataProperty": registerRuntimeContract(module, objectsContracts.objectDefineDataProperty),
+    "objectSet": registerRuntimeContract(module, objectsContracts.objectSet),
+    "objectDelete": registerRuntimeContract(module, objectsContracts.objectDelete),
+    "objectAssign": registerRuntimeContract(module, objectsContracts.objectAssign),
+    "objectAssignArray": registerRuntimeContract(module, objectsContracts.objectAssignArray),
+    "valueObjectAssign": registerRuntimeContract(module, objectsContracts.valueObjectAssign),
+    "objectValues": registerRuntimeContract(module, objectsContracts.objectValues),
+    "objectOwnPropertyDescriptor": registerRuntimeContract(module, objectsContracts.objectOwnPropertyDescriptor),
+    "objectEntries": registerRuntimeContract(module, objectsContracts.objectEntries),
+    "objectFromEntries": registerRuntimeContract(module, objectsContracts.objectFromEntries),
+    "objectPropertyIsEnumerable": registerRuntimeContract(module, objectsContracts.objectPropertyIsEnumerable),
+    "objectOwnPropertyNames": registerRuntimeContract(module, objectsContracts.objectOwnPropertyNames),
+    "objectOwnPropertyDescriptors": registerRuntimeContract(module, objectsContracts.objectOwnPropertyDescriptors),
+    "objectIs": registerRuntimeContract(module, objectsContracts.objectIs),
+    "objectKeys": registerRuntimeContract(module, objectsContracts.objectKeys),
+  };
+}

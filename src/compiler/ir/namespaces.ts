@@ -51,10 +51,7 @@ function lowerNamespaceField(
     // cannot hold a function member, so the two shapes do not combine yet.
     return unsupportedIn("Nested namespaces are not supported yet; a namespace member must be a value or a function");
   }
-  let exported = false;
-  if (ts.canHaveModifiers(statement)) {
-    exported = ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
-  }
+  const exported = ts.canHaveModifiers(statement) ? ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true : false;
   if (!exported) {
     // The closure that would keep a non-exported declaration local is the IIFE half of the desugaring
     // this does not perform, so a namespace carrying one is declined rather than given an object that

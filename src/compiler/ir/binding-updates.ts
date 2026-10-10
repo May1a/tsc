@@ -2,6 +2,7 @@ import type { JsIrBindingValue, JsIrValueKind } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 import { jsIrOperationChildren } from "./visit.js";
+import { aggregateBindingForOperation } from "./operation-bindings.js";
 
 /**
  * The binding map: what name means what, and how that changes as operations are emitted.
@@ -17,106 +18,8 @@ import { jsIrOperationChildren } from "./visit.js";
  * object, because a shadowed name can no longer be read as a known-shape field. Getting that order
  * wrong is how a `for...of` over an array literal ends up reading a stale layout.
  *
- * `aggregateBindingForOperation` is the classifier: given one operation, name the binding it produces.
- * It is the only place that mapping exists, which is what makes it checkable — every operation kind
- * that binds a name has an entry, and one that does not is a compile error rather than a silent miss.
  */
 
-// eslint-disable-next-line complexity, max-statements -- Aggregate binding classification is centralized during the runtime-shape transition.
-export function aggregateBindingForOperation(operation: JsIrOperation): JsIrBindingValue | undefined {
-  if (operation.kind === "arrayLiteral") {
-    return { kind: "array", name: operation.name, length: operation.elements.length };
-  }
-  if (operation.kind === "runtimeArrayLiteral") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "objectLiteral") {
-    return { kind: "object", value: operation.value };
-  }
-  if (operation.kind === "runtimeObjectLiteral") {
-    return { kind: "runtimeObject", name: operation.name, value: operation.value };
-  }
-  if (operation.kind === "runtimeObjectCreate") {
-    return { kind: "runtimeObject", name: operation.name };
-  }
-  if (operation.kind === "runtimeErrorLiteral") {
-    return { kind: "runtimeObject", name: operation.name, errorName: operation.errorName };
-  }
-  if (operation.kind === "runtimeObjectKeys") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeObjectValues") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeObjectEntries") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeObjectFromEntries") {
-    return { kind: "runtimeObject", name: operation.name };
-  }
-  if (operation.kind === "runtimeObjectOwnPropertyDescriptor") {
-    return { kind: "valueVariable", name: operation.name };
-  }
-  if (operation.kind === "runtimeObjectOwnPropertyNames") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeObjectOwnPropertyDescriptors") {
-    return { kind: "runtimeObject", name: operation.name };
-  }
-  if (operation.kind === "runtimeArraySlice" || operation.kind === "runtimeArrayFlatMapCallback" || operation.kind === "runtimeArraySort" || operation.kind === "runtimeArrayFrom") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeArraySplice") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeArrayFlat") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeStringSplit" || operation.kind === "runtimeRegexSplit") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeArrayMapCallback" || operation.kind === "runtimeArrayMapFunctionObject") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeArrayFilterCallback") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeArrayConcat") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeArrayMutatorResult") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (
-    operation.kind === "runtimeMapNew" ||
-    operation.kind === "runtimeMapFromArray" ||
-    operation.kind === "runtimeMapFromIterable" ||
-    operation.kind === "runtimeMapFromCollection" ||
-    operation.kind === "runtimeMapSetResult"
-  ) {
-    return { kind: "runtimeMap", name: operation.name };
-  }
-  if (
-    operation.kind === "runtimeSetNew" ||
-    operation.kind === "runtimeSetFromArray" ||
-    operation.kind === "runtimeSetFromIterable" ||
-    operation.kind === "runtimeSetFromCollection" ||
-    operation.kind === "runtimeSetAddResult"
-  ) {
-    return { kind: "runtimeSet", name: operation.name };
-  }
-  if (operation.kind === "runtimeIteratorNew") {
-    // Protocol-compatible iterators are ordinary objects with a callable `.next`.
-    return { kind: "valueVariable", name: operation.name };
-  }
-  if (operation.kind === "runtimeArrayFromValue" || operation.kind === "runtimeArrayFromCollection") {
-    return { kind: "runtimeArray", name: operation.name };
-  }
-  if (operation.kind === "runtimeObjectGetPrototype") {
-    return { kind: "runtimeObject", name: operation.name };
-  }
-  return undefined;
-}
 export function updateConstBindings(
   operation: JsIrOperation,
   bindings: Map<string, JsIrBindingValue>

@@ -66,10 +66,7 @@ function lowerArrayProtocolDestructuring(
   if (ts.isIdentifier(unwrapped)) {
     const binding = working.get(unwrapped.text);
     if (binding?.kind === "runtimeMap" || binding?.kind === "runtimeSet") {
-      let sourceKind: "map" | "set" = "set";
-      if (binding.kind === "runtimeMap") {
-        sourceKind = "map";
-      }
+      const sourceKind: "map" | "set" = binding.kind === "runtimeMap" ? "map" : "set";
       source = {
         kind: "collection",
         name: binding.name,
@@ -125,14 +122,13 @@ export function lowerArrayProtocolDestructuringFromSource(
         if (functionObjectValueResult.kind === "unsupported") {
           return functionObjectValueResult;
         }
-        defaultValue = loweredPayload(functionObjectValueResult);
-        if (defaultValue === undefined) {
-          const valueExpressionResult = context.lowerValueExpression(context, element.initializer, working);
-          if (valueExpressionResult.kind === "unsupported") {
-            return valueExpressionResult;
-          }
-          defaultValue = loweredPayload(valueExpressionResult);
+        const defaultResult = functionObjectValueResult.kind === "lowered"
+          ? functionObjectValueResult
+          : context.lowerValueExpression(context, element.initializer, working);
+        if (defaultResult.kind === "unsupported") {
+          return defaultResult;
         }
+        defaultValue = loweredPayload(defaultResult);
         if (defaultValue === undefined) {
           return produced(false);
         }
@@ -378,8 +374,9 @@ function lowerNestedProtocolDestructuring(
   const nestedWorking = new Map(working);
   nestedWorking.set(temporaryName, { kind: "valueVariable", name: temporaryName });
   const nestedOperations: JsIrOperation[] = [];
+  const bindingName = element.initializer === undefined ? temporaryName : `${temporaryName}.default`;
   const nestedResult = lowerNestedBindingFromValue(
-    context, element, temporaryName, { kind: "variable", name: temporaryName }, nestedWorking, nestedOperations
+    context, element, bindingName, { kind: "variable", name: temporaryName }, nestedWorking, nestedOperations
   );
   if (nestedResult.kind === "unsupported") {
     return nestedResult;

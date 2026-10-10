@@ -12,6 +12,16 @@ import type { JsIrOperation } from "./types.js";
 export type JsIrNumberOperator = "add" | "subtract" | "multiply" | "divide" | "remainder" | "bitAnd" | "bitOr" | "bitXor" | "shiftLeft" | "shiftRight" | "shiftRightUnsigned" | "power";
 export type JsIrValueComparisonOperator = "==" | "!=" | "<" | "<=" | ">" | ">=";
 
+/**
+ * What `Array.isArray` is asked about.
+ *
+ * It is either the answer the lowering pass already proved — the source wrote a literal array, so the
+ * question is constant — or a runtime value. Named because it is the one IR field that mixes a plain
+ * value with a whole expression union, and the resolved model dispatches on payload names: an unnamed
+ * union would fall through and keep its expression unresolved.
+ */
+export type JsIrArrayIsArrayOperand = boolean | JsIrValueExpression;
+
 export type JsIrValueExpression =
   | {
       readonly kind: "number";
@@ -222,7 +232,6 @@ export type JsIrValueExpression =
       readonly head: string;
       readonly middleTexts: readonly string[];
       readonly expressions: readonly JsIrValueExpression[];
-      readonly wrapValuesInRest?: boolean;
     }
   | {
       readonly kind: "boxedPrimitive";
@@ -609,7 +618,7 @@ export type JsIrCondition =
     }
   | {
       readonly kind: "runtimeArrayIsArray";
-      readonly value: boolean | JsIrValueExpression;
+      readonly value: JsIrArrayIsArrayOperand;
     }
   | {
       readonly kind: "runtimeArrayEvery" | "runtimeArraySome";

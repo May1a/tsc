@@ -42,10 +42,7 @@ const linkFailureDiagnostic = (message: string): CompilerDiagnostic => ({
 
 const linkExitFailureDiagnostic = (toolName: string, exitCode: number, stderr: string): CompilerDiagnostic => {
   const exitLabel = String(exitCode);
-  let stderrLabel = "";
-  if (stderr) {
-    stderrLabel = `: ${stderr.trim()}`;
-  }
+  const stderrLabel = stderr ? `: ${stderr.trim()}` : "";
   return {
     code: "TSCN2003",
     category: "error",
@@ -82,12 +79,7 @@ const runClang = (
       if (error instanceof LinkerExitFailed) {
         return Effect.fail(error);
       }
-      let description: string;
-      if (error instanceof Error) {
-        description = error.message;
-      } else {
-        description = String(error);
-      }
+      const description: string = error instanceof Error ? error.message : String(error);
       return Effect.succeed({ diagnostics: [linkFailureDiagnostic(`Failed to start ${clangPath}: ${description}`)] });
     })
   );

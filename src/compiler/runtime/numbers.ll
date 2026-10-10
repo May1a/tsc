@@ -408,3 +408,41 @@ entry:
   %result = fdiv double %sin, %cos
   ret double %result
 }
+
+define i32 @numberToInt32(double %value) {
+entry:
+  %magnitude = call double @llvm.fabs.f64(double %value)
+  %finite = fcmp olt double %magnitude, 0x7FF0000000000000
+  br i1 %finite, label %convert, label %zero
+zero:
+  ret i32 0
+convert:
+  %integer = call double @llvm.trunc.f64(double %value)
+  %remainder = frem double %integer, 4294967296.0
+  %negative = fcmp olt double %remainder, 0.0
+  %wrapped = fadd double %remainder, 4294967296.0
+  %unsigned = select i1 %negative, double %wrapped, double %remainder
+  %result = fptoui double %unsigned to i32
+  ret i32 %result
+}
+
+define i64 @numberToIndex(double %value) {
+entry:
+  %nan = fcmp uno double %value, %value
+  br i1 %nan, label %zero, label %lower.check
+zero:
+  ret i64 0
+lower.check:
+  %too.low = fcmp ole double %value, -9223372036854775808.0
+  br i1 %too.low, label %minimum, label %upper.check
+minimum:
+  ret i64 -9223372036854775808
+upper.check:
+  %too.high = fcmp oge double %value, 9223372036854775808.0
+  br i1 %too.high, label %maximum, label %convert
+maximum:
+  ret i64 9223372036854775807
+convert:
+  %result = fptosi double %value to i64
+  ret i64 %result
+}
