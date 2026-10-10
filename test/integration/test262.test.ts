@@ -47,7 +47,7 @@ const expectClassification = (result: TestCaseResult, classification: Classifica
     expect(result.detail).toContain("clang was not found");
     return;
   }
-  expect(result.classification).toBe(classification);
+  expect(result.classification, result.detail).toBe(classification);
   if (reason !== undefined) {
     expect(result.reason).toBe(reason);
   }

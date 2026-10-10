@@ -1,24 +1,10 @@
+import { type TargetFacts, normalizeHostTargetFacts } from "./target.js";
 import { Command, type CommandExecutor } from "@effect/platform";
 import { Context, Effect, Layer, Option } from "effect";
 import { devNull } from "node:os";
 import process from "node:process";
 
 export type ToolName = "clang" | "clang++" | "llvm-as" | "lli";
-
-const thirtyTwoBitWord = 32;
-const sixtyFourBitWord = 64;
-const jsValuePointerAddressBits = 48;
-const darwinArm64PointerAddressBits = 47;
-
-export type TargetArchitecture = "x86_64" | "aarch64" | "x86" | "arm" | "unknown";
-
-export interface TargetFacts {
-  readonly triple: string;
-  readonly architecture: TargetArchitecture;
-  readonly pointerWidthBits: number | undefined;
-  readonly doubleFormat: "ieee754-binary64" | "other" | "unknown";
-  readonly pointerAddressBits: number | undefined;
-}
 
 export interface Toolchain {
   readonly clang: Option.Option<string>;
@@ -29,48 +15,6 @@ export interface Toolchain {
 }
 
 export const Toolchain = Context.GenericTag<Toolchain>("tscn/Toolchain");
-
-export function normalizeHostTargetFacts(
-  architecture: NodeJS.Architecture,
-  platform: NodeJS.Platform
-): TargetFacts {
-  let normalizedArchitecture: TargetArchitecture = "unknown";
-  let pointerWidthBits: number | undefined;
-  if (architecture === "x64") {
-    normalizedArchitecture = "x86_64";
-    pointerWidthBits = sixtyFourBitWord;
-  } else if (architecture === "arm64") {
-    normalizedArchitecture = "aarch64";
-    pointerWidthBits = sixtyFourBitWord;
-  } else if (architecture === "ia32") {
-    normalizedArchitecture = "x86";
-    pointerWidthBits = thirtyTwoBitWord;
-  } else if (architecture === "arm") {
-    normalizedArchitecture = "arm";
-    pointerWidthBits = thirtyTwoBitWord;
-  }
-  let pointerAddressBits: number | undefined;
-  // This records the active host ABI's default-allocation guarantee, not the CPU's
-  // maximum virtual-address width. These x86-64 OS ABIs keep ordinary image,
-  // stack, and allocator mappings in the low canonical 48-bit range; Linux also
-  // does so on five-level paging unless a caller explicitly requests a high hint.
-  // The compiler runtime and inline extension allocator never request such hints.
-  if (normalizedArchitecture === "x86_64" && (platform === "linux" || platform === "darwin" || platform === "win32")) {
-    pointerAddressBits = jsValuePointerAddressBits;
-  } else if (normalizedArchitecture === "aarch64" && platform === "darwin") {
-    // FIXME(arm64-darwin): This is a host allowlist shortcut based on Darwin's
-    // current 47-bit userspace VM ceiling. Replace it with target capabilities
-    // before adding cross-compilation, arm64e, or another AArch64 OS.
-    pointerAddressBits = darwinArm64PointerAddressBits;
-  }
-  return {
-    triple: `${normalizedArchitecture}-${platform}`,
-    architecture: normalizedArchitecture,
-    pointerWidthBits,
-    doubleFormat: "ieee754-binary64",
-    pointerAddressBits
-  };
-}
 
 const probeTool = (
   name: ToolName

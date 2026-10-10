@@ -9,15 +9,6 @@ import type {
 } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 
-/**
- * What a name currently holds.
- *
- * The lowering pass records one of these per binding and the emitter consults it to choose between
- * a direct register and a boxed runtime cell, so a new representation is a new variant here before
- * it is anything else. The `aggregate*` forms are the ones a fixed-shape literal or a runtime
- * object stands for; the rest are the tiers the value, number and string expression emitters
- * specialise on.
- */
 export type JsIrValueKind = "number" | "string" | "value";
 
 export interface JsIrFunctionParameter {
@@ -25,15 +16,7 @@ export interface JsIrFunctionParameter {
   readonly valueKind: JsIrValueKind;
   readonly defaultValue?: JsIrNumberExpression;
   readonly isRest?: boolean;
-  /**
-   * A parameter declared `x?: T` with no initializer, which a call may therefore omit. Omitting it
-   * passes `undefined` rather than dropping the argument, so the callee still sees one slot per
-   * declared parameter.
-   *
-   * This is distinct from `defaultValue`: a default is a value the call site substitutes, while this
-   * is the absence of one. The parameter keeps its declared `valueKind` because the IR is monomorphic
-   * — `x ?? 0` tests the slot at runtime, which is what makes an omitted argument safe to read.
-   */
+  /** An omitted optional parameter receives undefined in boxed storage. */
   readonly isOptional?: boolean;
 }
 
@@ -45,11 +28,21 @@ export interface JsIrFunctionObjectDefinition {
   readonly body?: readonly JsIrOperation[];
   readonly directTarget?: string;
   readonly inferredName?: string;
-  readonly captures?: readonly {
-    readonly name: string;
-    readonly valueKind: JsIrValueKind;
-    readonly value: JsIrValueExpression;
-  }[];
+  readonly captures?: readonly JsIrFunctionObjectCapture[];
+}
+
+/**
+ * One environment slot a function object fills.
+ *
+ * `name` is a binding the enclosing scope declared — the source's own name — and `value` is the read
+ * that loads it into the environment. A callback operation's capture list uses the same shape for a
+ * *generated* slot name, so the two are distinguished by which operation carries them rather than by
+ * the shape alone.
+ */
+export interface JsIrFunctionObjectCapture {
+  readonly name: string;
+  readonly valueKind: JsIrValueKind;
+  readonly value: JsIrValueExpression;
 }
 
 export type JsIrCallArgument =

@@ -40,10 +40,7 @@ export const parseRunArguments = (argv: readonly string[]): RunArguments => {
     if (argument === "--classification") {
       const parsed = parseClassification(value);
       if (parsed === undefined) {
-        let display = "missing";
-        if (value !== undefined) {
-          display = value;
-        }
+        const display = value ?? "missing";
         throw new Error(`invalid --classification: ${display}`);
       }
       classification = parsed;

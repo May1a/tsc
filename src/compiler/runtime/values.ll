@@ -281,6 +281,26 @@ entry:
   %value = or i64 %payload.bits, 9221683186994511872
   ret i64 %value
 }
+
+define i64 @valueCopyString(ptr %source, i64 %length) {
+entry:
+  %size = add i64 %length, 1
+  %copy = call ptr @malloc(i64 %size)
+  %empty = icmp eq i64 %length, 0
+  br i1 %empty, label %terminate, label %copy.bytes
+copy.bytes:
+  call ptr @memcpy(ptr %copy, ptr %source, i64 %length)
+  br label %terminate
+terminate:
+  %end = getelementptr i8, ptr %copy, i64 %length
+  store i8 0, ptr %end
+  %boxed = call i64 @valueBoxString(ptr %copy, i64 %length)
+  %bits = and i64 %boxed, 281474976710655
+  %cell = inttoptr i64 %bits to ptr
+  %owns = getelementptr i8, ptr %cell, i64 4
+  store i8 1, ptr %owns
+  ret i64 %boxed
+}
 define ptr @valueStringPtr(i64 %value) {
 entry:
   %box.bits = and i64 %value, 281474976710655
@@ -450,7 +470,15 @@ array:
   ret i64 %array.len
 check.object:
   %is.object = icmp eq i64 %tagged, 9221120237041090560
-  br i1 %is.object, label %object, label %zero
+  br i1 %is.object, label %object, label %check.function
+check.function:
+  %is.function = icmp eq i64 %tagged, 9221964661971222528
+  br i1 %is.function, label %function, label %zero
+function:
+  %function.length.value = call i64 @functionObjectGet(i64 %value, i64 6, ptr @.valuelength.key)
+  %function.length.number = call double @valueNumber(i64 %function.length.value)
+  %function.length = fptosi double %function.length.number to i64
+  ret i64 %function.length
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %raw = call i64 @objectGet(ptr %object.ptr, i64 6, ptr @.valuelength.key)

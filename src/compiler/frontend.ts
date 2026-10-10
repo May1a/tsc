@@ -189,16 +189,13 @@ const sourceFileCacheKey = (
     stableFileName = normalized.toLowerCase();
   }
 
-  let languageKey: string;
-  if (typeof languageVersionOrOptions === "number") {
-    languageKey = String(languageVersionOrOptions);
-  } else {
-    languageKey = JSON.stringify({
+  const languageKey = typeof languageVersionOrOptions === "number"
+    ? String(languageVersionOrOptions)
+    : JSON.stringify({
       languageVersion: languageVersionOrOptions.languageVersion,
       impliedNodeFormat: languageVersionOrOptions.impliedNodeFormat,
       jsDocParsingMode: languageVersionOrOptions.jsDocParsingMode
     });
-  }
   return `${stableFileName}:${languageKey}`;
 };
 

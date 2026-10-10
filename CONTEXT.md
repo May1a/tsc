@@ -1,137 +1,173 @@
-# tscn — domain model
+# tscn domain model
 
-`tscn` compiles TypeScript to native code by generating LLVM IR and linking it with clang. This
-file names the concepts the compiler is built from. Use these names in code, tests and reviews;
-if an idea needs a concept that is not here, add it here first.
+`tscn` compiles TypeScript to native code. The production pipeline resolves lexical
+bindings, builds typed LLVM functions, verifies their control flow and GC roots,
+and renders LLVM IR for clang.
 
 ## Pipeline
 
-```
+```text
 entry.ts
-  │  ts.createProgram — a typed AST plus tsconfig resolution
-  ▼
-FrontendResult        program + source files + diagnostics
-  │
-  ▼
-Lowering              TypeScript AST → JsIrModule
-  ▼
-JsIrModule            the IR: a closed set of operation and expression forms
-  │
-  ▼
-Emission              JsIrModule → LLVM IR text, plus a trace map
-  ▼
-Linking               clang / clang++ → native executable
+  → FrontendResult          TypeScript program, source files, diagnostics
+  → Lowering                TypeScript AST → JsIrModule
+  → Binding resolution      JsIrModule → ResolvedModule
+  → Native lowering         resolved operations → typed LLVM functions
+  → LLVM verification       ownership, signatures, CFG, SSA, GC roots
+  → LLVM rendering          BuiltLlvmModule → text and trace ranges
+  → Linking                 clang or clang++ → native executable
 ```
 
-## Terms
+`pipeline.ts` composes these passes and writes the artifacts. Filesystem access,
+process execution, and Effect belong at compiler boundaries. The passes and their
+models are pure, synchronous code with state owned by one compilation.
 
-**IR Operation** (`JsIrOperation`) — one statement-level form in the IR. A closed union of 121
-kinds. 19 of them are *containers*: they hold nested operations. The rest are leaves. The
-container/leaf split is enumerated in `jsIrLeafOperationKinds` (`src/compiler/ir/visit.ts`) and is
-checked for completeness by the compiler, so a new operation must be classified before it can be
-emitted. Walking the tree — `jsIrOperationChildren` and `visitJsIrOperations` — lives beside that
-classification rather than in `types.ts`, so the union file states the IR's shape and `visit.ts`
-describes the traversal over it.
+## IR and Lowering
 
-**Operation Emitter Table** (`operationEmittersByKind`, `src/compiler/llvm/operations.ts`) — the one place
-an operation is turned into LLVM IR text. It is a `Record` keyed by the operation union, so the
-compiler rejects a new kind until something emits it, and `Extract` gives each handler its own
-narrowed operation so it cannot read a field its kind does not have. Dispatch is a table lookup,
-not an `if` chain; the `Record`'s totality is what replaces the exhaustiveness check the chain
-could not express.
+**IR Operation** (`JsIrOperation`, `ir/types.ts`) is the closed statement union.
+**IR Value Expression**, **IR Condition**, **IR Number Expression**, and **IR String
+Expression** are the closed expression tiers in `ir/expressions.ts`.
 
-**IR Value Expression** (`JsIrValueExpression`) — an expression producing a JSValue. Emitted by
-`emitValueExpression`.
+Operations that contain other operations are classified in `ir/visit.ts`.
+`jsIrOperationChildren` and `visitJsIrOperations` traverse that classification.
+Adding an operation requires both its classification and a native handler.
 
-Object destructuring of a general value starts with the `requireObjectCoercible` IR Operation,
-including an empty binding pattern. It throws a TypeError for null or undefined through the
-generated completion protocol, so enclosing IteratorClose and finally frames still run. General
-property reads use `checkedValuePropertyGet`, which checks nullish receivers and dispatches by
-value kind. `valueObjectGet` assumes an object layout and belongs only in Static Runtime IR;
-`scripts/check-unchecked-object-access.mjs` rejects that helper in emission templates.
+The **IR model** consists of `ir/{bindings,expressions,types,module,lowered,visit,
+operation-bindings}.ts`. It depends on no TypeScript AST logic or compiler pass.
+`aggregateBindingForOperation` classifies aggregate Binding Values in this model.
 
-**IR Condition** (`JsIrCondition`) — an expression producing an i1, used by branches and loops.
-Emitted by `emitCondition`.
+A **Binding Value** (`JsIrBindingValue`) records what Lowering knows about a
+binding, including specialized Number, String, and fixed aggregate forms.
+Native lowering consumes resolved storage descriptions instead of looking up
+these facts by source name.
 
-**IR Number Expression** / **IR String Expression** — the numeric and string tiers of the IR.
-They exist because the lowering pass proves a static type for those positions, which lets emission
-use a narrower runtime ABI than the general value tier.
+**Lowering** (`lowerToJsIr`, `ir/source-module.ts`) recognizes TypeScript AST forms
+and produces `JsIrModule` with diagnostics. Each invocation owns its class
+registries, checker, identifiers, inline C++ blocks, and recursive entries through
+`LoweringContext`. Each source module receives its own class registry.
+Repeated or interleaved compilations share no mutable Lowering state.
 
-**Binding Value** (`JsIrBindingValue`) — what a name currently holds. Emission consults these to
-decide between direct registers and boxed runtime cells.
+**Lowered** carries `lowered`, `notApplicable`, or `unsupported`. Recognition can
+decline an AST shape, but a refusal propagates through the enclosing body.
+`Produced<T>` excludes `notApplicable` after recognition. Native lowering never
+uses recognition fallthrough for a resolved IR variant.
 
-**Lowering** (`lowerToJsIr`, `src/compiler/ir/source-module.ts`) — TypeScript AST → JsIrModule.
-Pure and synchronous, but **not fiber-safe**: it keeps module-level lowering state. It *returns* diagnostics rather than pushing
-them anywhere. Each source file is traversed once: a statement no recognizer claims becomes a
-TSCN1002 where it failed, and there is no strict re-run to tell "unrecognized" from "recognized and
-gave up".
+## Binding resolution
 
-**Lowering Context** (`LoweringContext`, `src/compiler/ir/context.ts`) holds the recursive entries
-shared by lowering domains and the counters and scope flags for the current compilation. The
-composition root in `lowering-context.ts` connects ten entries. Domain modules import the context
-type instead of importing a recursive caller. `ir.ts` only re-exports the public IR types and
-`lowerToJsIr`. Module envelopes live in `ir/module.ts`; `source-module.ts` owns source traversal
-and trace finalization.
+**Binding resolution** (`resolveBindings`, `binding-resolution/index.ts`) gives
+each lexical declaration an opaque `BindingId`. Each function body has a
+`FunctionId`. References carry identities and storage descriptions. Source
+spellings remain available for diagnostics and observable function names.
+Property keys, private field keys, string values, and runtime symbols are separate
+from lexical identities.
 
-**Lowered** (`Lowered`, `src/compiler/ir/lowered.ts`) — the result of trying to recognize one AST shape:
-`lowered` carries the operation, `notApplicable` continues the recognizer chain, and `unsupported`
-stops it with the reason the diagnostic will quote. Expression, scalar, argument, binding and
-statement recognizers return this union.
-`Produced<T>` omits `notApplicable` for steps below a matched shape. A refusal travels through
-function bodies, class members, branches, loops and catch blocks in its return value.
-`loweredPayload` accepts only a result already narrowed away from `unsupported`, so it cannot
-discard a refusal. The old class refusal holder and statement adapter are gone.
+Resolution predeclares scopes before bodies. It records lexical ownership,
+shadowing, parameters, catch bindings, captures, loop bindings, and module globals.
+`ResolvedModule` contains the resolved operations and the declaration table.
+`resolvedOperationChildren` traverses resolved containers.
 
-**Emission** (`emitLlvmModule`) — JsIrModule → LLVM IR text. Pure. Operations dispatch through the
-Operation Emitter Table; the value, condition and number/string tiers are still `if` chains, which
-is why `switch-exhaustiveness-check` does not apply to them.
+## Native lowering and storage
 
-**Static Runtime IR** (`src/compiler/runtime/*.ll`) — the fixed body of the generated JS runtime, held
-as LLVM IR text in one file per domain (`gc`, `values`, `numbers`, `strings`, `regex`, `arrays`,
-`objects`, `collections`, `functions`, `json`, `errors`, `iterators`, plus `declares.ll` for the
-external `declare`s and `globals.ll` for module-scope constants). `runtime-ir.ts` reads them
-through a cached, module-relative loader and `emitLlvmModule` appends the whole blob to every
-module. There is **no helper registry and no tree-shaking**: an unused `define` is inert in a
-single-module IR file, so paying for all of it costs emitted text and nothing else. Static IR
-belongs in these files, never inline in TypeScript — `scripts/check-inline-llvm.mjs` (second stage
-of `npm run lint`) enforces that, and `scripts/copy-runtime-ll.mjs` is what puts the files into
-`dist/`, so the build is `tsc` *and then* the copy.
+**Native lowering** (`emitNativeModule`, `native-lowering/module.ts`) consumes
+`ResolvedModule`. Its operation and four expression tiers use total handler tables.
+`dispatchKind` in `dispatch.ts` preserves the correlation between each kind and
+its handler parameter without a caller assertion.
 
-**JsValue ABI** (`jsValueAbi`) — how a JavaScript value is represented in native code. An `i64`
-whose bit pattern encodes a tag plus a payload. The representation differs per host
-(`forLlvm` vs `forLegacyLlvm`) and is validated against the host's `TargetFacts` before emission.
+`NativeModule` owns generated symbols. `FunctionCursor` owns function blocks and
+instruction positions. `ControlFlow` owns exception handlers, cleanup frames, and
+loop destinations. Domain handlers receive readonly capabilities with operations
+for these owners. They cannot change shared counters or maps directly.
 
-**Compilation Diagnostic** (`CompilerDiagnostic`) — a code, category, message and optional source
-span. Categories are `error`, `warning` and `info`. Any `error` prevents linking.
+`ModuleBindings` allocates storage from the resolved descriptions before body
+emission. Number storage uses `double`. String storage retains byte and length
+slots plus a boxed GC owner. Fixed arrays retain double elements. Fixed objects
+retain numeric fields and, when required, a stable runtime shadow synchronized by
+numeric stores. General values use boxed slots. Captured mutable bindings use
+boxed environment cells shared by closures. Module GC owners are registered as
+global roots, so a value survives after its writer returns.
 
-**Toolchain** (`Toolchain`) — discovered host tools (`clang`, `clang++`, `llvm-as`, `lli`) plus
-the normalized `TargetFacts` of the host.
+Generated functions use one thunk ABI:
 
-**Trace Map** (`TraceMapV1`) — the mapping from IR operation id to the LLVM IR line ranges that
-operation emitted. Serialized to `trace-map.json` for the debugger and for the correctness oracle.
+```text
+{ i64, i1 } function(i64 argc, ptr argv, ptr environment, i64 thisValue)
+```
 
-**Inline C++** (`--fcpp`, `JsIrInlineCppBlock`) — tagged template literals in the source that are
-rewritten to a companion `.cpp` file linked alongside the LLVM module.
+Arguments cross this boundary as boxed JSValues. Parameter initialization converts
+proven Number and String parameters into their specialized storage. Missing,
+default, optional, and rest parameters retain their JavaScript behavior. Function
+objects own their environment, name, and callable address. Module function
+declarations and tagged template objects use registered global caches for stable
+identity. Function expressions and nested declarations create fresh objects each
+time their enclosing code runs.
 
-**Compiler boundaries check** (`scripts/check-compiler-boundaries.mjs`) builds the runtime import
-graph for `ir/**` and `llvm/**` after TypeScript erases type-only imports. `npm run lint` rejects
-cycles in that graph. The same command enforces 800 nonblank, noncomment lines per source file
-and 400 per function, and bans Effect imports throughout both compiler directories.
+**Completion** is `{ i64, i1 }`: a boxed payload and a throw flag. A call that
+returns completion branches to its continuation or exception destination.
+`finally`, IteratorClose, return, throw, break, and continue use explicit edges and
+payload storage before rendering.
 
-## Invariants worth knowing
+General property reads use `checkedValuePropertyGet`. It checks nullish receivers
+and dispatches by value kind. `valueObjectGet` assumes an object layout and belongs
+only in Static Runtime IR. Object destructuring starts with
+`requireObjectCoercible`, including an empty pattern.
 
-- The IR is a **closed world**. Every union is meant to enumerate every form the lowering pass can
-  produce, so emission can be total. This is the property most of the compiler's type-level work
-  exists to enforce.
-- **Effect is confined to two boundaries**: CLI parsing/help (`src/cli/**`, `@effect/cli`) and
-  scoped process spawning (`toolchain.ts`, `linker.ts`, `test262/process.ts`, `@effect/platform`).
-  The compiler core — `ir.ts`, `ir/**`, `llvm/**`, `runtime-ir.ts`, `llvm-ir/**`,
-  `js-value-abi/**` — is pure and synchronous. This is enforced by the `no-restricted-imports` override in
-  `oxlint.config.ts`, not by convention.
-- The correctness oracle (`test/integration/oracle.ts`) compiles a fixture with `tscn`, runs the
-  native binary, runs the same fixture under Node, and asserts the two agree. The fixtures are
-  registered in `oracleFixtures`. Four admitted forms cannot be: Node 22's strip-only mode rejects `accessor`, an `enum`,
-  a `namespace` and a parameter property outright, because each needs transformation rather than
-  erasure. Those are asserted by native value in `test/integration/core.test.ts` instead, which is
-  what backs the manifest's claim that they work. Prefer adding a fixture over asserting on emitted
-  text.
+## LLVM construction, runtime, and GC
+
+**LLVM construction** (`llvm-ir/index.ts`) records a closed instruction union with
+typed values and owned block labels. Functions seal only after every block exists.
+The builder checks operand and function ownership, signatures, terminators,
+predecessors, phi inputs, and SSA dominance. `BuiltLlvmModule` is frozen data.
+Rendering reads that data after verification and derives trace ranges from
+instruction provenance.
+
+**Static Runtime IR** is the fixed LLVM text in `runtime/*.ll`. The filesystem
+boundary `runtime-files.ts` loads it. `createLlvmModule({ staticRuntime })` copies
+and freezes its origin and text fragments at construction. There is no append API
+for generated LLVM text. `runtime-ir.ts` constructs the typed runtime helpers.
+All runtime definitions are included, with no tree shaking.
+
+**Runtime call contracts** (`runtime-contracts/index.ts`) describe signatures,
+allocation and collection effects, semantic result kinds, pointer ownership, and
+completion. `npm run runtime:contracts` derives the catalog from Static Runtime IR
+and propagates effects through its call graph. The command reports the current
+symbol count. The freshness check is part of `npm run lint`.
+
+The runtime-call capability selects owned callable handles from this catalog.
+Heap results receive ownership facts. Completion calls require an exception edge.
+Indirect calls conservatively allocate and collect. Unknown foreign `i64` results
+receive boxed-value protection rather than an assumed scalar classification.
+
+**GC verification** (`gc-liveness/index.ts`) reads finished typed functions.
+Backward SSA liveness includes live phi inputs on their incoming edges. Forward
+root analysis intersects protection across predecessors and tracks saved frames.
+A collecting call requires protection for live heap values and heap arguments.
+Root frame verification checks consistent stacks at joins and restoration at exits.
+A failed function prevents module rendering.
+
+**JsValue ABI** (`jsValueAbi`) represents a JavaScript value as tagged `i64` bits.
+`forLlvm` constructs typed LLVM values. Inline C++ support uses the same accepted
+layout. `TargetFacts` records pointer widths, address bits, architecture, and double
+format. Host validation runs before native emission.
+
+## Diagnostics, traces, and verification
+
+**Compilation Diagnostic** has a code, category, message, and optional source span.
+Frontend and Lowering collect diagnostics before binding resolution. Any error
+prevents native emission, including errors from binding resolution.
+**Toolchain** identifies clang, clang++, llvm-as, and
+lli at the process boundary.
+
+**Trace Map** (`TraceMapV1`) maps IR operation IDs to rendered LLVM line ranges.
+`trace.ts` combines source spans with instruction-derived ranges.
+
+**Inline C++** (`--fcpp`) produces a companion source file from
+`JsIrInlineCppBlock`. Its external functions return the JSValue boundary type.
+
+`npm run check` typechecks source and tests. `npm run lint` enforces procedural
+style, pass boundaries, owned state, typed instruction construction, and runtime
+contract freshness. The dependency scanner rejects forbidden imports and runtime
+cycles. Oxlint enforces source file, function, and control-depth limits.
+
+The correctness oracle compiles fixtures and compares their native output with
+Node. Forms Node's strip-only mode cannot execute are checked against literal
+native expectations. LLVM verification and typed builder tests check structural
+properties independently. See [the architecture contract](docs/compiler-architecture.md)
+and [lint policy](docs/code-quality-lints.md).

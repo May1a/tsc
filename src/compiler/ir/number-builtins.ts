@@ -76,35 +76,37 @@ export function lowerNumericBuiltinCall(
     }
   }
   if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression) || expression.expression.expression.text !== "Math") {
-    if (ts.isPropertyAccessExpression(expression.expression) && ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "Number") {
-      const method = expression.expression.name.text;
-      if (method === "parseInt" && (expression.arguments.length === 1 || expression.arguments.length === 2)) {
-        if (expression.arguments.length === 2) {
-          const radixResult2 = context.lowerNumberExpression(context, expression.arguments[1], bindings);
-          if (radixResult2.kind === "unsupported") {
-            return radixResult2;
-          }
-          const radix = loweredPayload(radixResult2);
-          if (numericLiteralValue(radix ?? { kind: "nan" }) !== decimalRadix) {
-            return notApplicable;
-          }
+    if (!ts.isPropertyAccessExpression(expression.expression) ||
+      !ts.isIdentifier(expression.expression.expression) || expression.expression.expression.text !== "Number") {
+      return notApplicable;
+    }
+    const method = expression.expression.name.text;
+    if (method === "parseInt" && (expression.arguments.length === 1 || expression.arguments.length === 2)) {
+      if (expression.arguments.length === 2) {
+        const radixResult2 = context.lowerNumberExpression(context, expression.arguments[1], bindings);
+        if (radixResult2.kind === "unsupported") {
+          return radixResult2;
         }
-        const value = context.lowerStringRuntimeExpression(context, expression.arguments[0], bindings);
-        if (value.kind === "unsupported") {
-          return value;
-        }
-        if (value.kind === "lowered") {
-          return produced({ kind: "parseInt", value: value.operation });
+        const radix = loweredPayload(radixResult2);
+        if (numericLiteralValue(radix ?? { kind: "nan" }) !== decimalRadix) {
+          return notApplicable;
         }
       }
-      if (method === "parseFloat" && expression.arguments.length === 1) {
-        const value = context.lowerStringRuntimeExpression(context, expression.arguments[0], bindings);
-        if (value.kind === "unsupported") {
-          return value;
-        }
-        if (value.kind === "lowered") {
-          return produced({ kind: "parseFloat", value: value.operation });
-        }
+      const value = context.lowerStringRuntimeExpression(context, expression.arguments[0], bindings);
+      if (value.kind === "unsupported") {
+        return value;
+      }
+      if (value.kind === "lowered") {
+        return produced({ kind: "parseInt", value: value.operation });
+      }
+    }
+    if (method === "parseFloat" && expression.arguments.length === 1) {
+      const value = context.lowerStringRuntimeExpression(context, expression.arguments[0], bindings);
+      if (value.kind === "unsupported") {
+        return value;
+      }
+      if (value.kind === "lowered") {
+        return produced({ kind: "parseFloat", value: value.operation });
       }
     }
     return notApplicable;

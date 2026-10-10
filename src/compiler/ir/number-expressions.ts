@@ -9,7 +9,6 @@ import { lowerArrayNumberMethodCall, lowerNumberCoercionExpression, lowerNumeric
 import { numberConstantValue, numberExpressionFromNumber } from "./number-constants.js";
 import { lowerClassNumberAccess, lowerNumberAccessExpression } from "./number-access.js";
 import { lowerNumberOperator } from "./number-operators.js";
-import { classLoweringState } from "./class-info.js";
 import { isPlannedBuiltinCall } from "./builtins/index.js";
 import { lowerCallThisValue, lowerSpreadCallValue } from "./value-calls.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
@@ -269,17 +268,15 @@ function lowerNumberConditionalExpression(
   });
 }
 
-// eslint-disable-next-line complexity, max-statements -- Number-call lowering preserves direct and dynamic call fast paths during ABI migration.
+// eslint-disable-next-line complexity, max-statements -- Number-call lowering handles direct and dynamic numeric callees.
 function lowerNumberCallExpression(
   context: LoweringContext,
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrNumberExpression> {
-  if (classLoweringState.typeChecker !== undefined) {
-    const callType = classLoweringState.typeChecker.getTypeAtLocation(expression);
-    if ((callType.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) !== 0) {
-      return notApplicable;
-    }
+  const callType = context.typeChecker?.getTypeAtLocation(expression);
+  if (callType !== undefined && (callType.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral | ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0) {
+    return notApplicable;
   }
   if (isPlannedBuiltinCall(expression.expression, bindings)) {
     return notApplicable;

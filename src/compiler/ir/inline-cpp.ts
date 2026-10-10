@@ -11,19 +11,24 @@ import type { JsIrValueExpression } from "./expressions.js";
  *
  * A `` __tscn_inline_cpp` tag ` marks a template whose body is C++ rather than JavaScript. The compiler
  * does not lower it — it passes the text to clang verbatim and links the result — which is why the
- * enabled flag is per-file and checked before anything else: a file using it in a build without the
- * runtime compiled in has to say so rather than emit a call to a symbol that does not exist.
+ * enabled flag is checked before anything else: a file using it in a build without the runtime compiled
+ * in has to say so rather than emit a call to a symbol that does not exist.
  *
- * The flag and the collected blocks were two loose module-level `let`s, and an ES module binding cannot
- * be assigned from outside its module — so they could not be cut out at all. One `inlineCppState`
- * object is the same state with a name on it. `lowerToJsIr` sets it around the statement list and clears
- * it afterwards, so one file's use does not enable the next.
+ * `InlineCppCompilation` is that state, owned by the one `lowerToJsIr` invocation that created it.
+ * Both fields used to be module-level, so the flag outlived the file it was set for and the block list
+ * was reachable from anywhere in the process; now a compilation carries both, and two compilations
+ * running in the same process cannot enable or contaminate each other. The blocks array is the array
+ * the result hands back, so there is exactly one list per compilation and nothing has to be collected
+ * afterwards.
  */
+export interface InlineCppCompilation {
+  readonly enabled: boolean;
+  readonly blocks: JsIrInlineCppBlock[];
+}
 
-export const inlineCppState: {
-  enabled: boolean;
-  blocks: JsIrInlineCppBlock[] | undefined;
-} = { enabled: false, blocks: undefined };
+export function createInlineCppCompilation(enabled: boolean): InlineCppCompilation {
+  return { enabled, blocks: [] };
+}
 
 export const inlineCppTag = "__tscn_inline_cpp";
 export function findInlineCppTaggedTemplate(sourceFile: ts.SourceFile): ts.TaggedTemplateExpression | undefined {
@@ -41,8 +46,11 @@ export function findInlineCppTaggedTemplate(sourceFile: ts.SourceFile): ts.Tagge
   visit(sourceFile);
   return found;
 }
-export function inlineCppDisabledDiagnostic(sourceFile: ts.SourceFile): CompilerDiagnostic | undefined {
-  if (inlineCppState.enabled) {
+export function inlineCppDisabledDiagnostic(
+  inlineCpp: InlineCppCompilation,
+  sourceFile: ts.SourceFile
+): CompilerDiagnostic | undefined {
+  if (inlineCpp.enabled) {
     return undefined;
   }
   const node = findInlineCppTaggedTemplate(sourceFile);
@@ -56,15 +64,18 @@ export function inlineCppDisabledDiagnostic(sourceFile: ts.SourceFile): Compiler
     span: sourceSpan(sourceFile, node.getStart(sourceFile))
   };
 }
-export function lowerInlineCppValueExpression(expression: ts.Expression): Lowered<JsIrValueExpression> {
+export function lowerInlineCppValueExpression(
+  inlineCpp: InlineCppCompilation,
+  expression: ts.Expression
+): Lowered<JsIrValueExpression> {
   if (!isInlineCppTaggedTemplate(expression) || !ts.isNoSubstitutionTemplateLiteral(expression.template)) {
     return notApplicable;
   }
-  if (!inlineCppState.enabled || inlineCppState.blocks === undefined) {
+  if (!inlineCpp.enabled) {
     return notApplicable;
   }
-  const symbol = `__tscn_cpp_${inlineCppState.blocks.length}`;
-  inlineCppState.blocks.push({ symbol, code: rawNoSubstitutionTemplateText(expression.template) });
+  const symbol = `__tscn_cpp_${inlineCpp.blocks.length}`;
+  inlineCpp.blocks.push({ symbol, code: rawNoSubstitutionTemplateText(expression.template) });
   return produced({ kind: "inlineCppValue", symbol });
 }
 export function rawNoSubstitutionTemplateText(template: ts.NoSubstitutionTemplateLiteral): string {

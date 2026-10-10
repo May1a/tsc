@@ -4,7 +4,7 @@ import type { LoweringContext } from "./context.js";
 import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
 import type { JsIrCondition, JsIrValueExpression } from "./expressions.js";
 import { errorConstructorNames, unwrapTypeOnlyExpression } from "./predicates.js";
-import { classLoweringState, classPrototypeName } from "./class-info.js";
+import { classPrototypeName } from "./class-info.js";
 import { lowerClassInstanceExpression } from "./class-calls.js";
 import { lowerRegexTestCondition } from "./regex.js";
 import { lowerArrayIsArrayConditionExpression, lowerHasOwnConditionExpression, lowerNumberPredicateCondition, lowerObjectIsConditionExpression, lowerObjectMethodSugarConditionExpression, lowerPresenceConditionExpression, lowerRuntimeArrayEverySomeConditionExpression, lowerRuntimeCollectionHasCondition, lowerRuntimeStringSearchCondition } from "./builtin-conditions.js";
@@ -37,7 +37,7 @@ function lowerInstanceOfCondition(
 ): Lowered<JsIrCondition> {
   const right = unwrapTypeOnlyExpression(expression.right);
   if (ts.isIdentifier(right) && !bindings.has(right.text)) {
-    const classInfo = classLoweringState.registry?.get(right.text);
+    const classInfo = context.classes.get(right.text);
     if (classInfo !== undefined) {
       const instance = lowerClassInstanceExpression(context, unwrapTypeOnlyExpression(expression.left), bindings);
       if (instance.kind === "unsupported") {

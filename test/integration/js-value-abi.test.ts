@@ -4,56 +4,67 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { jsValueAbi } from "../../src/compiler/js-value-abi/index.js";
-import { type LlvmModuleBuilder, createLlvmModule, llvm } from "../../src/compiler/llvm-ir/index.js";
-import type { TargetFacts } from "../../src/compiler/toolchain.js";
+import { type LlvmBlockBuilder, type LlvmFunctionSpec, type LlvmModuleBuilder, createLlvmModule, llvm } from "../../src/compiler/llvm-ir/index.js";
+import type { TargetFacts } from "../../src/compiler/target.js";
 import { captureCommand, commandExecutorLayer, toolExecutable } from "./helpers.js";
 
 interface AbiConformanceVector {
   readonly name: string;
-  readonly llvmExpression: string;
+  readonly symbol: string;
+  readonly arguments: readonly AbiArgument[];
   readonly cppExpression: string;
   readonly expected: string;
 }
 
+type AbiArgument =
+  | { readonly kind: "pointer" | "word" | "doubleBits"; readonly value: bigint }
+  | { readonly kind: "double"; readonly value: number };
+
+type AbiFunction = LlvmFunctionSpec & { readonly returns: typeof llvm.i64 };
+
 const pointerPayload = 4660n;
 const abiConformanceVectors: readonly AbiConformanceVector[] = [
-  { name: "undefined", llvmExpression: "call i64 @abi_undefined()", cppExpression: "tscn::undefined()", expected: "9222246136947933184" },
-  { name: "false", llvmExpression: "call i64 @abi_false()", cppExpression: "tscn::false_value()", expected: "9222246136947933185" },
-  { name: "true", llvmExpression: "call i64 @abi_true()", cppExpression: "tscn::true_value()", expected: "9222246136947933186" },
-  { name: "null", llvmExpression: "call i64 @abi_null()", cppExpression: "tscn::null()", expected: "9222246136947933187" },
-  { name: "object", llvmExpression: `call i64 @abi_object(ptr inttoptr (i64 ${pointerPayload} to ptr))`, cppExpression: `tscn::object(${pointerPayload}ULL)`, expected: "9221120237041095220" },
-  { name: "array", llvmExpression: `call i64 @abi_array(ptr inttoptr (i64 ${pointerPayload} to ptr))`, cppExpression: `tscn::array(${pointerPayload}ULL)`, expected: "9221401712017805876" },
-  { name: "string", llvmExpression: `call i64 @abi_string(ptr inttoptr (i64 ${pointerPayload} to ptr))`, cppExpression: `tscn::string(${pointerPayload}ULL)`, expected: "9221683186994516532" },
-  { name: "function", llvmExpression: `call i64 @abi_function(ptr inttoptr (i64 ${pointerPayload} to ptr))`, cppExpression: `tscn::function(${pointerPayload}ULL)`, expected: "9221964661971227188" },
-  { name: "payload", llvmExpression: "call i64 @abi_payload(i64 9221120237041095220)", cppExpression: "tscn::reference_payload(tscn::object(4660ULL))", expected: pointerPayload.toString() },
-  { name: "is-object", llvmExpression: "call i64 @abi_is_object(i64 9221120237041095220)", cppExpression: "tscn::is_object(tscn::object(4660ULL))", expected: "1" },
-  { name: "is-array", llvmExpression: "call i64 @abi_is_array(i64 9221120237041095220)", cppExpression: "tscn::is_array(tscn::object(4660ULL))", expected: "0" },
-  { name: "is-string", llvmExpression: "call i64 @abi_is_string(i64 9221683186994516532)", cppExpression: "tscn::is_string(tscn::string(4660ULL))", expected: "1" },
-  { name: "is-function", llvmExpression: "call i64 @abi_is_function(i64 9221964661971227188)", cppExpression: "tscn::is_function(tscn::function(4660ULL))", expected: "1" },
-  { name: "is-undefined", llvmExpression: "call i64 @abi_is_undefined(i64 9222246136947933184)", cppExpression: "tscn::is_undefined(tscn::undefined())", expected: "1" },
-  { name: "array-hole", llvmExpression: "call i64 @abi_array_hole()", cppExpression: "tscn::array_hole()", expected: "9222246136947933191" },
-  { name: "is-array-hole", llvmExpression: "call i64 @abi_is_array_hole(i64 9222246136947933191)", cppExpression: "tscn::is_array_hole(tscn::array_hole())", expected: "1" },
-  { name: "number", llvmExpression: "call i64 @abi_number(double 1.500000e+00)", cppExpression: "tscn::number(1.5)", expected: "4609434218613702656" },
-  { name: "is-number", llvmExpression: "call i64 @abi_is_number(i64 4609434218613702656)", cppExpression: "tscn::is_number(tscn::number(1.5))", expected: "1" },
+  { name: "undefined", symbol: "abi_undefined", arguments: [], cppExpression: "tscn::undefined()", expected: "9222246136947933184" },
+  { name: "false", symbol: "abi_false", arguments: [], cppExpression: "tscn::false_value()", expected: "9222246136947933185" },
+  { name: "true", symbol: "abi_true", arguments: [], cppExpression: "tscn::true_value()", expected: "9222246136947933186" },
+  { name: "null", symbol: "abi_null", arguments: [], cppExpression: "tscn::null()", expected: "9222246136947933187" },
+  { name: "object", symbol: "abi_object", arguments: [{ kind: "pointer", value: pointerPayload }], cppExpression: `tscn::object(${pointerPayload}ULL)`, expected: "9221120237041095220" },
+  { name: "array", symbol: "abi_array", arguments: [{ kind: "pointer", value: pointerPayload }], cppExpression: `tscn::array(${pointerPayload}ULL)`, expected: "9221401712017805876" },
+  { name: "string", symbol: "abi_string", arguments: [{ kind: "pointer", value: pointerPayload }], cppExpression: `tscn::string(${pointerPayload}ULL)`, expected: "9221683186994516532" },
+  { name: "function", symbol: "abi_function", arguments: [{ kind: "pointer", value: pointerPayload }], cppExpression: `tscn::function(${pointerPayload}ULL)`, expected: "9221964661971227188" },
+  { name: "payload", symbol: "abi_payload", arguments: [{ kind: "word", value: 9_221_120_237_041_095_220n }], cppExpression: "tscn::reference_payload(tscn::object(4660ULL))", expected: pointerPayload.toString() },
+  { name: "is-object", symbol: "abi_is_object", arguments: [{ kind: "word", value: 9_221_120_237_041_095_220n }], cppExpression: "tscn::is_object(tscn::object(4660ULL))", expected: "1" },
+  { name: "is-array", symbol: "abi_is_array", arguments: [{ kind: "word", value: 9_221_120_237_041_095_220n }], cppExpression: "tscn::is_array(tscn::object(4660ULL))", expected: "0" },
+  { name: "is-string", symbol: "abi_is_string", arguments: [{ kind: "word", value: 9_221_683_186_994_516_532n }], cppExpression: "tscn::is_string(tscn::string(4660ULL))", expected: "1" },
+  { name: "is-function", symbol: "abi_is_function", arguments: [{ kind: "word", value: 9_221_964_661_971_227_188n }], cppExpression: "tscn::is_function(tscn::function(4660ULL))", expected: "1" },
+  { name: "is-undefined", symbol: "abi_is_undefined", arguments: [{ kind: "word", value: 9_222_246_136_947_933_184n }], cppExpression: "tscn::is_undefined(tscn::undefined())", expected: "1" },
+  { name: "array-hole", symbol: "abi_array_hole", arguments: [], cppExpression: "tscn::array_hole()", expected: "9222246136947933191" },
+  { name: "is-array-hole", symbol: "abi_is_array_hole", arguments: [{ kind: "word", value: 9_222_246_136_947_933_191n }], cppExpression: "tscn::is_array_hole(tscn::array_hole())", expected: "1" },
+  { name: "number", symbol: "abi_number", arguments: [{ kind: "double", value: 1.5 }], cppExpression: "tscn::number(1.5)", expected: "4609434218613702656" },
+  { name: "is-number", symbol: "abi_is_number", arguments: [{ kind: "word", value: 4_609_434_218_613_702_656n }], cppExpression: "tscn::is_number(tscn::number(1.5))", expected: "1" },
   // FIXME(arm64-darwin): These vectors document canonicalization as a stopgap.
   // Remove the exact-bit assertion when NaNs cannot overlap tags by design.
-  { name: "signaling-nan", llvmExpression: "call i64 @abi_number(double 0x7FF5000000000000)", cppExpression: "tscn::number(std::bit_cast<double>(0x7ff5000000000000ULL))", expected: "9220275812110958592" },
-  { name: "reserved-quiet-nan", llvmExpression: "call i64 @abi_number(double 0x7FF8000000000000)", cppExpression: "tscn::number(std::numeric_limits<double>::quiet_NaN())", expected: "18444492273895866368" }
+  { name: "signaling-nan", symbol: "abi_number", arguments: [{ kind: "doubleBits", value: 0x7F_F5_00_00_00_00_00_00n }], cppExpression: "tscn::number(std::bit_cast<double>(0x7ff5000000000000ULL))", expected: "9220275812110958592" },
+  { name: "reserved-quiet-nan", symbol: "abi_number", arguments: [{ kind: "doubleBits", value: 0x7F_F8_00_00_00_00_00_00n }], cppExpression: "tscn::number(std::numeric_limits<double>::quiet_NaN())", expected: "18444492273895866368" }
 ];
 
-function defineAbiConformanceFunctions(module: LlvmModuleBuilder): void {
+function defineAbiConformanceFunctions(module: LlvmModuleBuilder): ReadonlyMap<string, AbiFunction> {
+  const functions = new Map<string, AbiFunction>();
+  const define = (spec: AbiFunction, build: Parameters<LlvmModuleBuilder["defineFunction"]>[1]): void => {
+    functions.set(spec.name, module.defineFunction(spec, build));
+  };
   for (const kind of ["undefined", "false", "true", "null"] as const) {
-    module.defineFunction({ name: `abi_${kind}`, parameters: [], returns: llvm.i64 }, (fn) => {
+    define({ name: `abi_${kind}`, parameters: [], returns: llvm.i64 }, (fn) => {
       fn.block("entry", (block) => block.ret(jsValueAbi.forLlvm(block).immediate(kind)));
     });
   }
   for (const kind of ["object", "array", "string", "function"] as const) {
-    module.defineFunction({ name: `abi_${kind}`, parameters: [{ name: "pointer", type: llvm.ptr }], returns: llvm.i64 }, (fn) => {
+    define({ name: `abi_${kind}`, parameters: [{ name: "pointer", type: llvm.ptr }], returns: llvm.i64 }, (fn) => {
       const pointer = fn.parameter(0, llvm.ptr);
       fn.block("entry", (block) => block.ret(jsValueAbi.forLlvm(block).boxReference(kind, pointer)));
     });
   }
-  module.defineFunction({ name: "abi_payload", parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
+  define({ name: "abi_payload", parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
     const value = fn.parameter(0, llvm.i64);
     fn.block("entry", (block) => {
       const pointer = jsValueAbi.forLlvm(block).unboxReference(jsValueAbi.forLlvm(block).fromBoundary(value));
@@ -61,7 +72,7 @@ function defineAbiConformanceFunctions(module: LlvmModuleBuilder): void {
     });
   });
   for (const kind of ["object", "array", "string", "function"] as const) {
-    module.defineFunction({ name: `abi_is_${kind}`, parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
+    define({ name: `abi_is_${kind}`, parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
       const value = fn.parameter(0, llvm.i64);
       fn.block("entry", (block) => {
         const values = jsValueAbi.forLlvm(block);
@@ -70,10 +81,10 @@ function defineAbiConformanceFunctions(module: LlvmModuleBuilder): void {
       });
     });
   }
-  module.defineFunction({ name: "abi_array_hole", parameters: [], returns: llvm.i64 }, (fn) => {
+  define({ name: "abi_array_hole", parameters: [], returns: llvm.i64 }, (fn) => {
     fn.block("entry", (block) => block.ret(jsValueAbi.forLlvm(block).arrayHole()));
   });
-  module.defineFunction({ name: "abi_is_array_hole", parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
+  define({ name: "abi_is_array_hole", parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
     const value = fn.parameter(0, llvm.i64);
     fn.block("entry", (block) => {
       const values = jsValueAbi.forLlvm(block);
@@ -81,7 +92,7 @@ function defineAbiConformanceFunctions(module: LlvmModuleBuilder): void {
       block.ret(block.select(matches, block.int(llvm.i64, 1n), block.int(llvm.i64, 0n), "result"));
     });
   });
-  module.defineFunction({ name: "abi_is_undefined", parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
+  define({ name: "abi_is_undefined", parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
     const value = fn.parameter(0, llvm.i64);
     fn.block("entry", (block) => {
       const values = jsValueAbi.forLlvm(block);
@@ -89,7 +100,7 @@ function defineAbiConformanceFunctions(module: LlvmModuleBuilder): void {
       block.ret(block.select(matches, block.int(llvm.i64, 1n), block.int(llvm.i64, 0n), "result"));
     });
   });
-  module.defineFunction({ name: "abi_is_number", parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
+  define({ name: "abi_is_number", parameters: [{ name: "value", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
     const value = fn.parameter(0, llvm.i64);
     fn.block("entry", (block) => {
       const values = jsValueAbi.forLlvm(block);
@@ -97,22 +108,42 @@ function defineAbiConformanceFunctions(module: LlvmModuleBuilder): void {
       block.ret(block.select(matches, block.int(llvm.i64, 1n), block.int(llvm.i64, 0n), "result"));
     });
   });
-  module.defineFunction({ name: "abi_number", parameters: [{ name: "value", type: llvm.double }], returns: llvm.i64 }, (fn) => {
+  define({ name: "abi_number", parameters: [{ name: "value", type: llvm.double }], returns: llvm.i64 }, (fn) => {
     const value = fn.parameter(0, llvm.double);
     fn.block("entry", (block) => block.ret(jsValueAbi.forLlvm(block).boxNumber(value)));
   });
+  return functions;
+}
+
+function abiArgument(argument: AbiArgument, block: LlvmBlockBuilder) {
+  switch (argument.kind) {
+    case "pointer": { return block.intToPtr(block.int(llvm.i64, argument.value), "argument.pointer"); }
+    case "word": { return block.int(llvm.i64, argument.value); }
+    case "doubleBits": { return block.bitcast(block.int(llvm.i64, argument.value), llvm.double, "argument.double"); }
+    case "double": { return block.double(argument.value); }
+    default: {
+      const exhaustive: never = argument;
+      throw new Error(`Unknown ABI argument ${String(exhaustive)}`);
+    }
+  }
 }
 
 function llvmConformanceSource(): string {
-  const module = createLlvmModule();
-  defineAbiConformanceFunctions(module);
-  const calls = abiConformanceVectors.flatMap((vector, index) => [
-    `  %value.${index} = ${vector.llvmExpression}`,
-    `  %print.${index} = call i32 (ptr, ...) @printf(ptr @.fmt, i64 %value.${index})`
-  ]).join("\n");
-  module.addLegacyModuleText({
-    origin: "ABI conformance harness",
-    text: `@.fmt = private unnamed_addr constant [6 x i8] c"%llu\\0A\\00"\ndeclare i32 @printf(ptr, ...)\ndefine i32 @main() {\nentry:\n${calls}\n  ret i32 0\n}\n`
+  const module = createLlvmModule({ staticRuntime: [] });
+  const functions = defineAbiConformanceFunctions(module);
+  const printf = module.declareFunction({ name: "printf", parameters: [{ name: "format", type: llvm.ptr }], returns: llvm.i32, variadic: true });
+  const format = module.stringConstant("%llu\n");
+  module.defineFunction({ name: "main", parameters: [], returns: llvm.i32 }, (fn) => {
+    fn.block("entry", (block) => {
+      for (const vector of abiConformanceVectors) {
+        const target = functions.get(vector.symbol);
+        if (target === undefined) throw new Error(`ABI vector references undeclared function ${vector.symbol}`);
+        const args = vector.arguments.map((argument) => abiArgument(argument, block));
+        const value = block.call(target, args, "vector.value");
+        block.call(printf, [block.globalPointer(format), value], "vector.print");
+      }
+      block.ret(block.int(llvm.i32, 0n));
+    });
   });
   return module.render().text;
 }
@@ -128,7 +159,7 @@ const expectedConformanceOutput = `${abiConformanceVectors.map((vector) => vecto
 
 describe("JSValue ABI", () => {
   test("drives textual LLVM and inline C++ from the accepted bit layout", () => {
-    const module = createLlvmModule();
+    const module = createLlvmModule({ staticRuntime: [] });
     module.defineFunction(
       {
         name: "valueBoxObject",
@@ -224,7 +255,7 @@ describe("JSValue ABI", () => {
   });
 
   test("allocates collision-free LLVM names for repeated ABI operations", () => {
-    const module = createLlvmModule();
+    const module = createLlvmModule({ staticRuntime: [] });
     module.defineFunction(
       {
         name: "boxSecondObject",

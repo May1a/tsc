@@ -497,6 +497,78 @@ result.not.object:
   call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %result.not.object.error
 }
+define { i64, i1 } @iterableAppend(ptr %target, i64 %source, i64 %message) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %target.owner = call i64 @valueBoxArray(ptr %target)
+  call void @gcRootPush(i64 %target.owner)
+  call void @gcRootPush(i64 %source)
+  call void @gcRootPush(i64 %message)
+  %opened = call { i64, i1 } @getIteratorValue(i64 %source, i64 %message)
+  %iterator = extractvalue { i64, i1 } %opened, 0
+  %open.failed = extractvalue { i64, i1 } %opened, 1
+  br i1 %open.failed, label %open.failure, label %iterate
+iterate:
+  %result = call { i64, i1 } @iteratorAppend(ptr %target, i64 %iterator)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %result
+open.failure:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %opened
+}
+
+define { i64, i1 } @arrayFromIterator(i64 %iterator) {
+entry:
+  %array = call ptr @arrayNew(i64 0)
+  %result = call { i64, i1 } @iteratorAppend(ptr %array, i64 %iterator)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @iteratorAppend(ptr %target, i64 %iterator) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %target.owner = call i64 @valueBoxArray(ptr %target)
+  call void @gcRootPush(i64 %target.owner)
+  call void @gcRootPush(i64 %iterator)
+  br label %next
+next:
+  %iteration.frame = call i64 @gcRootSave()
+  call void @gcSafepoint()
+  %result = call { i64, i1 } @callIteratorNext(i64 %iterator)
+  %step = extractvalue { i64, i1 } %result, 0
+  %step.failed = extractvalue { i64, i1 } %result, 1
+  call void @gcRootPush(i64 %step)
+  br i1 %step.failed, label %step.failure, label %check.done
+check.done:
+  %done.value = call i64 @valuePropertyGet(i64 %step, i64 4, ptr @.iter.key.done)
+  %done = call i1 @valueTruthy(i64 %done.value)
+  br i1 %done, label %success, label %append
+append:
+  %item = call i64 @valuePropertyGet(i64 %step, i64 5, ptr @.iter.key.value)
+  call void @gcRootPush(i64 %item)
+  call i64 @arrayPush(ptr %target, i64 %item)
+  call void @gcRootRestore(i64 %iteration.frame)
+  br label %next
+success:
+  call void @gcRootRestore(i64 %frame)
+  %ok.value = insertvalue { i64, i1 } undef, i64 %target.owner, 0
+  %ok = insertvalue { i64, i1 } %ok.value, i1 false, 1
+  ret { i64, i1 } %ok
+step.failure:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %result
+}
+
+define void @iteratorCloseForThrow(i64 %iterator, i64 %thrown) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %iterator)
+  call void @gcRootPush(i64 %thrown)
+  call { i64, i1 } @iteratorClose(i64 %iterator)
+  call void @gcRootRestore(i64 %frame)
+  ret void
+}
+
 define { i64, i1 } @iteratorClose(i64 %iterator) {
 entry:
   %frame = call i64 @gcRootSave()

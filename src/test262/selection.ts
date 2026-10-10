@@ -26,12 +26,7 @@ const walkTestFiles = async (directory: string, prefix: string): Promise<readonl
   const files: string[] = [];
   const directoryPromises: Promise<readonly string[]>[] = [];
   for (const entry of entries) {
-    let relative: string;
-    if (prefix === "") {
-      relative = entry.name;
-    } else {
-      relative = `${prefix}/${entry.name}`;
-    }
+    const relative: string = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
     if (entry.isDirectory()) {
       directoryPromises.push(walkTestFiles(path.join(directory, entry.name), relative));
       continue;
@@ -41,10 +36,7 @@ const walkTestFiles = async (directory: string, prefix: string): Promise<readonl
     }
   }
   const nested = await Promise.all(directoryPromises);
-  for (const result of nested) {
-    files.push(...result);
-  }
-  return files;
+  return [...files, ...nested.flat()];
 };
 
 const classifyFlags = (flags: readonly string[], filters: HarnessFilters): string | undefined => {
@@ -87,10 +79,7 @@ const classifyTest = (id: string, source: string, filters: HarnessFilters): Clas
   if (frontmatter === undefined) {
     return { kind: "skipped", reason: "invalid-frontmatter" };
   }
-  let parseGoal: ParseGoal = "script";
-  if (frontmatter.flags.includes("module")) {
-    parseGoal = "module";
-  }
+  const parseGoal: ParseGoal = frontmatter.flags.includes("module") ? "module" : "script";
   const flagReason = classifyFlags(frontmatter.flags, filters);
   if (flagReason !== undefined) {
     return { kind: "skipped", reason: flagReason };

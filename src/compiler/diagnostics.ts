@@ -14,10 +14,7 @@ export interface CompilerDiagnostic {
 }
 
 export const formatDiagnostic = (diagnostic: CompilerDiagnostic): string => {
-  let location = "";
-  if (diagnostic.span) {
-    location = `${diagnostic.span.fileName}:${diagnostic.span.line}:${diagnostic.span.column}: `;
-  }
+  const location = diagnostic.span ? `${diagnostic.span.fileName}:${diagnostic.span.line}:${diagnostic.span.column}: ` : "";
 
   return `${location}${diagnostic.category} ${diagnostic.code}: ${diagnostic.message}`;
 };

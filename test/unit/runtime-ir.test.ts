@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SYMBOL_ITERATOR_SENTINEL, runtimeIrText } from "../../src/compiler/runtime-ir.js";
+import { runtimeIrText } from "../../src/compiler/runtime-files.js";
+import { SYMBOL_ITERATOR_SENTINEL } from "../../src/compiler/symbols.js";
 
 const runtimeDir = join(import.meta.dirname, "../../src/compiler/runtime");
 
@@ -22,7 +23,7 @@ const topLevelSymbolNames = (text: string): string[] => [
 
 // Mirrors the sentinel-key encoding the compiler bakes into iterators.ll.
 const encodedSentinelKey = (): string => {
-  const bytes = [...Buffer.from(SYMBOL_ITERATOR_SENTINEL, "utf8"), 0];
+  const bytes: number[] = [...Buffer.from(SYMBOL_ITERATOR_SENTINEL, "utf8"), 0];
   return bytes
     .map((byte) => {
       if (byte >= firstPrintableAscii && byte <= lastPrintableAscii && byte !== doubleQuote && byte !== backslash) {
@@ -35,7 +36,7 @@ const encodedSentinelKey = (): string => {
 
 describe("runtime IR", () => {
   it("includes the content of every .ll file in the runtime directory", () => {
-    const files = readdirSync(runtimeDir).filter((file) => file.endsWith(".ll"));
+    const files: string[] = readdirSync(runtimeDir).filter((file) => file.endsWith(".ll"));
     expect(files.length).toBeGreaterThanOrEqual(minimumExpectedRuntimeFiles);
     const text = runtimeIrText();
     for (const file of files) {

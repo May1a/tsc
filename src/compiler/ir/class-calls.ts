@@ -3,7 +3,7 @@ import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import { type Lowered, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { JsIrValueExpression } from "./expressions.js";
-import { type ClassInfo, type ClassMethodInfo, classLoweringState, classPrototypeName, findClassInChain, resolveReceiverClass } from "./class-info.js";
+import { type ClassInfo, type ClassMethodInfo, classPrototypeName, findClassInChain, resolveReceiverClass } from "./class-info.js";
 import { CLASS_THIS_NAME, classConstructorName, classMethodFunctionName } from "./class-names.js";
 
 // eslint-disable-next-line complexity, max-statements -- Method resolution handles super, static inheritance, and instance inheritance at one dispatch seam.
@@ -13,9 +13,6 @@ export function lowerClassMethodCall(
   callee: ts.PropertyAccessExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<Extract<JsIrValueExpression, { readonly kind: "call" }>> {
-  if (classLoweringState.registry === undefined) {
-    return notApplicable;
-  }
   const methodName = callee.name.text;
 
   if (callee.expression.kind === ts.SyntaxKind.SuperKeyword) {
@@ -23,10 +20,10 @@ export function lowerClassMethodCall(
   }
 
   if (ts.isIdentifier(callee.expression) && !bindings.has(callee.expression.text)) {
-    const staticClass = classLoweringState.registry.get(callee.expression.text);
+    const staticClass = context.classes.get(callee.expression.text);
     let definingClass: ClassInfo | undefined;
     if (staticClass !== undefined) {
-      definingClass = findClassInChain(staticClass, (candidate) => candidate.staticMethods.has(methodName));
+      definingClass = findClassInChain(context, staticClass, (candidate) => candidate.staticMethods.has(methodName));
     }
     const staticMethod = definingClass?.staticMethods.get(methodName);
     if (definingClass !== undefined && staticMethod !== undefined) {
@@ -42,10 +39,10 @@ export function lowerClassMethodCall(
     }
   }
 
-  const receiverClass = resolveReceiverClass(callee.expression, bindings);
+  const receiverClass = resolveReceiverClass(context, callee.expression, bindings);
   let definingClass: ClassInfo | undefined;
   if (receiverClass !== undefined) {
-    definingClass = findClassInChain(receiverClass, (candidate) => candidate.methods.has(methodName));
+    definingClass = findClassInChain(context, receiverClass, (candidate) => candidate.methods.has(methodName));
   }
   const method = definingClass?.methods.get(methodName);
   if (definingClass === undefined || method === undefined) {
@@ -77,17 +74,13 @@ function lowerSuperMethodCall(
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   methodName: string
 ): Lowered<Extract<JsIrValueExpression, { readonly kind: "call" }>> {
-  const { registry } = classLoweringState;
-  if (registry === undefined) {
-    return notApplicable;
-  }
-  const base = baseClassOf(context.activeEnclosingClass, registry);
+  const base = baseClassOf(context.activeEnclosingClass, context.classes);
   if (base === undefined) {
     return unsupportedIn(`\`super.${methodName}\` appears in a class with no base class this module lowered`);
   }
   const isStatic = context.activeClassMethodStatic;
   const declares = (candidate: ClassInfo): boolean => superMethodOf(candidate, methodName, isStatic) !== undefined;
-  const definingClass = findClassInChain(base, declares);
+  const definingClass = findClassInChain(context, base, declares);
   if (definingClass === undefined) {
     return unsupportedIn(classSuperMethodRefusal(methodName, base.name, isStatic));
   }
@@ -127,10 +120,7 @@ function superMethodOf(
 
 /** Why a `super.m(...)` found no method, naming whether it was looking for a static one. */
 function classSuperMethodRefusal(methodName: string, baseName: string, isStatic: boolean): string {
-  let kind = "method";
-  if (isStatic) {
-    kind = "static method";
-  }
+  const kind = isStatic ? "static method" : "method";
   return `\`super.${methodName}\` is not a ${kind} of \`${baseName}\` or its bases`;
 }
 
@@ -170,14 +160,11 @@ export function lowerClassInstanceExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  if (classLoweringState.registry === undefined) {
-    return notApplicable;
-  }
   if (context.classThisInScope && expression.kind === ts.SyntaxKind.ThisKeyword) {
     return produced({ kind: "variable", name: CLASS_THIS_NAME } as JsIrValueExpression);
   }
   if (ts.isNewExpression(expression) && ts.isIdentifier(expression.expression) && !bindings.has(expression.expression.text)) {
-    const info = classLoweringState.registry.get(expression.expression.text);
+    const info = context.classes.get(expression.expression.text);
     if (info !== undefined) {
       const args = context.lowerTypedCallArguments(context, info.constructorParameters, expression.arguments ?? ts.factory.createNodeArray(), bindings);
       if (args.kind !== "lowered") {
@@ -197,7 +184,7 @@ export function lowerClassInstanceExpression(
   // typed as the class) resolves to its stable slot so identity is preserved.
   if (ts.isIdentifier(expression)) {
     const binding = bindings.get(expression.text);
-    if (binding?.kind === "valueVariable" && resolveReceiverClass(expression, bindings) !== undefined) {
+    if (binding?.kind === "valueVariable" && resolveReceiverClass(context, expression, bindings) !== undefined) {
       return produced({ kind: "variable", name: expression.text } as JsIrValueExpression);
     }
   }

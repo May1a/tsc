@@ -1,9 +1,52 @@
 import { describe, expect, test } from "vitest";
-import { type LlvmBlockBuilder, createLlvmModule, llvm, renderLlvmType, sameLlvmType } from "../../src/compiler/llvm-ir/index.js";
+import { type LlvmBlockBuilder, type LlvmValue, createLlvmModule, llvm, renderLlvmType, sameLlvmType } from "../../src/compiler/llvm-ir/index.js";
 
 describe("LLVM IR builder", () => {
+  test("rejects a parameter borrowed from another function in the same module", () => {
+    const module = createLlvmModule({ staticRuntime: [] });
+    let borrowed: LlvmValue<typeof llvm.i64> | undefined;
+    module.defineFunction({ name: "first", parameters: [{ name: "input", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
+      borrowed = fn.parameter(0, llvm.i64);
+      fn.block("entry", (block) => block.ret(borrowed));
+    });
+    expect(() => module.defineFunction({ name: "second", parameters: [], returns: llvm.i64 }, (fn) => {
+      fn.block("entry", (block) => block.ret(borrowed));
+    })).toThrow();
+  });
+
+  test("allows an instruction result in a block dominated by its definition", () => {
+    const module = createLlvmModule({ staticRuntime: [] });
+    module.defineFunction({ name: "dominated", parameters: [{ name: "input", type: llvm.i64 }], returns: llvm.i64 }, (fn) => {
+      let value: LlvmValue<typeof llvm.i64> | undefined;
+      const input = fn.parameter(0, llvm.i64);
+      fn.block("entry", (block) => {
+        value = block.add(input, block.int(llvm.i64, 1n), "incremented");
+        block.br(fn.label("next"));
+      });
+      fn.block("next", (block) => block.ret(value));
+    });
+    expect(module.render().text).toContain("ret i64 %incremented");
+  });
+
+  test("supports a zero-length LLVM array", () => {
+    expect(renderLlvmType(llvm.array(llvm.double, 0))).toBe("[0 x double]");
+  });
+
+  test("preserves negative zero and renders NaN as an LLVM bit pattern", () => {
+    const module = createLlvmModule({ staticRuntime: [] });
+    module.defineFunction({ name: "negativeZero", parameters: [], returns: llvm.double }, (fn) => {
+      fn.block("entry", (block) => block.ret(block.double(-0)));
+    });
+    module.defineFunction({ name: "notANumber", parameters: [], returns: llvm.double }, (fn) => {
+      fn.block("entry", (block) => block.ret(block.double(Number.NaN)));
+    });
+    const { text } = module.render();
+    expect(text).toMatch(/ret double (?:-0\.0|0x8000000000000000)/);
+    expect(text).toMatch(/ret double 0x7FF8000000000000/i);
+  });
+
   test("renders typed functions and records trace ranges without scanning markers", () => {
-    const module = createLlvmModule();
+    const module = createLlvmModule({ staticRuntime: [] });
 
     module.defineFunction(
       {
@@ -41,20 +84,12 @@ entry:
     ]));
   });
 
-  test("composes declarations, tracked legacy text, and structured functions deterministically", () => {
-    const module = createLlvmModule();
+  test("composes static runtime and traces only typed instructions", () => {
+    const module = createLlvmModule({ staticRuntime: [{ origin: "test fixture", text: "@message = global ptr null\n" }] });
     const puts = module.declareFunction({ name: "puts", parameters: [{ name: "message", type: llvm.ptr }], returns: llvm.i32 });
-    module.addLegacyModuleText({
-      origin: "test fixture",
-      text: "; tscn-trace-start legacy\n@message = global ptr null\n; tscn-trace-end legacy\n",
-      traceMarkers: [
-        { line: 1, kind: "start", id: "legacy" },
-        { line: 3, kind: "end", id: "legacy" }
-      ]
-    });
     module.defineFunction({ name: "main", parameters: [], returns: llvm.i32 }, (fn) => {
       fn.block("entry", (block) => {
-        block.call(puts, [block.nullPtr()], "status");
+        block.withTrace("typed", () => block.call(puts, [block.nullPtr()], "status"));
         block.ret(block.int(llvm.i32, 0n));
       });
     });
@@ -62,17 +97,20 @@ entry:
     const rendered = module.render();
     expect(rendered.text).toContain("declare i32 @puts(ptr)");
     expect(rendered.text).toContain("%status = call i32 @puts(ptr null)");
-    expect(rendered.traceRanges.get("legacy")).toEqual([{ startLine: 3, endLine: 3 }]);
+    expect(rendered.traceRanges.get("typed")).toEqual([{ startLine: 6, endLine: 6 }]);
+    expect(rendered.traceRanges.size).toBe(1);
   });
 
   test("supports typed memory, comparisons, selection, and control flow", () => {
-    const module = createLlvmModule();
+    const module = createLlvmModule({ staticRuntime: [] });
     module.defineFunction({ name: "choose", parameters: [{ name: "pointer", type: llvm.ptr }], returns: llvm.i64 }, (fn) => {
       const pointer = fn.parameter(0, llvm.ptr);
+      const empty = fn.label("empty");
+      const present = fn.label("present");
       fn.block("entry", (block) => {
         const bits = block.ptrToInt(pointer, llvm.i64, "bits");
         const isNull = block.icmp("eq", bits, block.int(llvm.i64, 0n), "is.null");
-        block.condBr(isNull, "empty", "present");
+        block.condBr(isNull, empty, present);
       });
       fn.block("empty", (block) => {
         block.ret(block.int(llvm.i64, 0n));
@@ -87,7 +125,7 @@ entry:
   });
 
   test("rejects structural misuse and escaped scoped builders", () => {
-    expect(() => createLlvmModule().defineFunction({
+    expect(() => createLlvmModule({ staticRuntime: [] }).defineFunction({
       name: "duplicateParameters",
       parameters: [{ name: "value", type: llvm.i64 }, { name: "value", type: llvm.i64 }],
       returns: llvm.i64
@@ -95,14 +133,14 @@ entry:
       throw new Error("builder callback should not run");
     })).toThrow("duplicate LLVM parameter name");
 
-    const missingTerminator = createLlvmModule();
+    const missingTerminator = createLlvmModule({ staticRuntime: [] });
     expect(() => missingTerminator.defineFunction({ name: "missing", parameters: [], returns: llvm.void }, (fn) => {
       fn.block("entry", () => {
         void fn;
       });
     })).toThrow("missing a terminator");
 
-    const escapedModule = createLlvmModule();
+    const escapedModule = createLlvmModule({ staticRuntime: [] });
     let escaped: LlvmBlockBuilder | undefined;
     escapedModule.defineFunction({ name: "escaped", parameters: [], returns: llvm.void }, (fn) => {
       fn.block("entry", (block) => {
@@ -112,36 +150,37 @@ entry:
     });
     expect(() => escaped?.int(llvm.i64, 0n)).toThrow("escaped its scope");
 
-    const unknownBranch = createLlvmModule();
+    const unknownBranch = createLlvmModule({ staticRuntime: [] });
     expect(() => unknownBranch.defineFunction({ name: "badBranch", parameters: [], returns: llvm.void }, (fn) => {
-      fn.block("entry", (block) => block.br("missing"));
+      fn.block("entry", (block) => block.br(fn.label("missing")));
     })).toThrow("unknown block missing");
 
-    const crossBlockValue = createLlvmModule();
-    expect(() => crossBlockValue.defineFunction({ name: "crossBlock", parameters: [], returns: llvm.i64 }, (fn) => {
-      let siblingValue: ReturnType<LlvmBlockBuilder["int"]> | undefined;
-      fn.block("entry", (block) => {
-        siblingValue = block.int(llvm.i64, 1n);
-        block.br("next");
-      });
-      fn.block("next", (block) => block.ret(siblingValue));
-    })).toThrow("incompatible LLVM value");
-
-    const invalidBitcast = createLlvmModule();
+    const invalidBitcast = createLlvmModule({ staticRuntime: [] });
     expect(() => invalidBitcast.defineFunction({ name: "invalidBitcast", parameters: [{ name: "value", type: llvm.i32 }], returns: llvm.i64 }, (fn) => {
       const value = fn.parameter(0, llvm.i32);
       fn.block("entry", (block) => block.ret(block.bitcast(value, llvm.i64, "invalid")));
     })).toThrow("invalid LLVM bitcast");
 
-    const reentrantBlock = createLlvmModule();
-    expect(() => reentrantBlock.defineFunction({ name: "reentrant", parameters: [], returns: llvm.void }, (fn) => {
+    // Nesting used to be refused while a block's callback was still running, because a block was
+    // sealed the moment its callback returned. Blocks are now sealed by the function's `finish`, so a
+    // nested region opens, fills and closes inside its parent — which is what a recursive lowering
+    // pass needs in order to descend into a nested block and come back.
+    const nestedBlocks = createLlvmModule({ staticRuntime: [] });
+    nestedBlocks.defineFunction({ name: "nested", parameters: [], returns: llvm.void }, (fn) => {
       fn.block("entry", (block) => {
-        fn.block("nested", (nested) => nested.ret());
+        fn.block("inner", (inner) => inner.ret());
         block.ret();
       });
-    })).toThrow("another block is active");
+    });
+    expect(nestedBlocks.render().text).toBe("define void @nested() {\nentry:\n  ret void\ninner:\n  ret void\n}\n");
 
-    const unownedCall = createLlvmModule();
+    const duplicateBlock = createLlvmModule({ staticRuntime: [] });
+    expect(() => duplicateBlock.defineFunction({ name: "duplicateBlock", parameters: [], returns: llvm.void }, (fn) => {
+      fn.block("entry", (block) => block.ret());
+      fn.block("entry", (block) => block.ret());
+    })).toThrow("duplicate LLVM block name entry");
+
+    const unownedCall = createLlvmModule({ staticRuntime: [] });
     expect(() => unownedCall.defineFunction({ name: "caller", parameters: [], returns: llvm.void }, (fn) => {
       fn.block("entry", (block) => {
         block.call({ name: "missing", parameters: [], returns: llvm.void }, []);
@@ -168,7 +207,7 @@ entry:
 
   test("uses struct types in function declarations, calls, and returns", () => {
     const pair = llvm.struct([llvm.i64, llvm.i1]);
-    const module = createLlvmModule();
+    const module = createLlvmModule({ staticRuntime: [] });
     const producer = module.declareFunction({
       name: "producePair",
       parameters: [{ name: "tag", type: llvm.i1 }],
@@ -189,7 +228,7 @@ entry:
 
   test("emits insertvalue and extractvalue instructions for building struct aggregates", () => {
     const pair = llvm.struct([llvm.i64, llvm.i1]);
-    const module = createLlvmModule();
+    const module = createLlvmModule({ staticRuntime: [] });
     module.defineFunction({ name: "makePair", parameters: [{ name: "value", type: llvm.i64 }], returns: pair }, (fn) => {
       const value = fn.parameter(0, llvm.i64);
       fn.block("entry", (block) => {
@@ -198,7 +237,6 @@ entry:
         const flag = block.icmp("eq", value, block.int(llvm.i64, 0n), "flag");
         const pairValue = block.insertValue(withValue, flag, 1, "pair");
         const extractedFlag = block.extractValue(pairValue, 1, "extracted.flag");
-        // @ts-expect-error: TS2345 - extractValue returns LlvmStructElementType<T>, the element *union*, because llvm.struct() erases tuple positions, so the literal index 1 cannot narrow the result to i1 even though it is i1 at runtime. This test pins the emitted instruction text, and select's i1 constraint cannot see through the union. Widening struct() to a tuple type would fix it at the interface, but that is a larger change than this test warrants.
         const final = block.select(extractedFlag, pairValue, pairValue, "final");
         block.ret(final);
       });
@@ -214,10 +252,11 @@ entry:
 
   test("rejects out-of-bounds insertvalue and extractvalue indices", () => {
     const pair = llvm.struct([llvm.i64, llvm.i1]);
-    const module = createLlvmModule();
+    const module = createLlvmModule({ staticRuntime: [] });
     expect(() => module.defineFunction({ name: "badInsert", parameters: [], returns: pair }, (fn) => {
       fn.block("entry", (block) => {
         const initial = block.undef(pair, "initial");
+        // @ts-expect-error: TS2345 - deliberate: index 2 is not a position of { i64, i1 }, so the static type has no element for it. The test pins the runtime bounds guard that stands behind the compile-time one.
         block.insertValue(initial, block.int(llvm.i64, 0n), 2, "bad");
         block.ret(initial);
       });
@@ -244,6 +283,7 @@ entry:
       fn.block("entry", (block) => {
         const initial = block.undef(pair, "initial");
         // oxlint-disable-next-line no-magic-numbers -- non-integer index triggers the bounds check
+        // @ts-expect-error: TS2345 - deliberate: 0.5 is not a position of a tuple, so the static index type rejects it before the runtime bounds check ever sees the value.
         block.insertValue(initial, block.int(llvm.i64, 0n), 0.5, "bad");
         block.ret(initial);
       });
@@ -252,10 +292,11 @@ entry:
 
   test("rejects insertvalue with mismatched element type and non-struct aggregate", () => {
     const pair = llvm.struct([llvm.i64, llvm.i1]);
-    const module = createLlvmModule();
+    const module = createLlvmModule({ staticRuntime: [] });
     expect(() => module.defineFunction({ name: "wrongElement", parameters: [], returns: pair }, (fn) => {
       fn.block("entry", (block) => {
         const initial = block.undef(pair, "initial");
+        // @ts-expect-error: TS2345 - deliberate: position 0 of { i64, i1 } is i64, so an i32 element cannot be spelled. The test pins the runtime element check behind the compile-time one.
         block.insertValue(initial, block.int(llvm.i32, 0n), 0, "bad");
         block.ret(initial);
       });
@@ -264,6 +305,7 @@ entry:
     expect(() => module.defineFunction({ name: "wrongSlot", parameters: [], returns: pair }, (fn) => {
       fn.block("entry", (block) => {
         const initial = block.undef(pair, "initial");
+        // @ts-expect-error: TS2345 - deliberate: position 1 of { i64, i1 } is i1, so an i64 element cannot be spelled. The runtime check reports the same disagreement.
         block.insertValue(initial, block.int(llvm.i64, 0n), 1, "bad");
         block.ret(initial);
       });
@@ -279,28 +321,12 @@ entry:
     })).toThrow("expected LLVM struct type, found i64");
   });
 
-  test("rejects unowned values used as insertvalue aggregates or elements", () => {
-    const module = createLlvmModule();
-    // Cross-block: a value created in one block cannot be used in another
-    expect(() => module.defineFunction({ name: "crossBlock", parameters: [], returns: llvm.i64 }, (fn) => {
-      let sibling: ReturnType<LlvmBlockBuilder["undef"]> | undefined;
-      fn.block("entry", (block) => {
-        sibling = block.undef(llvm.struct([llvm.i64]), "owned");
-        block.br("next");
-      });
-      fn.block("next", (block) => {
-        if (sibling === undefined) {
-          throw new Error("test setup: sibling should be captured");
-        }
-        // @ts-expect-error: TS2345 - deliberate: the value is owned by another block. Block ownership is a runtime property tracked in a WeakMap, so the static type still looks valid here. The test pins the runtime "incompatible LLVM value" guard that catches this cross-block use.
-        block.insertValue(sibling, block.int(llvm.i64, 0n), 0, "bad");
-        block.ret(block.int(llvm.i64, 0n));
-      });
-    })).toThrow("incompatible LLVM value");
+  test("rejects a value from another function, and one a block does not dominate", () => {
+    const module = createLlvmModule({ staticRuntime: [] });
 
-    // Cross-module: a value from another module cannot be used here
+    // Cross-module: a value minted by another module's function is a different SSA name.
     expect(() => {
-      const foreign = createLlvmModule();
+      const foreign = createLlvmModule({ staticRuntime: [] });
       let external: ReturnType<LlvmBlockBuilder["undef"]> | undefined;
       foreign.defineFunction({ name: "foreign", parameters: [], returns: llvm.void }, (fn) => {
         fn.block("entry", (block) => {
@@ -311,13 +337,39 @@ entry:
       module.defineFunction({ name: "useForeign", parameters: [], returns: llvm.void }, (fn) => {
         fn.block("entry", (block) => {
           if (external === undefined) {
-            throw new Error("test setup: external should be captured");
+            throw new Error("test setup: external should have been captured");
           }
-          // @ts-expect-error: TS2345 - deliberate: the value belongs to another module. Module ownership is a runtime property tracked in a WeakMap, so the static type still looks valid here. The test pins the runtime "incompatible LLVM value" guard that catches this cross-module use.
+          // @ts-expect-error: TS2345 - deliberate: the value belongs to another module. Function ownership is a runtime property tracked in a WeakMap, so the static type still looks valid here. The test pins the runtime guard that catches this cross-function use.
           block.insertValue(external, block.int(llvm.i64, 0n), 0, "bad");
           block.ret();
         });
       });
     }).toThrow("incompatible LLVM value");
+
+    // Same function, two blocks: a definition in a branch that does not dominate the join reaches the
+    // join on one path only, which is exactly what SSA forbids. See llvm-control-flow.test.ts for the
+    // dominance rules; this is the aggregate form of the same check.
+    expect(() => module.defineFunction({ name: "join", parameters: [], returns: llvm.i64 }, (fn) => {
+      const left = fn.label("left");
+      const right = fn.label("right");
+      const join = fn.label("join");
+      let onlyOnOnePath: ReturnType<LlvmBlockBuilder["add"]> | undefined;
+      fn.block("entry", (block) => {
+        block.condBr(block.int(llvm.i1, 1n), left, right);
+      });
+      fn.block("left", (block) => {
+        onlyOnOnePath = block.add(block.int(llvm.i64, 1n), block.int(llvm.i64, 1n), "left.only");
+        block.br(join);
+      });
+      fn.block("right", (block) => {
+        block.br(join);
+      });
+      fn.block("join", (block) => {
+        if (onlyOnOnePath === undefined) {
+          throw new Error("test setup: onlyOnOnePath should have been captured");
+        }
+        block.ret(onlyOnOnePath);
+      });
+    })).toThrow("does not dominate its use in join");
   });
 });

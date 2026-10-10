@@ -103,18 +103,8 @@ export const runFilteredSuite = async (options: RunOptions): Promise<SuiteRun> =
 };
 
 const formatResultLine = (result: TestCaseResult): string => {
-  let label: string;
-  if (result.classification === "coverage-gap") {
-    label = "COVERAGE-GAP";
-  } else {
-    label = result.classification.toUpperCase();
-  }
-  let reason: string;
-  if (result.reason === undefined) {
-    reason = "";
-  } else {
-    reason = ` [${result.reason}]`;
-  }
+  const label: string = result.classification === "coverage-gap" ? "COVERAGE-GAP" : result.classification.toUpperCase();
+  const reason: string = result.reason === undefined ? "" : ` [${result.reason}]`;
   return `${label} ${result.id}${reason}`;
 };
 

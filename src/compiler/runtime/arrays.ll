@@ -4,6 +4,125 @@ entry:
   %ptr = inttoptr i64 %bits to ptr
   ret ptr %ptr
 }
+define { i64, i1 } @arrayValidateMapper(i64 %mapper) {
+entry:
+  %missing = icmp eq i64 %mapper, 9222246136947933184
+  %callable = call i1 @valueIsFunction(i64 %mapper)
+  %valid = or i1 %missing, %callable
+  br i1 %valid, label %success, label %failure
+success:
+  ret { i64, i1 } { i64 9222246136947933184, i1 false }
+failure:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %mapper)
+  %message = call i64 @iteratorNotCallableMessage(i64 %mapper)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %error
+}
+
+define { i64, i1 } @arrayFromCollection(ptr %collection, i64 %source.kind, i64 %iteration.kind, i64 %mapper, i64 %this.arg) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %owner = call i64 @valueBoxObject(ptr %collection)
+  call void @gcRootPush(i64 %owner)
+  call void @gcRootPush(i64 %mapper)
+  call void @gcRootPush(i64 %this.arg)
+  %validation = call { i64, i1 } @arrayValidateMapper(i64 %mapper)
+  %invalid = extractvalue { i64, i1 } %validation, 1
+  br i1 %invalid, label %invalid.mapper, label %acquire
+acquire:
+  %opened = call { i64, i1 } @getCollectionIterator(ptr %collection, i64 %source.kind, i64 %iteration.kind)
+  %iterator = extractvalue { i64, i1 } %opened, 0
+  %failed = extractvalue { i64, i1 } %opened, 1
+  br i1 %failed, label %open.failure, label %consume
+consume:
+  %result = call { i64, i1 } @arrayFromIteratorMapped(i64 %iterator, i64 %mapper, i64 %this.arg)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %result
+invalid.mapper:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %validation
+open.failure:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %opened
+}
+
+define { i64, i1 } @arrayFromIteratorMapped(i64 %iterator, i64 %mapper, i64 %this.arg) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %iterator)
+  call void @gcRootPush(i64 %mapper)
+  call void @gcRootPush(i64 %this.arg)
+  %validation = call { i64, i1 } @arrayValidateMapper(i64 %mapper)
+  %invalid = extractvalue { i64, i1 } %validation, 1
+  br i1 %invalid, label %invalid.mapper, label %create
+create:
+  %missing = icmp eq i64 %mapper, 9222246136947933184
+  %array = call ptr @arrayNew(i64 0)
+  %owner = call i64 @valueBoxArray(ptr %array)
+  call void @gcRootPush(i64 %owner)
+  %index.slot = alloca i64
+  store i64 0, ptr %index.slot
+  %argv = alloca i64, i64 2
+  %index.arg = getelementptr i64, ptr %argv, i64 1
+  br label %next
+next:
+  %iteration.frame = call i64 @gcRootSave()
+  call void @gcSafepoint()
+  %step.result = call { i64, i1 } @callIteratorNext(i64 %iterator)
+  %step = extractvalue { i64, i1 } %step.result, 0
+  %step.failed = extractvalue { i64, i1 } %step.result, 1
+  call void @gcRootPush(i64 %step)
+  br i1 %step.failed, label %step.failure, label %check.done
+check.done:
+  %done.value = call i64 @valuePropertyGet(i64 %step, i64 4, ptr @.iter.key.done)
+  %done = call i1 @valueTruthy(i64 %done.value)
+  br i1 %done, label %success, label %read.value
+read.value:
+  %item = call i64 @valuePropertyGet(i64 %step, i64 5, ptr @.iter.key.value)
+  call void @gcRootPush(i64 %item)
+  br i1 %missing, label %unmapped, label %map
+unmapped:
+  br label %append
+map:
+  %index = load i64, ptr %index.slot
+  %number = uitofp i64 %index to double
+  %boxed.index = call i64 @valueBoxNumber(double %number)
+  store i64 %item, ptr %argv
+  store i64 %boxed.index, ptr %index.arg
+  %mapped.result = call { i64, i1 } @jsCall(i64 %mapper, i64 2, ptr %argv, i64 %this.arg)
+  %mapped = extractvalue { i64, i1 } %mapped.result, 0
+  %map.failed = extractvalue { i64, i1 } %mapped.result, 1
+  call void @gcRootPush(i64 %mapped)
+  br i1 %map.failed, label %map.failure, label %mapped.value
+mapped.value:
+  br label %append
+append:
+  %value = phi i64 [ %item, %unmapped ], [ %mapped, %mapped.value ]
+  call i64 @arrayPush(ptr %array, i64 %value)
+  %old.index = load i64, ptr %index.slot
+  %next.index = add i64 %old.index, 1
+  store i64 %next.index, ptr %index.slot
+  call void @gcRootRestore(i64 %iteration.frame)
+  br label %next
+success:
+  %ok.value = insertvalue { i64, i1 } undef, i64 %owner, 0
+  %ok = insertvalue { i64, i1 } %ok.value, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok
+invalid.mapper:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %validation
+step.failure:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %step.result
+map.failure:
+  call void @iteratorCloseForThrow(i64 %iterator, i64 %mapped)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %mapped.result
+}
+
 define { i64, i1 } @arrayFromValue(i64 %source, i64 %mapper, i64 %this.arg) {
 entry:
   %frame = call i64 @gcRootSave()
@@ -67,59 +186,9 @@ iter.not.object:
   call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %iter.err
 create.array:
-  %out = call ptr @arrayNew(i64 0)
-  %out.root = call i64 @valueBoxArray(ptr %out)
-  call void @gcRootPush(i64 %out.root)
-  %index.addr = alloca i64
-  store i64 0, ptr %index.addr
-  %loop.frame = call i64 @gcRootSave()
-  br label %loop
-loop:
-  call void @gcRootRestore(i64 %loop.frame)
-  call void @gcSafepoint()
-  %next.call = call { i64, i1 } @callIteratorNext(i64 %iter)
-  %next = extractvalue { i64, i1 } %next.call, 0
-  %next.exc = extractvalue { i64, i1 } %next.call, 1
-  call void @gcRootPush(i64 %next)
-  br i1 %next.exc, label %fail.next, label %check.done
-check.done:
-  %done.value = call i64 @valueObjectGet(i64 %next, i64 4, ptr @.iter.key.done)
-  %is.done = call i1 @valueTruthy(i64 %done.value)
-  br i1 %is.done, label %success, label %read.item
-read.item:
-  %item = call i64 @valueObjectGet(i64 %next, i64 5, ptr @.iter.key.value)
-  call void @gcRootPush(i64 %item)
-  %index = load i64, ptr %index.addr
-  br i1 %mapper.missing, label %push.item, label %map.item
-map.item:
-  %index.number = uitofp i64 %index to double
-  %index.value = call i64 @valueBoxNumber(double %index.number)
-  %map.argv = alloca i64, i64 2
-  %map.arg0 = getelementptr i64, ptr %map.argv, i64 0
-  store i64 %item, ptr %map.arg0
-  %map.arg1 = getelementptr i64, ptr %map.argv, i64 1
-  store i64 %index.value, ptr %map.arg1
-  %map.call = call { i64, i1 } @jsCall(i64 %mapper, i64 2, ptr %map.argv, i64 %this.arg)
-  %mapped = extractvalue { i64, i1 } %map.call, 0
-  %map.exc = extractvalue { i64, i1 } %map.call, 1
-  call void @gcRootPush(i64 %mapped)
-  br i1 %map.exc, label %fail.map, label %push.mapped
-push.item:
-  br label %push.value
-push.mapped:
-  br label %push.value
-push.value:
-  %pushed = phi i64 [ %item, %push.item ], [ %mapped, %push.mapped ]
-  call i64 @arrayPush(ptr %out, i64 %pushed)
-  %index.next = add i64 %index, 1
-  store i64 %index.next, ptr %index.addr
-  br label %loop
-success:
-  %boxed = call i64 @valueBoxArray(ptr %out)
-  %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
-  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  %iterated = call { i64, i1 } @arrayFromIteratorMapped(i64 %iter, i64 %mapper, i64 %this.arg)
   call void @gcRootRestore(i64 %frame)
-  ret { i64, i1 } %ok.1
+  ret { i64, i1 } %iterated
 array.like:
   %is.array = call i1 @valueIsArray(i64 %source)
   br i1 %is.array, label %from.array, label %from.object
@@ -179,14 +248,10 @@ array.like.success:
   ret { i64, i1 } %array.like.ok.1
 fail:
   br label %fail.payload
-fail.next:
-  br label %fail.payload
-fail.map:
-  br label %fail.payload
 fail.array.like.map:
   br label %fail.payload
 fail.payload:
-  %failure = phi i64 [ %iter, %fail ], [ %next, %fail.next ], [ %mapped, %fail.map ], [ %array.like.mapped, %fail.array.like.map ]
+  %failure = phi i64 [ %iter, %fail ], [ %array.like.mapped, %fail.array.like.map ]
   %fail.0 = insertvalue { i64, i1 } undef, i64 %failure, 0
   %fail.1 = insertvalue { i64, i1 } %fail.0, i1 true, 1
   call void @gcRootRestore(i64 %frame)
@@ -259,6 +324,25 @@ fill.body:
   br label %fill.cond
 exit:
   ret ptr %array
+}
+
+define ptr @arrayFromFixed(i64 %length, ptr %source) {
+entry:
+  %result = call ptr @arrayNew(i64 %length)
+  br label %loop
+loop:
+  %index = phi i64 [ 0, %entry ], [ %next, %copy ]
+  %done = icmp uge i64 %index, %length
+  br i1 %done, label %end, label %copy
+copy:
+  %slot = getelementptr double, ptr %source, i64 %index
+  %number = load double, ptr %slot
+  %value = call i64 @valueBoxNumber(double %number)
+  call void @arraySet(ptr %result, i64 %index, i64 %value)
+  %next = add i64 %index, 1
+  br label %loop
+end:
+  ret ptr %result
 }
 define i64 @arrayLength(ptr %array) {
 entry:

@@ -29,7 +29,7 @@ export function scanSource(sourceText) {
 }
 
 export function scanRepository(root = repoRoot) {
-  const directory = path.join(root, "src/compiler/llvm");
+  const directory = path.join(root, "src/compiler/native-lowering");
   const files = readdirSync(directory, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
     .map((entry) => path.join(entry.parentPath, entry.name))

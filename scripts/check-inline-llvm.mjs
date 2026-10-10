@@ -119,7 +119,7 @@ function collectSourceFiles(directory) {
       files.push(absolute);
     }
   }
-  return files.toSorted();
+  return files.toSorted((left, right) => left.localeCompare(right));
 }
 
 export function scanRepository() {

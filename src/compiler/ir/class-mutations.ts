@@ -2,7 +2,7 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import { type Lowered, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
-import { classLoweringState, classStaticStorageName, findClassInChain, resolveReceiverClass } from "./class-info.js";
+import { classStaticStorageName, findClassInChain, resolveReceiverClass } from "./class-info.js";
 import { lowerInstanceReceiverValue } from "./class-calls.js";
 import { classSetterFunctionName } from "./class-names.js";
 
@@ -15,10 +15,7 @@ export function lowerClassPropertyAssignment(
   right: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  if (classLoweringState.registry === undefined) {
-    return notApplicable;
-  }
-  const receiverClass = resolveReceiverClass(left.expression, bindings);
+  const receiverClass = resolveReceiverClass(context, left.expression, bindings);
   if (receiverClass === undefined) {
     return notApplicable;
   }
@@ -32,8 +29,8 @@ export function lowerClassPropertyAssignment(
   const isClassReceiver =
     ts.isIdentifier(left.expression) &&
     !bindings.has(left.expression.text) &&
-    classLoweringState.registry.get(left.expression.text) !== undefined;
-  if (isClassReceiver && findClassInChain(receiverClass, (candidate) => candidate.staticFields.has(propertyName)) !== undefined) {
+    context.classes.get(left.expression.text) !== undefined;
+  if (isClassReceiver && findClassInChain(context, receiverClass, (candidate) => candidate.staticFields.has(propertyName)) !== undefined) {
     const value = context.lowerValueExpression(context, right, bindings);
     if (value.kind !== "lowered") {
       return withRefusal(value, unsupportedIn(`The value written to the static field \`${propertyName}\` is not an expression this build can evaluate`));
@@ -49,7 +46,7 @@ export function lowerClassPropertyAssignment(
   if (value.kind !== "lowered") {
     return withRefusal(value, unsupportedIn(`The value written to \`${propertyName}\` is not an expression this build can evaluate`));
   }
-  const setterClass = findClassInChain(receiverClass, (candidate) => candidate.setters.has(propertyName));
+  const setterClass = findClassInChain(context, receiverClass, (candidate) => candidate.setters.has(propertyName));
   if (setterClass !== undefined) {
     const receiver = lowerInstanceReceiverValue(context, left.expression, bindings);
     if (receiver.kind !== "lowered") {

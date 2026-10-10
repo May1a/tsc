@@ -28,7 +28,7 @@ export function lowerValueExpression(
     return produced({ kind: "variable", name: CLASS_THIS_NAME });
   }
 
-  const inlineCppValue = lowerInlineCppValueExpression(expression);
+  const inlineCppValue = lowerInlineCppValueExpression(context.inlineCpp, expression);
   if (inlineCppValue.kind !== "notApplicable") {
     return inlineCppValue;
   }
@@ -194,10 +194,7 @@ function lowerValueElementAccess(
     index = { kind: "literal", value: stringIndex };
   }
   if (index !== undefined) {
-    let keyValue = "0";
-    if (index.kind === "literal") {
-      keyValue = String(index.value);
-    }
+    const keyValue = index.kind === "literal" ? String(index.value) : "0";
     return produced({ kind: "valueArrayAccess", value: value.operation, index, key: { kind: "literal", value: keyValue } });
   }
   const key = lowerPropertyKeyExpression(context, expression.argumentExpression, bindings);

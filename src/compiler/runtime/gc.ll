@@ -20,6 +20,7 @@
 @gcRootStack = internal global ptr null
 @gcRootStackCount = internal global i64 0
 @gcRootStackCap = internal global i64 0
+@gcGlobalRoots = internal global ptr null
 @gcTrace = internal global i64 0
 
 @.gc.env.name = private unnamed_addr constant [18 x i8] c"TSCN_GC_HEAP_SIZE\00"
@@ -59,6 +60,7 @@ init:
   store ptr %root.stack, ptr @gcRootStack
   store i64 0, ptr @gcRootStackCount
   store i64 64, ptr @gcRootStackCap
+  store ptr null, ptr @gcGlobalRoots
   %mark.cap.bytes = mul i64 64, 8
   %mark.stack = call ptr @malloc(i64 %mark.cap.bytes)
   store ptr %mark.stack, ptr @gcMarkStack
@@ -94,6 +96,43 @@ store:
   store i64 %value, ptr %slot
   %next = add i64 %count, 1
   store i64 %next, ptr @gcRootStackCount
+  ret void
+}
+
+; Slot roots follow the caller's root frame and read the current binding at collection.
+define void @gcRootPushSlot(ptr %slot) {
+entry:
+  %address = ptrtoint ptr %slot to i64
+  %payload = and i64 %address, 281474976710655
+  %tagged = or i64 %payload, 9220557287087669248
+  call void @gcRootPush(i64 %tagged)
+  ret void
+}
+
+define void @gcRegisterGlobalRoot(ptr %slot) {
+entry:
+  %head = load ptr, ptr @gcGlobalRoots
+  br label %lookup
+lookup:
+  %record = phi ptr [ %head, %entry ], [ %next, %advance ]
+  %missing = icmp eq ptr %record, null
+  br i1 %missing, label %register, label %compare
+compare:
+  %registered = load ptr, ptr %record
+  %same = icmp eq ptr %registered, %slot
+  br i1 %same, label %end, label %advance
+advance:
+  %next.slot = getelementptr i8, ptr %record, i64 8
+  %next = load ptr, ptr %next.slot
+  br label %lookup
+register:
+  %fresh = call ptr @malloc(i64 16)
+  store ptr %slot, ptr %fresh
+  %fresh.next = getelementptr i8, ptr %fresh, i64 8
+  store ptr %head, ptr %fresh.next
+  store ptr %fresh, ptr @gcGlobalRoots
+  br label %end
+end:
   ret void
 }
 
@@ -560,17 +599,41 @@ root.loop:
   %i = phi i64 [ 0, %entry ], [ %i.next, %root.advance ]
   %count = load i64, ptr @gcRootStackCount
   %done = icmp uge i64 %i, %count
-  br i1 %done, label %drain.mark, label %mark.root
+  br i1 %done, label %globals.start, label %mark.root
 mark.root:
   %stack = load ptr, ptr @gcRootStack
   %slot.bytes = mul i64 %i, 8
   %slot = getelementptr i8, ptr %stack, i64 %slot.bytes
   %root = load i64, ptr %slot
+  %tag = and i64 %root, -281474976710656
+  %is.slot = icmp eq i64 %tag, 9220557287087669248
+  br i1 %is.slot, label %mark.slot, label %mark.value
+mark.slot:
+  %address = and i64 %root, 281474976710655
+  %root.slot = inttoptr i64 %address to ptr
+  %current = load i64, ptr %root.slot
+  call void @gcMarkValue(i64 %current)
+  br label %root.advance
+mark.value:
   call void @gcMarkValue(i64 %root)
   br label %root.advance
 root.advance:
   %i.next = add i64 %i, 1
   br label %root.loop
+globals.start:
+  %global.head = load ptr, ptr @gcGlobalRoots
+  br label %globals.loop
+globals.loop:
+  %global.record = phi ptr [ %global.head, %globals.start ], [ %global.next, %globals.mark ]
+  %global.done = icmp eq ptr %global.record, null
+  br i1 %global.done, label %drain.mark, label %globals.mark
+globals.mark:
+  %global.slot = load ptr, ptr %global.record
+  %global.value = load i64, ptr %global.slot
+  call void @gcMarkValue(i64 %global.value)
+  %global.next.slot = getelementptr i8, ptr %global.record, i64 8
+  %global.next = load ptr, ptr %global.next.slot
+  br label %globals.loop
 drain.mark:
   br label %drain.loop
 drain.loop:

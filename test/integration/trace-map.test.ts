@@ -16,7 +16,7 @@ function collectMarkerIntervals(lines: readonly string[]): ReadonlyMap<string, r
   const markerIntervals = new Map<string, MarkerInterval[]>();
   const stack: { readonly id: string; readonly start: number }[] = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const start = /^; tscn-trace-start (\S+) /.exec(lines[index]);
+    const start = /^; tscn-trace-start (\S+)$/.exec(lines[index]);
     if (start !== null) {
       stack.push({ id: start[1], start: index + 1 });
       continue;
@@ -153,13 +153,13 @@ describe("operation trace maps", () => {
     }
   });
 
-  test("derives empty and repeated LLVM ranges from explicit marker pairs", async () => {
+  test("derives storage and repeated body ranges from instruction provenance", async () => {
     const emptyResult = await expectSuccessfulCompile("const-number.ts");
     const repeatedResult = await expectSuccessfulCompile("array-runtime-map-unsupported-callback.ts");
     try {
       const emptyMap = await readTraceMap(emptyResult);
       const repeatedMap = await readTraceMap(repeatedResult);
-      expect(emptyMap.operations.find((operation) => operation.kind === "constNumber")?.llvmRanges).toEqual([]);
+      expect(emptyMap.operations.find((operation) => operation.kind === "constNumber")?.llvmRanges.length).toBeGreaterThan(0);
       const callback = repeatedMap.operations.find((operation) => operation.kind === "runtimeArrayMapFunctionObject");
       expect(callback?.llvmRanges.length).toBeGreaterThan(1);
 
@@ -167,7 +167,7 @@ describe("operation trace maps", () => {
       const lines = llvm.split("\n");
       const markerIntervals = collectMarkerIntervals(lines);
       for (const operation of repeatedMap.operations) {
-        expect(llvm).toContain(`; tscn-trace-start ${operation.id} ${operation.kind} `);
+        expect(llvm).toContain(`; tscn-trace-start ${operation.id}\n`);
         expect(llvm).toContain(`; tscn-trace-end ${operation.id}`);
         expectOperationRangesMatchMarkers(operation, lines, markerIntervals);
       }

@@ -7,9 +7,10 @@ import { lowerStringRuntimeExpression } from "./string-expressions.js";
 import { lowerConditionExpression } from "./conditions.js";
 import { lowerObjectDestructuringElements } from "./object-destructuring.js";
 import { lowerConstAggregateBinding, lowerConstVariableBinding } from "./variable-bindings.js";
-import type { LoweringContext } from "./context.js";
+import type { LoweringContext, LoweringContextOptions } from "./context.js";
 
-export function createLoweringContext(): LoweringContext {
+/** The state of one `lowerToJsIr` invocation: nothing here survives the call that created it. */
+export function createLoweringContext(options: LoweringContextOptions): LoweringContext {
   return {
     enclosingLoopLabels: [],
     pendingLoopLabel: undefined,
@@ -18,6 +19,9 @@ export function createLoweringContext(): LoweringContext {
     activeClassMethodStatic: false,
     nextFunctionObjectId: 0,
     nextJsonStatementValueId: 0,
+    classes: new Map(),
+    typeChecker: options.typeChecker,
+    inlineCpp: options.inlineCpp,
     tryRegionOfCatchFinallyDepth: 0,
     finallyBlockDepth: 0,
     lowerStatement,

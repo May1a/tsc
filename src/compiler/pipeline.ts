@@ -6,11 +6,28 @@ import { CompilationFailed } from "./errors.js";
 import { loadProgram } from "./frontend.js";
 import { lowerToJsIr } from "./ir.js";
 import { type LinkResult, linkWithClang, linkWithClangxx, linkerErrorToLinkResult } from "./linker.js";
-import { emitLlvmModule } from "./llvm/module.js";
-import { emitInlineCppSource } from "./llvm/inline-cpp.js";
+import { emitNativeModule } from "./native-lowering/module.js";
+import { emitInlineCppSource } from "./inline-cpp-source.js";
+import { resolveBindings } from "./binding-resolution/index.js";
+import { createLlvmModule } from "./llvm-ir/index.js";
+import { buildTraceMap } from "./trace.js";
 import { Toolchain } from "./toolchain.js";
 import type { CompileOptions, CompileResult } from "./types.js";
 import { jsValueAbi } from "./js-value-abi/index.js";
+import { runtimeIrText } from "./runtime-files.js";
+
+const hasError = (diagnostics: readonly CompilerDiagnostic[]): boolean =>
+  diagnostics.some((diagnostic) => diagnostic.category === "error");
+
+const failCompilation = (
+  fs: FileSystem.FileSystem,
+  diagnosticsPath: string,
+  diagnostics: readonly CompilerDiagnostic[]
+): Effect.Effect<never, CompilationFailed | PlatformError> =>
+  Effect.gen(function* failCompilationGen() {
+    yield* fs.writeFileString(diagnosticsPath, diagnostics.map(formatDiagnostic).join("\n"));
+    return yield* Effect.fail(new CompilationFailed({ diagnostics: [...diagnostics] }));
+  });
 
 export const compile = (
   options: CompileOptions
@@ -25,9 +42,6 @@ export const compile = (
     const path = yield* Path.Path;
     const toolchain = yield* Toolchain;
 
-    // Diagnostics accumulate in a local list rather than an ambient service. The service had one
-    // implementation, one consumer and three dead methods, and required the caller to drain it at a
-    // fixed point in the pipeline — an ordering invariant that lived nowhere but in this function.
     const diagnostics: CompilerDiagnostic[] = [];
 
     yield* fs.makeDirectory(options.outDir, { recursive: true });
@@ -35,17 +49,22 @@ export const compile = (
     const hostDiagnostic = jsValueAbi.validateHost(toolchain.target);
     if (hostDiagnostic !== undefined) {
       diagnostics.push(hostDiagnostic);
-      yield* fs.writeFileString(diagnosticsPath, diagnostics.map(formatDiagnostic).join("\n"));
-      return yield* Effect.fail(new CompilationFailed({ diagnostics }));
+      return yield* failCompilation(fs, diagnosticsPath, diagnostics);
     }
 
     const frontend = yield* loadProgram(options.entry, {
       suppressSemanticDiagnostics: options.suppressSemanticDiagnostics
     });
     diagnostics.push(...frontend.diagnostics);
+    // Collect unsupported-form diagnostics alongside frontend errors.
     const jsIr = lowerToJsIr(path.resolve(options.entry), frontend.sourceFiles, frontend.program.getTypeChecker(), {
       fcpp: options.fcpp
     });
+    diagnostics.push(...jsIr.diagnostics);
+
+    if (hasError(diagnostics)) {
+      return yield* failCompilation(fs, diagnosticsPath, diagnostics);
+    }
 
     const llvmIr = path.join(options.outDir, "main.ll");
     const traceMap = path.join(options.outDir, "trace-map.json");
@@ -55,17 +74,22 @@ export const compile = (
       inlineCpp = path.join(options.outDir, "inline-cpp.cpp");
     }
 
-    const emission = emitLlvmModule(jsIr.module);
-    yield* fs.writeFileString(llvmIr, emission.llvmIr);
-    yield* fs.writeFileString(traceMap, `${JSON.stringify(emission.traceMap, undefined, 2)}\n`);
+    const resolved = resolveBindings(jsIr.module);
+    diagnostics.push(...resolved.diagnostics);
+    if (hasError(diagnostics)) {
+      return yield* failCompilation(fs, diagnosticsPath, diagnostics);
+    }
+
+    const builder = createLlvmModule({ staticRuntime: [{ origin: "static runtime", text: runtimeIrText() }] });
+    const emission = emitNativeModule(resolved.module, builder);
+    yield* fs.writeFileString(llvmIr, emission.text);
+    yield* fs.writeFileString(traceMap, `${JSON.stringify(buildTraceMap(jsIr.module, emission.traceRanges), undefined, 2)}\n`);
     if (inlineCpp !== undefined) {
       yield* fs.writeFileString(inlineCpp, emitInlineCppSource(jsIr.module.inlineCppBlocks));
     }
 
-    diagnostics.push(...jsIr.diagnostics);
-    diagnostics.push(...emission.diagnostics);
     let link: LinkResult = { diagnostics: [] };
-    if (options.link !== false && !diagnostics.some((diagnostic) => diagnostic.category === "error")) {
+    if (options.link !== false) {
       let linkEffect = linkWithClang(llvmIr, executable);
       if (inlineCpp !== undefined) {
         linkEffect = linkWithClangxx(llvmIr, inlineCpp, executable);
@@ -74,11 +98,11 @@ export const compile = (
     }
     const allDiagnostics = [...diagnostics, ...link.diagnostics];
 
-    yield* fs.writeFileString(diagnosticsPath, allDiagnostics.map(formatDiagnostic).join("\n"));
-
-    if (allDiagnostics.some((diagnostic) => diagnostic.category === "error")) {
-      return yield* Effect.fail(new CompilationFailed({ diagnostics: allDiagnostics }));
+    if (hasError(allDiagnostics)) {
+      return yield* failCompilation(fs, diagnosticsPath, allDiagnostics);
     }
+
+    yield* fs.writeFileString(diagnosticsPath, allDiagnostics.map(formatDiagnostic).join("\n"));
 
     return {
       diagnostics: allDiagnostics,

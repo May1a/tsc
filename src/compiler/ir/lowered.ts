@@ -1,6 +1,3 @@
-import type ts from "typescript";
-import type { JsIrBindingValue } from "./bindings.js";
-import { unsupportedStatementMessage } from "./diagnostics.js";
 import type { JsIrOperation } from "./types.js";
 
 /**
@@ -39,24 +36,6 @@ export const loweredOperation = (operation: JsIrOperation): Lowered => ({ kind: 
 export const unsupported = (reason: string): Lowered => ({ kind: "unsupported", reason });
 export const loweredOperationList = (operations: readonly JsIrOperation[]): LoweredStatementList => produced(operations);
 export const loweredUnsupportedStatementList = (reason: string): LoweredStatementList => unsupportedIn(reason);
-/**
- * A statement whose recognizer returned `Lowered`.
- *
- * A recognizer that already carries a reason wins over the generic message: it knows *why* the statement
- * failed, and reconstructing that from the syntax afterwards is how a diagnostic ends up naming the shape
- * instead of the feature. Only a `notApplicable` — nothing claimed the statement — falls back.
- */
-export function loweredStatementResult(
-  result: Lowered,
-  statement: ts.Statement,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): Lowered {
-  if (result.kind !== "notApplicable") {
-    return result;
-  }
-  return unsupported(unsupportedStatementMessage(statement, bindings));
-}
-
 /** A leaf recognizer's optional payload becomes an explicit chain result. */
 export function loweredOptional<T>(operation: T | undefined): Lowered<T> {
   if (operation === undefined) {

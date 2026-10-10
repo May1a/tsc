@@ -46,127 +46,104 @@ not.object:
 }
 define { i64, i1 } @mapFromIterable(i64 %iterable, i64 %not.iterable.message) {
 entry:
-  %frame = call i64 @gcRootSave()
-  call void @gcRootPush(i64 %iterable)
-  call void @gcRootPush(i64 %not.iterable.message)
-  %iter.call = call { i64, i1 } @getIteratorValue(i64 %iterable, i64 %not.iterable.message)
-  %iter = extractvalue { i64, i1 } %iter.call, 0
-  %iter.exc = extractvalue { i64, i1 } %iter.call, 1
-  call void @gcRootPush(i64 %iter)
-  br i1 %iter.exc, label %fail, label %create
-create:
-  %collection = call ptr @collectionNew()
-  %collection.root = call i64 @valueBoxObject(ptr %collection)
-  call void @gcRootPush(i64 %collection.root)
-  %loop.frame = call i64 @gcRootSave()
-  br label %loop
-loop:
-  call void @gcRootRestore(i64 %loop.frame)
-  call void @gcSafepoint()
-  %next.call = call { i64, i1 } @callIteratorNext(i64 %iter)
-  %next = extractvalue { i64, i1 } %next.call, 0
-  %next.exc = extractvalue { i64, i1 } %next.call, 1
-  call void @gcRootPush(i64 %next)
-  br i1 %next.exc, label %fail.next, label %check.done
-check.done:
-  %done.value = call i64 @valueObjectGet(i64 %next, i64 4, ptr @.iter.key.done)
-  %is.done = call i1 @valueTruthy(i64 %done.value)
-  br i1 %is.done, label %success, label %read.value
-read.value:
-  %entry.value = call i64 @valueObjectGet(i64 %next, i64 5, ptr @.iter.key.value)
-  call void @gcRootPush(i64 %entry.value)
-  %entry.is.object = call i1 @valueIsObject(i64 %entry.value)
-  %entry.is.array = call i1 @valueIsArray(i64 %entry.value)
-  %entry.ok = or i1 %entry.is.object, %entry.is.array
-  br i1 %entry.ok, label %read.entry, label %bad.entry
-read.entry:
-  br i1 %entry.is.array, label %entry.array, label %entry.object
-entry.array:
-  %key.a = call i64 @valueArrayGet(i64 %entry.value, i64 0, i64 1, ptr @.iter.key.0)
-  %val.a = call i64 @valueArrayGet(i64 %entry.value, i64 1, i64 1, ptr @.iter.key.1)
-  call void @gcRootPush(i64 %key.a)
-  call void @gcRootPush(i64 %val.a)
-  call void @collectionSet(ptr %collection, i64 %key.a, i64 %val.a)
-  br label %loop
-entry.object:
-  %key.o = call i64 @valueObjectGet(i64 %entry.value, i64 1, ptr @.iter.key.0)
-  %val.o = call i64 @valueObjectGet(i64 %entry.value, i64 1, ptr @.iter.key.1)
-  call void @gcRootPush(i64 %key.o)
-  call void @gcRootPush(i64 %val.o)
-  call void @collectionSet(ptr %collection, i64 %key.o, i64 %val.o)
-  br label %loop
-bad.entry:
-  %entry.msg = call i64 @iteratorEntryNotObjectMessage(i64 %entry.value)
-  %entry.err = call { i64, i1 } @iteratorTypeError(i64 %entry.msg)
-  %entry.err.value = extractvalue { i64, i1 } %entry.err, 0
-  br label %fail.payload
-success:
-  %collection.bits = ptrtoint ptr %collection to i64
-  %ok.0 = insertvalue { i64, i1 } undef, i64 %collection.bits, 0
-  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
-  call void @gcRootRestore(i64 %frame)
-  ret { i64, i1 } %ok.1
-fail:
-  br label %fail.payload
-fail.next:
-  br label %fail.payload
-fail.payload:
-  %err = phi i64 [ %iter, %fail ], [ %next, %fail.next ], [ %entry.err.value, %bad.entry ]
-  %fail.0 = insertvalue { i64, i1 } undef, i64 %err, 0
-  %fail.1 = insertvalue { i64, i1 } %fail.0, i1 true, 1
-  call void @gcRootRestore(i64 %frame)
-  ret { i64, i1 } %fail.1
+  %result = call { i64, i1 } @collectionFromIterable(i64 %iterable, i64 %not.iterable.message, i1 true)
+  ret { i64, i1 } %result
 }
 define { i64, i1 } @setFromIterable(i64 %iterable, i64 %not.iterable.message) {
+entry:
+  %result = call { i64, i1 } @collectionFromIterable(i64 %iterable, i64 %not.iterable.message, i1 false)
+  ret { i64, i1 } %result
+}
+define { i64, i1 } @collectionFromIterable(i64 %iterable, i64 %not.iterable.message, i1 %map) {
 entry:
   %frame = call i64 @gcRootSave()
   call void @gcRootPush(i64 %iterable)
   call void @gcRootPush(i64 %not.iterable.message)
-  %iter.call = call { i64, i1 } @getIteratorValue(i64 %iterable, i64 %not.iterable.message)
-  %iter = extractvalue { i64, i1 } %iter.call, 0
-  %iter.exc = extractvalue { i64, i1 } %iter.call, 1
-  call void @gcRootPush(i64 %iter)
-  br i1 %iter.exc, label %fail, label %create
-create:
-  %collection = call ptr @collectionNew()
-  %collection.root = call i64 @valueBoxObject(ptr %collection)
-  call void @gcRootPush(i64 %collection.root)
-  %loop.frame = call i64 @gcRootSave()
-  br label %loop
-loop:
-  call void @gcRootRestore(i64 %loop.frame)
-  call void @gcSafepoint()
-  %next.call = call { i64, i1 } @callIteratorNext(i64 %iter)
-  %next = extractvalue { i64, i1 } %next.call, 0
-  %next.exc = extractvalue { i64, i1 } %next.call, 1
-  call void @gcRootPush(i64 %next)
-  br i1 %next.exc, label %fail.next, label %check.done
-check.done:
-  %done.value = call i64 @valueObjectGet(i64 %next, i64 4, ptr @.iter.key.done)
-  %is.done = call i1 @valueTruthy(i64 %done.value)
-  br i1 %is.done, label %success, label %read.value
-read.value:
-  %item = call i64 @valueObjectGet(i64 %next, i64 5, ptr @.iter.key.value)
-  call void @gcRootPush(i64 %item)
-  call void @collectionSet(ptr %collection, i64 %item, i64 9222246136947933186)
-  br label %loop
-success:
-  %collection.bits = ptrtoint ptr %collection to i64
-  %ok.0 = insertvalue { i64, i1 } undef, i64 %collection.bits, 0
-  %ok.1 = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  %opened = call { i64, i1 } @getIteratorValue(i64 %iterable, i64 %not.iterable.message)
+  %iterator = extractvalue { i64, i1 } %opened, 0
+  %open.failed = extractvalue { i64, i1 } %opened, 1
+  call void @gcRootPush(i64 %iterator)
+  br i1 %open.failed, label %open.failure, label %consume
+consume:
+  %result = call { i64, i1 } @collectionFromIterator(i64 %iterator, i1 %map)
   call void @gcRootRestore(i64 %frame)
-  ret { i64, i1 } %ok.1
-fail:
-  br label %fail.payload
-fail.next:
-  br label %fail.payload
-fail.payload:
-  %err = phi i64 [ %iter, %fail ], [ %next, %fail.next ]
-  %fail.0 = insertvalue { i64, i1 } undef, i64 %err, 0
-  %fail.1 = insertvalue { i64, i1 } %fail.0, i1 true, 1
+  ret { i64, i1 } %result
+open.failure:
   call void @gcRootRestore(i64 %frame)
-  ret { i64, i1 } %fail.1
+  ret { i64, i1 } %opened
 }
+define { i64, i1 } @collectionFromIterator(i64 %iterator, i1 %map) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %iterator)
+  %collection = call ptr @collectionNew()
+  %owner = call i64 @valueBoxObject(ptr %collection)
+  call void @gcRootPush(i64 %owner)
+  br label %next
+next:
+  %iteration.frame = call i64 @gcRootSave()
+  call void @gcSafepoint()
+  %step.result = call { i64, i1 } @callIteratorNext(i64 %iterator)
+  %step = extractvalue { i64, i1 } %step.result, 0
+  %failed = extractvalue { i64, i1 } %step.result, 1
+  call void @gcRootPush(i64 %step)
+  br i1 %failed, label %step.failure, label %check.done
+check.done:
+  %done.value = call i64 @valuePropertyGet(i64 %step, i64 4, ptr @.iter.key.done)
+  %done = call i1 @valueTruthy(i64 %done.value)
+  br i1 %done, label %success, label %read.value
+read.value:
+  %item = call i64 @valuePropertyGet(i64 %step, i64 5, ptr @.iter.key.value)
+  call void @gcRootPush(i64 %item)
+  br i1 %map, label %check.entry, label %set.entry
+set.entry:
+  call void @collectionSet(ptr %collection, i64 %item, i64 9222246136947933186)
+  br label %advance
+check.entry:
+  %is.object = call i1 @valueIsObject(i64 %item)
+  %is.array = call i1 @valueIsArray(i64 %item)
+  %valid = or i1 %is.object, %is.array
+  br i1 %valid, label %map.entry, label %bad.entry
+map.entry:
+  %key = call i64 @valuePropertyGet(i64 %item, i64 1, ptr @.iter.key.0)
+  call void @gcRootPush(i64 %key)
+  %value = call i64 @valuePropertyGet(i64 %item, i64 1, ptr @.iter.key.1)
+  call void @gcRootPush(i64 %value)
+  call void @collectionSet(ptr %collection, i64 %key, i64 %value)
+  br label %advance
+advance:
+  call void @gcRootRestore(i64 %iteration.frame)
+  br label %next
+success:
+  %ok.value = insertvalue { i64, i1 } undef, i64 %owner, 0
+  %ok = insertvalue { i64, i1 } %ok.value, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok
+step.failure:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %step.result
+bad.entry:
+  %message = call i64 @iteratorEntryNotObjectMessage(i64 %item)
+  %error.result = call { i64, i1 } @iteratorTypeError(i64 %message)
+  %error = extractvalue { i64, i1 } %error.result, 0
+  call void @gcRootPush(i64 %error)
+  call { i64, i1 } @iteratorClose(i64 %iterator)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %error.result
+}
+
+define { i64, i1 } @mapFromIterator(i64 %iterator) {
+entry:
+  %result = call { i64, i1 } @collectionFromIterator(i64 %iterator, i1 true)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @setFromIterator(i64 %iterator) {
+entry:
+  %result = call { i64, i1 } @collectionFromIterator(i64 %iterator, i1 false)
+  ret { i64, i1 } %result
+}
+
 define ptr @collectionNew() {
 entry:
   %cell = call ptr @gcAlloc(i64 4, i64 40)

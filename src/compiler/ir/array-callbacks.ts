@@ -36,10 +36,7 @@ export function lowerRuntimeArrayCallbackBinding(
   }
   const method = initializer.expression.name.text;
   if (method === "reduce" || method === "reduceRight") {
-    let direction: "left" | "right" = "left";
-    if (method === "reduceRight") {
-      direction = "right";
-    }
+    const direction: "left" | "right" = method === "reduceRight" ? "right" : "left";
     return lowerRuntimeArrayReduceCallbackBinding(context, name, arrayName, initializer.arguments, bindings, direction);
   }
   if (method !== "map" && method !== "flatMap" && method !== "filter" && method !== "find" && method !== "findIndex") {
@@ -195,10 +192,7 @@ function lowerInlineArrayCallbackFunctionObject(
   if (ts.isFunctionExpression(callback) && callback.asteriskToken !== undefined) {
     return unsupportedIn(unsupportedFormMessage("generator-function"));
   }
-  let callbackKind: "arrow" | "ordinary" = "ordinary";
-  if (ts.isArrowFunction(callback)) {
-    callbackKind = "arrow";
-  }
+  const callbackKind: "arrow" | "ordinary" = ts.isArrowFunction(callback) ? "arrow" : "ordinary";
   const declaredParameters = [...callback.parameters];
   const firstParameter = declaredParameters.at(0);
   if (callbackKind === "ordinary" && firstParameter !== undefined && ts.isIdentifier(firstParameter.name) && firstParameter.name.text === CLASS_THIS_NAME) {
@@ -248,10 +242,7 @@ function lowerInlineArrayCallbackFunctionObject(
   }
   const callbackName = `__tscn_fnobj_${name}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   context.nextFunctionObjectId += 1;
-  let direction: "left" | "right" = "left";
-  if (method === "reduceRight") {
-    direction = "right";
-  }
+  const direction: "left" | "right" = method === "reduceRight" ? "right" : "left";
   return produced({ kind: "runtimeArrayMapFunctionObject", method, name, arrayName, callbackName, callbackParameters: parameters, callbackReturnKind: returnKind, callbackBody: body.operation, callbackKind, direction, thisArg, captures });
 }
 

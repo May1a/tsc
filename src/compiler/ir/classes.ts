@@ -2,7 +2,7 @@ import { unsupportedFormMessage } from "./builtins/manifest.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type ClassInfo, type CollectedClassMembers, buildClassInfo, classAccessorEntries, classLoweringState, classMethodEntries, collectClassMembers, lowerClassInheritanceOperations, resolveClassNames } from "./class-info.js";
+import { type ClassInfo, type CollectedClassMembers, buildClassInfo, classAccessorEntries, classMethodEntries, collectClassMembers, lowerClassInheritanceOperations, resolveClassNames } from "./class-info.js";
 import { type LoweredStatementList, type Produced, loweredOperationList, loweredUnsupportedStatementList, unsupportedIn } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
 import { unwrapTypeOnlyExpression } from "./predicates.js";
@@ -220,7 +220,6 @@ function lowerRegisteredClassDeclaration(
   }
   const info = built.operation;
   classes.set(info.name, info);
-  classLoweringState.registry = classes;
   let previousInnerName: ClassInfo | undefined;
   if (names.innerName !== undefined) {
     previousInnerName = classes.get(names.innerName);

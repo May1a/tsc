@@ -28,27 +28,12 @@ describe("tscn CLI", () => {
       const llvmIr = await result.readArtifact("main.ll");
       expect(llvmIr).toContain("declare i32 @puts(ptr)");
       expect(llvmIr).toContain(String.raw`c"hello from tscn\00"`);
-      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+      expect(llvmIr).toContain("call void @valuePrint(i64 ");
     } finally {
       await result.cleanup();
     }
   });
 
-  // A compiler failure that says nothing is the one failure a user cannot act on, and this one was
-  // silent: exit status 1 with empty stdout *and* empty stderr. `runMain` is configured with
-  // `disableErrorReporting`, and a defect — an exception thrown rather than a typed failure — does not
-  // pass through the typed handlers, so it left the process mute. `run.ts` now reports defects the same
-  // way it reports typed errors.
-  //
-  // The fixture triggers a real one rather than a synthetic fault: reading a field of an object literal
-  // from inside a function needs a layout that `@main` registers after the function definitions are
-  // emitted, so the emitter cannot resolve it. The ordering is documented in the fixture; fixing it
-  // reorders emission and changes every `main.ll`, so it is not done here.
-  // A class refusal used to reach the diagnostic by throwing, and the throw unwound the whole file: one
-  // class failure discarded every operation lowered before it and reported a single message at position 0.
-  // It now travels with the statement that caused it, and lowering continues — so the reason is reported
-  // *and* the statement after it is still looked at, which is what every other refusal here has done
-  // since the statement tier became `Lowered`.
   test("a class refusal reports its own reason and lowering continues", async () => {
     const result = await compileFixture("class-refusal-reason-survives.ts");
 
@@ -68,55 +53,23 @@ describe("tscn CLI", () => {
     }
   }, roadmapIntegrationTimeoutMs);
 
-  test("reports a compiler defect instead of exiting silently", async () => {
-    const outDir = await mkdtemp(path.join(tmpdir(), "tscn-defect-"));
-    const run = await Effect.runPromise(
-      captureCommand("bun", [
-        "src/cli/main.ts",
-        "test/fixtures/defect-closure-over-object-literal.ts",
-        "--out-dir",
-        outDir
-      ], { cwd: repoRoot }).pipe(Effect.provide(commandExecutorLayer))
-    );
-
+  test("reads an enclosing fixed object through the CLI compiler", async () => {
+    const result = await expectSuccessfulCompile("defect-closure-over-object-literal.ts", { link: true });
     try {
-      expect(run.status).not.toBe(0);
-      expect(run.stdout).toBe("");
-      expect(run.stderr, "a defect must not be silent").not.toBe("");
-      expect(run.stderr).toContain("error:");
-      // It is an internal error rather than a diagnostic about the program, and saying so is the point:
-      // the user needs to know the compiler broke, not that their source was rejected.
-      expect(run.stderr).toContain("Unhandled JsIrNumberExpression");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "5\n", stderr: "" });
     } finally {
-      await rm(outDir, { recursive: true, force: true });
+      await result.cleanup();
     }
-  }, roadmapIntegrationTimeoutMs);
+  });
 
-  // The same capture gap reached clang instead of dying in the emitter, which is worse than being
-  // silent: a program that is correct TypeScript and correct JavaScript fails at link time, through a
-  // namespace — a form this project admits.
-  test("names a capture gap that reaches the linker rather than dying in the emitter", async () => {
-    const outDir = await mkdtemp(path.join(tmpdir(), "tscn-capture-"));
-    const run = await Effect.runPromise(
-      captureCommand("bun", [
-        "src/cli/main.ts",
-        "test/fixtures/defect-closure-over-namespace.ts",
-        "--out-dir",
-        outDir
-      ], { cwd: repoRoot }).pipe(Effect.provide(commandExecutorLayer))
-    );
-
+  test("reads an enclosing namespace through the CLI compiler", async () => {
+    const result = await expectSuccessfulCompile("defect-closure-over-namespace.ts", { link: true });
     try {
-      expect(run.status).not.toBe(0);
-      expect(run.stdout).toBe("");
-      expect(run.stderr, "a failed compile must say what it could not emit").not.toBe("");
-      // The diagnostic is a link failure rather than a complaint about the source, and it is what the
-      // user sees. Both fixtures record the same cause from the two sides the compiler can fail on.
-      expect(run.stderr).toContain("%Config.addr");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n", stderr: "" });
     } finally {
-      await rm(outDir, { recursive: true, force: true });
+      await result.cleanup();
     }
-  }, roadmapIntegrationTimeoutMs);
+  });
 
   test("runs emitted native executable when clang is available", async () => {
     const result = await expectSuccessfulCompile("hello.ts", { link: true });
@@ -341,12 +294,9 @@ describe("tscn CLI", () => {
   });
 
   test("lowers top-level const string bindings used by print", async () => {
-    const result = await expectSuccessfulCompile("const-string.ts");
-
+    const result = await expectSuccessfulCompile("const-string.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain(String.raw`c"from const string\00"`);
-      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "from const string\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
@@ -364,128 +314,90 @@ describe("tscn CLI", () => {
   });
 
   test("lowers number literals used by print", async () => {
-    const result = await expectSuccessfulCompile("number-literal.ts");
-
+    const result = await expectSuccessfulCompile("number-literal.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("declare i32 @printf(ptr, ...)");
-      expect(llvmIr).toContain(String.raw`c"%g\0A\00"`);
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "42\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
   });
 
   test("preserves numeric expression shape in print calls", async () => {
-    const result = await expectSuccessfulCompile("number-expression-print.ts");
-
+    const result = await expectSuccessfulCompile("number-expression-print.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fadd double 1.0, 2.0");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
   });
 
   test("lowers top-level const number bindings used by print", async () => {
-    const result = await expectSuccessfulCompile("const-number.ts");
-
+    const result = await expectSuccessfulCompile("const-number.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 42.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "42\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
   });
 
   test("preserves numeric expression shape in const number bindings used by print", async () => {
-    const result = await expectSuccessfulCompile("const-number-addition.ts");
-
+    const result = await expectSuccessfulCompile("const-number-addition.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("%num.0 = fadd double 40.0, 2.0");
-      expect(llvmIr).toContain("call i32 (ptr, ...) @printf(ptr @.fmt.number, double %num.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "42\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
   });
 
   test("lowers boolean literals used by print", async () => {
-    const result = await expectSuccessfulCompile("boolean-literal.ts");
-
+    const result = await expectSuccessfulCompile("boolean-literal.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain(String.raw`c"true\00"`);
-      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "true\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
   });
 
   test("lowers top-level const boolean bindings used by print", async () => {
-    const result = await expectSuccessfulCompile("const-boolean.ts");
-
+    const result = await expectSuccessfulCompile("const-boolean.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain(String.raw`c"false\00"`);
-      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "false\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
   });
 
   test("lowers string concatenation in top-level const bindings used by print", async () => {
-    const result = await expectSuccessfulCompile("const-string-concat.ts");
-
+    const result = await expectSuccessfulCompile("const-string-concat.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain(String.raw`c"hello, world\00"`);
-      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "hello, world\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
   });
 
   test("lowers top-level if statements with const boolean conditions", async () => {
-    const result = await expectSuccessfulCompile("if-const-true.ts");
-
+    const result = await expectSuccessfulCompile("if-const-true.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("br i1 true, label %if.then.0, label %if.end.0");
-      expect(llvmIr).toContain("if.then.0:");
-      expect(llvmIr).toContain(String.raw`c"enabled\00"`);
-      expect(llvmIr).toContain("call i32 @puts(ptr @.str.0)");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "enabled\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
   });
 
   test("lowers top-level if else statements with const boolean conditions", async () => {
-    const result = await expectSuccessfulCompile("if-const-false-else.ts");
-
+    const result = await expectSuccessfulCompile("if-const-false-else.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("br i1 false, label %if.then.0, label %if.else.0");
-      expect(llvmIr).toContain("if.then.0:");
-      expect(llvmIr).toContain("if.else.0:");
-      expect(llvmIr).toContain(String.raw`c"enabled\00"`);
-      expect(llvmIr).toContain(String.raw`c"disabled\00"`);
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "disabled\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
   });
 
   test("preserves statement order inside supported if blocks", async () => {
-    const result = await expectSuccessfulCompile("if-multiple-prints.ts");
-
+    const result = await expectSuccessfulCompile("if-multiple-prints.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr).toContain("br i1 true, label %if.then.0, label %if.end.0");
-      expect(llvmIr.indexOf("call i32 (ptr, ...) @printf(ptr @.fmt.number, double 3.0)")).toBeLessThan(
-        llvmIr.indexOf("call i32 @puts(ptr @.str.1)")
-      );
-      expect(llvmIr).toContain(String.raw`c"done\00"`);
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "3\ndone\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
@@ -514,12 +426,9 @@ describe("tscn CLI", () => {
   });
 
   test("preserves print order for literals and const bindings", async () => {
-    const result = await expectSuccessfulCompile("multiple-prints.ts");
-
+    const result = await expectSuccessfulCompile("multiple-prints.ts", { link: true });
     try {
-      const llvmIr = await result.readArtifact("main.ll");
-      expect(llvmIr.indexOf(String.raw`c"first literal\00"`)).toBeLessThan(llvmIr.indexOf(String.raw`c"first const\00"`));
-      expect(llvmIr.indexOf(String.raw`c"first const\00"`)).toBeLessThan(llvmIr.indexOf(String.raw`c"second literal\00"`));
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "first literal\nfirst const\nsecond literal\n", stderr: "" });
     } finally {
       await result.cleanup();
     }

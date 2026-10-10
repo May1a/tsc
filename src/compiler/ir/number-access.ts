@@ -3,7 +3,6 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrNumberExpression } from "./expressions.js";
-import { classLoweringState } from "./class-info.js";
 import { lowerClassValueExpression } from "./class-values.js";
 import { isBoxedAggregateCandidateBinding, lowerObjectAccessPath } from "./builtins/object-producers.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
@@ -17,14 +16,15 @@ export function lowerClassNumberAccess(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrNumberExpression> {
-  if (classLoweringState.registry === undefined || classLoweringState.typeChecker === undefined) {
+  const { typeChecker } = context;
+  if (typeChecker === undefined) {
     return notApplicable;
   }
   const isMemberAccess = ts.isPropertyAccessExpression(expression) || (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression));
   if (!isMemberAccess) {
     return notApplicable;
   }
-  const type = classLoweringState.typeChecker.getTypeAtLocation(expression);
+  const type = typeChecker.getTypeAtLocation(expression);
   if ((type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) === 0) {
     return notApplicable;
   }
@@ -40,7 +40,7 @@ export function lowerNumberAccessExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrNumberExpression> {
-  if (classLoweringState.typeChecker?.getTypeAtLocation(expression).getCallSignatures().length !== 0) {
+  if (context.typeChecker?.getTypeAtLocation(expression).getCallSignatures().length !== 0) {
     return notApplicable;
   }
   if (ts.isElementAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
@@ -109,6 +109,10 @@ function lowerLengthPropertyAccessExpression(
   }
   if (binding?.kind === "value" && binding.value.kind === "boxedPrimitive") {
     return produced({ kind: "valueObjectLength", value: value.operation });
+  }
+  if (context.typeChecker?.getTypeAtLocation(expression.expression).getCallSignatures().length
+      || (binding?.kind === "valueVariable" && binding.valueType === "function")) {
+    return produced({ kind: "valueLength", value: value.operation });
   }
   return produced({ kind: "valueArrayLength", value: value.operation });
 }
