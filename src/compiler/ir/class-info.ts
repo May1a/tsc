@@ -550,24 +550,21 @@ export function hasUnconstrainedTypeParameter(parameter: ts.ParameterDeclaration
   return type !== undefined && ts.isTypeReferenceNode(type) && ts.isIdentifier(type.typeName);
 }
 /**
- * The runtime parameters of a class member, or the reason it has none this build can place.
+ * A class member's parameters as its call sites see them, or the reason it has none this build can
+ * place.
  *
- * A class member's parameter list becomes an LLVM function signature with one slot per parameter, so
- * a parameter with no fixed shape has no slot: a rest parameter is a different calling convention, an
- * optional or defaulted one needs a slot filled at the call site, and a destructuring or
- * parameter-property one has no name to give the slot. Those are five different omissions that all
- * used to be one string, and the reason is what a user needs in order to know which one they wrote.
+ * Collection runs before any member is lowered, so this is the signature without its defaults: a
+ * parameter that is optional or has a default may be omitted, and the call site passes `undefined`
+ * into its slot. The member's own function lowers its defaults and destructuring patterns with
+ * `lowerFunctionParameters`, which names every slot as `parameterSlotName` does here.
  */
 export function classCallableParameters(
   declaration: ts.ConstructorDeclaration | ts.MethodDeclaration | ts.AccessorDeclaration
 ): Produced<readonly JsIrFunctionParameter[]> {
   const parameters: JsIrFunctionParameter[] = [];
-  for (const param of runtimeParameters(declaration.parameters)) {
+  for (const [index, param] of runtimeParameters(declaration.parameters).entries()) {
     if (param.dotDotDotToken !== undefined) {
       return unsupportedIn("Rest parameters are not supported on class members yet");
-    }
-    if (param.initializer !== undefined) {
-      return unsupportedIn("Parameters with defaults are not supported on class members yet");
     }
     // An accessibility or `readonly` modifier declares a field, which the constructor stores onto
     // `this`; it is not an error and it is not a second argv slot. Any other modifier on a parameter
@@ -575,19 +572,19 @@ export function classCallableParameters(
     if ((ts.getModifiers(param)?.length ?? 0) > 0 && !isParameterProperty(param)) {
       return unsupportedIn("This modifier on a class member parameter is not supported yet");
     }
-    if (!ts.isIdentifier(param.name)) {
-      return unsupportedIn("Destructuring parameters are not supported on class members yet");
-    }
-    // `x?: T` reaches here only without an initializer — the check above refuses those — so it is
-    // omittable, and the call site passes `undefined` into the slot rather than shifting the rest.
-    const valueKind = parameterValueKind(param);
-    if (param.questionToken === undefined) {
-      parameters.push({ name: param.name.text, valueKind });
+    const name = parameterSlotName(param, index);
+    if (param.questionToken !== undefined || param.initializer !== undefined) {
+      parameters.push({ name, valueKind: "value", isOptional: true });
     } else {
-      parameters.push({ name: param.name.text, valueKind, isOptional: true });
+      parameters.push({ name, valueKind: ts.isIdentifier(param.name) ? parameterValueKind(param) : "value" });
     }
   }
   return produced(parameters);
+}
+
+/** The argv slot a parameter binds: its own name, or a private name for a destructuring pattern. */
+export function parameterSlotName(parameter: ts.ParameterDeclaration, index: number): string {
+  return ts.isIdentifier(parameter.name) ? parameter.name.text : `__param${index}`;
 }
 // Resolves a static field read `C.x` to a property access on the class's
 // module-level static storage slot. Returns undefined when the receiver is not a

@@ -132,7 +132,7 @@ export interface ResolvedClosureValue {
 export interface ResolvedFunctionParameter {
   readonly name: BindingRef;
   readonly valueKind: JsIrValueKind;
-  readonly defaultValue?: ResolvedNumberExpression;
+  readonly defaultValue?: ResolvedValueExpression;
   readonly isRest?: boolean;
   readonly isOptional?: boolean;
 }

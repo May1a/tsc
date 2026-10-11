@@ -14,7 +14,11 @@ export type JsIrValueKind = "number" | "string" | "value";
 export interface JsIrFunctionParameter {
   readonly name: string;
   readonly valueKind: JsIrValueKind;
-  readonly defaultValue?: JsIrNumberExpression;
+  /**
+   * Evaluated by the callee when the argument is missing or `undefined`, after every earlier parameter
+   * is bound, so it may read them.
+   */
+  readonly defaultValue?: JsIrValueExpression;
   readonly isRest?: boolean;
   /** An omitted optional parameter receives undefined in boxed storage. */
   readonly isOptional?: boolean;
