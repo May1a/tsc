@@ -11,7 +11,6 @@ import { unwrapTypeOnlyExpression } from "./predicates.js";
 interface ClassHierarchyEntry {
   readonly baseName: string | undefined;
   readonly methods: ReadonlySet<string>;
-  readonly abstractMethods: ReadonlySet<string>;
   readonly opaque: boolean;
 }
 
@@ -61,14 +60,12 @@ function mergeEntries(existing: ClassHierarchyEntry | undefined, next: ClassHier
   return {
     baseName: existing.baseName ?? next.baseName,
     methods: new Set([...existing.methods, ...next.methods]),
-    abstractMethods: new Set([...existing.abstractMethods, ...next.abstractMethods]),
     opaque: existing.opaque || next.opaque
   };
 }
 
 function hierarchyEntry(node: ts.ClassLikeDeclaration): ClassHierarchyEntry {
   const methods = new Set<string>();
-  const abstractMethods = new Set<string>();
   let opaque = false;
   for (const member of node.members) {
     if (!ts.isMethodDeclaration(member) || hasModifier(member, ts.SyntaxKind.StaticKeyword) || ts.isPrivateIdentifier(member.name)) {
@@ -79,11 +76,9 @@ function hierarchyEntry(node: ts.ClassLikeDeclaration): ClassHierarchyEntry {
       opaque ||= member.body !== undefined;
     } else if (member.body !== undefined) {
       methods.add(name);
-    } else if (hasModifier(member, ts.SyntaxKind.AbstractKeyword)) {
-      abstractMethods.add(name);
     }
   }
-  return { baseName: extendedIdentifier(node), methods, abstractMethods, opaque };
+  return { baseName: extendedIdentifier(node), methods, opaque };
 }
 
 function hasModifier(member: ts.ClassElement, kind: ts.SyntaxKind): boolean {
@@ -122,21 +117,4 @@ export function isOverriddenBelow(hierarchy: ClassHierarchy, className: string, 
     }
   }
   return false;
-}
-
-/**
- * Whether `className`'s own implementation of `methodName` must be reachable through its prototype.
- *
- * That is the case when a call can dispatch to it: the method overrides one a base declares, so a
- * base-typed call can land on it, or a subclass overrides it, so a call dispatched from a
- * subclass-typed receiver can fall through to it.
- */
-export function isDispatchedMethod(hierarchy: ClassHierarchy, className: string, methodName: string): boolean {
-  if (isOverriddenBelow(hierarchy, className, methodName)) {
-    return true;
-  }
-  return ancestorsOf(hierarchy, className).some((ancestor) => {
-    const entry = hierarchy.entries.get(ancestor);
-    return entry !== undefined && (entry.methods.has(methodName) || entry.abstractMethods.has(methodName));
-  });
 }

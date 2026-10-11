@@ -270,6 +270,8 @@ export const oracleFixtures: readonly string[] = [
   "optional-call-absent-member.ts",
   "optional-call-present-member.ts",
   "optional-call-nullish-receiver.ts",
+  "call-untyped-result-not-number.ts",
+  "const-snapshot.ts",
   "class-extends-super-constructor.ts",
   "class-instanceof-inheritance.ts",
   "class-inheritance-construction.ts",
@@ -358,4 +360,5 @@ export const oracleFixtures: readonly string[] = [
   "form-admitted-labeled-statement.ts",
   "labeled-statement-for-of-frame.ts",
   "class-static-and-instance-field-write.ts",
+  "class-method-dynamic-access.ts",
 ] as const;

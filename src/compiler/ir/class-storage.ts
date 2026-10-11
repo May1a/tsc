@@ -1,6 +1,5 @@
 import type { LoweringContext } from "./context.js";
 import { type ClassComputedKeyInfo, type ClassComputedMethodEntry, type ClassFieldInfo, type ClassInfo, type ClassMethodInfo, type CollectedClassMembers, classPrototypeName, classStaticStorageName } from "./class-info.js";
-import { isDispatchedMethod } from "./class-hierarchy.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import { type Produced, loweredPayload, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
@@ -108,24 +107,22 @@ export function lowerClassStaticStorage(
 }
 
 /**
- * The prototype entries a class declaration installs for dispatched calls.
+ * The prototype entries a class declaration installs: one per instance method it declares.
  *
- * A dispatched call reads its method off the receiver, so every implementation it can reach must be
- * on a prototype: each method this class overrides, and each method a subclass overrides. Each class
- * installs only its own implementations, on its own prototype, when its declaration runs. A base's
- * entries therefore exist before any subclass instance can be constructed.
+ * A call that cannot be bound statically reads its method off the receiver: a dispatched call to an
+ * overridden method, a call through a computed key such as `obj["m"]()`, or any call on a boxed
+ * value. Each class installs its own implementations, on its own prototype, when its declaration
+ * runs, so a base's entries exist before any subclass instance can be constructed. A call the
+ * lowering binds statically still calls the method function directly.
  */
-export function lowerPrototypeDispatchStores(
+export function lowerPrototypeMethodStores(
   context: LoweringContext,
   info: ClassInfo,
   members: CollectedClassMembers
 ): readonly JsIrOperation[] {
   return members.methodDeclarations.flatMap((entry) => {
     const method = info.methods.get(entry.name);
-    if (method === undefined || !isDispatchedMethod(context.classHierarchy, info.name, entry.name)) {
-      return [];
-    }
-    return [lowerPrototypeMethodStore(context, info, entry.name, method)];
+    return method === undefined ? [] : [lowerPrototypeMethodStore(context, info, entry.name, method)];
   });
 }
 

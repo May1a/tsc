@@ -123,6 +123,55 @@ short-circuit on the receiver's nullish check, not only on the callee's.
 The fixture covers `o?.f()` and `o?.f(sideEffect())` on `undefined` and `null`, the chained form
 `a?.b.f()`, and the optional call `o.f?.()`.
 
+**0d. Untyped call results printed as numbers.** Found while verifying workstream 2.
+`const f: any = () => "x"; print(f())` prints `NaN`. The same happens for `for (const f of fns) f()`
+over an `any[]`, for a callee typed `() => unknown`, and for a spread call to a function returning
+`any`. `lowerNumberCallExpression` claimed every call whose checker type is `any` or `unknown`, and
+coerced the result with `valueToNumber`. `print` tries the number tier before the value tier.
+
+A call through a boxed callee is now claimed only when its static type is a number. A call to a
+declared function is still claimed under `any`, because its return kind is known and the checker
+types a recursive call in an unannotated function as `any`. The fixture is
+`call-untyped-result-not-number.ts`.
+
+`f() * 2` with an `any`-typed `f` is now refused, as `v * 2` with an `any`-typed `v` already was.
+Arithmetic operands need a ToNumber coercion of boxed values, including `valueOf`, before either can
+be admitted.
+
+**0e. `const` re-evaluated at every read.** Found while verifying workstream 2. `updateConstBindings`
+recorded a `const` by its initializer expression, and every read through an expression tier inlined
+it. `let n = 1; const m = n * 10; n = 2; return m` returned `20`, and `const a = ++i` incremented `i`
+at every read of `a`. This affected numbers, strings, booleans and values, inside functions and at
+module scope through another `const`. The Test262 harness already worked around it in
+`verifyProperty`.
+
+A `const` is now inlined only when its initializer is stable: constants, parameters, aggregate
+references and effect-free operators over them (`stable-expressions.ts`). Any other `const` is
+read from the slot its declaration stored. The fixture is `const-snapshot.ts`.
+
+**0f. Stores through an unchecked boxed receiver.** Found with 0e. `valueObjectSet`, `valueArraySet`,
+`valueArraySetLength` and `valueArrayDelete` turn the receiver's bits into a pointer without
+checking its tag. `isProvenBoxedAggregateBinding` admits an element read of an `any[]` as proof of an
+object, so `const t = xs[0]; t["k"] = 1` with `xs = [5]` writes through a number and the process
+dies silently. Assigning to a property of `undefined` dies instead of throwing a `TypeError`.
+
+Make those helpers dispatch on the receiver's tag with the language's semantics, then accept any boxed
+binding as a receiver. Then remove the 0e exception in `isShapeRecognizedReceiver`. For now, a
+`const` initialized by an element read, or by `new Number`/`Boolean`/`String`, is still re-evaluated
+at every read, so `n === n` is `false` for such a wrapper.
+
+**0h. Class methods missing from the prototype.** Found while verifying workstream 2. 0b installed only
+overridden methods on a class prototype, so `obj["m"]()` threw `TypeError: value is not a function`
+for any other method, and `inst.hasOwnProperty(k)` did the same. Every instance method is now
+installed (`lowerPrototypeMethodStores`), and `hasOwnProperty` on a boxed receiver lowers to
+`runtimeObjectHas`. Other `Object.prototype` methods called through a class instance, such as
+`toString` or `isPrototypeOf`, still throw, because the runtime has no `Object.prototype` functions.
+That belongs with 0g. The fixture is `class-method-dynamic-access.ts`.
+
+0d drops the Test262 floor from 1,013 to 1,012, and 0e restores it to 1,013. `language/statements/function/S13.2.1_A7_T2.js` passed
+only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never
+reads `x`. It is now refused, because a `var` cannot hold a boxed value yet. Workstream 2 admits it.
+
 ### 1. Refusal reasons reach the diagnostic
 
 1,652 Test262 gaps carry only a generic message. Find each place where an inner `unsupported` is

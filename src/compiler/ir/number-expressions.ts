@@ -285,6 +285,15 @@ function lowerNumberCallExpression(
   if (isPlannedBuiltinCall(expression.expression, bindings)) {
     return notApplicable;
   }
+  // A call through a boxed callee returns a number only when its static type says so. `any` and
+  // `unknown` say nothing, and claiming such a call here would coerce a string or object result to
+  // NaN in number-first contexts like `print`, so the value tier keeps it. A call to a declared
+  // function is still claimed under `any`: its return kind is known, and the checker reports a
+  // recursive call inside an unannotated function as `any`.
+  const boxedResultIsNumber = callType === undefined || (callType.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0;
+  if (!boxedResultIsNumber && isBoxedCallee(expression, bindings)) {
+    return notApplicable;
+  }
   const spreadCall = lowerSpreadCallValue(context, expression, bindings);
   if (spreadCall.kind === "unsupported") {
     return spreadCall;
@@ -365,4 +374,16 @@ function lowerNumberCallExpression(
   }
 
   return produced({ kind: "call", name, arguments: args });
+}
+
+/**
+ * Whether a call's result comes back boxed from a callee the lowering cannot see into: any callee
+ * other than an identifier, a binding that holds a boxed value, or a call with spread arguments.
+ */
+function isBoxedCallee(expression: ts.CallExpression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean {
+  if (!ts.isIdentifier(expression.expression) || expression.arguments.some(ts.isSpreadElement)) {
+    return true;
+  }
+  const callee = bindings.get(expression.expression.text);
+  return callee?.kind === "value" || callee?.kind === "valueVariable";
 }
