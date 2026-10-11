@@ -1,4 +1,4 @@
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
@@ -114,6 +114,10 @@ export function lowerNumberExpression(
   const collectionSize = lowerRuntimeCollectionSizeExpression(expression, bindings);
   if (collectionSize !== undefined) {
     return produced(collectionSize);
+  }
+
+  if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.PlusToken) {
+    return unsupportedIn("Unary `+` expressions are not supported yet");
   }
 
   if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.MinusToken) {
@@ -294,12 +298,15 @@ function lowerNumberCallExpression(
       return calleeValueResult;
     }
     const calleeValue = loweredPayload(calleeValueResult);
-    const dynamicArgsResult = lowerValueCallArguments(context, expression.arguments, bindings);
+    const dynamicArgsResult = lowerValueCallArguments(context, expression.arguments, bindings, expression.expression.getText());
     if (dynamicArgsResult.kind === "unsupported") {
       return dynamicArgsResult;
     }
     const dynamicArgs = loweredPayload(dynamicArgsResult);
     if (calleeValue === undefined || dynamicArgs === undefined) {
+      if (calleeValue !== undefined && dynamicArgsResult.kind !== "lowered") {
+        return withRefusal(dynamicArgsResult, unsupportedIn(`Arguments to \`${expression.expression.getText()}\` must be expressions this build can evaluate`));
+      }
       return notApplicable;
     }
     const callThisValueResult = lowerCallThisValue(context, expression.expression, bindings);
@@ -320,12 +327,15 @@ function lowerNumberCallExpression(
       return calleeValueResult2;
     }
     const calleeValue = loweredPayload(calleeValueResult2);
-    const dynamicArgsResult2 = lowerValueCallArguments(context, expression.arguments, bindings);
+    const dynamicArgsResult2 = lowerValueCallArguments(context, expression.arguments, bindings, expression.expression.getText());
     if (dynamicArgsResult2.kind === "unsupported") {
       return dynamicArgsResult2;
     }
     const dynamicArgs = loweredPayload(dynamicArgsResult2);
     if (calleeValue === undefined || dynamicArgs === undefined) {
+      if (calleeValue !== undefined && dynamicArgsResult2.kind !== "lowered") {
+        return withRefusal(dynamicArgsResult2, unsupportedIn(`Arguments to \`${expression.expression.getText()}\` must be expressions this build can evaluate`));
+      }
       return notApplicable;
     }
     const callThisValueResult2 = lowerCallThisValue(context, expression.expression, bindings);

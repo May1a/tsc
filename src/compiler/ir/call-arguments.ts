@@ -1,7 +1,8 @@
-import { type Lowered, notApplicable, produced } from "./lowered.js";
+import { type Lowered, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import { isUndefinedExpression } from "./predicates.js";
+import { expressionSnippet } from "./diagnostics.js";
 import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionParameter } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 
@@ -13,30 +14,56 @@ export function lowerCallArguments(
 ): Lowered<readonly JsIrCallArgument[]> {
   const callee = bindings.get(name);
   if (callee?.kind === "function") {
-    return context.lowerTypedCallArguments(context, callee.parameters, args, bindings);
+    const typed = context.lowerTypedCallArguments(context, callee.parameters, args, bindings);
+    if (typed.kind !== "lowered") {
+      return withRefusal(typed, unsupportedIn(`Arguments to \`${name}\` must be expressions this build can evaluate`));
+    }
+    return typed;
   }
 
   const lowered: JsIrCallArgument[] = [];
   for (const arg of args) {
     const value = context.lowerNumberExpression(context, arg, bindings);
     if (value.kind !== "lowered") {
-      return value;
+      const sourceTextCall = unsupportedSourceTextCallMessage(name);
+      if (sourceTextCall !== undefined) {
+        return withRefusal(value, unsupportedIn(sourceTextCall));
+      }
+      return withRefusal(value, unsupportedIn(`The argument \`${expressionSnippet(arg)}\` to \`${name}\` is not an expression this build can evaluate`));
     }
     lowered.push({ valueKind: "number", value: value.operation });
   }
   return produced(lowered);
 }
 
+/**
+ * Why a call that compiles source text did not lower its arguments.
+ *
+ * `eval` and the `Function` constructor take source text, which the number-argument path for
+ * unbound callees never accepts; naming the callee says that rather than blaming the argument.
+ * Calls that pass numbers keep lowering exactly as before.
+ */
+function unsupportedSourceTextCallMessage(name: string): string | undefined {
+  if (name === "eval") {
+    return "Calling `eval` with source text is not supported yet";
+  }
+  if (name === "Function") {
+    return "The `Function` constructor compiles source text at runtime, which is not supported yet";
+  }
+  return undefined;
+}
+
 export function lowerValueCallArguments(
   context: LoweringContext,
   args: readonly ts.Expression[],
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  calleeName: string
 ): Lowered<readonly JsIrCallArgument[]> {
   const lowered: JsIrCallArgument[] = [];
   for (const argument of args) {
     const value = context.lowerValueExpression(context, argument, bindings);
     if (value.kind !== "lowered") {
-      return value;
+      return withRefusal(value, unsupportedIn(`The argument \`${expressionSnippet(argument)}\` to \`${calleeName}\` is not an expression this build can evaluate`));
     }
     lowered.push({ valueKind: "value", value: value.operation });
   }
@@ -145,7 +172,7 @@ function lowerRestCallValues(
     }
     const value = context.lowerValueExpression(context, arg, bindings);
     if (value.kind !== "lowered") {
-      return value;
+      return withRefusal(value, unsupportedIn(`The argument \`${expressionSnippet(arg)}\` is not an expression this build can evaluate`));
     }
     restValues.push(value.operation);
   }
@@ -188,20 +215,20 @@ export function lowerTypedCallArgument(
   if (parameter.valueKind === "string") {
     const value = context.lowerStringRuntimeExpression(context, arg, bindings);
     if (value.kind !== "lowered") {
-      return value;
+      return withRefusal(value, unsupportedIn(`The argument \`${expressionSnippet(arg)}\` is not an expression this build can evaluate`));
     }
     return produced({ valueKind: "string", value: value.operation });
   }
   if (parameter.valueKind === "value") {
     const value = context.lowerValueExpression(context, arg, bindings);
     if (value.kind !== "lowered") {
-      return value;
+      return withRefusal(value, unsupportedIn(`The argument \`${expressionSnippet(arg)}\` is not an expression this build can evaluate`));
     }
     return produced({ valueKind: "value", value: value.operation });
   }
   const value = context.lowerNumberExpression(context, arg, bindings);
   if (value.kind !== "lowered") {
-    return value;
+    return withRefusal(value, unsupportedIn(`The argument \`${expressionSnippet(arg)}\` is not an expression this build can evaluate`));
   }
   return produced({ valueKind: "number", value: value.operation });
 }

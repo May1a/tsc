@@ -1,11 +1,12 @@
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { lowerDestructuringBinding } from "./destructuring.js";
 import { lowerClosureFactoryCall, lowerFunctionObjectValue } from "./closures.js";
-import { isUndefinedExpression, unwrapTypeOnlyExpression } from "./predicates.js";
+import { errorConstructorNames, isUndefinedExpression, isUnsupportedSymbolExpression, unwrapTypeOnlyExpression } from "./predicates.js";
+import { expressionSnippet, unsupportedNewExpressionMessage } from "./diagnostics.js";
 import { classifyArrayLiteral } from "./array-literals.js";
 import { lowerStringExpression } from "./string-constants.js";
 import { lowerBooleanExpression } from "./conditions.js";
@@ -24,12 +25,12 @@ export function lowerVariableBinding(
   promotedAggregates: ReadonlySet<string> = new Set()
 ): Lowered {
   if (statement.declarationList.declarations.length !== 1) {
-    return notApplicable;
+    return unsupported("Declaring multiple bindings in one statement is not supported yet");
   }
 
   const [declaration] = statement.declarationList.declarations;
   if (!declaration.initializer) {
-    return notApplicable;
+    return unsupported("A variable declaration without an initializer is not supported yet");
   }
 
   const isConst = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
@@ -37,7 +38,7 @@ export function lowerVariableBinding(
 
   if (ts.isArrayBindingPattern(declaration.name) || ts.isObjectBindingPattern(declaration.name)) {
     if (!isConst) {
-      return notApplicable;
+      return unsupported("Destructuring bindings must be declared with `const`");
     }
     return lowerDestructuringBinding(context, declaration.name, declaration.initializer, bindings);
   }
@@ -88,26 +89,23 @@ function lowerVarRedeclaration(
   if (binding?.kind === "stringVariable") {
     const value = context.lowerStringRuntimeExpression(context, initializer, bindings);
     if (value.kind !== "lowered") {
-      return value;
+      return withRefusal(value, unsupportedIn(`Redeclaring \`${name}\`, which holds a string, with a non-string value is not supported: a binding keeps the representation of its initializer`));
     }
     return produced({ kind: "assignString", name, value: value.operation });
   }
   if (binding?.kind === "booleanVariable") {
     const booleanValue = context.lowerConditionExpression(context, initializer, bindings);
-    if (booleanValue.kind === "unsupported") {
-      return booleanValue;
-    }
     if (booleanValue.kind !== "lowered") {
-      return notApplicable;
+      return withRefusal(booleanValue, unsupportedIn(`Redeclaring \`${name}\`, which holds a boolean, with a non-boolean value is not supported: a binding keeps the representation of its initializer`));
     }
     return produced({ kind: "assignBoolean", name, value: booleanValue.operation });
   }
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
-    return notApplicable;
+    return unsupported("`var` redeclaration is only supported for number, string, and boolean bindings");
   }
   const value = context.lowerNumberExpression(context, initializer, bindings);
   if (value.kind !== "lowered") {
-    return value;
+    return withRefusal(value, unsupportedIn(`Redeclaring \`${name}\`, which holds a number, with a non-number value is not supported: a binding keeps the representation of its initializer`));
   }
   return produced({ kind: "assignNumber", name, value: value.operation });
 }
@@ -178,9 +176,33 @@ function lowerLetVariableBinding(
     });
   }
 
+  return lowerLetNumberOrRefusal(context, name, initializer, bindings);
+}
+
+/**
+ * The numeric tail of a `let` binding: object literals report their own refusal, numbers bind,
+ * and anything else is refused at the declaration.
+ *
+ * An object literal with an accessor reports its own refusal rather than the declaration's. A
+ * general `Symbol` value keeps the diagnostic's reason, which names the unsupported `Symbol`.
+ */
+function lowerLetNumberOrRefusal(
+  context: LoweringContext,
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const objectLiteralResult = classifyObjectLiteral(context, initializer, bindings);
+  if (objectLiteralResult.kind === "unsupported") {
+    return objectLiteralResult;
+  }
+
   const numberValue = context.lowerNumberExpression(context, initializer, bindings);
   if (numberValue.kind !== "lowered") {
-    return numberValue;
+    if (numberValue.kind === "notApplicable" && isUnsupportedSymbolExpression(initializer, bindings)) {
+      return numberValue;
+    }
+    return withRefusal(numberValue, unsupportedIn(unsupportedLetInitializerMessage(context, initializer)));
   }
 
   return produced({
@@ -188,6 +210,31 @@ function lowerLetVariableBinding(
     name,
     value: numberValue.operation
   });
+}
+
+/**
+ * Why a `let` or `var` initializer did not lower.
+ *
+ * A `const` can hold class instances, collections, and error literals; a `let` or `var` keeps the
+ * representation of its initializer, so those shapes name the storage limit rather than the
+ * declaration around them. Anything else names the constructor it could not find.
+ */
+function unsupportedLetInitializerMessage(context: LoweringContext, initializer: ts.Expression): string {
+  const unwrapped = unwrapTypeOnlyExpression(initializer);
+  if (ts.isNewExpression(unwrapped) && ts.isIdentifier(unwrapped.expression)) {
+    const constructorName = unwrapped.expression.text;
+    if (context.classes.has(constructorName)) {
+      return `\`new ${constructorName}()\` constructs a class instance, which a \`let\` or \`var\` binding cannot hold yet`;
+    }
+    if (constructorName === "Map" || constructorName === "Set" || errorConstructorNames.has(constructorName)) {
+      return `\`new ${constructorName}()\` constructs a \`${constructorName}\`, which a \`let\` or \`var\` binding cannot hold yet`;
+    }
+    return unsupportedNewExpressionMessage(constructorName);
+  }
+  if (ts.isObjectLiteralExpression(unwrapped)) {
+    return `\`${expressionSnippet(unwrapped)}\` is an object literal, which a \`let\` or \`var\` binding cannot hold yet`;
+  }
+  return `\`${expressionSnippet(unwrapped)}\` is not a value a \`let\` or \`var\` binding can hold yet`;
 }
 
 /** The value an `undefined` or `null` initializer denotes, or `undefined` for any other initializer. */
@@ -321,7 +368,7 @@ export function lowerConstVariableBinding(
     });
   }
 
-  return notApplicable;
+  return withRefusal(value, unsupportedIn(`The initializer \`${expressionSnippet(unwrappedInitializer)}\` of \`${name}\` is not an expression this build can evaluate`));
 }
 
 // eslint-disable-next-line complexity, max-statements -- Const aggregate binding routes the supported built-in constructors and inspectors.

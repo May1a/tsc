@@ -1,5 +1,5 @@
 import { unsupportedFormMessage } from "./builtins/manifest.js";
-import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import { isUndefinedExpression } from "./predicates.js";
@@ -105,12 +105,17 @@ export function lowerDirectValueExpression(
 
   if (ts.isNewExpression(expression) && ts.isIdentifier(expression.expression)) {
     const constructorName = expression.expression.text;
+    // The `Date` constructor is a known builtin this build has not written: refusing it by name here
+    // reports the missing builtin from every position, not just statement position.
+    if (constructorName === "Date" && !bindings.has("Date")) {
+      return unsupportedIn(unsupportedFormMessage("date-constructor"));
+    }
     const constructor = bindings.get(constructorName);
     if (constructor?.kind === "function" && constructor.constructibleByObjectReturn === true) {
       const constructorArguments = expression.arguments ?? ts.factory.createNodeArray<ts.Expression>();
       const args = lowerPlainConstructorArguments(context, constructor.parameters, constructorArguments, bindings);
       if (args.kind !== "lowered") {
-        return args;
+        return withRefusal(args, unsupportedIn(`Arguments to \`new ${constructorName}(...)\` must be expressions this build can evaluate`));
       }
       return produced({ kind: "call", name: constructorName, arguments: args.operation });
     }
@@ -121,7 +126,7 @@ export function lowerDirectValueExpression(
       }
       const inner = context.lowerValueExpression(context, args[0], bindings);
       if (inner.kind !== "lowered") {
-        return inner;
+        return withRefusal(inner, unsupportedIn(`Arguments to \`new ${constructorName}(...)\` must be expressions this build can evaluate`));
       }
       return produced({ kind: "boxedPrimitive", inner: inner.operation, storeLength: constructorName === "String" });
     }

@@ -17,8 +17,7 @@ interface LoweredParameters {
 export function lowerFunctionParameters(
   context: LoweringContext,
   declarations: readonly ts.ParameterDeclaration[],
-  bindings: ReadonlyMap<string, JsIrBindingValue>,
-  reason: string
+  bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<LoweredParameters> {
   const parameters: JsIrFunctionParameter[] = [];
   const fnBindings = functionFrameBindings(bindings);
@@ -26,16 +25,16 @@ export function lowerFunctionParameters(
   const declaredParameters = runtimeParameters(declarations);
   for (const [index, declaration] of declaredParameters.entries()) {
     if (declaration.dotDotDotToken !== undefined && index !== declaredParameters.length - 1) {
-      return unsupportedIn(reason);
+      return unsupportedIn("A rest parameter must be the last parameter in a function declaration");
     }
-    const result = lowerFunctionParameter(context, declaration, index, fnBindings, reason);
+    const result = lowerFunctionParameter(context, declaration, index, fnBindings);
     if (result.kind === "unsupported") {
       return result;
     }
     const parameter = result.operation;
     parameters.push(parameter);
     bindFunctionParameter(parameter.name, parameter.isOptional === true ? "value" : parameter.valueKind, parameter.isRest === true, fnBindings);
-    const destructured = lowerParameterDestructuring(context, declaration.name, parameter.name, fnBindings, reason);
+    const destructured = lowerParameterDestructuring(context, declaration.name, parameter.name, fnBindings);
     if (destructured.kind === "unsupported") {
       return destructured;
     }
@@ -48,17 +47,16 @@ function lowerFunctionParameter(
   context: LoweringContext,
   declaration: ts.ParameterDeclaration,
   index: number,
-  bindings: ReadonlyMap<string, JsIrBindingValue>,
-  reason: string
+  bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<JsIrFunctionParameter> {
   const isRest = declaration.dotDotDotToken !== undefined;
   if (ts.isObjectBindingPattern(declaration.name) || ts.isArrayBindingPattern(declaration.name)) {
     return isRest
-      ? unsupportedIn(reason)
+      ? unsupportedIn("A rest parameter with a destructuring pattern is not supported in a function declaration yet")
       : produced({ name: `__param${index}`, valueKind: "value" });
   }
   if (!ts.isIdentifier(declaration.name)) {
-    return unsupportedIn(reason);
+    return unsupportedIn("Function parameters must be identifiers or destructuring patterns");
   }
   const name = declaration.name.text;
   const valueKind = isRest ? "value" : parameterValueKind(declaration);
@@ -85,8 +83,7 @@ function lowerParameterDestructuring(
   context: LoweringContext,
   pattern: ts.BindingName,
   name: string,
-  bindings: Map<string, JsIrBindingValue>,
-  reason: string
+  bindings: Map<string, JsIrBindingValue>
 ): Produced<readonly JsIrOperation[]> {
   if (ts.isIdentifier(pattern)) {
     return produced([]);
@@ -105,7 +102,7 @@ function lowerParameterDestructuring(
     return result;
   }
   if (!result.operation) {
-    return unsupportedIn(reason);
+    return unsupportedIn("Unsupported destructuring pattern in a function parameter");
   }
   for (const operation of operations) {
     updateBindings(operation, working);

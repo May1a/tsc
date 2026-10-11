@@ -1,5 +1,5 @@
 import { unsupportedFormMessage } from "./builtins/manifest.js";
-import { type Lowered, notApplicable, produced, unsupportedIn } from "./lowered.js";
+import { type Lowered, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrFunctionParameter, JsIrValueKind } from "./bindings.js";
@@ -8,6 +8,7 @@ import { bindFunctionParameter } from "./function-parameters.js";
 import { collectFunctionExpressionCaptureNames, lowerCapturedBindingValue } from "./captures.js";
 import { lowerInlineFunctionBody } from "./array-callbacks.js";
 import type { JsIrValueExpression } from "./expressions.js";
+import { expressionSnippet } from "./diagnostics.js";
 import { functionReturnKind } from "./binding-updates.js";
 
 export function lowerReturnStatement(
@@ -53,7 +54,7 @@ export function lowerReturnStatement(
 
   const valueExpression = context.lowerValueExpression(context, statement.expression, bindings);
   if (valueExpression.kind !== "lowered") {
-    return valueExpression;
+    return withRefusal(valueExpression, unsupportedIn(`The return value is not an expression this build can evaluate: \`${expressionSnippet(statement.expression)}\``));
   }
 
   return produced({

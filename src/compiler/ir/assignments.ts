@@ -1,11 +1,11 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
 import type { JsIrCondition, JsIrNumberOperator } from "./expressions.js";
 import { lowerObjectAccessPath, objectPathExists } from "./builtins/object-producers.js";
 import { lowerSymbolIteratorKeyExpression } from "./class-info.js";
-import { lowerCanonicalArrayIndexString } from "./predicates.js";
+import { isUndefinedExpression, lowerCanonicalArrayIndexString } from "./predicates.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 import { isProvenBoxedAggregateBinding } from "./number-access.js";
 import { lowerStringExpression } from "./string-constants.js";
@@ -52,7 +52,7 @@ export function lowerAssignmentStatement(
   if (binding?.kind === "stringVariable") {
     const value = context.lowerStringRuntimeExpression(context, expression.right, bindings);
     if (value.kind !== "lowered") {
-      return value;
+      return withRefusal(value, unsupportedIn(`Assigning a non-string value to \`${expression.left.text}\`, which holds a string, is not supported: a binding keeps the representation of its initializer`));
     }
 
     return produced({ kind: "assignString", name: expression.left.text, value: value.operation });
@@ -61,22 +61,42 @@ export function lowerAssignmentStatement(
   if (binding?.kind === "booleanVariable") {
     const value = context.lowerConditionExpression(context, expression.right, bindings);
     if (value.kind !== "lowered") {
-      return value;
+      return withRefusal(value, unsupportedIn(`Assigning a non-boolean value to \`${expression.left.text}\`, which holds a boolean, is not supported: a binding keeps the representation of its initializer`));
     }
 
     return produced({ kind: "assignBoolean", name: expression.left.text, value: value.operation });
   }
 
-  if (binding?.kind !== "number" || binding.value.kind !== "variable") {
-    return notApplicable;
+  if (binding === undefined) {
+    return unsupported(`Assignment to \`${expression.left.text}\`, which has no declared binding, is not supported`);
+  }
+
+  if (binding.kind !== "number" || binding.value.kind !== "variable") {
+    return unsupported(`Cannot assign to \`${expression.left.text}\` because it does not hold a mutable number`);
   }
 
   const value = context.lowerNumberExpression(context, expression.right, bindings);
   if (value.kind !== "lowered") {
-    return value;
+    return withRefusal(value, unsupportedIn(`Assigning ${assignedValueDescription(expression.right)} to \`${expression.left.text}\`, which holds a number, is not supported: a binding keeps the representation of its initializer`));
   }
 
   return produced({ kind: "assignNumber", name: expression.left.text, value: value.operation });
+}
+
+/**
+ * How the right-hand side of a mismatched number assignment reads in the refusal.
+ *
+ * The common cases name their literal; anything else is described by the limitation rather than
+ * quoted, so a long expression does not become the message.
+ */
+function assignedValueDescription(right: ts.Expression): string {
+  if (right.kind === ts.SyntaxKind.NullKeyword) {
+    return "`null`";
+  }
+  if (isUndefinedExpression(right)) {
+    return "`undefined`";
+  }
+  return "a non-number value";
 }
 
 function lowerCompoundAssignmentStatement(
@@ -90,7 +110,7 @@ function lowerCompoundAssignmentStatement(
   }
   const binding = bindings.get(expression.left.text);
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
-    return notApplicable;
+    return unsupported(`Compound assignment to \`${expression.left.text}\` is only supported for mutable number bindings`);
   }
   const right = context.lowerNumberExpression(context, expression.right, bindings);
   if (right.kind !== "lowered") {
@@ -136,7 +156,7 @@ function lowerNullishAssignmentStatement(
   } else if (ts.isPropertyAccessExpression(expression.left)) {
     store = lowerObjectPropertyAssignment(context, expression.left, expression.right, bindings);
   } else {
-    return notApplicable;
+    return unsupported("Nullish assignment to a plain binding is not supported yet");
   }
   if (store.kind === "unsupported") {
     return store;

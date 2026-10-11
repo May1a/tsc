@@ -1,7 +1,7 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerAssignmentStatement } from "./assignments.js";
 import { lowerRuntimeObjectCallStatement } from "./object-mutations.js";
 import { lowerRuntimeArrayCallStatement } from "./array-mutations.js";
@@ -59,8 +59,19 @@ export function lowerExpressionStatement(
     return produced({ kind: "inlineCpp", symbol: inlineCppValue.symbol });
   }
 
-  if (!ts.isCallExpression(expression)) {
+  // A discarded `new` runs its constructor for side effects; see `lowerDiscardedNewExpression`.
+  if (ts.isNewExpression(expression)) {
+    return lowerDiscardedNewExpression(context, expression, bindings);
+  }
+
+  // String directives and tagged templates keep the diagnostic's own reason, which names the string
+  // slice or the tag rather than the statement around them.
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression) || ts.isTaggedTemplateExpression(expression)) {
     return notApplicable;
+  }
+
+  if (!ts.isCallExpression(expression)) {
+    return unsupported("Only calls, assignments, update expressions, and `delete` expressions are supported as statements");
   }
 
   const callOp = lowerCallStatement(context, expression, bindings);
@@ -68,23 +79,57 @@ export function lowerExpressionStatement(
     return callOp;
   }
 
-  if (!ts.isIdentifier(expression.expression)) {
+  return lowerPrintCallStatement(context, expression, bindings);
+}
+
+/**
+ * A discarded `new` runs its constructor for side effects, which the value tier already knows how
+ * to lower; the statement tier only refuses to drop the instance, and reports an inner failure (an
+ * unknown class, an unlowerable argument) in that failure's own words.
+ */
+function lowerDiscardedNewExpression(
+  context: LoweringContext,
+  expression: ts.NewExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const reason = "A `new` expression as a statement is not supported yet";
+  const newValue = context.lowerValueExpression(context, expression, bindings);
+  if (newValue.kind === "lowered") {
+    return unsupported(reason);
+  }
+  return withRefusal(newValue, unsupportedIn(reason));
+}
+
+/**
+ * A `print` call the general call tier declined: `print` is recognized by its own tier below, while
+ * any other declined call still belongs to the diagnostic, where a planned builtin or an
+ * unrecognized target is named.
+ */
+function lowerPrintCallStatement(
+  context: LoweringContext,
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (!ts.isIdentifier(expression.expression) || expression.expression.text !== "print") {
     return notApplicable;
   }
-
-  if (expression.expression.text !== "print" || expression.arguments.length !== 1) {
-    return notApplicable;
+  if (expression.arguments.length !== 1) {
+    return unsupported("`print` accepts exactly one argument");
   }
-
+  const reason = "The argument to `print` must be an expression this build can evaluate";
   const [argument] = expression.arguments;
   const printExpression = lowerPrintExpression(context, argument, bindings);
-  if (printExpression.kind === "unsupported") {
-    return printExpression;
-  }
   if (printExpression.kind === "lowered") {
     return produced({ kind: "print", expression: printExpression.operation });
   }
-
+  if (printExpression.kind === "unsupported") {
+    return printExpression;
+  }
+  // Only a bare identifier this build cannot evaluate is the print tier's own refusal: calls,
+  // literals, templates, and member reads keep the diagnostic's reason, which names the argument.
+  if (ts.isIdentifier(argument)) {
+    return unsupported(reason);
+  }
   return notApplicable;
 }
 

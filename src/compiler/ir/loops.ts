@@ -1,7 +1,7 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, type LoweredStatementList, type Produced, notApplicable, produced, unsupported } from "./lowered.js";
+import { type Lowered, type LoweredStatementList, type Produced, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerAssignmentStatement } from "./assignments.js";
 import type { JsIrCondition, JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
@@ -9,6 +9,7 @@ import { lowerUpdateExpressionStatement } from "./expression-statements.js";
 import { withinLoopLabel } from "./loop-labels.js";
 import { lowerStatementBody } from "./statement-lists.js";
 import { iteratorErrorSubject } from "./iterator-subject.js";
+import { expressionSnippet } from "./diagnostics.js";
 import { unsupportedFormMessage } from "./builtins/manifest.js";
 import { updateBindings } from "./binding-updates.js";
 import { lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
@@ -47,7 +48,7 @@ export function lowerForStatement(
 
   const condition = lowerForCondition(context, statement.condition, forBindings);
   if (condition.kind !== "lowered") {
-    return condition;
+    return withRefusal(condition, unsupportedIn("A `for` statement condition must be an expression this build can evaluate"));
   }
 
   const increment = lowerForIncrement(context, statement.incrementor, forBindings);
@@ -111,7 +112,7 @@ function lowerForIncrement(
   }
   const update = lowerUpdateExpressionStatement(incrementor, bindings);
   if (update.kind !== "lowered") {
-    return update;
+    return withRefusal(update, unsupportedIn("A `for` statement update clause must be an assignment or update expression"));
   }
   return produced<JsIrOperation | undefined>(update.operation);
 }
@@ -123,11 +124,11 @@ export function lowerForOfStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
   if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1) {
-    return notApplicable;
+    return unsupported("A `for...of` statement must declare its item with `const`, without an initializer");
   }
   const [declaration] = statement.initializer.declarations;
   if (declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
-    return notApplicable;
+    return unsupported("A `for...of` statement must declare its item with `const`, without an initializer");
   }
   const itemName = forOfItemName(declaration.name);
   const bodyStatement = statement.statement;
@@ -138,7 +139,7 @@ export function lowerForOfStatement(
   // Generic sync iteration protocol: for-of over any value that may implement Symbol.iterator.
   const iterable = context.lowerValueExpression(context, statement.expression, bindings);
   if (iterable.kind !== "lowered") {
-    return iterable;
+    return withRefusal(iterable, unsupportedIn("The source of a `for...of` statement must be an expression this build can evaluate"));
   }
   const bodyResult = lowerForOfBody(context, declaration.name, bodyStatement, bindings, { kind: "valueVariable", name: itemName });
   if (bodyResult.kind === "unsupported") {
@@ -284,14 +285,17 @@ export function lowerForInStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
   if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1) {
-    return notApplicable;
+    return unsupported("A `for...in` statement must declare its key with `const`, without an initializer");
   }
   const [declaration] = statement.initializer.declarations;
-  if (!ts.isIdentifier(declaration.name) || declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
-    return notApplicable;
+  if (!ts.isIdentifier(declaration.name)) {
+    return unsupported("Destructuring the key of a `for...in` statement is not supported yet");
+  }
+  if (declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
+    return unsupported("A `for...in` statement must declare its key with `const`, without an initializer");
   }
   if (!ts.isIdentifier(statement.expression)) {
-    return notApplicable;
+    return unsupported("A `for...in` statement must iterate over a runtime dictionary object or a runtime array");
   }
   const sourceName = statement.expression.text;
   const sourceBinding = bindings.get(sourceName);
@@ -317,7 +321,7 @@ export function lowerForInStatement(
 
     return produced({ kind: "forInArray", itemName: declaration.name.text, arrayName: sourceBinding.name, body });
   }
-  return notApplicable;
+  return unsupported("A `for...in` statement must iterate over a runtime dictionary object or a runtime array");
 }
 
 /**
@@ -327,26 +331,32 @@ export function lowerForInStatement(
  * evaluated before the condition runs: `for (let i = 0, j = i + 1; ...)` needs `i` visible to `j`. The
  * caller therefore folds each result into its binding map as it goes rather than after the fact.
  *
- * `notApplicable` means this initializer is not one the loop tier can represent — a `const`, a destructuring
- * pattern, or a value that is not a number — and the caller declines the whole statement.
+ * The loop tier only represents numeric `let` and `var` bindings, so anything else is refused with a
+ * reason that names the shape: a `const`, a destructuring pattern, or a value that is not a number.
  */
 function lowerForInitializer(
   context: LoweringContext,
   initializer: ts.ForInitializer,
   bindings: Map<string, JsIrBindingValue>
 ): Lowered<readonly JsIrOperation[]> {
-  if (!ts.isVariableDeclarationList(initializer) || (initializer.flags & ts.NodeFlags.Const) !== 0) {
-    return notApplicable;
+  if (!ts.isVariableDeclarationList(initializer)) {
+    return unsupportedIn("A `for` statement initializer must be a `let` or `var` declaration");
+  }
+  if ((initializer.flags & ts.NodeFlags.Const) !== 0) {
+    return unsupportedIn("A `for` statement initializer must be a `let` or `var` declaration, not `const`");
   }
 
   const declarations: JsIrOperation[] = [];
   for (const declaration of initializer.declarations) {
-    if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
-      return notApplicable;
+    if (!ts.isIdentifier(declaration.name)) {
+      return unsupportedIn("A `for` statement initializer does not support destructuring patterns yet");
+    }
+    if (!declaration.initializer) {
+      return unsupportedIn("A `for` statement binding without an initializer is not supported yet");
     }
     const value = context.lowerNumberExpression(context, declaration.initializer, bindings);
     if (value.kind !== "lowered") {
-      return value;
+      return withRefusal(value, unsupportedIn("A `for` statement initializer must be a number this build can evaluate"));
     }
     const operation: JsIrOperation = {
       kind: "letNumber",
@@ -367,7 +377,7 @@ export function lowerWhileStatement(
 ): Lowered {
   const condition = context.lowerConditionExpression(context, statement.expression, bindings);
   if (condition.kind !== "lowered") {
-    return condition;
+    return withRefusal(condition, unsupportedIn(`A \`while\` condition must be an expression this build can evaluate: \`${expressionSnippet(statement.expression)}\``));
   }
 
   const bodyResult = lowerLoopBody(context, statement.statement, bindings);
@@ -390,7 +400,7 @@ export function lowerDoWhileStatement(
 ): Lowered {
   const condition = context.lowerConditionExpression(context, statement.expression, bindings);
   if (condition.kind !== "lowered") {
-    return condition;
+    return withRefusal(condition, unsupportedIn(`A \`do...while\` condition must be an expression this build can evaluate: \`${expressionSnippet(statement.expression)}\``));
   }
 
   const bodyResult = lowerLoopBody(context, statement.statement, bindings);

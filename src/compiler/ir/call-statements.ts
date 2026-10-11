@@ -2,7 +2,7 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerClassMethodCall } from "./class-calls.js";
 import { lowerJsonStatementCall } from "./json-values.js";
 import { lowerCallThisValue, lowerSpreadCallValue } from "./value-calls.js";
@@ -99,12 +99,17 @@ function lowerDynamicCallStatement(
     return calleeResult;
   }
   const callee = loweredPayload(calleeResult);
-  const argsResult = lowerValueCallArguments(context, expression.arguments, bindings);
+  const argsResult = lowerValueCallArguments(context, expression.arguments, bindings, expression.expression.getText());
   if (argsResult.kind === "unsupported") {
     return argsResult;
   }
   const args = loweredPayload(argsResult);
   if (callee === undefined || args === undefined) {
+    // The callee names the failure when it did not lower: the diagnostic reports the unrecognized
+    // target. Only when the callee lowered and an argument did not is the call's own shape at fault.
+    if (callee !== undefined && argsResult.kind !== "lowered") {
+      return withRefusal(argsResult, unsupportedIn(`Arguments to \`${expression.expression.getText()}\` must be expressions this build can evaluate`));
+    }
     return notApplicable;
   }
   const callThisValueResult = lowerCallThisValue(context, expression.expression, bindings);

@@ -453,10 +453,31 @@ describe("tscn CLI", () => {
       expect(result.stderr).toContain("error TSCN1002");
 
       const diagnostics = await result.readArtifact("diagnostics.txt");
-      expect(diagnostics).toContain("Unsupported statement in the current lowering slice: IfStatement");
+      expect(diagnostics).toContain("An `if` condition must be an expression this build can evaluate");
     } finally {
       await result.cleanup();
     }
+  });
+
+  test("names the refused shape instead of reporting a generic slice diagnostic", async () => {
+    const expectations = new Map([
+      ["call-argument-unsupported.ts", "`ReferenceError` cannot be used as a value yet"],
+      ["var-object-initializer-unsupported.ts", "`{}` is an object literal, which a `let` or `var` binding cannot hold yet"],
+      ["new-class-in-let-unsupported.ts", "`new C()` constructs a class instance, which a `let` or `var` binding cannot hold yet"],
+      ["new-unknown-constructor-unsupported.ts", "`new Test262Error(...)` constructs `Test262Error`, which is not a class declared in this module"],
+      ["eval-source-unsupported.ts", "Calling `eval` with source text is not supported yet"],
+      ["typeof-instance-unsupported.ts", "`typeof c` cannot be answered statically yet"],
+      ["map-in-let-unsupported.ts", "`new Map()` constructs a `Map`, which a `let` or `var` binding cannot hold yet"],
+      ["member-read-argument-unsupported.ts", "The argument `Math.max` is not an expression this build can evaluate"],
+      ["for-of-var-binding-unsupported.ts", "A `for...of` statement must declare its item with `const`, without an initializer"],
+      ["var-without-initializer-unsupported.ts", "A variable declaration without an initializer is not supported yet"],
+      ["for-update-clause-unsupported.ts", "A `for` statement update clause must be an assignment or update expression"],
+      ["unary-plus-unsupported.ts", "Unary `+` expressions are not supported yet"],
+      ["nested-class-unsupported.ts", "Class declarations inside function and block bodies are not supported yet"],
+      ["assign-null-to-number-unsupported.ts", "Assigning `null` to `second`, which holds a number, is not supported"]
+    ]);
+
+    await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
   });
 
   test("rejects package imports during the native CLI subset milestone", async () => {

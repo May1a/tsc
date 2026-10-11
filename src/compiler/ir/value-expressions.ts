@@ -1,9 +1,11 @@
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
-import { lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
+import { isUnsupportedSymbolExpression, lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
+import { callTargetMessage, isKnownGlobalCallee, isPlannedBuiltinCall, isRecognizedGlobalCallee, plannedBuiltinMessageFor } from "./builtins/index.js";
+import { expressionSnippet, unsupportedNewExpressionMessage, unsupportedSymbolMessage, unsupportedUnboundValueMessage } from "./diagnostics.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
 import { lowerInlineCppValueExpression } from "./inline-cpp.js";
 import { lowerClassValueExpression } from "./class-values.js";
@@ -53,11 +55,130 @@ export function lowerValueExpression(
     return scalarValue;
   }
 
+  return lowerValueCallAndSymbol(context, expression, bindings);
+}
+
+/**
+ * What the value chain reports for a call, tag, or `Symbol` no tier lowered: a planned builtin or a
+ * general `Symbol` is refused by name, and any other call lowers through the value-call tier.
+ *
+ * Both refusals run after every tier that could lower the expression — including degraded "stubbed"
+ * lowerings such as `Date.now()` to `0` — so only an expression no tier claimed is refused. In an
+ * expression position there is no statement diagnostic to name the missing builtin, so declining
+ * would report the enclosing initializer or argument instead.
+ */
+function lowerValueCallAndSymbol(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrValueExpression> {
+  // General `Symbol` values have no representation: only the well-known `Symbol.iterator` key is
+  // available, and it is read by its own recognizer rather than as a value.
+  if (isUnsupportedSymbolExpression(expression, bindings)) {
+    return unsupportedIn(unsupportedSymbolMessage);
+  }
   if (ts.isCallExpression(expression) && !(ts.isIdentifier(expression.expression) && expression.expression.text === "print")) {
+    const plannedCall = plannedCallRefusal(expression.expression, bindings);
+    if (plannedCall !== undefined) {
+      return plannedCall;
+    }
     return lowerValueCallExpression(context, expression, bindings);
   }
+  if (ts.isTaggedTemplateExpression(expression)) {
+    const plannedTag = plannedCallRefusal(expression.tag, bindings);
+    if (plannedTag !== undefined) {
+      return plannedTag;
+    }
+  }
+  const plannedMember = plannedMemberCallRefusal(expression, bindings);
+  if (plannedMember !== undefined) {
+    return plannedMember;
+  }
+  if (ts.isNewExpression(expression)) {
+    return unsupportedIn(newExpressionRefusal(expression));
+  }
+  return unboundValueRefusal(context, expression, bindings);
+}
 
-  return notApplicable;
+/**
+ * Why a `new` expression did not lower to a value.
+ *
+ * Every tier that constructs something has declined by this point: module classes, builtin
+ * constructors such as `RegExp` and `Map`, and functions that construct by returning an object. The
+ * constructor itself is therefore what this build cannot construct.
+ */
+function newExpressionRefusal(expression: ts.NewExpression): string {
+  if (ts.isIdentifier(expression.expression)) {
+    return unsupportedNewExpressionMessage(expression.expression.text);
+  }
+  return `A \`new\` expression with a non-identifier target is not supported yet: \`${expressionSnippet(expression)}\``;
+}
+
+/**
+ * Why a member call did not lower to a value.
+ *
+ * The direct tier tries the members this build implements; a call it declined that the support
+ * tables list as planned names the missing builtin rather than the argument or initializer around it.
+ */
+function plannedMemberCallRefusal(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrValueExpression> | undefined {
+  if (!ts.isCallExpression(expression) || !ts.isPropertyAccessExpression(expression.expression)) {
+    return undefined;
+  }
+  const planned = plannedBuiltinMessageFor(expression.expression.expression, expression.expression.name.text, bindings);
+  if (planned === undefined) {
+    return undefined;
+  }
+  return unsupportedIn(planned);
+}
+
+/**
+ * Why a bare name did not lower to a value.
+ *
+ * Bindings lower through their own recognizers, and alias functions through the named-call path, so
+ * an unbound identifier that reaches the tail of the value chain has no value to read. Reads the
+ * number tier answers itself (`NaN`, `Infinity`) and globals the compiler lowers itself keep their
+ * own diagnostics rather than this one.
+ */
+function unboundValueRefusal(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrValueExpression> {
+  if (expression.kind === ts.SyntaxKind.ThisKeyword) {
+    return unsupportedIn(unsupportedUnboundValueMessage("this"));
+  }
+  if (!ts.isIdentifier(expression) || bindings.has(expression.text)) {
+    return notApplicable;
+  }
+  if (expression.text === "undefined" || expression.text === "NaN" || expression.text === "Infinity" || expression.text === "print") {
+    return notApplicable;
+  }
+  if (isRecognizedGlobalCallee(expression) || isKnownGlobalCallee(expression)) {
+    return notApplicable;
+  }
+  const symbol = context.typeChecker?.getSymbolAtLocation(expression);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+    return notApplicable;
+  }
+  return unsupportedIn(unsupportedUnboundValueMessage(expression.text));
+}
+
+/** The refusal for a call or tag the support tables list as planned, or `undefined` when it is not one. */
+function plannedCallRefusal(
+  callee: ts.LeftHandSideExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrValueExpression> | undefined {
+  if (!isPlannedBuiltinCall(callee, bindings)) {
+    return undefined;
+  }
+  const planned = callTargetMessage(callee, bindings);
+  if (planned === undefined) {
+    return undefined;
+  }
+  return unsupportedIn(planned);
 }
 
 function lowerAggregateValueExpression(

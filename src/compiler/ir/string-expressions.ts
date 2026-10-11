@@ -1,4 +1,4 @@
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
@@ -6,6 +6,7 @@ import type { JsIrStringExpression, JsIrValueExpression } from "./expressions.js
 import { isRegexExpression } from "./regex-predicates.js";
 import { lowerRuntimeNumberFormatExpression, lowerRuntimeStringMethodExpression, lowerStringFromCharCodeExpression } from "./string-builtins.js";
 import { lowerTypeOfResult } from "./comparisons.js";
+import { expressionSnippet } from "./diagnostics.js";
 import { lowerSymbolIteratorKeyExpression } from "./class-info.js";
 import { sourceNumericLiteralValue } from "./enums.js";
 import { lowerCallArguments } from "./call-arguments.js";
@@ -125,6 +126,7 @@ export function lowerStringRuntimeExpression(
     if (typeName !== undefined) {
       return produced({ kind: "typeof", value: typeName });
     }
+    return unsupportedIn(unsupportedTypeOfMessage(expression.expression, bindings));
   }
 
   if (!ts.isConditionalExpression(expression)) {
@@ -323,4 +325,18 @@ function lowerDateIsoStringExpression(
     return notApplicable;
   }
   return produced({ kind: "literal", value: "1970-01-01T00:00:00.000Z" });
+}
+
+/**
+ * Why a `typeof` expression did not lower.
+ *
+ * Only the string tier answers `typeof`, from the binding and the syntax, so an unanswerable one
+ * names its operand rather than the condition or initializer around it.
+ */
+function unsupportedTypeOfMessage(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): string {
+  const operand = expressionSnippet(expression);
+  if (ts.isIdentifier(expression) && !bindings.has(expression.text)) {
+    return `\`typeof ${operand}\` cannot be answered statically: \`${expression.text}\` has no declared binding`;
+  }
+  return `\`typeof ${operand}\` cannot be answered statically yet`;
 }
