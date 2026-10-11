@@ -2,9 +2,10 @@ import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
+import type { JsIrValueExpression } from "./expressions.js";
 import { lowerDestructuringBinding } from "./destructuring.js";
 import { lowerClosureFactoryCall, lowerFunctionObjectValue } from "./closures.js";
-import { unwrapTypeOnlyExpression } from "./predicates.js";
+import { isUndefinedExpression, unwrapTypeOnlyExpression } from "./predicates.js";
 import { classifyArrayLiteral } from "./array-literals.js";
 import { lowerStringExpression } from "./string-constants.js";
 import { lowerBooleanExpression } from "./conditions.js";
@@ -146,6 +147,13 @@ function lowerLetVariableBinding(
     });
   }
 
+  // `undefined` and `null` initializers are values, not conditions: letting them fall through to
+  // the condition tier would bind the name to the truthiness of the initializer (`false`).
+  const nullishValue = nullishLiteralValue(initializer);
+  if (nullishValue !== undefined) {
+    return produced({ kind: "letValue", name, value: nullishValue });
+  }
+
   const booleanValue = context.lowerConditionExpression(context, initializer, bindings);
   if (booleanValue.kind === "unsupported") {
     return booleanValue;
@@ -180,6 +188,15 @@ function lowerLetVariableBinding(
     name,
     value: numberValue.operation
   });
+}
+
+/** The value an `undefined` or `null` initializer denotes, or `undefined` for any other initializer. */
+function nullishLiteralValue(initializer: ts.Expression): Extract<JsIrValueExpression, { readonly kind: "null" | "undefined" }> | undefined {
+  const unwrapped = unwrapTypeOnlyExpression(initializer);
+  if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
+    return { kind: "null" };
+  }
+  return isUndefinedExpression(unwrapped) ? { kind: "undefined" } : undefined;
 }
 
 // eslint-disable-next-line complexity, max-statements -- Const initializer dispatch walks aggregate/closure/string/number/boolean/condition/value branches in one place.
@@ -266,6 +283,13 @@ export function lowerConstVariableBinding(
       name,
       value: booleanValue
     });
+  }
+
+  // `undefined` and `null` initializers are values, not conditions: letting them fall through to
+  // the condition tier would bind the name to the truthiness of the initializer (`false`).
+  const nullishValue = nullishLiteralValue(unwrappedInitializer);
+  if (nullishValue !== undefined) {
+    return produced({ kind: "constValue", name, value: nullishValue });
   }
 
   const booleanCondition = context.lowerConditionExpression(context, unwrappedInitializer, bindings);

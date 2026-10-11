@@ -63,7 +63,6 @@ describe("runtime IR", () => {
     const text = runtimeIrText();
     const symbols = [
       "@malloc",
-      "@.fmt.number",
       "@gcInit",
       "@valuePrint",
       "@mathAbs",

@@ -147,7 +147,241 @@ ret.original:
   %result.1 = insertvalue { ptr, i64 } %result.0, i64 %len, 1
   ret { ptr, i64 } %result.1
 }
-@.number.fmt.default = private unnamed_addr constant [3 x i8] c"%g\00"
+@.number.shortest.format = private unnamed_addr constant [5 x i8] c"%.*e\00"
+@.number.shortest.nan = private unnamed_addr constant [4 x i8] c"NaN\00"
+@.number.shortest.infinity = private unnamed_addr constant [9 x i8] c"Infinity\00"
+@.number.shortest.negative.infinity = private unnamed_addr constant [10 x i8] c"-Infinity\00"
+@.number.shortest.zero = private unnamed_addr constant [2 x i8] c"0\00"
+; ECMA-262 6.1.6.1.20 Number::toString(10): the shortest decimal string that parses
+; back to the same double. The digit string is the first %.*e rendering whose strtod
+; round trip is exact, and `n` is that rendering's exponent plus one, which is the
+; position Number::toString lays the decimal point at.
+define { ptr, i64 } @numberToShortestString(double %value) {
+entry:
+  ; Working storage for this call only: the %.*e rendering, and its digits without the point.
+  %scratch = alloca [64 x i8]
+  %digits = alloca [32 x i8]
+  %nan = fcmp uno double %value, %value
+  br i1 %nan, label %string.nan, label %check.infinite
+string.nan:
+  %nan.0 = insertvalue { ptr, i64 } undef, ptr @.number.shortest.nan, 0
+  %nan.1 = insertvalue { ptr, i64 } %nan.0, i64 3, 1
+  ret { ptr, i64 } %nan.1
+check.infinite:
+  %absolute = call double @llvm.fabs.f64(double %value)
+  %infinite = fcmp oge double %absolute, 0x7FF0000000000000
+  br i1 %infinite, label %string.infinite, label %check.zero
+string.infinite:
+  %infinite.negative = fcmp olt double %value, 0.0
+  %infinite.ptr = select i1 %infinite.negative, ptr @.number.shortest.negative.infinity, ptr @.number.shortest.infinity
+  %infinite.len = select i1 %infinite.negative, i64 9, i64 8
+  %infinite.0 = insertvalue { ptr, i64 } undef, ptr %infinite.ptr, 0
+  %infinite.1 = insertvalue { ptr, i64 } %infinite.0, i64 %infinite.len, 1
+  ret { ptr, i64 } %infinite.1
+check.zero:
+  %zero = fcmp oeq double %value, 0.0
+  br i1 %zero, label %string.zero, label %finite
+string.zero:
+  %zero.0 = insertvalue { ptr, i64 } undef, ptr @.number.shortest.zero, 0
+  %zero.1 = insertvalue { ptr, i64 } %zero.0, i64 1, 1
+  ret { ptr, i64 } %zero.1
+finite:
+  %out = call ptr @malloc(i64 64)
+  %negative = fcmp olt double %value, 0.0
+  %sign.length = select i1 %negative, i64 1, i64 0
+  %sign.byte = select i1 %negative, i8 45, i8 48
+  store i8 %sign.byte, ptr %out
+  br label %precision.loop
+precision.loop:
+  %precision = phi i64 [ 1, %finite ], [ %precision.next, %precision.more ]
+  %significant = sub i64 %precision, 1
+  %significant.i32 = trunc i64 %significant to i32
+  call i32 (ptr, ptr, ...) @sprintf(ptr %scratch, ptr @.number.shortest.format, i32 %significant.i32, double %absolute)
+  %round.trip = call double @strtod(ptr %scratch, ptr null)
+  %matches = fcmp oeq double %round.trip, %absolute
+  br i1 %matches, label %digit.scan, label %precision.more
+precision.more:
+  %precision.next = add i64 %precision, 1
+  %exhausted = icmp eq i64 %precision.next, 18
+  br i1 %exhausted, label %digit.scan, label %precision.loop
+digit.scan:
+  %scan.index = phi i64 [ 0, %precision.loop ], [ 0, %precision.more ], [ %scan.next.index, %digit.step ]
+  %scan.count = phi i64 [ 0, %precision.loop ], [ 0, %precision.more ], [ %scan.next.count, %digit.step ]
+  %scan.ptr = getelementptr i8, ptr %scratch, i64 %scan.index
+  %scan.char = load i8, ptr %scan.ptr
+  %scan.marker = icmp eq i8 %scan.char, 101
+  %scan.separator = icmp eq i8 %scan.char, 46
+  %scan.is.digit = xor i1 %scan.marker, true
+  %scan.is.digit.separated = xor i1 %scan.separator, true
+  %scan.kept = and i1 %scan.is.digit, %scan.is.digit.separated
+  %scan.slot = getelementptr i8, ptr %digits, i64 %scan.count
+  %scan.byte = select i1 %scan.kept, i8 %scan.char, i8 48
+  store i8 %scan.byte, ptr %scan.slot
+  %scan.count.advanced = add i64 %scan.count, 1
+  %scan.next.count = select i1 %scan.kept, i64 %scan.count.advanced, i64 %scan.count
+  %scan.next.index = add i64 %scan.index, 1
+  br i1 %scan.marker, label %exponent.sign, label %digit.step
+digit.step:
+  br label %digit.scan
+exponent.sign:
+  %exponent.next = add i64 %scan.index, 1
+  %exponent.sign.ptr = getelementptr i8, ptr %scratch, i64 %exponent.next
+  %exponent.sign.char = load i8, ptr %exponent.sign.ptr
+  %exponent.negative = icmp eq i8 %exponent.sign.char, 45
+  %exponent.start = add i64 %exponent.next, 1
+  br label %exponent.loop
+exponent.loop:
+  %exponent.position = phi i64 [ %exponent.start, %exponent.sign ], [ %exponent.position.next, %exponent.body ]
+  %exponent.value = phi i64 [ 0, %exponent.sign ], [ %exponent.value.next, %exponent.body ]
+  %exponent.ptr = getelementptr i8, ptr %scratch, i64 %exponent.position
+  %exponent.char = load i8, ptr %exponent.ptr
+  %exponent.at.least = icmp uge i8 %exponent.char, 48
+  %exponent.at.most = icmp ule i8 %exponent.char, 57
+  %exponent.is.digit = and i1 %exponent.at.least, %exponent.at.most
+  br i1 %exponent.is.digit, label %exponent.body, label %layout
+exponent.body:
+  %exponent.digit.code = sub i8 %exponent.char, 48
+  %exponent.digit.value = zext i8 %exponent.digit.code to i64
+  %exponent.scaled = mul i64 %exponent.value, 10
+  %exponent.value.next = add i64 %exponent.scaled, %exponent.digit.value
+  %exponent.position.next = add i64 %exponent.position, 1
+  br label %exponent.loop
+layout:
+  %exponent.negated = sub i64 0, %exponent.value
+  %exponent.signed = select i1 %exponent.negative, i64 %exponent.negated, i64 %exponent.value
+  %point = add i64 %exponent.signed, 1
+  br label %check.large
+check.large:
+  %too.large = icmp sgt i64 %point, 21
+  br i1 %too.large, label %exponential, label %check.positive
+check.positive:
+  %positive = icmp sgt i64 %point, 0
+  br i1 %positive, label %plain, label %check.small
+check.small:
+  %small = icmp sgt i64 %point, -6
+  br i1 %small, label %leading.zeros, label %exponential
+plain:
+  %integral = icmp sle i64 %scan.count, %point
+  %plain.fraction = xor i1 %integral, true
+  %plain.fractional.length = add i64 %scan.count, 1
+  %plain.length = select i1 %integral, i64 %point, i64 %plain.fractional.length
+  br label %decimal.loop
+leading.zeros:
+  %leading.count = sub i64 0, %point
+  %leading.base = add i64 %leading.count, 2
+  %leading.length = add i64 %leading.base, %scan.count
+  br label %decimal.loop
+decimal.loop:
+  %decimal.point = phi i64 [ %point, %plain ], [ 1, %leading.zeros ]
+  %decimal.pointed = phi i1 [ %plain.fraction, %plain ], [ true, %leading.zeros ]
+  %decimal.base = phi i64 [ 0, %plain ], [ %leading.base, %leading.zeros ]
+  %decimal.length = phi i64 [ %plain.length, %plain ], [ %leading.length, %leading.zeros ]
+  %decimal.index = phi i64 [ 0, %plain ], [ 0, %leading.zeros ], [ %decimal.next, %decimal.body ]
+  %decimal.done = icmp uge i64 %decimal.index, %decimal.length
+  br i1 %decimal.done, label %decimal.result, label %decimal.body
+decimal.body:
+  %decimal.at.point = icmp eq i64 %decimal.index, %decimal.point
+  %decimal.is.point = and i1 %decimal.at.point, %decimal.pointed
+  %decimal.after.point = icmp sgt i64 %decimal.index, %decimal.point
+  %decimal.point.past = icmp sge i64 %decimal.point, %decimal.base
+  %decimal.displaces = and i1 %decimal.after.point, %decimal.point.past
+  %decimal.shifted = and i1 %decimal.displaces, %decimal.pointed
+  %decimal.shift = select i1 %decimal.shifted, i64 1, i64 0
+  %decimal.beyond.base = icmp uge i64 %decimal.index, %decimal.base
+  %decimal.relative = sub i64 %decimal.index, %decimal.base
+  %decimal.read = sub i64 %decimal.relative, %decimal.shift
+  %decimal.in.range = icmp ult i64 %decimal.read, %scan.count
+  %decimal.has.digit = and i1 %decimal.beyond.base, %decimal.in.range
+  %decimal.load.index = select i1 %decimal.has.digit, i64 %decimal.read, i64 0
+  %decimal.source = getelementptr i8, ptr %digits, i64 %decimal.load.index
+  %decimal.byte = load i8, ptr %decimal.source
+  %decimal.written = select i1 %decimal.has.digit, i8 %decimal.byte, i8 48
+  %decimal.placed = select i1 %decimal.is.point, i8 46, i8 %decimal.written
+  %decimal.offset = add i64 %sign.length, %decimal.index
+  %decimal.slot = getelementptr i8, ptr %out, i64 %decimal.offset
+  store i8 %decimal.placed, ptr %decimal.slot
+  %decimal.next = add i64 %decimal.index, 1
+  br label %decimal.loop
+decimal.result:
+  %decimal.total = add i64 %sign.length, %decimal.length
+  %decimal.nul = getelementptr i8, ptr %out, i64 %decimal.total
+  store i8 0, ptr %decimal.nul
+  %decimal.result.0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %decimal.result.1 = insertvalue { ptr, i64 } %decimal.result.0, i64 %decimal.total, 1
+  ret { ptr, i64 } %decimal.result.1
+exponential:
+  %mantissa.fraction = icmp sgt i64 %scan.count, 1
+  %mantissa.point.offset = select i1 %mantissa.fraction, i64 1, i64 0
+  %mantissa.length = add i64 %scan.count, %mantissa.point.offset
+  br label %exponent.measure
+exponent.measure:
+  %measure.quotient = phi i64 [ %exponent.value, %exponential ], [ %measure.quotient.next, %exponent.measure.body ]
+  %measure.power = phi i64 [ 1, %exponential ], [ %measure.power.next, %exponent.measure.body ]
+  %measure.width = phi i64 [ 1, %exponential ], [ %measure.width.next, %exponent.measure.body ]
+  %measure.wider = icmp uge i64 %measure.quotient, 10
+  br i1 %measure.wider, label %exponent.measure.body, label %mantissa.loop
+exponent.measure.body:
+  %measure.quotient.next = udiv i64 %measure.quotient, 10
+  %measure.power.next = mul i64 %measure.power, 10
+  %measure.width.next = add i64 %measure.width, 1
+  br label %exponent.measure
+mantissa.loop:
+  %mantissa.index = phi i64 [ 0, %exponent.measure ], [ %mantissa.next, %mantissa.body ]
+  %mantissa.done = icmp uge i64 %mantissa.index, %mantissa.length
+  br i1 %mantissa.done, label %mantissa.result, label %mantissa.body
+mantissa.body:
+  %mantissa.at.point = icmp eq i64 %mantissa.index, 1
+  %mantissa.is.point = and i1 %mantissa.at.point, %mantissa.fraction
+  %mantissa.after.first = icmp ugt i64 %mantissa.index, 0
+  %mantissa.shift = zext i1 %mantissa.after.first to i64
+  %mantissa.read = sub i64 %mantissa.index, %mantissa.shift
+  %mantissa.has.digit = icmp ult i64 %mantissa.read, %scan.count
+  %mantissa.load.index = select i1 %mantissa.has.digit, i64 %mantissa.read, i64 0
+  %mantissa.source = getelementptr i8, ptr %digits, i64 %mantissa.load.index
+  %mantissa.byte = load i8, ptr %mantissa.source
+  %mantissa.written = select i1 %mantissa.has.digit, i8 %mantissa.byte, i8 48
+  %mantissa.placed = select i1 %mantissa.is.point, i8 46, i8 %mantissa.written
+  %mantissa.offset = add i64 %sign.length, %mantissa.index
+  %mantissa.slot = getelementptr i8, ptr %out, i64 %mantissa.offset
+  store i8 %mantissa.placed, ptr %mantissa.slot
+  %mantissa.next = add i64 %mantissa.index, 1
+  br label %mantissa.loop
+mantissa.result:
+  %marked.offset = add i64 %sign.length, %mantissa.length
+  %marked.slot = getelementptr i8, ptr %out, i64 %marked.offset
+  store i8 101, ptr %marked.slot
+  %signed.offset = add i64 %marked.offset, 1
+  %signed.slot = getelementptr i8, ptr %out, i64 %signed.offset
+  %signed.byte = select i1 %exponent.negative, i8 45, i8 43
+  store i8 %signed.byte, ptr %signed.slot
+  %write.start = add i64 %signed.offset, 1
+  %write.end = add i64 %write.start, %measure.width
+  br label %write.loop
+write.loop:
+  %write.position = phi i64 [ %write.start, %mantissa.result ], [ %write.position.next, %write.body ]
+  %write.remaining = phi i64 [ %exponent.value, %mantissa.result ], [ %write.rest, %write.body ]
+  %write.divisor = phi i64 [ %measure.power, %mantissa.result ], [ %write.divisor.next, %write.body ]
+  %write.done = icmp uge i64 %write.position, %write.end
+  br i1 %write.done, label %exponential.result, label %write.body
+write.body:
+  %write.position.next = add i64 %write.position, 1
+  %write.digit = udiv i64 %write.remaining, %write.divisor
+  %write.taken = mul i64 %write.digit, %write.divisor
+  %write.rest = sub i64 %write.remaining, %write.taken
+  %write.code = add i64 %write.digit, 48
+  %write.byte = trunc i64 %write.code to i8
+  %write.slot = getelementptr i8, ptr %out, i64 %write.position
+  store i8 %write.byte, ptr %write.slot
+  %write.divisor.next = udiv i64 %write.divisor, 10
+  br label %write.loop
+exponential.result:
+  %exponential.total = add i64 %sign.length, %write.end
+  %exponential.nul = getelementptr i8, ptr %out, i64 %exponential.total
+  store i8 0, ptr %exponential.nul
+  %exponential.0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %exponential.1 = insertvalue { ptr, i64 } %exponential.0, i64 %exponential.total, 1
+  ret { ptr, i64 } %exponential.1
+}
 @.number.radix.digits = private unnamed_addr constant [37 x i8] c"0123456789abcdefghijklmnopqrstuvwxyz\00"
 
 define { ptr, i64 } @numberToStringRadix(double %value, double %radix.value) {
@@ -156,12 +390,8 @@ entry:
   %is.decimal = icmp eq i64 %radix, 10
   br i1 %is.decimal, label %decimal, label %convert
 decimal:
-  %decimal.buffer = call ptr @malloc(i64 128)
-  %written = call i32 (ptr, ptr, ...) @sprintf(ptr %decimal.buffer, ptr @.number.fmt.default, double %value)
-  %decimal.len = sext i32 %written to i64
-  %decimal.0 = insertvalue { ptr, i64 } undef, ptr %decimal.buffer, 0
-  %decimal.1 = insertvalue { ptr, i64 } %decimal.0, i64 %decimal.len, 1
-  ret { ptr, i64 } %decimal.1
+  %radix.decimal = call { ptr, i64 } @numberToShortestString(double %value)
+  ret { ptr, i64 } %radix.decimal
 convert:
   %raw = fptosi double %value to i64
   %negative = icmp slt i64 %raw, 0

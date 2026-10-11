@@ -1,13 +1,14 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
+import type { JsIrValueExpression } from "./expressions.js";
 import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
 import { lowerClassMethodCall } from "./class-calls.js";
 import { lowerJsonStatementCall } from "./json-values.js";
 import { lowerCallThisValue, lowerSpreadCallValue } from "./value-calls.js";
 import { unlowerableCallee } from "./builtins/index.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
-import { optionalStatementCallee } from "./optional-call.js";
+import { discardOptionalCall, optionalReceiverGuard, optionalStatementCallee } from "./optional-call.js";
 
 export function lowerCallStatement(
   context: LoweringContext,
@@ -23,11 +24,9 @@ export function lowerCallStatement(
   // installed on the prototype, so `jsCall` dispatched on `undefined` and the program
   // segfaulted. Resolve it to the generated method function here, exactly as the value path
   // does, so both positions agree.
-  if (ts.isPropertyAccessExpression(expression.expression)) {
-    const methodCall = lowerClassMethodCall(context, expression, expression.expression, bindings);
-    if (methodCall.kind !== "notApplicable") {
-      return methodCall;
-    }
+  const methodCall = lowerClassMethodCallStatement(context, expression, bindings);
+  if (methodCall.kind !== "notApplicable") {
+    return methodCall;
   }
 
   const jsonStatement = lowerJsonStatementCall(context, expression, bindings);
@@ -36,6 +35,13 @@ export function lowerCallStatement(
   }
 
   const spreadCall = lowerSpreadCallValue(context, expression, bindings);
+  if (spreadCall.kind === "lowered") {
+    const guarded = optionalReceiverGuard(spreadCall.operation);
+    if (guarded !== undefined) {
+      return produced(discardOptionalCall(context, guarded));
+    }
+    return produced(spreadCall.operation);
+  }
   if (spreadCall.kind !== "notApplicable") {
     return spreadCall;
   }
@@ -57,6 +63,30 @@ export function lowerCallStatement(
   }
 
   return produced({ kind: "call", name: expression.expression.text, arguments: args.operation });
+}
+
+function lowerClassMethodCallStatement(
+  context: LoweringContext,
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (!ts.isPropertyAccessExpression(expression.expression)) {
+    return notApplicable;
+  }
+  const methodCall = lowerClassMethodCall(context, expression, expression.expression, bindings);
+  if (methodCall.kind === "lowered") {
+    // A class method on an optional receiver (`s?.area()`) lowers to the direct call guarded
+    // by the receiver's nullish check. The guard is a value, so a discarded call materializes
+    // it into a throwaway slot rather than dropping the short-circuit.
+    if (methodCall.operation.kind === "optionalChain") {
+      return produced(discardOptionalCall(context, methodCall.operation));
+    }
+    return produced(methodCall.operation);
+  }
+  if (methodCall.kind !== "notApplicable") {
+    return methodCall;
+  }
+  return notApplicable;
 }
 
 function lowerDynamicCallStatement(
@@ -81,11 +111,16 @@ function lowerDynamicCallStatement(
   if (callThisValueResult.kind === "unsupported") {
     return callThisValueResult;
   }
-  return produced({
+  const built: Extract<JsIrValueExpression, { readonly kind: "callValue" }> = {
     kind: "callValue",
     callee,
     arguments: args,
     thisValue: loweredPayload(callThisValueResult),
     optionalCallee: optionalStatementCallee(expression)
-  });
+  };
+  const guarded = optionalReceiverGuard(built);
+  if (guarded !== undefined) {
+    return produced(discardOptionalCall(context, guarded));
+  }
+  return produced(built);
 }

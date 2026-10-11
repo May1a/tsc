@@ -5,7 +5,7 @@ import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrRuntimeArrayElement, JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
 import { isKnownGlobalCallee, isPlannedBuiltinCall } from "./builtins/index.js";
-import { optionalStatementCallee } from "./optional-call.js";
+import { optionalReceiverGuard, optionalStatementCallee } from "./optional-call.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 import { iteratorErrorSubject } from "./iterator-subject.js";
 
@@ -40,6 +40,9 @@ export function lowerValueCallExpression(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
   const spreadCall = lowerSpreadCallValue(context, expression, bindings);
+  if (spreadCall.kind === "lowered") {
+    return produced(optionalReceiverGuard(spreadCall.operation) ?? spreadCall.operation);
+  }
   if (spreadCall.kind !== "notApplicable") {
     return spreadCall;
   }
@@ -75,13 +78,14 @@ export function lowerValueCallExpression(
   if (callThisValueResult.kind === "unsupported") {
     return callThisValueResult;
   }
-  return produced({
+  const built: Extract<JsIrValueExpression, { readonly kind: "callValue" }> = {
     kind: "callValue",
     callee: calleeValue,
     arguments: args,
     thisValue: loweredPayload(callThisValueResult),
     optionalCallee: optionalStatementCallee(expression)
-  });
+  };
+  return produced(optionalReceiverGuard(built) ?? built);
 }
 
 function lowerNamedValueCall(

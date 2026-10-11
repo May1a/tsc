@@ -2,6 +2,7 @@ import { unsupportedFormMessage } from "./builtins/manifest.js";
 import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
+import { isUndefinedExpression } from "./predicates.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { lowerRegexValueExpression } from "./regex.js";
@@ -90,7 +91,7 @@ export function lowerDirectValueExpression(
     }
   }
 
-  if (expression.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(expression) && expression.text === "undefined")) {
+  if (isUndefinedExpression(expression)) {
     return produced({ kind: "undefined" });
   }
 

@@ -147,7 +147,7 @@ function parameterPropertyValue(parameter: JsIrFunctionParameter): JsIrValueExpr
   return { kind: "variable", name: parameter.name };
 }
 
-function forwardedClassArgument(parameter: JsIrFunctionParameter): JsIrCallArgument {
+export function forwardedClassArgument(parameter: JsIrFunctionParameter): JsIrCallArgument {
   if (parameter.valueKind === "number") {
     return { valueKind: "number", value: { kind: "parameter", name: parameter.name } };
   }
