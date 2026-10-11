@@ -1,10 +1,10 @@
 import type { LoweringContext } from "./context.js";
-import type { ClassFieldInfo, ClassInfo } from "./class-info.js";
+import { type ClassFieldInfo, type ClassInfo, classPrivateFunctions } from "./class-info.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionParameter } from "./bindings.js";
 import { type Lowered, type Produced, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
-import { CLASS_THIS_NAME, classAbortReason, classConstructorName, classMemberKeyStringExpression } from "./class-names.js";
+import { CLASS_THIS_NAME, classAbortReason, classConstructorName, classMemberKeyStringExpression, classPrivateFieldDefineMessage } from "./class-names.js";
 import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
 import { lowerFunctionParameters } from "./function-parameter-lowering.js";
 import { isNonExecutableDeclaration } from "./comparisons.js";
@@ -87,6 +87,18 @@ export function lowerClassConstructor(
     if (iteratorStore.kind === "lowered") {
       body.push(iteratorStore.operation);
     }
+    // Private methods and accessors join the instance before any field initializer runs
+    // (InitializeInstanceElements).
+    for (const privateFunction of classPrivateFunctions(info)) {
+      body.push({
+        kind: "privateFieldStore",
+        targetName: CLASS_THIS_NAME,
+        key: privateFunction.storageKey,
+        value: { kind: "variable", name: privateFunction.slotName },
+        message: classPrivateFieldDefineMessage(privateFunction.functionName),
+        define: true
+      });
+    }
     // TypeScript assigns parameter properties after `super(...)` and before the field initializers, so
     // a field initializer may read one. The order here matches that emit exactly, which is what makes
     // `class C { x = this.p + 1; constructor(public p: number) {} }` read the argument.
@@ -107,12 +119,7 @@ export function lowerClassConstructor(
       if (initializer.kind !== "lowered") {
         return initializer;
       }
-      body.push({
-        kind: "valueObjectStore",
-        targetName: CLASS_THIS_NAME,
-        key: classMemberKeyStringExpression(field.key),
-        value: initializer.operation
-      });
+      body.push(classFieldStore(field, initializer.operation));
     }
     if (constructorDeclaration?.body !== undefined) {
       for (const statement of remainingStatements) {
@@ -164,6 +171,14 @@ function lowerConstructorParameters(
     bindFunctionParameter(parameter.name, parameter.isOptional === true ? "value" : parameter.valueKind, false, fnBindings);
   }
   return produced({ parameters: info.constructorParameters, bindings: fnBindings, prelude: [] });
+}
+
+/** A public field is an own property of the instance; a private one is a private element. */
+function classFieldStore(field: ClassFieldInfo, value: JsIrValueExpression): JsIrOperation {
+  if (field.privateName !== undefined && field.key.kind === "literal") {
+    return { kind: "privateFieldStore", targetName: CLASS_THIS_NAME, key: field.key.name, value, message: classPrivateFieldDefineMessage(field.privateName), define: true };
+  }
+  return { kind: "valueObjectStore", targetName: CLASS_THIS_NAME, key: classMemberKeyStringExpression(field.key), value };
 }
 
 function parameterPropertyValue(parameter: JsIrFunctionParameter): JsIrValueExpression {

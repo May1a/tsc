@@ -56,7 +56,11 @@ function objectOperations(): readonly JsIrOperation[] {
     { kind: "objectStore", objectName: "fixed", path: ["nested", "y"], value: { kind: "literal", value: 8 } }, json("fixed"),
     { kind: "runtimeObjectLiteral", name: "object", value: { fields: [{ kind: "field", key: { kind: "literal", value: "x" }, value: text("rooted") }] } },
     { kind: "runtimeObjectStore", objectName: "object", key: { kind: "literal", value: "z" }, value: numeric(3) },
-    { kind: "privateFieldStore", targetName: "object", key: "x", value: text("updated"), message: "wrong brand" }, json("object"),
+    { kind: "runtimeObjectStore", objectName: "object", key: { kind: "literal", value: "x" }, value: text("updated") },
+    // A private element lives outside the property table, so the JSON below does not show it.
+    { kind: "privateFieldStore", targetName: "object", key: "secret", value: text("first"), message: "added twice", define: true },
+    { kind: "privateFieldStore", targetName: "object", key: "secret", value: text("second"), message: "wrong brand" },
+    print({ kind: "privateFieldAccess", receiver: variable("object"), key: "secret", message: "wrong brand" }), json("object"),
     { kind: "runtimeObjectDefineDataProperty", objectName: "object", descriptor: { key: { kind: "literal", value: "hidden" }, value: numeric(4), writable: true, enumerable: false, configurable: true } },
     { kind: "runtimeObjectKeys", name: "keys", targetName: "object", targetKind: "object" }, json("keys"),
     { kind: "runtimeObjectOwnPropertyNames", name: "names", targetName: "object", targetKind: "object" }, json("names"),
@@ -151,7 +155,7 @@ function aggregateModule(operations: readonly JsIrOperation[]): NativeModule {
 test.each([
   { name: "arrays and holes", operations: arrayOperations, expected: ["[3,null,5]", "[3,null,5,1,2]", "[3,null,5,1,2,7,8]", "[null,5,1,2]", "[null,5]", "[3,9,1,2,7,8]",
     "[10,11,3,9,1,2,7,8,12,13]", "[13,12,8,7,2,1,9,3,11,10]", "[13,6,6,13,6,1,9,3,11,10]", "[null,6,6,13]", '["a","b"]', "[1,2,3]"] },
-  { name: "objects and fixed shadows", operations: objectOperations, expected: ['{"x":1,"nested":{"y":2}}', '{"x":7,"nested":{"y":8}}', '{"x":"updated","z":3}', '["x","z"]', '["x","z","hidden"]',
+  { name: "objects and fixed shadows", operations: objectOperations, expected: ['{"x":1,"nested":{"y":2}}', '{"x":7,"nested":{"y":8}}', "second", '{"x":"updated","z":3}', '["x","z"]', '["x","z","hidden"]',
     '{"value":4,"writable":true,"enumerable":false,"configurable":true}', "updated", '{"x":"updated","z":9}', '{"z":9}', "true", "RangeError: bad range"] },
   { name: "collections and iterable construction", operations: collectionOperations, expected: ["two", "one", "true", "42", "true", "2"] },
   { name: "private brands and invalid iterables", operations: throwingOperations, expected: ["wrong private brand", "spread source is not iterable", "map source is not iterable"] }

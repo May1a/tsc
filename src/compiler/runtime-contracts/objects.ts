@@ -101,6 +101,41 @@ export const objectsContracts = {
     name: "objectNew", parameters: [llvm.i64], returns: llvm.ptr, variadic: false,
     effects: { allocates: true, collects: false, completion: "none" }
   },
+  "objectPrivateTable": {
+    resultKind: "pointer",
+    pointerResult: { kind: "borrowed", parameter: 0 },
+    origin: "staticRuntime",
+    name: "objectPrivateTable", parameters: [llvm.i64], returns: llvm.ptr, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "valuePrivateHas": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valuePrivateHas", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.i1, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "valuePrivateGet": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valuePrivateGet", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "valuePrivateSet": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valuePrivateSet", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "valuePrivateAdd": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valuePrivateAdd", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
   "objectCreate": {
     resultKind: "pointer",
     pointerResult: { kind: "heap" },

@@ -26,6 +26,11 @@ export function classMethodFunctionName(className: string, methodName: string, i
   return `${className}$${methodName}`;
 }
 
+/** The module slot holding a private function's object, which construction adds to instances. */
+export function classPrivateFunctionSlotName(className: string, functionName: string): string {
+  return `${className}$private$${functionName}`;
+}
+
 /** Accessors are getter/setter pairs, so the name says which half. */
 export function classAccessorFunctionName(className: string, propertyName: string, isGetter: boolean): string {
   if (isGetter) {
@@ -46,6 +51,10 @@ export function classSetterFunctionName(className: string, propertyName: string)
 // that does not own the declaring class's brand.
 export function classPrivateFieldReadMessage(fieldName: string): string {
   return `Cannot read private member ${fieldName} from an object whose class did not declare it`;
+}
+
+export function classPrivateFieldDefineMessage(fieldName: string): string {
+  return `Cannot initialize ${fieldName} twice on the same object`;
 }
 
 export function classPrivateFieldWriteMessage(fieldName: string): string {

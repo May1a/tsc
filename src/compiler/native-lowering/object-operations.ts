@@ -138,17 +138,9 @@ function privateStore(operation: OperationNode<"privateFieldStore">, context: Op
   const receiver = keep(context.bindings.value(operation.targetName), context);
   const value = keep(context.expressions.value(operation.value), context);
   const key = literalString(operation.key, context);
-  const branded = context.runtime.call("valueObjectHasOwn", [receiver, key.length, key.bytes], context.cursor.uniqueName("private.brand"));
-  const valid = context.cursor.reserveBlock("private.valid");
-  const invalid = context.cursor.reserveBlock("private.invalid");
-  context.cursor.currentBlock().condBr(branded, valid, invalid);
-  context.cursor.openBlock(invalid);
-  context.runtime.callWithCompletion("iteratorTypeError", [stringValue(operation.message, context)],
-    context.cursor.uniqueName("private.error"), context.exceptionTarget());
-  context.cursor.currentBlock().unreachable();
-  context.cursor.openBlock(valid);
-  context.runtime.callWithCompletion("valueObjectSet", [receiver, key.length, key.bytes, value],
-    context.cursor.uniqueName("private.store"), context.exceptionTarget());
+  const message = stringValue(operation.message, context);
+  context.runtime.callWithCompletion(operation.define === true ? "valuePrivateAdd" : "valuePrivateSet",
+    [receiver, key.length, key.bytes, value, message], context.cursor.uniqueName("private.store"), context.exceptionTarget());
 }
 
 function deleteProperty(operation: OperationNode<"runtimeObjectDelete" | "valueObjectDelete">, context: OperationContext): void {

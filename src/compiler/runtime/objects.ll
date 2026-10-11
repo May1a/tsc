@@ -364,7 +364,92 @@ entry:
   store i64 1, ptr %flags.slot
   %class.slot = getelementptr i8, ptr %object, i64 48
   store i64 0, ptr %class.slot
+  %private.slot = getelementptr i8, ptr %object, i64 56
+  store ptr null, ptr %private.slot
   ret ptr %object
+}
+
+; Private elements (`#x`) live in a table of their own at payload offset 56, created on the first
+; add, so no property enumeration, reflection or copy ever reaches them. Every read, write and add
+; first checks the receiver's brand: it must be an object that already holds the element, or for an
+; add one that does not yet. A failed check throws a TypeError with the compiler's message.
+define ptr @objectPrivateTable(i64 %value) {
+entry:
+  %is.object = call i1 @valueIsObject(i64 %value)
+  br i1 %is.object, label %object, label %none
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %table.slot = getelementptr i8, ptr %object.ptr, i64 56
+  %table = load ptr, ptr %table.slot
+  ret ptr %table
+none:
+  ret ptr null
+}
+define i1 @valuePrivateHas(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %table = call ptr @objectPrivateTable(i64 %value)
+  %has.table = icmp ne ptr %table, null
+  br i1 %has.table, label %lookup, label %absent
+lookup:
+  %has = call i1 @objectHasOwn(ptr %table, i64 %key.len, ptr %key.ptr)
+  ret i1 %has
+absent:
+  ret i1 false
+}
+define { i64, i1 } @valuePrivateGet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %message) {
+entry:
+  %branded = call i1 @valuePrivateHas(i64 %value, i64 %key.len, ptr %key.ptr)
+  br i1 %branded, label %read, label %unbranded
+read:
+  %table = call ptr @objectPrivateTable(i64 %value)
+  %element = call i64 @objectGet(ptr %table, i64 %key.len, ptr %key.ptr)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %element, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+unbranded:
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+}
+define { i64, i1 } @valuePrivateSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored, i64 %message) {
+entry:
+  %branded = call i1 @valuePrivateHas(i64 %value, i64 %key.len, ptr %key.ptr)
+  br i1 %branded, label %write, label %unbranded
+write:
+  %table = call ptr @objectPrivateTable(i64 %value)
+  call void @objectSet(ptr %table, i64 %key.len, ptr %key.ptr, i64 %stored)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+unbranded:
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+}
+define { i64, i1 } @valuePrivateAdd(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored, i64 %message) {
+entry:
+  %is.object = call i1 @valueIsObject(i64 %value)
+  br i1 %is.object, label %check, label %refused
+check:
+  %present = call i1 @valuePrivateHas(i64 %value, i64 %key.len, ptr %key.ptr)
+  br i1 %present, label %refused, label %table
+table:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %table.slot = getelementptr i8, ptr %object.ptr, i64 56
+  %existing = load ptr, ptr %table.slot
+  %has.table = icmp ne ptr %existing, null
+  br i1 %has.table, label %add, label %create
+create:
+  %created = call ptr @objectNew(i64 1)
+  store ptr %created, ptr %table.slot
+  br label %add
+add:
+  %target = phi ptr [ %existing, %table ], [ %created, %create ]
+  call void @objectSet(ptr %target, i64 %key.len, ptr %key.ptr, i64 %stored)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+refused:
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
 }
 define ptr @objectCreate(ptr %prototype) {
 entry:

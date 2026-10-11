@@ -1,6 +1,6 @@
 import type { LoweringContext } from "./context.js";
-import { type ClassComputedKeyInfo, type ClassComputedMethodEntry, type ClassFieldInfo, type ClassInfo, type ClassMethodInfo, type CollectedClassMembers, classPrototypeName, classStaticStorageName } from "./class-info.js";
-import type { JsIrBindingValue } from "./bindings.js";
+import { type ClassComputedKeyInfo, type ClassComputedMethodEntry, type ClassFieldInfo, type ClassInfo, type ClassMethodInfo, type CollectedClassMembers, classPrivateFunctions, classPrototypeName, classStaticStorageName } from "./class-info.js";
+import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
 import { type Produced, loweredPayload, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
 import type { JsIrRuntimeObjectField, JsIrValueExpression } from "./expressions.js";
@@ -126,6 +126,20 @@ export function lowerPrototypeMethodStores(
   });
 }
 
+/**
+ * One slot per private method, getter and setter, holding the function object every instance's
+ * private element shares, so `a.#m === b.#m` as in JavaScript. The constructor adds it to each
+ * instance it initializes.
+ */
+export function lowerPrivateFunctionSlots(context: LoweringContext, info: ClassInfo): readonly JsIrOperation[] {
+  return classPrivateFunctions(info).map((privateFunction): JsIrOperation => ({
+    kind: "letValue",
+    name: privateFunction.slotName,
+    moduleGlobal: true,
+    value: dispatchWrapper(context, info, privateFunction.functionName, privateFunction.parameters)
+  }));
+}
+
 /** One store installing `methodName`'s dispatch wrapper on `target`'s prototype object. */
 function lowerPrototypeMethodStore(
   context: LoweringContext,
@@ -155,22 +169,33 @@ function classMethodDispatchWrapper(
   methodName: string,
   method: ClassMethodInfo
 ): JsIrValueExpression {
-  const codeName = `__tscn_protomethod_${target.name}_${methodName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
+  return dispatchWrapper(context, target, classMethodFunctionName(target.name, methodName, false), method.parameters, methodName);
+}
+
+/** A function object taking `parameters` that calls the direct function `functionName` with its receiver. */
+function dispatchWrapper(
+  context: LoweringContext,
+  target: ClassInfo,
+  functionName: string,
+  parameters: readonly JsIrFunctionParameter[],
+  inferredName?: string
+): JsIrValueExpression {
+  const codeName = `__tscn_protomethod_${target.name}_${functionName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   context.nextFunctionObjectId += 1;
-  const forwarded = method.parameters.map((parameter) => forwardedClassArgument(parameter));
+  const forwarded = parameters.map((parameter) => forwardedClassArgument(parameter));
   return {
     kind: "functionObject",
     definition: {
       codeName,
-      parameters: method.parameters,
+      parameters,
       functionKind: "ordinary",
       returnKind: "value",
-      inferredName: methodName,
+      ...(inferredName === undefined ? {} : { inferredName }),
       body: [{
         kind: "returnValue",
         expression: {
           kind: "call",
-          name: classMethodFunctionName(target.name, methodName, false),
+          name: functionName,
           arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...forwarded]
         }
       }]

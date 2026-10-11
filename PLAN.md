@@ -232,6 +232,14 @@ The callee evaluates it when the argument is missing or `undefined`, after bindi
 before it. A default this build cannot evaluate is refused by name. `= undefined` makes the
 parameter omittable without a default. The fixture is `function-parameter-value-defaults.ts`.
 
+**0j. Private fields were properties.** Found while starting 3.2. A private field was an ordinary own
+property under a mangled key. `Object.keys` counted it, and `JSON.stringify(new C())` printed
+`{" private C #x":1}`. Each object now has a private-element table at payload offset 56, which the
+GC marks and which no enumeration, reflection or copy reaches. `valuePrivateGet`, `valuePrivateSet`
+and `valuePrivateAdd` check the brand. An add runs at construction (`privateFieldStore` with
+`define`) and throws if the element already exists. Fixtures: `private-field-brand.ts` and
+`private-field-not-a-property.ts`.
+
 0d drops the Test262 floor from 1,013 to 1,012, and 0e restores it to 1,013. `language/statements/function/S13.2.1_A7_T2.js` passed
 only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never
 reads `x`. It is now refused, because a `var` cannot hold a boxed value yet. Workstream 2 admits it.
@@ -353,6 +361,20 @@ Ordered by Test262 gap counts:
    applies its defaults. Rest parameters on class members are still refused. The fixture is
    `class-member-parameter-defaults.ts`. With 0i, Test262 rises from 1,438 to 1,600.
 2. Static accessors (36), private methods and accessors (22), and static private fields (82).
+
+   Done for instance private methods and accessors. A private method, getter or setter is a
+   function the class definition stores once in a module slot (`classPrivateFunctions`).
+   Construction adds it to every instance as a private element, before any field initializer
+   runs, so instances share one function object. `this.#m` reads it through the brand check, and a
+   call passes the receiver as `this`. Reading a private accessor calls its getter, and writing it
+   calls its setter. Writing a private method, and reading or writing a missing accessor half, is
+   refused rather than lowered to its `TypeError`. A stray `;` and an index signature in a class
+   body are skipped. Fixtures: `private-methods.ts`, `private-accessors.ts` and
+   `class-empty-members.ts`. With 0j, Test262 rises from 1,600 to 1,689.
+
+   Still open: static private fields, methods and accessors (235 gap tests). 202 of them read
+   `this.#x` in a static method, so they need `this` there to be the class itself, which comes with
+   classes as values (3.4). Static accessors and static blocks are also open.
 3. Computed method and accessor names (287 + 118). Class fields already handle computed keys through
    `ClassComputedKeyInfo`.
 4. Classes as boxed values: `const K = A`, unbound class expressions (66), and `extends` of a class not
