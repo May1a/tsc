@@ -227,6 +227,14 @@ export function lowerObjectMethodSugarConditionExpression(
   if (binding?.kind === "runtimeArray") {
     return lowerOwnArrayPropertyCondition(context, receiver, keyExpression, bindings);
   }
+  // A boxed receiver, such as a class instance, answers `hasOwnProperty` as `Object.hasOwn` does.
+  if (method === "hasOwnProperty" && isBoxedAggregateCandidateBinding(binding)) {
+    const key = lowerPropertyKeyExpression(context, keyExpression, bindings);
+    if (key.kind !== "lowered") {
+      return key;
+    }
+    return produced({ kind: "runtimeObjectHas", objectName: receiver, key: key.operation, ownOnly: true, receiverKind: "value" });
+  }
   return notApplicable;
 }
 

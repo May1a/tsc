@@ -160,6 +160,14 @@ binding as a receiver. Then remove the 0e exception in `isShapeRecognizedReceive
 `const` initialized by an element read, or by `new Number`/`Boolean`/`String`, is still re-evaluated
 at every read, so `n === n` is `false` for such a wrapper.
 
+**0h. Class methods missing from the prototype.** Found while verifying workstream 2. 0b installed only
+overridden methods on a class prototype, so `obj["m"]()` threw `TypeError: value is not a function`
+for any other method, and `inst.hasOwnProperty(k)` did the same. Every instance method is now
+installed (`lowerPrototypeMethodStores`), and `hasOwnProperty` on a boxed receiver lowers to
+`runtimeObjectHas`. Other `Object.prototype` methods called through a class instance, such as
+`toString` or `isPrototypeOf`, still throw, because the runtime has no `Object.prototype` functions.
+That belongs with 0g. The fixture is `class-method-dynamic-access.ts`.
+
 0d drops the Test262 floor from 1,013 to 1,012, and 0e restores it to 1,013. `language/statements/function/S13.2.1_A7_T2.js` passed
 only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never
 reads `x`. It is now refused, because a `var` cannot hold a boxed value yet. Workstream 2 admits it.

@@ -360,4 +360,5 @@ export const oracleFixtures: readonly string[] = [
   "form-admitted-labeled-statement.ts",
   "labeled-statement-for-of-frame.ts",
   "class-static-and-instance-field-write.ts",
+  "class-method-dynamic-access.ts",
 ] as const;
