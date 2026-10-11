@@ -32,18 +32,18 @@ export const objectsContracts = {
     effects: { allocates: true, collects: false, completion: "none" }
   },
   "valueObjectSet": {
-    resultKind: "void",
+    resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
-    name: "valueObjectSet", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    name: "valueObjectSet", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
   },
   "valueObjectDelete": {
-    resultKind: "void",
+    resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
-    name: "valueObjectDelete", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    name: "valueObjectDelete", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
   },
   "valueObjectHasOwn": {
     resultKind: "scalar",

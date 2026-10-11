@@ -5,7 +5,7 @@ import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrOperation } from "./types.js";
 import type { JsIrObjectAssignSource, JsIrRuntimeDataDescriptor } from "./expressions.js";
 import { lowerRuntimeDataDescriptorMapValue, objectHasNestedFields } from "./builtins/object-producers.js";
-import { isProvenBoxedAggregateBinding } from "./number-access.js";
+import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { definePropertyArgumentCount } from "./predicates.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 import { lowerRuntimeDataDescriptor } from "./object-descriptors.js";
@@ -231,7 +231,7 @@ function lowerObjectAssignSource(
   if (binding?.kind === "array") {
     return produced({ kind: "fixedArray", name: source.text, length: binding.length });
   }
-  if (isProvenBoxedAggregateBinding(binding)) {
+  if (isBoxedStoreReceiverBinding(binding)) {
     const value = context.lowerValueExpression(context, source, bindings);
     if (value.kind === "unsupported") {
       return value;

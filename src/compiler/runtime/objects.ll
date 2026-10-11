@@ -40,29 +40,123 @@ object:
   %result = call i64 @objectGet(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
   ret i64 %result
 }
-define void @valueObjectSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored) {
+@.object.set.nullish.msg = private unnamed_addr constant [43 x i8] c"Cannot set properties of undefined or null\00"
+@.object.set.primitive.msg = private unnamed_addr constant [44 x i8] c"Cannot create property on a primitive value\00"
+@.object.delete.nullish.msg = private unnamed_addr constant [43 x i8] c"Cannot convert undefined or null to object\00"
+define { i64, i1 } @valueObjectSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored) {
 entry:
-  %object = call ptr @valueObjectPtr(i64 %value)
-  call void @objectSet(ptr %object, i64 %key.len, ptr %key.ptr, i64 %stored)
-  ret void
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %value)
+  call void @gcRootPush(i64 %stored)
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  br i1 %is.undefined, label %nullish, label %check.null
+check.null:
+  %is.null = icmp eq i64 %value, 9222246136947933187
+  br i1 %is.null, label %nullish, label %check.object
+nullish:
+  %nullish.message = call i64 @valueBoxString(ptr @.object.set.nullish.msg, i64 42)
+  %nullish.error = call { i64, i1 } @iteratorTypeError(i64 %nullish.message)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %nullish.error
+check.object:
+  %tag = and i64 %value, -281474976710656
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  br i1 %is.object, label %object, label %check.function
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  call void @objectSet(ptr %object.ptr, i64 %key.len, ptr %key.ptr, i64 %stored)
+  br label %success
+check.function:
+  %is.function = icmp eq i64 %tag, 9221964661971222528
+  br i1 %is.function, label %function, label %check.array
+function:
+  %function.result = call { i64, i1 } @functionObjectSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored)
+  %function.failed = extractvalue { i64, i1 } %function.result, 1
+  br i1 %function.failed, label %propagate, label %success
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %primitive
+array:
+  %is.length.length = icmp eq i64 %key.len, 6
+  br i1 %is.length.length, label %array.length.compare, label %array.keyed
+array.length.compare:
+  %length.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.desc.length, i64 6)
+  %is.length = icmp eq i32 %length.cmp, 0
+  br i1 %is.length, label %array.length, label %array.keyed
+array.length:
+  %length.array = call ptr @valueArrayPtr(i64 %value)
+  %length.number = call double @valueToNumber(i64 %stored)
+  %length.i = call i64 @numberToIndex(double %length.number)
+  call void @arraySetLength(ptr %length.array, i64 %length.i)
+  br label %success
+array.keyed:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %array.index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %is.named = icmp slt i64 %array.index, 0
+  br i1 %is.named, label %array.named, label %array.element
+array.element:
+  call void @arraySet(ptr %array.ptr, i64 %array.index, i64 %stored)
+  br label %success
+array.named:
+  call void @arraySetNamed(ptr %array.ptr, i64 %key.len, ptr %key.ptr, i64 %stored)
+  br label %success
+primitive:
+  %primitive.message = call i64 @valueBoxString(ptr @.object.set.primitive.msg, i64 43)
+  %primitive.error = call { i64, i1 } @iteratorTypeError(i64 %primitive.message)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %primitive.error
+propagate:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %function.result
+success:
+  call void @gcRootRestore(i64 %frame)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }
-define void @valueObjectDelete(i64 %value, i64 %key.len, ptr %key.ptr) {
+define { i64, i1 } @valueObjectDelete(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  br i1 %is.undefined, label %nullish, label %check.null
+check.null:
+  %is.null = icmp eq i64 %value, 9222246136947933187
+  br i1 %is.null, label %nullish, label %check.object
+nullish:
+  %nullish.message = call i64 @valueBoxString(ptr @.object.delete.nullish.msg, i64 42)
+  %nullish.error = call { i64, i1 } @iteratorTypeError(i64 %nullish.message)
+  ret { i64, i1 } %nullish.error
+check.object:
   %tag = and i64 %value, -281474976710656
   %is.object = icmp eq i64 %tag, 9221120237041090560
   br i1 %is.object, label %object, label %check.function
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   call void @objectDelete(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
-  ret void
+  br label %success
 check.function:
   %is.function = icmp eq i64 %tag, 9221964661971222528
-  br i1 %is.function, label %function, label %done
+  br i1 %is.function, label %function, label %check.array
 function:
   call void @functionObjectDelete(i64 %value, i64 %key.len, ptr %key.ptr)
-  ret void
-done:
-  ret void
+  br label %success
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %success
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %array.index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %is.named = icmp slt i64 %array.index, 0
+  br i1 %is.named, label %array.named, label %array.element
+array.element:
+  call void @arrayDelete(ptr %array.ptr, i64 %array.index)
+  br label %success
+array.named:
+  call void @arrayDeleteNamed(ptr %array.ptr, i64 %key.len, ptr %key.ptr)
+  br label %success
+success:
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }
 define i1 @valueObjectHasOwn(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:

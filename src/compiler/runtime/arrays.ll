@@ -269,23 +269,56 @@ entry:
   %length = call i64 @arrayLength(ptr %array)
   ret i64 %length
 }
-define void @valueArraySet(i64 %value, i64 %index, i64 %stored) {
+; Stores through a receiver the compiler only knows is a value. An array takes the element store;
+; any other receiver gets the same store under the index's canonical key, which valueObjectSet and
+; valueObjectDelete check against the receiver's tag.
+define { i64, i1 } @valueArraySet(i64 %value, i64 %index, i64 %stored) {
 entry:
-  %array = call ptr @valueArrayPtr(i64 %value)
-  call void @arraySet(ptr %array, i64 %index, i64 %stored)
-  ret void
+  %is.array = call i1 @valueIsArray(i64 %value)
+  br i1 %is.array, label %array, label %keyed
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  call void @arraySet(ptr %array.ptr, i64 %index, i64 %stored)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+keyed:
+  %key.ptr = call ptr @indexToString(i64 %index)
+  %key.len = call i64 @strlen(ptr %key.ptr)
+  %result = call { i64, i1 } @valueObjectSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored)
+  ret { i64, i1 } %result
 }
-define void @valueArraySetLength(i64 %value, i64 %length) {
+define { i64, i1 } @valueArraySetLength(i64 %value, i64 %length) {
 entry:
-  %array = call ptr @valueArrayPtr(i64 %value)
-  call void @arraySetLength(ptr %array, i64 %length)
-  ret void
+  %is.array = call i1 @valueIsArray(i64 %value)
+  br i1 %is.array, label %array, label %keyed
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  call void @arraySetLength(ptr %array.ptr, i64 %length)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+keyed:
+  %length.number = uitofp i64 %length to double
+  %length.value = call i64 @valueBoxNumber(double %length.number)
+  %result = call { i64, i1 } @valueObjectSet(i64 %value, i64 6, ptr @.array.desc.length, i64 %length.value)
+  ret { i64, i1 } %result
 }
-define void @valueArrayDelete(i64 %value, i64 %index) {
+define { i64, i1 } @valueArrayDelete(i64 %value, i64 %index) {
 entry:
-  %array = call ptr @valueArrayPtr(i64 %value)
-  call void @arrayDelete(ptr %array, i64 %index)
-  ret void
+  %is.array = call i1 @valueIsArray(i64 %value)
+  br i1 %is.array, label %array, label %keyed
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  call void @arrayDelete(ptr %array.ptr, i64 %index)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+keyed:
+  %key.ptr = call ptr @indexToString(i64 %index)
+  %key.len = call i64 @strlen(ptr %key.ptr)
+  %result = call { i64, i1 } @valueObjectDelete(i64 %value, i64 %key.len, ptr %key.ptr)
+  ret { i64, i1 } %result
 }
 define ptr @arrayNew(i64 %length) {
 entry:

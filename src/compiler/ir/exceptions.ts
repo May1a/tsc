@@ -4,7 +4,7 @@ import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrOperation } from "./types.js";
 import { type Lowered, type LoweredStatementList, type Produced, loweredOperation, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerBlockStatements } from "./statement-lists.js";
-import { type DestructuringSource, lowerArrayDestructuringElements } from "./destructuring.js";
+import { type DestructuringSource, lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
 import { unwrapTypeOnlyExpression } from "./predicates.js";
 import { lowerRuntimeErrorLiteral } from "./errors.js";
 
@@ -142,7 +142,10 @@ function lowerCatchClause(
     const source: DestructuringSource = { name: variable, binding: { kind: "valueVariable", name: variable } };
     let lowered: boolean;
     if (ts.isArrayBindingPattern(catchBinding)) {
-      const arrayDestructuringElementsResult = lowerArrayDestructuringElements(context, catchBinding, source, catchBindings, destructuringOperations, true);
+      // The thrown value is any iterable, so the pattern runs the iterator protocol, closing the
+      // iterator when the pattern does not exhaust it.
+      const arrayDestructuringElementsResult = lowerArrayProtocolDestructuringFromSource(context, catchBinding,
+        { kind: "value", value: { kind: "variable", name: variable } }, "Catch parameter is not iterable", catchBindings, destructuringOperations);
       if (arrayDestructuringElementsResult.kind === "unsupported") {
         return arrayDestructuringElementsResult;
       }

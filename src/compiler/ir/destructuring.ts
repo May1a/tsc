@@ -201,11 +201,10 @@ export function lowerArrayDestructuringElements(
   pattern: ts.ArrayBindingPattern,
   source: DestructuringSource,
   working: Map<string, JsIrBindingValue>,
-  operations: JsIrOperation[],
-  lazyDefaults = false
+  operations: JsIrOperation[]
 ): Produced<boolean> {
   const sourceBinding = source.binding;
-  if (sourceBinding.kind !== "runtimeArray" && sourceBinding.kind !== "array" && sourceBinding.kind !== "valueVariable") {
+  if (sourceBinding.kind !== "runtimeArray" && sourceBinding.kind !== "array") {
     return produced(false);
   }
   for (let index = 0; index < pattern.elements.length; index += 1) {
@@ -237,28 +236,13 @@ export function lowerArrayDestructuringElements(
       }
       continue;
     }
-    if (sourceBinding.kind === "valueVariable") {
-      const access: JsIrValueExpression = {
-        kind: "valueArrayAccess",
-        value: { kind: "variable", name: source.name },
-        index: { kind: "literal", value: index },
-        key: { kind: "literal", value: String(index) }
-      };
-      const operation = lowerDestructuredValueBinding(context, name, access, element.initializer, working, lazyDefaults);
-      if (operation.kind !== "lowered") {
-        return withRefusal(operation, produced(false));
-      }
-      operations.push(operation.operation);
-      updateBindings(operation.operation, working);
-      continue;
-    }
     const access: JsIrValueExpression = {
       kind: "arrayAccess",
       arrayName: source.name,
       index: { kind: "literal", value: index },
       key: { kind: "literal", value: String(index) }
     };
-    const operation = lowerDestructuredValueBinding(context, name, access, element.initializer, working, lazyDefaults);
+    const operation = lowerDestructuredValueBinding(context, name, access, element.initializer, working);
     if (operation.kind !== "lowered") {
       return withRefusal(operation, produced(false));
     }

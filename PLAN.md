@@ -160,6 +160,31 @@ binding as a receiver. Then remove the 0e exception in `isShapeRecognizedReceive
 `const` initialized by an element read, or by `new Number`/`Boolean`/`String`, is still re-evaluated
 at every read, so `n === n` is `false` for such a wrapper.
 
+Done. Each store helper now dispatches on the receiver's tag and returns a completion, which native
+lowering checks:
+
+- `valueObjectSet` stores into an object, an array (element, named key or `length`), or a function.
+- `valueObjectDelete` also deletes from arrays.
+- `valueArraySet`, `valueArraySetLength` and `valueArrayDelete` handle an array receiver and give
+  any other receiver to the object helpers under the index's key.
+
+A nullish receiver throws a `TypeError`. So does a store on a primitive, as a module's strict code
+does. Deleting from a primitive succeeds. Function objects carry a lazily created property object, so
+`f.tag = 1` stores and reads back. The GC marks it, and a store to `name` or `length` throws.
+`isBoxedStoreReceiverBinding` admits every `value` and `valueVariable` binding.
+
+The 0e exception is gone, so every `const` with an unstable initializer is read from its slot. A
+`const` holding a primitive wrapper keeps its recognizers through the `boxedPrimitive` flag on its
+`valueVariable` binding (`isBoxedPrimitiveBinding`).
+
+Test262 then compiled `catch ([x])` tests, which showed that a catch clause's array pattern read
+elements by index instead of iterating. It now runs the iterator protocol, as `for...of` patterns do,
+so it closes an iterator it does not exhaust.
+
+Fixtures: `boxed-receiver-store-*.ts`, `const-primitive-wrapper-identity.ts`,
+`const-element-read-snapshot.ts` and `catch-array-pattern-iterator.ts`. Test262 rises from 1,242 to
+1,275.
+
 **0g. Array methods through a boxed value.** Found while verifying workstream 2. A method call on a
 boxed value that holds an array takes the generic dynamic-call path, and the runtime array has no
 property of that name. `for (const row of [[1, 2], [3]]) print(row.join("-"))` throws

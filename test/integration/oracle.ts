@@ -406,4 +406,10 @@ export const oracleFixtures: readonly string[] = [
   "object-method-read-number.ts",
   "object-method-read-string.ts",
   "object-method-read-boolean.ts",
+  "boxed-receiver-store-primitive.ts",
+  "boxed-receiver-store-aggregates.ts",
+  "boxed-receiver-store-nullish.ts",
+  "const-primitive-wrapper-identity.ts",
+  "const-element-read-snapshot.ts",
+  "catch-array-pattern-iterator.ts",
 ] as const;

@@ -2,10 +2,10 @@ import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import type { JsIrCondition, JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
+import type { JsIrCondition, JsIrStringExpression } from "./expressions.js";
 import { lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
-import { isBoxedAggregateCandidateBinding } from "./builtins/object-producers.js";
+import { isBoxedAggregateCandidateBinding, isBoxedPrimitiveBinding } from "./builtins/object-producers.js";
 import { classifyObjectLiteral } from "./object-literals.js";
 import { classifyArrayLiteral } from "./array-literals.js";
 
@@ -239,22 +239,15 @@ export function lowerObjectMethodSugarConditionExpression(
 }
 
 /**
- * The receiver of a `valueOf`/`toString` call when it is a boxed primitive, or `undefined` when it
- * is not. The binding is read rather than the lowered value so the decision is made once, from the
- * shape the lowering already recorded.
+ * Whether the receiver of a `valueOf`/`toString` call names a boxed primitive. The binding is read
+ * rather than the lowered value so the decision is made once, from the shape the lowering already
+ * recorded.
  */
-export function lowerBoxedPrimitiveReceiver(
+export function isBoxedPrimitiveReceiver(
   receiver: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrValueExpression | undefined {
-  if (!ts.isIdentifier(receiver)) {
-    return undefined;
-  }
-  const binding = bindings.get(receiver.text);
-  if (binding?.kind !== "value" || binding.value.kind !== "boxedPrimitive") {
-    return undefined;
-  }
-  return binding.value;
+): boolean {
+  return ts.isIdentifier(receiver) && isBoxedPrimitiveBinding(bindings.get(receiver.text));
 }
 
 // eslint-disable-next-line complexity -- Array.isArray classification mirrors supported receiver shapes explicitly.

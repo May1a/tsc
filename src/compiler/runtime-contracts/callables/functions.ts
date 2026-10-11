@@ -12,6 +12,8 @@ export function createFunctionsCallees(module: LlvmModuleBuilder): RuntimeCallee
     "functionObjectGet": registerRuntimeContract(module, functionsContracts.functionObjectGet),
     "functionObjectHasOwn": registerRuntimeContract(module, functionsContracts.functionObjectHasOwn),
     "functionObjectDelete": registerRuntimeContract(module, functionsContracts.functionObjectDelete),
+    "functionObjectProperties": registerRuntimeContract(module, functionsContracts.functionObjectProperties),
+    "functionObjectSet": registerRuntimeContract(module, functionsContracts.functionObjectSet),
     "functionObjectOwnPropertyDescriptor": registerRuntimeContract(module, functionsContracts.functionObjectOwnPropertyDescriptor),
   };
 }
