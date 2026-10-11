@@ -61,13 +61,14 @@ export const controlHandlers = {
   }),
 
   // The initializer's declarations are visible to the condition, the increment and the body, so all
-  // four sit inside one scope.
+  // four sit inside one scope. An omitted condition or update resolves to nothing: the field stays
+  // absent rather than carrying a synthesized constant.
   for: (node, resolver) => ({
     ...node,
     ...resolver.state.inScope("loop", () => ({
       initializer: resolver.operations(node.initializer),
-      condition: resolver.condition(node.condition),
-      increment: resolver.operation(node.increment),
+      condition: optional(node.condition, resolver.condition),
+      increment: optional(node.increment, resolver.operation),
       body: resolver.operations(node.body)
     }))
   }),

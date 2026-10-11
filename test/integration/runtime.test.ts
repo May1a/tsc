@@ -734,9 +734,9 @@ describe("tscn expanded runtime roadmap", () => {
   test("supports package BO callback-driven runtime array methods", async () => {
     const cases = [
       ["array-runtime-map-callback.ts", "3\n2\n4\n6\n"],
-      ["array-runtime-map-unsupported-callback.ts", "2\n1\n2\n"],
+      ["array-runtime-map-inline-callback.ts", "2\n1\n2\n"],
       ["array-runtime-filter-callback.ts", "2\n2\n4\n"],
-      ["array-runtime-filter-unsupported-callback.ts", "2\n1\n2\n"],
+      ["array-runtime-filter-inline-callback.ts", "2\n1\n2\n"],
       ["array-runtime-for-each-callback.ts", "2\n5\n8\ndone\n"],
       ["array-runtime-for-each-arrow-callback.ts", "1\n2\ndone\n"],
       ["array-runtime-find-callback.ts", "2\nundefined\n"],
@@ -744,7 +744,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["array-runtime-find-index-callback.ts", "1\n-1\n"],
       ["array-runtime-find-index-arrow-callback.ts", "1\n-1\n"],
       ["array-runtime-reduce-callback.ts", "16\n"],
-      ["array-runtime-reduce-unsupported-callback.ts", "1\n"],
+      ["array-runtime-reduce-inline-callback.ts", "1\n"],
       ["array-runtime-flat-map-arrow-callback.ts", "4\n1\n11\n2\n12\n"],
       ["array-runtime-reduce-no-initial.ts", "6\n"],
       ["array-runtime-map-thisarg.ts", "2\n3\n6\n"],
@@ -1135,7 +1135,7 @@ describe("tscn expanded runtime roadmap", () => {
   });
 
   test("supports throw across function boundaries via aggregate ABI", async () => {
-    const result = await expectSuccessfulCompile("throw-across-function-unsupported.ts", { link: true });
+    const result = await expectSuccessfulCompile("throw-across-function.ts", { link: true });
     try {
       await expectNativeBehaviorIfAvailable(result, { status: 1, stdout: "message\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
@@ -1362,7 +1362,7 @@ describe("tscn expanded runtime roadmap", () => {
       await malformed.cleanup();
     }
 
-    const dynamic = await expectSuccessfulCompile("json-parse-dynamic-unsupported.ts", { link: true });
+    const dynamic = await expectSuccessfulCompile("json-parse-dynamic-string.ts", { link: true });
     try {
       await expectNativeBehaviorIfAvailable(dynamic, { status: 0, stdout: "[object Object]\n", stderr: "" });
     } finally {
@@ -1383,9 +1383,9 @@ describe("tscn expanded runtime roadmap", () => {
     await expectNativeFixtures(cases, { verifyLlvm: true });
 
     await expectNativeFixtures([
-      ["regex-constructor-dynamic-unsupported.ts", "true\n"],
-      ["regex-nonascii-unsupported.ts", "true\n"],
-      ["string-replace-regex-unsupported.ts", "xbc\n"]
+      ["regex-constructor-dynamic.ts", "true\n"],
+      ["regex-nonascii.ts", "true\n"],
+      ["string-replace-regex.ts", "xbc\n"]
     ], { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
@@ -1405,16 +1405,16 @@ describe("tscn expanded runtime roadmap", () => {
       ["class-static-field.ts", "4\n"],
       ["class-getter-setter.ts", "3\n8\n"],
       ["class-accessor-prototype-lookup.ts", "6\n"],
-      ["class-expression-unsupported.ts", "1\n"],
+      ["class-expression-bound-const.ts", "1\n"],
       ["class-expression-instance.ts", "1\ntrue\n"],
       ["class-expression-named.ts", "inner\ntrue\ninner\n"],
-      ["class-computed-field-unsupported.ts", "1\n"],
+      ["class-computed-field.ts", "1\n"],
       ["class-computed-members.ts", "first\nthird\ndefined\n2\nconstructed\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
 
-    const privateField = await expectSuccessfulCompile("class-private-field-unsupported.ts", { link: true });
+    const privateField = await expectSuccessfulCompile("class-private-field.ts", { link: true });
     try {
       await expectNativeBehaviorIfAvailable(privateField, {
         status: 1,
@@ -1445,7 +1445,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["json-parse-runtime-object.ts", "1\ntrue\n"],
       ["json-parse-runtime-array.ts", "1\ntwo\nnull\n"],
       ["json-parse-runtime-malformed-catch.ts", "SyntaxError\ntrue\n"],
-      ["json-parse-reviver-unsupported.ts", "1\n"],
+      ["json-parse-reviver.ts", "1\n"],
       ["json-stringify-cycle-catch.ts", "TypeError\ntrue\n"],
       ["json-stringify-to-json.ts", '{"x":2}\n']
     ] as const;

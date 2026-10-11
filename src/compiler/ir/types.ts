@@ -618,11 +618,21 @@ export type JsIrOperationNode =
       /**
        * The `for` initializer's declarations, in source order. A list because the initializer is a
        * declaration list: `for (let i = 0, j = 1;;)` declares two bindings, and dropping all but the
-       * first would change which names the condition and body can see.
+       * first would change which names the condition and body can see. Empty when the source omitted
+       * the initializer, which declares nothing and reads the outer bindings instead.
        */
       readonly initializer: readonly JsIrOperation[];
-      readonly condition: JsIrCondition;
-      readonly increment: JsIrOperation;
+      /**
+       * The loop condition, absent when the source omitted it. Per ECMA-262 an omitted condition is
+       * `true`, which emission implements by entering the body without a test rather than by
+       * evaluating a synthesized constant.
+       */
+      readonly condition?: JsIrCondition;
+      /**
+       * The update step, absent when the source omitted it. An omitted update does nothing: `continue`
+       * then reaches the condition through the empty step.
+       */
+      readonly increment?: JsIrOperation;
       readonly body: readonly JsIrOperation[];
     }
   | {

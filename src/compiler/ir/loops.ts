@@ -1,9 +1,9 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, type LoweredStatementList, type Produced, loweredPayload, notApplicable, produced, unsupported } from "./lowered.js";
+import { type Lowered, type LoweredStatementList, type Produced, notApplicable, produced, unsupported } from "./lowered.js";
 import { lowerAssignmentStatement } from "./assignments.js";
-import type { JsIrValueExpression } from "./expressions.js";
+import type { JsIrCondition, JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 import { lowerUpdateExpressionStatement } from "./expression-statements.js";
 import { withinLoopLabel } from "./loop-labels.js";
@@ -36,44 +36,23 @@ export function lowerForStatement(
   statement: ts.ForStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  if (
-    statement.initializer === undefined ||
-    statement.condition === undefined ||
-    statement.incrementor === undefined
-  ) {
-    return notApplicable;
-  }
-
   const forBindings = new Map(bindings);
-  const initializer = lowerForInitializer(context, statement.initializer, forBindings);
+  // An omitted initializer declares nothing: `for (; cond; incr)` reads the outer bindings.
+  const initializer = statement.initializer === undefined
+    ? produced<readonly JsIrOperation[]>([])
+    : lowerForInitializer(context, statement.initializer, forBindings);
   if (initializer.kind !== "lowered") {
     return initializer;
   }
 
-  const condition = context.lowerConditionExpression(context, statement.condition, forBindings);
+  const condition = lowerForCondition(context, statement.condition, forBindings);
   if (condition.kind !== "lowered") {
     return condition;
   }
 
-  // `i = i + 1` and `i++` are both incrementors, and the two lower through different recognizers: the
-  // second is an update expression, which the expression-statement tier already lowers to the same
-  // `assignNumber`. Only routing one of them makes the other look unsupported.
-  const incrementor = lowerAssignmentStatement(context, statement.incrementor, forBindings);
-  if (incrementor.kind === "unsupported") {
-    return incrementor;
-  }
-  let increment: JsIrOperation | undefined;
-  if (incrementor.kind === "lowered") {
-    increment = incrementor.operation;
-  } else {
-    const updateExpressionStatementResult = lowerUpdateExpressionStatement(statement.incrementor, forBindings);
-    if (updateExpressionStatementResult.kind === "unsupported") {
-      return updateExpressionStatementResult;
-    }
-    increment = loweredPayload(updateExpressionStatementResult);
-  }
-  if (increment === undefined) {
-    return notApplicable;
+  const increment = lowerForIncrement(context, statement.incrementor, forBindings);
+  if (increment.kind !== "lowered") {
+    return increment;
   }
 
   const bodyResult = lowerLoopBody(context, statement.statement, forBindings);
@@ -85,10 +64,56 @@ export function lowerForStatement(
   return produced({
     kind: "for",
     initializer: initializer.operation,
-    condition: condition.operation,
-    increment,
+    ...(condition.operation === undefined ? {} : { condition: condition.operation }),
+    ...(increment.operation === undefined ? {} : { increment: increment.operation }),
     body
   });
+}
+
+/**
+ * A `for` condition, or `undefined` when the source omitted it.
+ *
+ * Per ECMA-262 an omitted condition is `true`. The omission stays an absent IR field rather than a
+ * synthesized constant so that emission enters the body without a test.
+ */
+function lowerForCondition(
+  context: LoweringContext,
+  condition: ts.Expression | undefined,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrCondition | undefined> {
+  if (condition === undefined) {
+    return produced(undefined);
+  }
+  return context.lowerConditionExpression(context, condition, bindings);
+}
+
+/**
+ * A `for` update step, or `undefined` when the source omitted it.
+ *
+ * `i = i + 1` and `i++` are both incrementors, and the two lower through different recognizers: the
+ * second is an update expression, which the expression-statement tier already lowers to the same
+ * `assignNumber`. Only routing one of them makes the other look unsupported.
+ */
+function lowerForIncrement(
+  context: LoweringContext,
+  incrementor: ts.Expression | undefined,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrOperation | undefined> {
+  if (incrementor === undefined) {
+    return produced(undefined);
+  }
+  const assignment = lowerAssignmentStatement(context, incrementor, bindings);
+  if (assignment.kind === "unsupported") {
+    return assignment;
+  }
+  if (assignment.kind === "lowered") {
+    return produced<JsIrOperation | undefined>(assignment.operation);
+  }
+  const update = lowerUpdateExpressionStatement(incrementor, bindings);
+  if (update.kind !== "lowered") {
+    return update;
+  }
+  return produced<JsIrOperation | undefined>(update.operation);
 }
 
 // eslint-disable-next-line complexity, max-statements -- for...of lowering dispatches specialized source kinds first, then the generic Symbol.iterator protocol.

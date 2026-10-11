@@ -119,7 +119,8 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
       return operation.body;
     }
     case "for": {
-      return [...operation.initializer, ...operation.body, operation.increment];
+      const step = operation.increment === undefined ? [] : [operation.increment];
+      return [...operation.initializer, ...operation.body, ...step];
     }
     default: {
       // The residual is exactly the leaf set. Indexing jsIrLeafOperationKinds is total by

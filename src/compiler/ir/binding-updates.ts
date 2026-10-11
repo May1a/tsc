@@ -179,11 +179,12 @@ export function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObject
     };
   }
   if (operation.kind === "for") {
+    const { increment } = operation;
     return {
       ...operation,
       initializer: operation.initializer.map((declaration) => markRuntimeObjectShadow(declaration, shadowedObjects)),
       body: markRuntimeObjectShadows(operation.body),
-      increment: markRuntimeObjectShadow(operation.increment, shadowedObjects)
+      ...(increment === undefined ? {} : { increment: markRuntimeObjectShadow(increment, shadowedObjects) })
     };
   }
   if (operation.kind === "function") {
@@ -317,7 +318,9 @@ export function collectOperationValueExpressions(operation: JsIrOperation, names
     for (const nested of operation.body) {
       collectRuntimeShadowObjectNames(nested, names);
     }
-    collectRuntimeShadowObjectNames(operation.increment, names);
+    if (operation.increment !== undefined) {
+      collectRuntimeShadowObjectNames(operation.increment, names);
+    }
   }
 }
 export function collectValueExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {
