@@ -10,6 +10,7 @@ import { iteratorsContracts } from "./iterators.js";
 import { jsonContracts } from "./json.js";
 import { numbersContracts } from "./numbers.js";
 import { objectsContracts } from "./objects.js";
+import { prototypesContracts } from "./prototypes.js";
 import { regexContracts } from "./regex.js";
 import { stringsContracts } from "./strings.js";
 import { valuesContracts } from "./values.js";
@@ -27,6 +28,7 @@ export const runtimeContracts = {
   ...jsonContracts,
   ...numbersContracts,
   ...objectsContracts,
+  ...prototypesContracts,
   ...regexContracts,
   ...stringsContracts,
   ...valuesContracts,

@@ -10,9 +10,9 @@ const scalarWordFunctions = new Set([
   "collectionSize", "collectionFind", "strtol", "strlen", "gcRootSave", "gcStatsLiveBytes", "gcStatsCollections",
   "jsonHex4", "regexAtomEnd", "regexDecodeUtf8", "regexAtomStep", "regexCaptureIndex", "regexGroupEnd",
   "regexMatchHere", "regexMatchAlternatives", "regexByteOffset", "regexFind", "stringTrimStartIndex", "stringTrimEndIndex",
-  "stringUtf16Length", "valueStringLength", "valueLength", "propertyKeyIndex", "numberToIndex"
+  "stringUtf16Length", "valueStringLength", "valueLength", "propertyKeyIndex", "numberToIndex", "arrayMethodPosition"
 ]);
-const externalPointerFunctions = new Set(["malloc", "memcpy", "getenv", "indexToString", "strConcat", "arrayJoin"]);
+const externalPointerFunctions = new Set(["malloc", "memcpy", "getenv", "indexToString", "strConcat", "arrayJoin", "arrayPrototypeMethod"]);
 const borrowedPointerFunctions = new Set([
   "valueArrayPtr", "valueObjectPtr", "valueFunctionPtr", "valueStringPtr", "objectGetPrototype", "arrayGetPrototype"
 ]);

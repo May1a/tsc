@@ -15,6 +15,7 @@ const runtimeIrFiles = [
   "collections.ll",
   "functions.ll",
   "callbacks.ll",
+  "prototypes.ll",
   "json.ll",
   "errors.ll",
   "iterators.ll"

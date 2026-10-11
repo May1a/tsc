@@ -907,7 +907,10 @@ define i64 @arrayIndexOf(ptr %array, i64 %needle, i64 %fromIndex) {
 entry:
   %length = call i64 @arrayLength(ptr %array)
   %from.negative = icmp slt i64 %fromIndex, 0
-  %from.low = select i1 %from.negative, i64 0, i64 %fromIndex
+  %from.from.end = add i64 %length, %fromIndex
+  %from.relative = select i1 %from.negative, i64 %from.from.end, i64 %fromIndex
+  %from.below = icmp slt i64 %from.relative, 0
+  %from.low = select i1 %from.below, i64 0, i64 %from.relative
   %from.high = icmp sgt i64 %from.low, %length
   %from = select i1 %from.high, i64 %length, i64 %from.low
   br label %scan
@@ -938,13 +941,17 @@ entry:
 bounds:
   %last = sub i64 %length, 1
   %from.negative = icmp slt i64 %fromIndex, 0
-  %from.low = select i1 %from.negative, i64 0, i64 %fromIndex
-  %from.high = icmp sgt i64 %from.low, %last
-  %from = select i1 %from.high, i64 %last, i64 %from.low
+  %from.from.end = add i64 %length, %fromIndex
+  %from.relative = select i1 %from.negative, i64 %from.from.end, i64 %fromIndex
+  %from.before.start = icmp slt i64 %from.relative, 0
+  br i1 %from.before.start, label %missing, label %clamp
+clamp:
+  %from.high = icmp sgt i64 %from.relative, %last
+  %from = select i1 %from.high, i64 %last, i64 %from.relative
   %initial = add i64 %from, 1
   br label %scan
 scan:
-  %i = phi i64 [ %initial, %bounds ], [ %prev, %advance ]
+  %i = phi i64 [ %initial, %clamp ], [ %prev, %advance ]
   %done = icmp eq i64 %i, 0
   br i1 %done, label %missing, label %check
 check:

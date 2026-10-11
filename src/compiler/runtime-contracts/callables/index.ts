@@ -14,6 +14,7 @@ import { createIteratorsCallees } from "./iterators.js";
 import { createJsonCallees } from "./json.js";
 import { createNumbersCallees } from "./numbers.js";
 import { createObjectsCallees } from "./objects.js";
+import { createPrototypesCallees } from "./prototypes.js";
 import { createRegexCallees } from "./regex.js";
 import { createStringsCallees } from "./strings.js";
 import { createValuesCallees } from "./values.js";
@@ -31,6 +32,7 @@ export function createRuntimeCallees(module: LlvmModuleBuilder): RuntimeCallees 
     ...createJsonCallees(module),
     ...createNumbersCallees(module),
     ...createObjectsCallees(module),
+    ...createPrototypesCallees(module),
     ...createRegexCallees(module),
     ...createStringsCallees(module),
     ...createValuesCallees(module),
