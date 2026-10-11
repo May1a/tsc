@@ -138,7 +138,29 @@ types a recursive call in an unannotated function as `any`. The fixture is
 Arithmetic operands need a ToNumber coercion of boxed values, including `valueOf`, before either can
 be admitted.
 
-The Test262 floor drops from 1,013 to 1,012. `language/statements/function/S13.2.1_A7_T2.js` passed
+**0e. `const` re-evaluated at every read.** Found while verifying workstream 2. `updateConstBindings`
+recorded a `const` by its initializer expression, and every read through an expression tier inlined
+it. `let n = 1; const m = n * 10; n = 2; return m` returned `20`, and `const a = ++i` incremented `i`
+at every read of `a`. This affected numbers, strings, booleans and values, inside functions and at
+module scope through another `const`. The Test262 harness already worked around it in
+`verifyProperty`.
+
+A `const` is now inlined only when its initializer is stable: constants, parameters, aggregate
+references and effect-free operators over them (`stable-expressions.ts`). Any other `const` is
+read from the slot its declaration stored. The fixture is `const-snapshot.ts`.
+
+**0f. Stores through an unchecked boxed receiver.** Found with 0e. `valueObjectSet`, `valueArraySet`,
+`valueArraySetLength` and `valueArrayDelete` turn the receiver's bits into a pointer without
+checking its tag. `isProvenBoxedAggregateBinding` admits an element read of an `any[]` as proof of an
+object, so `const t = xs[0]; t["k"] = 1` with `xs = [5]` writes through a number and the process
+dies silently. Assigning to a property of `undefined` dies instead of throwing a `TypeError`.
+
+Make those helpers dispatch on the receiver's tag with the language's semantics, then accept any boxed
+binding as a receiver. Then remove the 0e exception in `isShapeRecognizedReceiver`. For now, a
+`const` initialized by an element read, or by `new Number`/`Boolean`/`String`, is still re-evaluated
+at every read, so `n === n` is `false` for such a wrapper.
+
+0d drops the Test262 floor from 1,013 to 1,012, and 0e restores it to 1,013. `language/statements/function/S13.2.1_A7_T2.js` passed
 only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never
 reads `x`. It is now refused, because a `var` cannot hold a boxed value yet. Workstream 2 admits it.
 

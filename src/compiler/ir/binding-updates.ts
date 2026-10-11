@@ -3,6 +3,7 @@ import type { JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 import { jsIrOperationChildren } from "./visit.js";
 import { aggregateBindingForOperation } from "./operation-bindings.js";
+import { isStableExpression } from "./stable-expressions.js";
 
 /**
  * The binding map: what name means what, and how that changes as operations are emitted.
@@ -20,6 +21,23 @@ import { aggregateBindingForOperation } from "./operation-bindings.js";
  *
  */
 
+/**
+ * A receiver form that recognizers match by shape, which a `const` still re-evaluates at every read.
+ *
+ * Element and property reads of aggregates are accepted as mutation receivers
+ * (`isProvenBoxedAggregateBinding`) and passed to runtime stores that do not check the value is an
+ * object. A `new Number`/`Boolean`/`String` wrapper is recognized by shape for `valueOf` and
+ * `toString`, which the runtime wrapper does not provide. Reading such a `const` from its slot would
+ * hand those recognizers a plain value binding, which they refuse or call generically. Until the
+ * runtime checks its receivers and wrappers carry their methods, these forms keep the old aliasing:
+ * a later write to the element is visible through the `const`, and each read of a wrapper allocates
+ * a new one. PLAN.md 0f tracks removing this exception.
+ */
+function isShapeRecognizedReceiver(value: JsIrValueExpression): boolean {
+  return value.kind === "arrayAccess" || value.kind === "valueArrayAccess" || value.kind === "objectDynamicAccess" ||
+    value.kind === "valueObjectDynamicAccess" || value.kind === "boxedPrimitive";
+}
+
 export function updateConstBindings(
   operation: JsIrOperation,
   bindings: Map<string, JsIrBindingValue>
@@ -27,20 +45,27 @@ export function updateConstBindings(
   if (operation.kind === "constString") {
     bindings.set(operation.name, { kind: "string", value: operation.value });
   }
+  // An initializer that is not stable is read back from the slot the declaration stored, so a read
+  // after a later write, or after a side effect, sees the value the `const` captured.
   if (operation.kind === "constStringExpression") {
-    bindings.set(operation.name, { kind: "stringExpression", value: operation.value });
+    bindings.set(operation.name, { kind: "stringExpression",
+      value: isStableExpression(operation.value) ? operation.value : { kind: "variable", name: operation.name } });
   }
   if (operation.kind === "constNumber") {
-    bindings.set(operation.name, { kind: "number", value: operation.value });
+    bindings.set(operation.name, { kind: "number",
+      value: isStableExpression(operation.value) ? operation.value : { kind: "parameter", name: operation.name } });
   }
   if (operation.kind === "constBoolean") {
     bindings.set(operation.name, { kind: "boolean", value: operation.value });
   }
   if (operation.kind === "constBooleanExpression") {
-    bindings.set(operation.name, { kind: "booleanExpression", value: operation.value });
+    bindings.set(operation.name, { kind: "booleanExpression",
+      value: isStableExpression(operation.value) ? operation.value : { kind: "booleanVariable", name: operation.name } });
   }
   if (operation.kind === "constValue") {
-    bindings.set(operation.name, { kind: "value", value: operation.value });
+    bindings.set(operation.name, isStableExpression(operation.value) || isShapeRecognizedReceiver(operation.value)
+      ? { kind: "value", value: operation.value }
+      : { kind: "valueVariable", name: operation.name });
   }
   if (operation.kind === "letValue") {
     let valueType: "function" | "regex" | undefined;
