@@ -632,13 +632,19 @@ export function findClassInChain(
   return undefined;
 }
 // Determines the class of a method-call receiver. Directly-known instances
-// (`new C()`) resolve via the registry; named-variable receivers resolve through
-// the TypeScript checker.
+// (`new C()`) resolve via the registry; `this` in a constructor or instance member resolves to the
+// enclosing class; named-variable receivers resolve through their binding or the TypeScript checker,
+// and element, property and call receivers resolve through the checker alone.
 export function resolveReceiverClass(
   context: LoweringContext,
   receiver: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): ClassInfo | undefined {
+  // `this` is an instance of the enclosing class or one of its subclasses. The static class is the
+  // enclosing one; a subclass instance is exactly what makes the call dispatch at runtime.
+  if (receiver.kind === ts.SyntaxKind.ThisKeyword) {
+    return context.classThisInScope ? context.activeEnclosingClass : undefined;
+  }
   if (ts.isNewExpression(receiver) && ts.isIdentifier(receiver.expression) && !bindings.has(receiver.expression.text)) {
     return context.classes.get(receiver.expression.text);
   }
@@ -654,14 +660,28 @@ export function resolveReceiverClass(
       return context.classes.get(binding.className);
     }
   }
+  return checkerReceiverClass(context, receiver);
+}
+/**
+ * The class a receiver's static type names, or `undefined` when the checker names none.
+ *
+ * Only expressions with a type of their own qualify: an identifier, an element or property read, or
+ * a call result. Anything else reaching here (`this` and `new` are claimed above) has no static
+ * class this tier can dispatch on.
+ */
+function checkerReceiverClass(context: LoweringContext, receiver: ts.Expression): ClassInfo | undefined {
   const { typeChecker } = context;
-  if (ts.isIdentifier(receiver) && typeChecker !== undefined) {
-    const symbol = typeChecker.getTypeAtLocation(receiver).getSymbol();
-    if (symbol !== undefined) {
-      return context.classes.get(symbol.getName());
-    }
+  if (typeChecker === undefined) {
+    return undefined;
   }
-  return undefined;
+  if (!ts.isIdentifier(receiver) && !ts.isElementAccessExpression(receiver) && !ts.isPropertyAccessExpression(receiver) && !ts.isCallExpression(receiver)) {
+    return undefined;
+  }
+  const symbol = typeChecker.getTypeAtLocation(receiver).getSymbol();
+  if (symbol === undefined) {
+    return undefined;
+  }
+  return context.classes.get(symbol.getName());
 }
 export function isPlainObjectReturningConstructor(declaration: ts.FunctionDeclaration): boolean {
   if (declaration.body === undefined || containsLexicalThis(declaration.body)) {

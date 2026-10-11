@@ -35,6 +35,14 @@ export function unwrapTypeOnlyExpression(expression: ts.Expression): ts.Expressi
   return expression;
 }
 
+/**
+ * Whether an expression reads the value `undefined`: the keyword form, or the global identifier.
+ * The identifier test is by spelling, as every reader of `undefined` in Lowering already assumed.
+ */
+export function isUndefinedExpression(expression: ts.Expression): boolean {
+  return expression.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(expression) && expression.text === "undefined");
+}
+
 export function isUnsupportedSymbolExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>

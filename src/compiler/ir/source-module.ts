@@ -9,6 +9,7 @@ import { createInlineCppCompilation, inlineCppDisabledDiagnostic } from "./inlin
 import type { JsIrBindingValue, JsIrFunctionObjectDefinition } from "./bindings.js";
 import { collectFunctionObjectDefinitions, collectPromotedAggregateNames } from "./captures.js";
 import { type ClassInfo, appendClassOperations } from "./class-info.js";
+import { collectClassHierarchy } from "./class-hierarchy.js";
 import { isNonExecutableDeclaration, unsupportedStatementDiagnostic } from "./comparisons.js";
 import { lowerClassStatement } from "./classes.js";
 import { markRuntimeObjectShadows, updateBindings } from "./binding-updates.js";
@@ -170,8 +171,10 @@ function lowerStatements(
 ): LoweredStatements {
   context.nextFunctionObjectId = 0;
   context.nextJsonStatementValueId = 0;
+  context.nextOptionalCallStatementValueId = 0;
   // Class inheritance resolves against declarations in the current source file.
   context.classes = new Map<string, ClassInfo>();
+  context.classHierarchy = collectClassHierarchy(sourceFile);
   const inlineCppDiagnostic = inlineCppDisabledDiagnostic(context.inlineCpp, sourceFile);
   if (inlineCppDiagnostic !== undefined) {
     return { operations: [], diagnostics: [inlineCppDiagnostic], loweringMode: "native" };

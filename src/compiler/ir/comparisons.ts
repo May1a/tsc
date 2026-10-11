@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { isUndefinedExpression } from "./predicates.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrCondition, JsIrNumberExpression } from "./expressions.js";
 import { sourceSpan } from "./class-info.js";
@@ -71,7 +72,7 @@ export function isNonExecutableDeclaration(statement: ts.Statement): boolean {
 }
 // eslint-disable-next-line complexity -- Mirrors supported typeof cases explicitly while unsupported expressions stay diagnostic-only.
 export function lowerTypeOfResult(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): string | undefined {
-  if (expression.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(expression) && expression.text === "undefined")) {
+  if (isUndefinedExpression(expression)) {
     return "undefined";
   }
   if (expression.kind === ts.SyntaxKind.NullKeyword) {
@@ -130,7 +131,7 @@ export function lowerTruthyConditionExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrCondition | undefined {
-  if (expression.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(expression) && expression.text === "undefined")) {
+  if (isUndefinedExpression(expression)) {
     return { kind: "valueTruthy", value: { kind: "undefined" } };
   }
   if (expression.kind === ts.SyntaxKind.NullKeyword) {

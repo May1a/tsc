@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type { ClassHierarchy } from "./class-hierarchy.js";
 import type { ClassInfo } from "./class-info.js";
 import type { InlineCppCompilation } from "./inline-cpp.js";
 import type { lowerStatement } from "./statements.js";
@@ -26,6 +27,7 @@ export interface LoweringContext {
   activeClassMethodStatic: boolean;
   nextFunctionObjectId: number;
   nextJsonStatementValueId: number;
+  nextOptionalCallStatementValueId: number;
   /**
    * The classes the source file being lowered has declared, under every name each answers to.
    *
@@ -34,6 +36,12 @@ export interface LoweringContext {
    * compilation, so two compilations of the same program produce the same ids.
    */
   classes: Map<string, ClassInfo>;
+  /**
+   * The source file's class declarations, collected before any of them lowers. Whether an instance
+   * call dispatches depends on subclasses the registry above may not contain yet. Set per source file
+   * with `classes`.
+   */
+  classHierarchy: ClassHierarchy;
   /**
    * The program's type checker, for the questions a type answers that lowering state cannot: which
    * class an identifier's static type names, and what a call returns.

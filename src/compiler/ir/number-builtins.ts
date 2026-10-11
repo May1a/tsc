@@ -1,6 +1,7 @@
 import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
+import { isUndefinedExpression } from "./predicates.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrNumberExpression } from "./expressions.js";
 import { coerceStringToNumber, decimalRadix, numberExpressionFromNumber, numericLiteralValue } from "./number-constants.js";
@@ -251,7 +252,7 @@ export function lowerNumberCoercionExpression(
   if (expression.kind === ts.SyntaxKind.NullKeyword) {
     return produced({ kind: "literal", value: 0 });
   }
-  if (expression.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(expression) && expression.text === "undefined")) {
+  if (isUndefinedExpression(expression)) {
     return produced({ kind: "nan" });
   }
   const condition = context.lowerConditionExpression(context, expression, bindings);

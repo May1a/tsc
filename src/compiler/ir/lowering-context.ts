@@ -8,6 +8,7 @@ import { lowerConditionExpression } from "./conditions.js";
 import { lowerObjectDestructuringElements } from "./object-destructuring.js";
 import { lowerConstAggregateBinding, lowerConstVariableBinding } from "./variable-bindings.js";
 import type { LoweringContext, LoweringContextOptions } from "./context.js";
+import { emptyClassHierarchy } from "./class-hierarchy.js";
 
 /** The state of one `lowerToJsIr` invocation: nothing here survives the call that created it. */
 export function createLoweringContext(options: LoweringContextOptions): LoweringContext {
@@ -19,7 +20,9 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     activeClassMethodStatic: false,
     nextFunctionObjectId: 0,
     nextJsonStatementValueId: 0,
+    nextOptionalCallStatementValueId: 0,
     classes: new Map(),
+    classHierarchy: emptyClassHierarchy,
     typeChecker: options.typeChecker,
     inlineCpp: options.inlineCpp,
     tryRegionOfCatchFinallyDepth: 0,

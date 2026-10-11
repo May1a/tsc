@@ -1,11 +1,12 @@
 import type { LoweringContext } from "./context.js";
-import { type ClassComputedKeyInfo, type ClassComputedMethodEntry, type ClassFieldInfo, type ClassInfo, classPrototypeName, classStaticStorageName } from "./class-info.js";
+import { type ClassComputedKeyInfo, type ClassComputedMethodEntry, type ClassFieldInfo, type ClassInfo, type ClassMethodInfo, type CollectedClassMembers, classPrototypeName, classStaticStorageName } from "./class-info.js";
+import { isDispatchedMethod } from "./class-hierarchy.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import { type Produced, loweredPayload, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
 import type { JsIrRuntimeObjectField, JsIrValueExpression } from "./expressions.js";
-import { lowerClassFieldInitializer } from "./class-constructors.js";
-import { classMemberKeyStringExpression } from "./class-names.js";
+import { forwardedClassArgument, lowerClassFieldInitializer } from "./class-constructors.js";
+import { CLASS_THIS_NAME, classMemberKeyStringExpression, classMethodFunctionName } from "./class-names.js";
 
 // Emits the module-init slot holding a runtime-computed member name: the name
 // expression is evaluated exactly once, at class-definition time.
@@ -104,4 +105,78 @@ export function lowerClassStaticStorage(
     moduleGlobal: true,
     value: { kind: "objectLiteralValue", value: { fields } }
   });
+}
+
+/**
+ * The prototype entries a class declaration installs for dispatched calls.
+ *
+ * A dispatched call reads its method off the receiver, so every implementation it can reach must be
+ * on a prototype: each method this class overrides, and each method a subclass overrides. Each class
+ * installs only its own implementations, on its own prototype, when its declaration runs. A base's
+ * entries therefore exist before any subclass instance can be constructed.
+ */
+export function lowerPrototypeDispatchStores(
+  context: LoweringContext,
+  info: ClassInfo,
+  members: CollectedClassMembers
+): readonly JsIrOperation[] {
+  return members.methodDeclarations.flatMap((entry) => {
+    const method = info.methods.get(entry.name);
+    if (method === undefined || !isDispatchedMethod(context.classHierarchy, info.name, entry.name)) {
+      return [];
+    }
+    return [lowerPrototypeMethodStore(context, info, entry.name, method)];
+  });
+}
+
+/** One store installing `methodName`'s dispatch wrapper on `target`'s prototype object. */
+function lowerPrototypeMethodStore(
+  context: LoweringContext,
+  target: ClassInfo,
+  methodName: string,
+  method: ClassMethodInfo
+): JsIrOperation {
+  return {
+    kind: "valueObjectStore",
+    targetName: classPrototypeName(target.name),
+    key: { kind: "literal", value: methodName },
+    value: classMethodDispatchWrapper(context, target, methodName, method)
+  };
+}
+
+/**
+ * The function value a prototype entry holds for `methodName`.
+ *
+ * A dispatched call delivers the instance as the JavaScript receiver, while the direct method
+ * function reads `this` from its first argv slot. The wrapper bridges the two conventions: it takes
+ * the method's own parameters, so a dispatched call passes exactly the arguments a direct call
+ * would, and forwards them with the receiver to the direct function.
+ */
+function classMethodDispatchWrapper(
+  context: LoweringContext,
+  target: ClassInfo,
+  methodName: string,
+  method: ClassMethodInfo
+): JsIrValueExpression {
+  const codeName = `__tscn_protomethod_${target.name}_${methodName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
+  context.nextFunctionObjectId += 1;
+  const forwarded = method.parameters.map((parameter) => forwardedClassArgument(parameter));
+  return {
+    kind: "functionObject",
+    definition: {
+      codeName,
+      parameters: method.parameters,
+      functionKind: "ordinary",
+      returnKind: "value",
+      inferredName: methodName,
+      body: [{
+        kind: "returnValue",
+        expression: {
+          kind: "call",
+          name: classMethodFunctionName(target.name, methodName, false),
+          arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...forwarded]
+        }
+      }]
+    }
+  };
 }

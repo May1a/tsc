@@ -1,6 +1,7 @@
 import { type Lowered, notApplicable, produced } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
+import { isUndefinedExpression } from "./predicates.js";
 import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionParameter } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 
@@ -181,7 +182,7 @@ export function lowerTypedCallArgument(
   // `f(undefined)` is the same call as `f()` on an optional parameter, so it lowers to the same
   // argument rather than failing the parameter's value kind. Tested before the kind dispatch because
   // `undefined` is a value rather than a number or a string, whichever slot it is passed into.
-  if (arg.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(arg) && arg.text === "undefined")) {
+  if (isUndefinedExpression(arg)) {
     return produced({ valueKind: "undefined" });
   }
   if (parameter.valueKind === "string") {
