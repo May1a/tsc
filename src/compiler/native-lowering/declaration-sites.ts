@@ -1,4 +1,4 @@
-import type { BindingRef, ResolvedOperation } from "../binding-resolution/index.js";
+import type { BindingRef, ResolvedDestructureElement, ResolvedOperation } from "../binding-resolution/index.js";
 import { operationRoles } from "../binding-resolution/operation-roles.js";
 
 /**
@@ -19,4 +19,31 @@ export function declaredBinding(operation: ResolvedOperation): BindingRef | unde
     return undefined;
   }
   return operation.name;
+}
+
+/**
+ * Every binding a `for` header operation declares: its own name, the members of a binding group, and
+ * the destinations of a destructuring pattern, nested ones included.
+ */
+export function declaredHeaderBindings(operation: ResolvedOperation): readonly BindingRef[] {
+  if (operation.kind === "bindingGroup") {
+    return operation.operations.flatMap(declaredHeaderBindings);
+  }
+  if (operation.kind === "arrayDestructureProtocol") {
+    return operation.elements.flatMap(destructuredBindings);
+  }
+  const declared = declaredBinding(operation);
+  return declared === undefined ? [] : [declared];
+}
+
+function destructuredBindings(element: ResolvedDestructureElement): readonly BindingRef[] {
+  switch (element.kind) {
+    case "elision": { return []; }
+    case "binding": case "rest": { return [element.name]; }
+    case "nested": { return [element.temporaryName, ...element.operations.flatMap(declaredHeaderBindings)]; }
+    default: {
+      const exhaustive: never = element;
+      throw new Error(`Unknown destructuring element ${String(exhaustive)}`);
+    }
+  }
 }

@@ -662,24 +662,32 @@ export type JsIrOperationNode =
       readonly itemName: string;
       readonly arrayName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forOfString";
       readonly itemName: string;
       readonly source: JsIrStringExpression;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forOfSet";
       readonly itemName: string;
       readonly setName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forOfMap";
       readonly itemName: string;
       readonly mapName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forOfProtocol";
@@ -687,24 +695,32 @@ export type JsIrOperationNode =
       readonly iterable: JsIrValueExpression;
       readonly notIterableMessage: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "arrayDestructureProtocol";
       readonly source: JsIrDestructureSource;
       readonly elements: readonly JsIrArrayDestructureElement[];
       readonly notIterableMessage: string;
+      /** Set by a `var` pattern, whose names bind once per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forInObject";
       readonly itemName: string;
       readonly objectName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forInArray";
       readonly itemName: string;
       readonly arrayName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "break";
