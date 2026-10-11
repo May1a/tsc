@@ -1,5 +1,5 @@
 declare function print(value: unknown): void;
 
-var second = 1;
-second = null;
-print(second);
+let x: number;
+x = 3;
+print(x);

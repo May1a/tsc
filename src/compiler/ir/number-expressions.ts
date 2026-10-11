@@ -49,6 +49,11 @@ export function lowerNumberExpression(
       return produced({ kind: "literal", value: Number.POSITIVE_INFINITY });
     }
     const binding = bindings.get(expression.text);
+    if (binding?.kind === "valueVariable" && isNumberTyped(context, expression)) {
+      // A boxed binding the checker proves holds a number here, such as a `let` that also holds
+      // `null` elsewhere, after narrowing. Unboxing it cannot coerce anything.
+      return produced({ kind: "valueToNumber", value: { kind: "variable", name: expression.text } });
+    }
     if (binding?.kind !== "number") {
       return notApplicable;
     }
@@ -386,4 +391,10 @@ function isBoxedCallee(expression: ts.CallExpression, bindings: ReadonlyMap<stri
   }
   const callee = bindings.get(expression.expression.text);
   return callee?.kind === "value" || callee?.kind === "valueVariable";
+}
+
+/** Whether the checker gives an expression a number type at its location, after narrowing. */
+function isNumberTyped(context: LoweringContext, expression: ts.Expression): boolean {
+  const type = context.typeChecker?.getTypeAtLocation(expression);
+  return type !== undefined && (type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0;
 }

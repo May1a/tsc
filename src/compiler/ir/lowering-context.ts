@@ -9,6 +9,7 @@ import { lowerObjectDestructuringElements } from "./object-destructuring.js";
 import { lowerConstAggregateBinding, lowerConstVariableBinding } from "./variable-bindings.js";
 import type { LoweringContext, LoweringContextOptions } from "./context.js";
 import { emptyClassHierarchy } from "./class-hierarchy.js";
+import { emptyStoragePlan } from "./storage-plan.js";
 
 /** The state of one `lowerToJsIr` invocation: nothing here survives the call that created it. */
 export function createLoweringContext(options: LoweringContextOptions): LoweringContext {
@@ -23,6 +24,7 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     nextOptionalCallStatementValueId: 0,
     classes: new Map(),
     classHierarchy: emptyClassHierarchy,
+    storagePlan: emptyStoragePlan,
     typeChecker: options.typeChecker,
     inlineCpp: options.inlineCpp,
     tryRegionOfCatchFinallyDepth: 0,

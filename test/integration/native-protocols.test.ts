@@ -141,7 +141,8 @@ function protocolModule(): NativeModule {
             fn.capabilities.runtime.callVoid("gcCollect", []);
             return fn.capabilities.values.forBlock(cursor.currentBlock()).immediate("undefined");
           }, generated: forbiddenCall, inlineCpp: forbiddenCall, functionObject: forbiddenCall, tagged: forbiddenCall,
-          reference: forbiddenCall, closure: forbiddenCall, callback: forbiddenCall, returnedClosure: forbiddenCall
+          reference: forbiddenCall, closure: forbiddenCall, callback: forbiddenCall, returnedClosure: forbiddenCall,
+          functionDeclaration: forbiddenCall
         }) });
       context.operations.operations(scenario.body(names));
       if (!cursor.currentBlock().terminated) flow.returnValue(fn.capabilities.values.forBlock(cursor.currentBlock()).immediate("undefined"));

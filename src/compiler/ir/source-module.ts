@@ -10,6 +10,7 @@ import type { JsIrBindingValue, JsIrFunctionObjectDefinition } from "./bindings.
 import { collectFunctionObjectDefinitions, collectPromotedAggregateNames } from "./captures.js";
 import { type ClassInfo, appendClassOperations } from "./class-info.js";
 import { collectClassHierarchy } from "./class-hierarchy.js";
+import { collectStoragePlan } from "./storage-plan.js";
 import { isNonExecutableDeclaration, unsupportedStatementDiagnostic } from "./comparisons.js";
 import { lowerClassStatement } from "./classes.js";
 import { markRuntimeObjectShadows, updateBindings } from "./binding-updates.js";
@@ -177,6 +178,7 @@ function lowerStatements(
   // Class inheritance resolves against declarations in the current source file.
   context.classes = new Map<string, ClassInfo>();
   context.classHierarchy = collectClassHierarchy(sourceFile);
+  context.storagePlan = collectStoragePlan(sourceFile);
   const inlineCppDiagnostic = inlineCppDisabledDiagnostic(context.inlineCpp, sourceFile);
   if (inlineCppDiagnostic !== undefined) {
     return { operations: [], diagnostics: [inlineCppDiagnostic], loweringMode: "native" };

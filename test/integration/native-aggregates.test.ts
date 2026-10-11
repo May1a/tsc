@@ -131,7 +131,7 @@ function aggregateModule(operations: readonly JsIrOperation[]): NativeModule {
     const context = createOperationContext({ capabilities: fn.capabilities, writes, flow,
       calls: () => ({ direct: forbiddenCall, generated: forbiddenCall, inlineCpp: forbiddenCall,
         functionObject: forbiddenCall, tagged: forbiddenCall, reference: forbiddenCall, closure: forbiddenCall,
-        callback: forbiddenCall, returnedClosure: forbiddenCall }),
+        callback: forbiddenCall, returnedClosure: forbiddenCall, functionDeclaration: forbiddenCall }),
       stringConstant: (value) => module.stringConstant(value), withTrace: (id, build) => fn.withTrace(id, build)
     });
     for (const source of resolved.module.modules) {

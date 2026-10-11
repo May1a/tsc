@@ -81,7 +81,20 @@ function forIn(operation: ProtocolNode<"forInArray" | "forInObject">, context: O
 
 function storeString(reference: BindingRef, value: BoxedValue, context: OperationContext): void {
   const string = context.runtime.callString("valueToString", [value], context.cursor.uniqueName("iterator.string"));
+  context.writes.renewCell(reference);
   context.writes.storeString(reference, string);
+}
+
+/**
+ * Stores one loop iteration's item binding before running the body.
+ *
+ * A `for...of`/`for...in` item is a fresh binding on every iteration, so the store first renews its
+ * per-iteration cell; closures created in this iteration capture the new cell. The renewal is a
+ * no-op for bindings without slot storage.
+ */
+function storeLoopItem(reference: BindingRef, value: BoxedValue, context: OperationContext): void {
+  context.writes.renewCell(reference);
+  context.writes.storeValue(reference, value);
 }
 
 function pull(iterator: BoxedValue, done: LlvmValue<typeof llvm.ptr>, read: boolean, context: OperationContext): BoxedValue {
@@ -133,15 +146,15 @@ function destructure(operation: ProtocolNode<"arrayDestructureProtocol">, contex
   flow.withCleanup(cleanup, () => {
     for (const element of operation.elements) {
       if (cursor.currentBlock().terminated) break;
-      if (element.kind === "rest") { context.writes.storeValue(element.name, rest(iterator, done, context)); continue; }
+      if (element.kind === "rest") { storeDestructureElement(element.name, rest(iterator, done, context), context); continue; }
       const value = pull(iterator, done, element.kind !== "elision", context);
       if (element.kind === "elision") continue;
       if (element.kind === "nested") {
-        context.writes.storeValue(element.temporaryName, value);
+        storeDestructureElement(element.temporaryName, value, context);
         context.operations.operations(element.operations);
         continue;
       }
-      context.writes.storeValue(element.name, value);
+      storeDestructureElement(element.name, value, context);
       if (element.defaultValue !== undefined) {
         const stored = context.expressions.value({ kind: "lazyDefault", value: { kind: "variable", name: element.name }, defaultValue: element.defaultValue });
         context.writes.storeValue(element.name, stored);
@@ -151,23 +164,35 @@ function destructure(operation: ProtocolNode<"arrayDestructureProtocol">, contex
   if (!cursor.currentBlock().terminated) cleanup.run();
 }
 
+/**
+ * Stores one destructuring destination before running its default or nested bindings.
+ *
+ * A destructured binding declared in a loop is fresh on every execution, so the store first renews
+ * its per-iteration cell. The lazy-default store below writes the same execution's cell and must
+ * not renew again.
+ */
+function storeDestructureElement(reference: BindingRef, value: BoxedValue, context: OperationContext): void {
+  context.writes.renewCell(reference);
+  context.writes.storeValue(reference, value);
+}
+
 export const protocolOperationHandlers: VariantHandlers<ProtocolVariants, OperationContext, void> = {
   forOfArray: (operation, context) => forIterator(arrayIterator(context.bindings.value(operation.arrayName), context),
-    (value) => context.writes.storeValue(operation.itemName, value), operation.body, context),
+    (value) => storeLoopItem(operation.itemName, value, context), operation.body, context),
   forOfString: (operation, context) => {
     const source = boxString(context.expressions.string(operation.source), context);
     const iterator = keep(context.runtime.callBoxed("createStringIterator", [source], context.cursor.uniqueName("string.iterator")), context);
     forIterator(iterator, (value) => storeString(operation.itemName, value, context), operation.body, context);
   },
   forOfMap: (operation, context) => forIterator(collectionIterator(operation.mapName, true, context),
-    (value) => context.writes.storeValue(operation.itemName, value), operation.body, context),
+    (value) => storeLoopItem(operation.itemName, value, context), operation.body, context),
   forOfSet: (operation, context) => forIterator(collectionIterator(operation.setName, false, context),
-    (value) => context.writes.storeValue(operation.itemName, value), operation.body, context),
+    (value) => storeLoopItem(operation.itemName, value, context), operation.body, context),
   forOfProtocol: (operation, context) => {
     const source = keep(context.expressions.value(operation.iterable), context);
     const message = stringValue(operation.notIterableMessage, context);
     const iterator = keep(context.runtime.callWithCompletion("getIteratorValue", [source, message], context.cursor.uniqueName("protocol.iterator"), context.exceptionTarget()), context);
-    forIterator(iterator, (value) => context.writes.storeValue(operation.itemName, value), operation.body, context);
+    forIterator(iterator, (value) => storeLoopItem(operation.itemName, value, context), operation.body, context);
   },
   forInObject: forIn,
   forInArray: forIn,

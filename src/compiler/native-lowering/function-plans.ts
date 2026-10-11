@@ -80,7 +80,11 @@ function normalizeCaptures(plan: FunctionPlan, resolved: ResolvedModule): Functi
       const target = plan.captures.at(index);
       if (target === undefined) { throw new Error("Capture source has no target binding"); }
       const declaration = source.kind === "binding" ? resolved.bindings.declarations.at(source.reference.binding.ordinal) : undefined;
-      if (source.kind === "binding" && declaration?.owner.kind === "module") {
+      // A module-scope capture usually aliases the global: the callee reads the same global the
+      // creator writes. A per-iteration module binding is the exception: its global cell is renewed
+      // on every iteration, so the callee must receive the current cell through its environment,
+      // exactly like a function-owned capture, or it would observe the last iteration instead.
+      if (source.kind === "binding" && declaration?.owner.kind === "module" && !declaration.perIteration) {
         if (target.binding !== source.reference.binding) { aliases.push({ target, source: source.reference }); }
       } else { retained.push({ target, source }); }
     }

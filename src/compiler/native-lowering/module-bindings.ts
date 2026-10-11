@@ -15,6 +15,7 @@ export type GlobalBlueprint =
   | { readonly kind: "number" | "boolean" | "boxed"; readonly global: LlvmGlobalReference }
   | { readonly kind: "string"; readonly bytes: LlvmGlobalReference; readonly length: LlvmGlobalReference; readonly owner: LlvmGlobalReference }
   | { readonly kind: "fixedArray"; readonly global: LlvmGlobalReference; readonly length: number }
+  | { readonly kind: "environmentCell"; readonly cell: LlvmGlobalReference; readonly owner: LlvmGlobalReference }
   | { readonly kind: "fixedObject"; readonly shadow: LlvmGlobalReference; readonly shadowed: boolean;
       readonly fields: readonly { readonly key: string; readonly storage: GlobalBlueprint }[] };
 
@@ -62,7 +63,7 @@ export class ModuleBindings {
     for (const [index, reference] of (captures?.bindings ?? []).entries()) {
       const declaration = this.#declarations.at(reference.binding.ordinal);
       if (declaration?.id !== reference.binding) throw new Error("Capture belongs to another resolution");
-      if (declaration.storage.location.kind === "moduleScope") continue;
+      if (declaration.storage.location.kind === "moduleScope" && !declaration.perIteration) continue;
       if (captures === undefined) throw new Error("Capture has no environment");
       const { cursor, runtime, roots, values } = capabilities;
       const cellValue = runtime.callBoxed("environmentGet", [captures.environment, cursor.currentBlock().int(llvm.i64, BigInt(index))],
@@ -90,6 +91,16 @@ export class ModuleBindings {
   }
 
   #global(declaration: BindingDeclaration): GlobalBlueprint {
+    // A module-scope binding declared inside a loop is a fresh binding per iteration, so it lives
+    // behind a renewable cell rather than in a plain global: the declaration renews the cell when it
+    // executes, and closures capture the current cell. The representation is irrelevant, because
+    // every captured binding travels boxed.
+    if (declaration.perIteration) {
+      const cell = this.#define(`tscn.binding.${declaration.id.ordinal}.cell`, llvm.ptr);
+      const owner = this.#define(`tscn.binding.${declaration.id.ordinal}.owner`, llvm.i64);
+      this.#roots.push(owner);
+      return { kind: "environmentCell", cell, owner };
+    }
     const {representation} = declaration.storage;
     const stem = `tscn.binding.${declaration.id.ordinal}`;
     switch (representation.kind) {

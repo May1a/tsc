@@ -31,14 +31,10 @@ export function bindFunctionParameter(
   fnBindings.set(name, { kind: "number", value: { kind: "parameter", name } });
 }
 
-// Mutable scalar slots belong to the enclosing function frame. Until they have a capture
-// representation, omit them so references in a new frame are refused during lowering.
+// Mutable scalar slots are shared with nested frames through boxed environment cells: binding
+// resolution marks a binding captured when a nested function reads it, and native lowering
+// allocates an environment cell both frames address. Keep every binding visible so references in
+// a new frame lower, and let the capture lists name what the environment must carry.
 export function functionFrameBindings(bindings: ReadonlyMap<string, JsIrBindingValue>): Map<string, JsIrBindingValue> {
-  const frameBindings = new Map(bindings);
-  for (const [name, binding] of frameBindings) {
-    if (binding.kind === "stringVariable" || binding.kind === "booleanVariable" || (binding.kind === "number" && binding.value.kind === "variable")) {
-      frameBindings.delete(name);
-    }
-  }
-  return frameBindings;
+  return new Map(bindings);
 }

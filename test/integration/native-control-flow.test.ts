@@ -119,7 +119,8 @@ function controlModule(): NativeModule {
       });
       const context: OperationContext = {
         ...expression, writes, flow, initializeFixedArray: (reference, values) => writes.initializeFixedArray(reference, values),
-        calls: { ...expression.calls, reference: forbiddenCall, closure: forbiddenCall, callback: forbiddenCall, returnedClosure: forbiddenCall },
+        calls: { ...expression.calls, reference: forbiddenCall, closure: forbiddenCall, callback: forbiddenCall, returnedClosure: forbiddenCall,
+          functionDeclaration: forbiddenCall },
         returnValue: (value) => flow.returnValue(value), throwValue: (value) => flow.throwValue(value),
         operations: {
           operation: (operation) => lowerFixture(operation, context),

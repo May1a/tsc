@@ -1,6 +1,6 @@
 declare function print(value: unknown): void;
 
-// A `const` can hold a `Map`, but a `let` keeps the representation of its initializer, so the
-// declaration names the storage limit rather than the declaration around it.
+// A `const` holds a `Map` in collection storage, which a `let` cannot use yet, so the refusal names
+// the initializer rather than the declaration around it.
 let m = new Map();
 print(m);

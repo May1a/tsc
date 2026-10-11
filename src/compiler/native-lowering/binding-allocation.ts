@@ -9,6 +9,9 @@ export function allocateBinding(declaration: BindingDeclaration, layout: ObjectL
   const block = cursor.currentBlock();
   const name = `binding.${declaration.id.ordinal}`;
   if (declaration.storage.location.kind === "environment") {
+    if (declaration.perIteration) {
+      return allocateRenewableCell(name, capabilities);
+    }
     const cell = runtime.callPointer("environmentNew", [block.int(llvm.i64, 1n)], `${name}.cell`);
     const owner = values.forBlock(block).boxReference("object", cell);
     roots.push(owner);
@@ -55,6 +58,29 @@ function allocateRootSlot(name: string, capabilities: FunctionCapabilities): Llv
   return slot;
 }
 
+/**
+ * The slots behind a per-iteration environment cell, with an initial cell already stored.
+ *
+ * Both slots live in the entry block so every later block can load the current cell. Rooting the
+ * owner slot (rather than the initial owner value) keeps whatever cell is current alive: renewal
+ * replaces the slot contents, and previously captured cells stay alive through the closures that
+ * captured them. Module scope materializes the same shape over globals instead (see
+ * `materializeGlobal`).
+ */
+function allocateRenewableCell(name: string, capabilities: FunctionCapabilities): BindingStorage {
+  const { cursor, runtime, values, roots } = capabilities;
+  const block = cursor.currentBlock();
+  const cellSlot = block.alloca(llvm.ptr, `${name}.cell.slot`);
+  const ownerSlot = block.alloca(llvm.i64, `${name}.owner.slot`);
+  const cell = runtime.callPointer("environmentNew", [block.int(llvm.i64, 1n)], `${name}.cell`);
+  const owner = values.forBlock(block).boxReference("object", cell);
+  roots.push(owner);
+  block.store(cell, cellSlot);
+  block.store(owner, ownerSlot);
+  roots.pushSlot(ownerSlot);
+  return { kind: "environmentSlot", cellSlot, ownerSlot };
+}
+
 export function materializeGlobal(global: GlobalBlueprint, capabilities: FunctionCapabilities): BindingStorage {
   const block = capabilities.cursor.currentBlock();
   switch (global.kind) {
@@ -68,6 +94,8 @@ export function materializeGlobal(global: GlobalBlueprint, capabilities: Functio
       lengthSlot: block.globalPointer(global.length), ownerSlot: block.globalPointer(global.owner) };
     }
     case "fixedArray": { return { kind: "fixedArray", slot: block.globalPointer(global.global), length: global.length };
+    }
+    case "environmentCell": { return { kind: "environmentSlot", cellSlot: block.globalPointer(global.cell), ownerSlot: block.globalPointer(global.owner) };
     }
     case "fixedObject": { return { kind: "fixedObject", shadowed: global.shadowed, shadowSlot: block.globalPointer(global.shadow),
       fields: global.fields.map((field) => {

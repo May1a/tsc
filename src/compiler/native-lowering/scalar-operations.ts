@@ -7,7 +7,7 @@ import { literalString } from "./value-support.js";
 
 type ScalarKind =
   | "constNumber" | "letNumber" | "assignNumber" | "constString" | "constStringExpression" | "letString" | "assignString"
-  | "constBoolean" | "constBooleanExpression" | "letBoolean" | "assignBoolean" | "constValue" | "letValue"
+  | "constBoolean" | "constBooleanExpression" | "letBoolean" | "assignBoolean" | "constValue" | "letValue" | "assignValue"
   | "print" | "throwValue" | "returnNumber" | "returnString" | "returnValue" | "call" | "callValue" | "inlineCpp"
   | "requireObjectCoercible" | "block" | "bindingGroup" | "if" | "tryCatch" | "switch" | "while" | "doWhile" | "for" | "break" | "continue";
 
@@ -28,6 +28,7 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
   assignBoolean: (operation, context) => context.writes.storeBoolean(operation.name, context.expressions.condition(operation.value)),
   constValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
   letValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
+  assignValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
   print: (operation, context) => context.runtime.callVoid("valuePrint", [context.expressions.expression(operation.expression)]),
   throwValue: (operation, context) => context.throwValue(context.expressions.value(operation.value)),
   returnNumber: (operation, context) => {

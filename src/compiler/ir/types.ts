@@ -92,6 +92,13 @@ export type JsIrOperationNode =
       readonly name: string;
       readonly value: JsIrValueExpression;
       readonly moduleGlobal?: boolean;
+      /**
+       * Set when the source declared the binding with `var`. A `var` is one binding per function
+       * frame, so a declaration that executes on every iteration of an enclosing loop writes the
+       * same binding each time, while a `let` or `const` there is a fresh binding per iteration.
+       * The operation kind alone does not tell them apart, because both lower to the same kinds.
+       */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "constClosure";
@@ -102,26 +109,36 @@ export type JsIrOperationNode =
       readonly kind: "letNumber";
       readonly name: string;
       readonly value: JsIrNumberExpression;
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "letString";
       readonly name: string;
       readonly value: JsIrStringExpression;
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "letBoolean";
       readonly name: string;
       readonly value: JsIrCondition;
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "arrayLiteral";
       readonly name: string;
       readonly elements: readonly JsIrNumberExpression[];
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "runtimeArrayLiteral";
       readonly name: string;
       readonly elements: readonly JsIrRuntimeArrayElement[];
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "objectLiteral";
@@ -332,6 +349,11 @@ export type JsIrOperationNode =
       readonly kind: "assignBoolean";
       readonly name: string;
       readonly value: JsIrCondition;
+    }
+  | {
+      readonly kind: "assignValue";
+      readonly name: string;
+      readonly value: JsIrValueExpression;
     }
   | {
       readonly kind: "arrayStore";

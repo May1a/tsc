@@ -160,6 +160,12 @@ binding as a receiver. Then remove the 0e exception in `isShapeRecognizedReceive
 `const` initialized by an element read, or by `new Number`/`Boolean`/`String`, is still re-evaluated
 at every read, so `n === n` is `false` for such a wrapper.
 
+**0g. Array methods through a boxed value.** Found while verifying workstream 2. A method call on a
+boxed value that holds an array takes the generic dynamic-call path, and the runtime array has no
+property of that name. `for (const row of [[1, 2], [3]]) print(row.join("-"))` throws
+`TypeError: value is not a function`. A runtime array receiver has to reach the array builtins,
+either by a tag check before the dynamic call or by array prototype methods in the runtime.
+
 **0h. Class methods missing from the prototype.** Found while verifying workstream 2. 0b installed only
 overridden methods on a class prototype, so `obj["m"]()` threw `TypeError: value is not a function`
 for any other method, and `inst.hasOwnProperty(k)` did the same. Every instance method is now
@@ -228,6 +234,27 @@ Make storage a fact derived from all writes and uses before native lowering:
 - A mutable `let` captured by a closure receives a boxed environment cell, which `CONTEXT.md`
   describes as already supported. Find out why `let n = 0; const inc = () => ++n;` and the counter
   closure are still refused.
+
+  Done (2b). Lowering removed every mutable scalar from a nested function's bindings, and most
+  nested-function forms carried no capture list, so no environment cell was ever created. Captured
+  `let`, `const`, loop items and `catch` bindings declared inside a loop now get a fresh cell each
+  time their declaration runs (`perIteration`). A `for (let ...)` header is copied into a fresh cell
+  before each update, as ECMA-262 CreatePerIterationEnvironment requires. A `var` is one cell per
+  frame: `let`-path operations carry `functionScoped`, and resolution gives them the `var` kind.
+
+- Done (2a) for scalars and boxed values. `storage-plan.ts` reads every write to every `let` and
+  `var` of a source file before it lowers, classifying each write from syntax. A binding written
+  only by its initializer keeps the representation its initializer chooses. A binding without an
+  initializer, or with a later nullish, non-scalar or differently-typed scalar write, is boxed
+  (`letValue`, `assignValue`). Undecided writes, such as a call, change nothing and are refused
+  where they do not fit. A non-scalar `let` initializer with no later write lowers to a boxed slot.
+  A statement may declare several bindings, a `for` header may declare any of them, and a
+  `for...of` or `for...in` item may be a `let`. The number tier reads a boxed binding as a number
+  where the checker proves its type is `number`.
+
+  Still open in 2a: a `let` holding a `Map`, `Set` or error (a `const` keeps those in aggregate
+  storage); a `var` loop item; and `typeof` on a boxed value, which only the string tier answers, at
+  compile time. A runtime `typeof` belongs with workstream 5.
 
 Where it lives: Lowering records a `JsIrBindingValue` per declaration. A pre-pass over the function body
 or module collects the writes and uses per declaration and chooses the representation before the
