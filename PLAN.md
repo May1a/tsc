@@ -123,6 +123,25 @@ short-circuit on the receiver's nullish check, not only on the callee's.
 The fixture covers `o?.f()` and `o?.f(sideEffect())` on `undefined` and `null`, the chained form
 `a?.b.f()`, and the optional call `o.f?.()`.
 
+**0d. Untyped call results printed as numbers.** Found while verifying workstream 2.
+`const f: any = () => "x"; print(f())` prints `NaN`. The same happens for `for (const f of fns) f()`
+over an `any[]`, for a callee typed `() => unknown`, and for a spread call to a function returning
+`any`. `lowerNumberCallExpression` claimed every call whose checker type is `any` or `unknown`, and
+coerced the result with `valueToNumber`. `print` tries the number tier before the value tier.
+
+A call through a boxed callee is now claimed only when its static type is a number. A call to a
+declared function is still claimed under `any`, because its return kind is known and the checker
+types a recursive call in an unannotated function as `any`. The fixture is
+`call-untyped-result-not-number.ts`.
+
+`f() * 2` with an `any`-typed `f` is now refused, as `v * 2` with an `any`-typed `v` already was.
+Arithmetic operands need a ToNumber coercion of boxed values, including `valueOf`, before either can
+be admitted.
+
+The Test262 floor drops from 1,013 to 1,012. `language/statements/function/S13.2.1_A7_T2.js` passed
+only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never
+reads `x`. It is now refused, because a `var` cannot hold a boxed value yet. Workstream 2 admits it.
+
 ### 1. Refusal reasons reach the diagnostic
 
 1,652 Test262 gaps carry only a generic message. Find each place where an inner `unsupported` is
