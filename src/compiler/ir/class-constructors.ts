@@ -9,6 +9,7 @@ import { bindFunctionParameter, functionFrameBindings } from "./function-paramet
 import { isNonExecutableDeclaration } from "./comparisons.js";
 import { updateBindings } from "./binding-updates.js";
 import type { JsIrValueExpression } from "./expressions.js";
+import { expressionSnippet } from "./diagnostics.js";
 import { SYMBOL_ITERATOR_SENTINEL } from "../symbols.js";
 
 // eslint-disable-next-line complexity, max-statements -- Constructor lowering owns super ordering, instance initialization, and body scope restoration.
@@ -198,7 +199,7 @@ export function lowerClassFieldInitializer(
   }
   const value = context.lowerValueExpression(context, field.initializer, bindings);
   if (value.kind !== "lowered") {
-    return withRefusal(value, unsupportedIn("A class field initializer is not an expression this build can evaluate"));
+    return withRefusal(value, unsupportedIn(`A class field initializer is not an expression this build can evaluate: \`${expressionSnippet(field.initializer)}\``));
   }
   return produced(value.operation);
 }

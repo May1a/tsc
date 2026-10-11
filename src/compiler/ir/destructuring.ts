@@ -1,9 +1,10 @@
-import { type Lowered, type Produced, loweredOptional, loweredPayload, notApplicable, produced, withRefusal } from "./lowered.js";
+import { type Lowered, type Produced, loweredOptional, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrOperation } from "./types.js";
 import { unwrapTypeOnlyExpression } from "./predicates.js";
+import { expressionSnippet } from "./diagnostics.js";
 import { iteratorErrorSubject } from "./iterator-subject.js";
 import type { JsIrArrayDestructureElement, JsIrValueExpression } from "./expressions.js";
 import { lowerFunctionObjectValue } from "./closures.js";
@@ -315,7 +316,7 @@ export function lowerDestructuredValueBinding(
       defaultValue = loweredPayload(valueExpressionResult2);
     }
     if (defaultValue === undefined) {
-      return notApplicable;
+      return unsupportedIn(`The default value \`${expressionSnippet(defaultInitializer)}\` of \`${name}\` is not an expression this build can evaluate`);
     }
     defaultIsFunction = defaultValue.kind === "functionObject";
     const defaultIsCall = ts.isCallExpression(unwrapTypeOnlyExpression(defaultInitializer));

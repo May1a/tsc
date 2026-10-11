@@ -1,4 +1,4 @@
-import { type Produced, produced, withRefusal } from "./lowered.js";
+import { type Produced, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import { type DestructuringSource, lowerDestructuredFallbackOperation, lowerDestructuredValueBinding, lowerNestedBindingFromValue } from "./destructuring.js";
@@ -36,7 +36,7 @@ export function lowerObjectDestructuringElements(
     }
     const key = destructuredPropertyKey(element);
     if (key === undefined) {
-      return produced(false);
+      return unsupportedIn("Computed property names in destructuring patterns are not supported yet");
     }
     extractedKeys.push(key);
     if (!ts.isIdentifier(element.name)) {

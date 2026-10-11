@@ -145,6 +145,23 @@ In the same step:
 **Lint proposal.** Add `fixture-name-matches-outcome`: a fixture named `-unsupported` must be refused,
 and a `defect-` fixture must be listed in a test that asserts the defect.
 
+**Census after workstream 1** (2026-10-11): 1,013 pass, 0 fail, 3,254 coverage-gap. 4 gap tests carry
+only a generic message. Each figure below is the number of tests whose *first* diagnostic, which is the
+likely root cause, is that reason.
+
+| Tests | First diagnostic | Workstream |
+| --- | --- | --- |
+| 520 | a `let` or `var` binding cannot hold an object literal (199), a class instance (177), or another value (144) | 2 |
+| 467 | `X` cannot be used as a value yet: builtin constructors such as `ReferenceError` or `Test262Error` used as values | 3.4 |
+| 255 | method names must be identifiers, string literals, or computable from constants | 3.3 |
+| 205 | a variable declaration without an initializer | 2 |
+| 255 | parameters with defaults (137) and destructuring parameters (118) on class members | 3.1 |
+| 134 | a `for...of` item declared with something other than `const` | 2 |
+| 129 | multiple bindings in one declaration | 1 (follow-up) |
+
+Workstream 2 comes first, as planned. Every `let` or `var` that holds a non-scalar is refused, and that
+is the largest single cause.
+
 ### 2. Storage from every write
 
 A binding's storage is chosen from its initializer and never widened. Each write or use that does not

@@ -121,11 +121,13 @@ function withTracedChildren(operation: JsIrOperation, nextTraceId: () => string)
     }
     case "for": {
       const rebuild = tracedOperationChild(operation, nextTraceId);
+      const { increment } = operation;
       return {
         ...operation,
         initializer: operation.initializer.map(rebuild),
         body: operation.body.map(rebuild),
-        increment: rebuild(operation.increment)
+        // Absent stays absent: emission distinguishes "no update step" from an empty one.
+        ...(increment === undefined ? {} : { increment: rebuild(increment) })
       };
     }
     default: {

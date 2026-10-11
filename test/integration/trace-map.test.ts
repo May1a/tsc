@@ -155,7 +155,7 @@ describe("operation trace maps", () => {
 
   test("derives storage and repeated body ranges from instruction provenance", async () => {
     const emptyResult = await expectSuccessfulCompile("const-number.ts");
-    const repeatedResult = await expectSuccessfulCompile("array-runtime-map-unsupported-callback.ts");
+    const repeatedResult = await expectSuccessfulCompile("array-runtime-map-inline-callback.ts");
     try {
       const emptyMap = await readTraceMap(emptyResult);
       const repeatedMap = await readTraceMap(repeatedResult);

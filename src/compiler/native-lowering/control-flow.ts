@@ -170,6 +170,7 @@ export class ControlFlow implements FlowCapability {
     } };
     this.withCleanup(cleanup, () => {
       if (operation.kind === "doWhile") { cursor.currentBlock().br(body); }
+      else if (operation.condition === undefined) { cursor.currentBlock().br(body); }
       else {
         const condition = context.expressions.condition(operation.condition);
         cursor.currentBlock().condBr(condition, body, exhausted);
@@ -179,7 +180,9 @@ export class ControlFlow implements FlowCapability {
         () => context.operations.operations(operation.body));
       this.#join(step);
       cursor.openBlock(step);
-      if (operation.kind === "for") { context.operations.operation(operation.increment); }
+      // An omitted update does nothing: the step still exists so `continue` reaches the condition
+      // through it, exactly as a `while` continue does.
+      if (operation.kind === "for" && operation.increment !== undefined) { context.operations.operation(operation.increment); }
       const condition = operation.kind === "doWhile" ? context.expressions.condition(operation.condition) : undefined;
       runtime.callVoid("gcSafepoint", []);
       roots.restore(frame);

@@ -3,7 +3,6 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import { type Lowered, loweredOperation, unsupported } from "./lowered.js";
-import { unsupportedStatementMessage } from "./diagnostics.js";
 import { declaredFunctionReturnKind } from "./function-parameters.js";
 import { lowerFunctionParameters } from "./function-parameter-lowering.js";
 import type { JsIrOperation } from "./types.js";
@@ -22,12 +21,11 @@ export function lowerFunctionDeclaration(
   if (statement.asteriskToken !== undefined) {
     return unsupported(unsupportedFormMessage("generator-function"));
   }
-  const reason = unsupportedStatementMessage(statement, bindings);
   if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
-    return unsupported(reason);
+    return unsupported("A function declaration must have a name and a body");
   }
 
-  const loweredParameters = lowerFunctionParameters(context, statement.parameters, bindings, reason);
+  const loweredParameters = lowerFunctionParameters(context, statement.parameters, bindings);
   if (loweredParameters.kind === "unsupported") {
     return loweredParameters;
   }

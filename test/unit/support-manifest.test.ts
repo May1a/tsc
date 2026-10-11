@@ -38,7 +38,7 @@ const fixtureNames: ReadonlySet<string> = new Set(readdirSync(fixturesDirectory)
  * The fixture family a supported builtin is covered by: `array-runtime-at.ts`, or a fixture that
  * narrows one shape of it such as `array-runtime-map-callback.ts`. The convention predates the
  * table — 138 of the fixtures already followed it — so the test reads it rather than imposing it.
- * It does not try to read the other direction: `array-runtime-map-unsupported-callback.ts` is a
+ * It does not try to read the other direction: `array-runtime-map-inline-callback.ts` is a
  * *passing* program whose callback is not inlined, so a filename cannot say whether a fixture
  * asserts support or a rejection.
  */

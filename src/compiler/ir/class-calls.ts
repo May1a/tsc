@@ -172,7 +172,7 @@ function lowerDispatchedMethodCall(
   if (receiverValue.kind !== "lowered") {
     return withRefusal(receiverValue, unsupportedIn(`The receiver of the method \`${methodName}\` is not an instance this build can pass`));
   }
-  const args = lowerValueCallArguments(context, call.arguments, bindings);
+  const args = lowerValueCallArguments(context, call.arguments, bindings, methodName);
   if (args.kind !== "lowered") {
     return withRefusal(args, unsupportedIn(`Arguments to the method \`${methodName}\` must be expressions this build can evaluate`));
   }
@@ -363,3 +363,4 @@ export function lowerClassInstanceExpression(
   }
   return notApplicable;
 }
+

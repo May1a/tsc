@@ -18,7 +18,7 @@ export function resolvedOperationChildren(operation: ResolvedOperation): readonl
     }
     case "switch": { return operation.clauses.flatMap((clause) => clause.operations);
     }
-    case "for": { return [...operation.initializer, operation.increment, ...operation.body];
+    case "for": { return forChildren(operation);
     }
     default: {
       return leafChildren(operation);
@@ -27,6 +27,10 @@ export function resolvedOperationChildren(operation: ResolvedOperation): readonl
 }
 
 function leafChildren(_leaf: Extract<ResolvedOperation, { readonly kind: ResolvedLeafOperationKind }>): readonly ResolvedOperation[] { return []; }
+
+function forChildren(operation: Extract<ResolvedOperation, { readonly kind: "for" }>): readonly ResolvedOperation[] {
+  return [...operation.initializer, ...(operation.increment === undefined ? [] : [operation.increment]), ...operation.body];
+}
 
 function destructureChildren(operation: Extract<ResolvedOperation, { readonly kind: "arrayDestructureProtocol" }>): readonly ResolvedOperation[] {
   return operation.elements.flatMap((element) => element.kind === "nested" ? element.operations : []);
