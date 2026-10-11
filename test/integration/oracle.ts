@@ -171,6 +171,7 @@ export const oracleFixtures: readonly string[] = [
   "multiple-prints.ts",
   "while-loop.ts",
   "const-number-addition.ts",
+  "number-to-string-shortest.ts",
   "boolean-coercion-supported-values.ts",
   "function-call.ts",
   "nested-function-declaration.ts",

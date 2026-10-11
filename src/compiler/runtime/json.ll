@@ -219,7 +219,6 @@ inner:
 @.json.false = private unnamed_addr constant [6 x i8] c"false\00"
 @.json.cycle.error.name = private unnamed_addr constant [10 x i8] c"TypeError\00"
 @.json.cycle.error.message = private unnamed_addr constant [38 x i8] c"Converting circular structure to JSON\00"
-@.json.fmt.number = private unnamed_addr constant [3 x i8] c"%g\00"
 
 define { ptr, i64, i64, i1 } @jsonStringifyInner(i64 %value, ptr %filter, i64 %indent, i64 %depth, ptr %stack) {
 entry:
@@ -299,10 +298,10 @@ check.infinite:
   %is.infinite = icmp eq i64 %abs.bits, 9218868437227405312
   br i1 %is.infinite, label %null, label %finite
 finite:
-  %buffer = call ptr @malloc(i64 32)
-  %written = call i32 (ptr, ptr, ...) @sprintf(ptr %buffer, ptr @.json.fmt.number, double %number.value)
-  %written.len = sext i32 %written to i64
-  %finite.r = call { ptr, i64, i64, i1 } @jsonStrOk(ptr %buffer, i64 %written.len)
+  %finite.number = call { ptr, i64 } @numberToShortestString(double %number.value)
+  %finite.ptr = extractvalue { ptr, i64 } %finite.number, 0
+  %finite.len = extractvalue { ptr, i64 } %finite.number, 1
+  %finite.r = call { ptr, i64, i64, i1 } @jsonStrOk(ptr %finite.ptr, i64 %finite.len)
   ret { ptr, i64, i64, i1 } %finite.r
 }
 @.json.arr.null = private unnamed_addr constant [5 x i8] c"null\00"

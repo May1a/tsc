@@ -544,10 +544,6 @@ true:
 false:
   ret i1 false
 }
-@.value.fmt.number = private unnamed_addr constant [4 x i8] c"%g\0A\00"
-@.value.number.nan = private unnamed_addr constant [4 x i8] c"NaN\00"
-@.value.number.infinity = private unnamed_addr constant [9 x i8] c"Infinity\00"
-@.value.number.negative-infinity = private unnamed_addr constant [10 x i8] c"-Infinity\00"
 @.value.true = private unnamed_addr constant [5 x i8] c"true\00"
 @.value.false = private unnamed_addr constant [6 x i8] c"false\00"
 @.value.undefined = private unnamed_addr constant [10 x i8] c"undefined\00"
@@ -615,29 +611,11 @@ print.string:
   ret void
 print.number:
   %number = call double @valueNumber(i64 %value)
-  %number.is.nan = fcmp uno double %number, %number
-  br i1 %number.is.nan, label %print.number.nan, label %check.number.infinity
-check.number.infinity:
-  %number.absolute-bits = and i64 %value, 9223372036854775807
-  %number.is.infinity = icmp eq i64 %number.absolute-bits, 9218868437227405312
-  br i1 %number.is.infinity, label %print.number.infinity, label %print.number.finite
-print.number.nan:
-  call i32 @puts(ptr @.value.number.nan)
-  ret void
-print.number.infinity:
-  %number.is.negative = icmp slt i64 %value, 0
-  br i1 %number.is.negative, label %print.number.negative-infinity, label %print.number.positive-infinity
-print.number.negative-infinity:
-  call i32 @puts(ptr @.value.number.negative-infinity)
-  ret void
-print.number.positive-infinity:
-  call i32 @puts(ptr @.value.number.infinity)
-  ret void
-print.number.finite:
-  call i32 (ptr, ...) @printf(ptr @.value.fmt.number, double %number)
+  %number.string = call { ptr, i64 } @numberToShortestString(double %number)
+  %number.ptr = extractvalue { ptr, i64 } %number.string, 0
+  call i32 @puts(ptr %number.ptr)
   ret void
 }
-@.tostring.fmt.number = private unnamed_addr constant [3 x i8] c"%g\00"
 @.tostring.true = private unnamed_addr constant [5 x i8] c"true\00"
 @.tostring.false = private unnamed_addr constant [6 x i8] c"false\00"
 @.tostring.undefined = private unnamed_addr constant [10 x i8] c"undefined\00"
@@ -715,13 +693,9 @@ string:
   %string.1 = insertvalue { ptr, i64 } %string.0, i64 %string.len, 1
   ret { ptr, i64 } %string.1
 number:
-  %number.ptr = call ptr @malloc(i64 32)
   %number.value = call double @valueNumber(i64 %value)
-  %written = call i32 (ptr, ptr, ...) @sprintf(ptr %number.ptr, ptr @.tostring.fmt.number, double %number.value)
-  %number.len = sext i32 %written to i64
-  %number.0 = insertvalue { ptr, i64 } undef, ptr %number.ptr, 0
-  %number.1 = insertvalue { ptr, i64 } %number.0, i64 %number.len, 1
-  ret { ptr, i64 } %number.1
+  %number.text = call { ptr, i64 } @numberToShortestString(double %number.value)
+  ret { ptr, i64 } %number.text
 }
 define ptr @indexToString(i64 %index) {
 entry:

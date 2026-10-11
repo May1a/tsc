@@ -915,7 +915,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["number-coercion-infinity-nan-string.ts", "Infinity\n-Infinity\nNaN\nNaN\n"],
       ["number-coercion-primitives.ts", "0\nNaN\n1\n0\n0\nNaN\nInfinity\n"],
       ["number-coercion-aggregates.ts", "NaN\n0\n1\nNaN\n"],
-      ["number-coercion-signed-zero.ts", "-0\n"]
+      ["number-coercion-signed-zero.ts", "0\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
@@ -949,7 +949,7 @@ describe("tscn expanded runtime roadmap", () => {
 
     const numbers = await expectSuccessfulCompile("value-string-conversion-number-edge.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(numbers, { status: 0, stdout: "-0\ninf\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(numbers, { status: 0, stdout: "0\nInfinity\n", stderr: "" });
     } finally {
       await numbers.cleanup();
     }
@@ -1165,7 +1165,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["bitwise-and-or-xor.ts", "2\n5\n4\n"],
       ["bitwise-not.ts", "-1\n-6\n"],
       ["bitwise-shift-left-right.ts", "12\n-4\n"],
-      ["bitwise-unsigned-right-shift.ts", "4.29497e+09\n2.14748e+09\n"],
+      ["bitwise-unsigned-right-shift.ts", "4294967295\n2147483644\n"],
       ["increment-prefix-postfix.ts", "1\n2\n3\n3\n"],
       ["decrement-prefix-postfix.ts", "3\n2\n1\n1\n"],
       ["compound-assign-bitwise.ts", "2\n6\n7\n28\n14\n7\n"],
