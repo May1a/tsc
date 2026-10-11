@@ -105,7 +105,7 @@ export function lowerTypedCallArguments(
 
 // The callee applies defaults to undefined arguments. Optional parameters retain boxed storage.
 function omittedParameterArgument(parameter: JsIrFunctionParameter): JsIrCallArgument | undefined {
-  if (parameter.defaultValue !== undefined && parameter.valueKind === "number") {
+  if (parameter.defaultValue !== undefined) {
     return { valueKind: "undefined" };
   }
   if (parameter.isOptional === true) {

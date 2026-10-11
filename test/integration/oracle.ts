@@ -422,4 +422,6 @@ export const oracleFixtures: readonly string[] = [
   "for-let-header-pattern.ts",
   "var-loop-items.ts",
   "for-of-var-binding.ts",
+  "function-parameter-value-defaults.ts",
+  "class-member-parameter-defaults.ts",
 ] as const;

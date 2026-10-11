@@ -76,10 +76,10 @@ export function lowerPlainConstructorArguments(
       lowered.push(value.operation);
     } else if (parameter.valueKind === "value") {
       lowered.push({ valueKind: "value", value: { kind: "undefined" } });
-    } else if (parameter.valueKind === "number" && parameter.defaultValue !== undefined) {
-      lowered.push({ valueKind: "undefined" });
-    } else {
+    } else if (parameter.defaultValue === undefined) {
       return notApplicable;
+    } else {
+      lowered.push({ valueKind: "undefined" });
     }
   }
   return produced(lowered);

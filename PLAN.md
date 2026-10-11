@@ -224,6 +224,14 @@ installed (`lowerPrototypeMethodStores`), and `hasOwnProperty` on a boxed receiv
 `toString` or `isPrototypeOf`, still throw, because the runtime has no `Object.prototype` functions.
 0g lists them as open. The fixture is `class-method-dynamic-access.ts`.
 
+**0i. Parameter defaults that are not numbers.** Found while starting 3.1. A parameter's default was
+recorded only when it lowered as a number. Any other default was dropped, so `function f(x = "s")`
+returned `undefined` when called through a function value. A direct call omitting the argument was
+refused, which hid the bug. Every default is now a value-tier expression (`lowerParameterDefault`).
+The callee evaluates it when the argument is missing or `undefined`, after binding the parameters
+before it. A default this build cannot evaluate is refused by name. `= undefined` makes the
+parameter omittable without a default. The fixture is `function-parameter-value-defaults.ts`.
+
 0d drops the Test262 floor from 1,013 to 1,012, and 0e restores it to 1,013. `language/statements/function/S13.2.1_A7_T2.js` passed
 only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never
 reads `x`. It is now refused, because a `var` cannot hold a boxed value yet. Workstream 2 admits it.
@@ -335,6 +343,15 @@ Ordered by Test262 gap counts:
 
 1. Class members get function parameter parity: default parameters (173 gaps) and destructured
    parameters (146). Function declarations already support both.
+
+   Done. Constructors, methods, static methods and accessors lower their parameters with
+   `lowerFunctionParameters`, so defaults and destructuring work as they do for function
+   declarations. This happens inside the member's scope, so a default can read `this`.
+   `classCallableParameters` gives call sites the signature without defaults: an optional or
+   defaulted parameter is omittable, and a pattern's slot is named by `parameterSlotName`, as the
+   lowering names it. An implicit derived constructor forwards the base signature, and the base
+   applies its defaults. Rest parameters on class members are still refused. The fixture is
+   `class-member-parameter-defaults.ts`. With 0i, Test262 rises from 1,438 to 1,600.
 2. Static accessors (36), private methods and accessors (22), and static private fields (82).
 3. Computed method and accessor names (287 + 118). Class fields already handle computed keys through
    `ClassComputedKeyInfo`.

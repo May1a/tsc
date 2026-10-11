@@ -6,6 +6,7 @@ import { type Lowered, type Produced, loweredPayload, notApplicable, produced, u
 import type { JsIrOperation } from "./types.js";
 import { CLASS_THIS_NAME, classAbortReason, classConstructorName, classMemberKeyStringExpression } from "./class-names.js";
 import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
+import { lowerFunctionParameters } from "./function-parameter-lowering.js";
 import { isNonExecutableDeclaration } from "./comparisons.js";
 import { updateBindings } from "./binding-updates.js";
 import { collectMethodEnclosingCaptureNames } from "./captures.js";
@@ -20,12 +21,8 @@ export function lowerClassConstructor(
   constructorDeclaration: ts.ConstructorDeclaration | undefined,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<JsIrOperation> {
-  const parameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...info.constructorParameters];
-  const fnBindings = functionFrameBindings(bindings);
-  fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-  for (const parameter of info.constructorParameters) {
-    bindFunctionParameter(parameter.name, parameter.valueKind, false, fnBindings);
-  }
+  const receiverBindings = functionFrameBindings(bindings);
+  receiverBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
 
   const previousThis = context.classThisInScope;
   const previousClass = context.activeEnclosingClass;
@@ -34,7 +31,13 @@ export function lowerClassConstructor(
   context.activeEnclosingClass = info;
   context.activeClassMethodStatic = false;
   try {
-    const body: JsIrOperation[] = [];
+    const lowered = lowerConstructorParameters(context, info, constructorDeclaration, receiverBindings);
+    if (lowered.kind !== "lowered") {
+      return lowered;
+    }
+    const { bindings: fnBindings, prelude } = lowered.operation;
+    const parameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...lowered.operation.parameters];
+    const body: JsIrOperation[] = [...prelude];
     let remainingStatements: readonly ts.Statement[] = constructorDeclaration?.body?.statements ?? [];
     if (info.baseName !== undefined) {
       const base = context.classes.get(info.baseName);
@@ -88,7 +91,7 @@ export function lowerClassConstructor(
     // a field initializer may read one. The order here matches that emit exactly, which is what makes
     // `class C { x = this.p + 1; constructor(public p: number) {} }` read the argument.
     for (const name of info.parameterProperties) {
-      const parameter = info.constructorParameters.find((candidate) => candidate.name === name);
+      const parameter = lowered.operation.parameters.find((candidate) => candidate.name === name);
       if (parameter === undefined) {
         return unsupportedIn(`\`${name}\` is declared as a field by a parameter this build cannot read`);
       }
@@ -136,6 +139,31 @@ export function lowerClassConstructor(
     context.activeEnclosingClass = previousClass;
     context.activeClassMethodStatic = previousStatic;
   }
+}
+
+/**
+ * A written constructor lowers its parameters like a function declaration's, defaults and patterns
+ * included. An implicit one takes the signature it forwards to the base constructor, which applies
+ * its own defaults.
+ */
+function lowerConstructorParameters(
+  context: LoweringContext,
+  info: ClassInfo,
+  constructorDeclaration: ts.ConstructorDeclaration | undefined,
+  receiverBindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<{
+  readonly parameters: readonly JsIrFunctionParameter[];
+  readonly bindings: Map<string, JsIrBindingValue>;
+  readonly prelude: readonly JsIrOperation[];
+}> {
+  if (constructorDeclaration !== undefined) {
+    return lowerFunctionParameters(context, constructorDeclaration.parameters, receiverBindings);
+  }
+  const fnBindings = new Map(receiverBindings);
+  for (const parameter of info.constructorParameters) {
+    bindFunctionParameter(parameter.name, parameter.isOptional === true ? "value" : parameter.valueKind, false, fnBindings);
+  }
+  return produced({ parameters: info.constructorParameters, bindings: fnBindings, prelude: [] });
 }
 
 function parameterPropertyValue(parameter: JsIrFunctionParameter): JsIrValueExpression {

@@ -2,8 +2,11 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
 import type { JsIrOperation } from "./types.js";
-import { type Produced, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
-import { parameterValueKind, runtimeParameters } from "./class-info.js";
+import { type Produced, produced, unsupportedIn, withRefusal } from "./lowered.js";
+import type { JsIrValueExpression } from "./expressions.js";
+import { lowerFunctionObjectValue } from "./closures.js";
+import { expressionSnippet } from "./diagnostics.js";
+import { parameterSlotName, parameterValueKind, runtimeParameters } from "./class-info.js";
 import { lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
 import { updateBindings } from "./binding-updates.js";
 import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
@@ -50,33 +53,56 @@ function lowerFunctionParameter(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<JsIrFunctionParameter> {
   const isRest = declaration.dotDotDotToken !== undefined;
-  if (ts.isObjectBindingPattern(declaration.name) || ts.isArrayBindingPattern(declaration.name)) {
-    return isRest
-      ? unsupportedIn("A rest parameter with a destructuring pattern is not supported in a function declaration yet")
-      : produced({ name: `__param${index}`, valueKind: "value" });
+  const isPattern = ts.isObjectBindingPattern(declaration.name) || ts.isArrayBindingPattern(declaration.name);
+  if (isPattern && isRest) {
+    return unsupportedIn("A rest parameter with a destructuring pattern is not supported in a function declaration yet");
   }
-  if (!ts.isIdentifier(declaration.name)) {
+  if (!isPattern && !ts.isIdentifier(declaration.name)) {
     return unsupportedIn("Function parameters must be identifiers or destructuring patterns");
   }
-  const name = declaration.name.text;
-  const valueKind = isRest ? "value" : parameterValueKind(declaration);
+  const name = parameterSlotName(declaration, index);
   if (isRest) {
-    return produced({ name, valueKind, isRest: true });
+    return produced({ name, valueKind: "value", isRest: true });
   }
-  const defaultResult = declaration.initializer === undefined || declaration.initializer.kind === ts.SyntaxKind.UndefinedKeyword
-    ? notApplicable
-    : context.lowerNumberExpression(context, declaration.initializer, bindings);
-  if (defaultResult.kind === "unsupported") {
+  const valueKind = isPattern ? "value" : parameterValueKind(declaration);
+  const defaultResult = lowerParameterDefault(context, declaration.initializer, name, bindings);
+  if (defaultResult.kind !== "lowered") {
     return defaultResult;
   }
-  const defaultValue = loweredPayload(defaultResult);
+  const defaultValue = defaultResult.operation;
   if (defaultValue !== undefined) {
     return produced({ name, valueKind, defaultValue });
   }
-  if (declaration.questionToken !== undefined) {
-    return produced({ name, valueKind, isOptional: true });
+  // `= undefined` is no default, but it still makes the parameter omittable, like `x?`.
+  if (declaration.questionToken !== undefined || declaration.initializer !== undefined) {
+    return produced({ name, valueKind: "value", isOptional: true });
   }
   return produced({ name, valueKind });
+}
+
+/**
+ * A parameter's default, lowered against the parameters before it. `= undefined` is no default at
+ * all. A default this build cannot evaluate refuses the parameter rather than being dropped.
+ */
+export function lowerParameterDefault(
+  context: LoweringContext,
+  initializer: ts.Expression | undefined,
+  name: string,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<JsIrValueExpression | undefined> {
+  if (initializer === undefined || initializer.kind === ts.SyntaxKind.UndefinedKeyword) {
+    return produced(undefined);
+  }
+  const refusal: Produced<JsIrValueExpression | undefined> = unsupportedIn(`The default value \`${expressionSnippet(initializer)}\` of \`${name}\` is not an expression this build can evaluate`);
+  const functionValue = lowerFunctionObjectValue(context, initializer, bindings, name);
+  if (functionValue.kind === "lowered") {
+    return produced(functionValue.operation);
+  }
+  if (functionValue.kind === "unsupported") {
+    return withRefusal(functionValue, refusal);
+  }
+  const value = context.lowerValueExpression(context, initializer, bindings);
+  return value.kind === "lowered" ? produced(value.operation) : withRefusal(value, refusal);
 }
 
 function lowerParameterDestructuring(

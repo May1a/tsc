@@ -65,3 +65,12 @@ class Overwritten {
 }
 
 print(new Overwritten(1).get());
+
+// A defaulted parameter property stores its default when the argument is omitted, and the argument
+// otherwise.
+class Defaulted {
+  constructor(public x: number = 3, readonly label: string = "d") {}
+}
+
+print(new Defaulted().x);
+print(new Defaulted(4, "e").label);
