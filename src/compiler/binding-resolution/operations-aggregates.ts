@@ -10,6 +10,7 @@ export const aggregateHandlers = {
     name: resolver.reference(node.name),
     value: resolver.condition(node.value)
   }),
+  assignValue: (node, resolver) => ({ ...node, name: resolver.reference(node.name), value: resolver.value(node.value) }),
 
   arrayStore: (node, resolver) => ({
     ...node,

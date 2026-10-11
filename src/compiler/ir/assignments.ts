@@ -2,7 +2,7 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import { type Lowered, loweredPayload, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
-import type { JsIrCondition, JsIrNumberOperator } from "./expressions.js";
+import type { JsIrCondition, JsIrNumberOperator, JsIrValueExpression } from "./expressions.js";
 import { lowerObjectAccessPath, objectPathExists } from "./builtins/object-producers.js";
 import { lowerSymbolIteratorKeyExpression } from "./class-info.js";
 import { isUndefinedExpression, lowerCanonicalArrayIndexString } from "./predicates.js";
@@ -67,6 +67,10 @@ export function lowerAssignmentStatement(
     return produced({ kind: "assignBoolean", name: expression.left.text, value: value.operation });
   }
 
+  if (binding?.kind === "valueVariable") {
+    return lowerBoxedAssignment(context, expression.left.text, expression.right, bindings);
+  }
+
   if (binding === undefined) {
     return unsupported(`Assignment to \`${expression.left.text}\`, which has no declared binding, is not supported`);
   }
@@ -123,6 +127,9 @@ function lowerCompoundAssignmentStatement(
       value: { kind: "concat", left: { kind: "variable", name: expression.left.text }, right: right.operation }
     });
   }
+  if (binding?.kind === "valueVariable") {
+    return lowerBoxedCompoundAssignment(context, expression.left.text, expression.right, operator, bindings);
+  }
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
     return unsupported(`Compound assignment to \`${expression.left.text}\` is only supported for mutable number bindings`);
   }
@@ -134,6 +141,52 @@ function lowerCompoundAssignmentStatement(
     kind: "assignNumber",
     name: expression.left.text,
     value: { kind: "binary", operator, left: { kind: "variable", name: expression.left.text }, right: right.operation }
+  });
+}
+
+/** An assignment to a boxed binding, which holds whatever value it is given. */
+function lowerBoxedAssignment(
+  context: LoweringContext,
+  name: string,
+  right: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const value = context.lowerValueExpression(context, right, bindings);
+  if (value.kind !== "lowered") {
+    return withRefusal(value, unsupportedIn(`The value assigned to \`${name}\` is not an expression this build can evaluate`));
+  }
+  return produced({ kind: "assignValue", name, value: value.operation });
+}
+
+/**
+ * A compound assignment to a boxed binding, which may hold any value.
+ *
+ * `+=` keeps JavaScript's `+`, which concatenates when either side is a string. Every other operator
+ * converts the current value to a number first, as the operator does in JavaScript.
+ */
+function lowerBoxedCompoundAssignment(
+  context: LoweringContext,
+  name: string,
+  rightExpression: ts.Expression,
+  operator: JsIrNumberOperator,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const current: JsIrValueExpression = { kind: "variable", name };
+  if (operator === "add") {
+    const right = context.lowerValueExpression(context, rightExpression, bindings);
+    if (right.kind !== "lowered") {
+      return withRefusal(right, unsupportedIn(`The value added to \`${name}\` is not an expression this build can evaluate`));
+    }
+    return produced({ kind: "assignValue", name, value: { kind: "valuePlus", left: current, right: right.operation } });
+  }
+  const right = context.lowerNumberExpression(context, rightExpression, bindings);
+  if (right.kind !== "lowered") {
+    return withRefusal(right, unsupportedIn(`The right-hand side of a compound assignment to \`${name}\` must be a number this build can evaluate`));
+  }
+  return produced({
+    kind: "assignValue",
+    name,
+    value: { kind: "number", value: { kind: "binary", operator, left: { kind: "valueToNumber", value: current }, right: right.operation } }
   });
 }
 

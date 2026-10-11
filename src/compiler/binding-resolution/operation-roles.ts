@@ -74,6 +74,7 @@ export const operationRoles = {
   assignNumber: { name: reference },
   assignString: { name: reference },
   assignBoolean: { name: reference },
+  assignValue: { name: reference },
 
   // Aggregate mutation.
   arrayStore: { arrayName: reference },

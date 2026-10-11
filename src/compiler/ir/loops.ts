@@ -13,6 +13,7 @@ import { expressionSnippet } from "./diagnostics.js";
 import { unsupportedFormMessage } from "./builtins/manifest.js";
 import { updateBindings } from "./binding-updates.js";
 import { lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
+import { lowerVariableDeclarator } from "./variable-bindings.js";
 
 /**
  * Lower one loop's body, taking a label frame for the loop being entered.
@@ -117,6 +118,18 @@ function lowerForIncrement(
   return produced<JsIrOperation | undefined>(update.operation);
 }
 
+/**
+ * Whether a loop item is declared with `const` or `let`. Either is a fresh binding per iteration. A
+ * `var` item is one binding visible after the loop, which the loop lowering does not model.
+ */
+function isBlockScopedList(list: ts.VariableDeclarationList): boolean {
+  return (list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) !== 0;
+}
+
+function loopItemRefusal(loop: "for...of" | "for...in"): string {
+  return `A \`${loop}\` statement must declare one item with \`const\` or \`let\`, without an initializer`;
+}
+
 // eslint-disable-next-line complexity, max-statements -- for...of lowering dispatches specialized source kinds first, then the generic Symbol.iterator protocol.
 export function lowerForOfStatement(
   context: LoweringContext,
@@ -124,11 +137,11 @@ export function lowerForOfStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
   if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1) {
-    return unsupported("A `for...of` statement must declare its item with `const`, without an initializer");
+    return unsupported(loopItemRefusal("for...of"));
   }
   const [declaration] = statement.initializer.declarations;
-  if (declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
-    return unsupported("A `for...of` statement must declare its item with `const`, without an initializer");
+  if (declaration.initializer !== undefined || !isBlockScopedList(statement.initializer)) {
+    return unsupported(loopItemRefusal("for...of"));
   }
   const itemName = forOfItemName(declaration.name);
   const bodyStatement = statement.statement;
@@ -285,14 +298,14 @@ export function lowerForInStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
   if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1) {
-    return unsupported("A `for...in` statement must declare its key with `const`, without an initializer");
+    return unsupported(loopItemRefusal("for...in"));
   }
   const [declaration] = statement.initializer.declarations;
   if (!ts.isIdentifier(declaration.name)) {
     return unsupported("Destructuring the key of a `for...in` statement is not supported yet");
   }
-  if (declaration.initializer !== undefined || (statement.initializer.flags & ts.NodeFlags.Const) === 0) {
-    return unsupported("A `for...in` statement must declare its key with `const`, without an initializer");
+  if (declaration.initializer !== undefined || !isBlockScopedList(statement.initializer)) {
+    return unsupported(loopItemRefusal("for...in"));
   }
   if (!ts.isIdentifier(statement.expression)) {
     return unsupported("A `for...in` statement must iterate over a runtime dictionary object or a runtime array");
@@ -334,43 +347,28 @@ export function lowerForInStatement(
  * The loop tier only represents numeric `let` and `var` bindings, so anything else is refused with a
  * reason that names the shape: a `const`, a destructuring pattern, or a value that is not a number.
  */
+/**
+ * A `for` header's declarations, lowered like a declaration statement. `var` marks its operations
+ * function-scoped, so every iteration shares the binding; a `let` header is copied into a fresh
+ * binding for each iteration when a closure captures it.
+ */
 function lowerForInitializer(
   context: LoweringContext,
   initializer: ts.ForInitializer,
   bindings: Map<string, JsIrBindingValue>
 ): Lowered<readonly JsIrOperation[]> {
   if (!ts.isVariableDeclarationList(initializer)) {
-    return unsupportedIn("A `for` statement initializer must be a `let` or `var` declaration");
+    return unsupportedIn("A `for` statement initializer must be a declaration");
   }
-  if ((initializer.flags & ts.NodeFlags.Const) !== 0) {
-    return unsupportedIn("A `for` statement initializer must be a `let` or `var` declaration, not `const`");
-  }
-
-  // A `var` header is one function-scoped binding that every iteration shares; a `let` header is
-  // copied into a fresh binding per iteration, which resolution decides from this marker.
-  const scope = (initializer.flags & ts.NodeFlags.Let) === 0 ? { functionScoped: true as const } : {};
   const declarations: JsIrOperation[] = [];
   for (const declaration of initializer.declarations) {
-    if (!ts.isIdentifier(declaration.name)) {
-      return unsupportedIn("A `for` statement initializer does not support destructuring patterns yet");
+    const operation = lowerVariableDeclarator(context, initializer, declaration, bindings, new Set());
+    if (operation.kind !== "lowered") {
+      return withRefusal(operation, unsupportedIn("A `for` statement initializer must declare values this build can evaluate"));
     }
-    if (!declaration.initializer) {
-      return unsupportedIn("A `for` statement binding without an initializer is not supported yet");
-    }
-    const value = context.lowerNumberExpression(context, declaration.initializer, bindings);
-    if (value.kind !== "lowered") {
-      return withRefusal(value, unsupportedIn("A `for` statement initializer must be a number this build can evaluate"));
-    }
-    const operation: JsIrOperation = {
-      kind: "letNumber",
-      name: declaration.name.text,
-      value: value.operation,
-      ...scope
-    };
-    declarations.push(operation);
-    updateBindings(operation, bindings);
+    declarations.push(operation.operation);
+    updateBindings(operation.operation, bindings);
   }
-
   return produced(declarations);
 }
 

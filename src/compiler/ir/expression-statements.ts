@@ -10,6 +10,7 @@ import { lowerCallStatement } from "./call-statements.js";
 import { lowerPrintExpression } from "./print.js";
 import { lowerUpdateNumberExpression } from "./number-expressions.js";
 import type { JsIrNumberExpression, JsIrNumberOperator } from "./expressions.js";
+import type { JsIrOperation } from "./types.js";
 import { isProvenBoxedAggregateBinding } from "./number-access.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
@@ -137,6 +138,10 @@ export function lowerUpdateExpressionStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
+  const boxedUpdate = lowerBoxedUpdateStatement(expression, bindings);
+  if (boxedUpdate !== undefined) {
+    return produced(boxedUpdate);
+  }
   const update = lowerUpdateNumberExpression(expression, bindings);
   if (update === undefined) {
     return notApplicable;
@@ -144,6 +149,35 @@ export function lowerUpdateExpressionStatement(
   const step: JsIrNumberExpression = { kind: "literal", value: 1 };
   const operator: JsIrNumberOperator = update.operator === "decrement" ? "subtract" : "add";
   return produced({ kind: "assignNumber", name: update.name, value: { kind: "binary", operator, left: { kind: "variable", name: update.name }, right: step } });
+}
+
+const updateOperators: ReadonlyMap<ts.SyntaxKind, JsIrNumberOperator> = new Map([
+  [ts.SyntaxKind.PlusPlusToken, "add"],
+  [ts.SyntaxKind.MinusMinusToken, "subtract"]
+]);
+
+/**
+ * `x++` or `--x` as a statement on a boxed binding: the value converts to a number, as `++` does in
+ * JavaScript, and the result is stored back boxed.
+ */
+function lowerBoxedUpdateStatement(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Extract<JsIrOperation, { readonly kind: "assignValue" }> | undefined {
+  if (!(ts.isPrefixUnaryExpression(expression) || ts.isPostfixUnaryExpression(expression)) || !ts.isIdentifier(expression.operand)) {
+    return undefined;
+  }
+  const operator = updateOperators.get(expression.operator);
+  const name = expression.operand.text;
+  if (operator === undefined || bindings.get(name)?.kind !== "valueVariable") {
+    return undefined;
+  }
+  return {
+    kind: "assignValue",
+    name,
+    value: { kind: "number", value: { kind: "binary", operator, left: { kind: "valueToNumber", value: { kind: "variable", name } },
+      right: { kind: "literal", value: 1 } } }
+  };
 }
 
 function lowerRuntimeCollectionCallStatement(

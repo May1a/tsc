@@ -1,5 +1,6 @@
 import type ts from "typescript";
 import type { ClassHierarchy } from "./class-hierarchy.js";
+import type { StoragePlan } from "./storage-plan.js";
 import type { ClassInfo } from "./class-info.js";
 import type { InlineCppCompilation } from "./inline-cpp.js";
 import type { lowerStatement } from "./statements.js";
@@ -42,6 +43,11 @@ export interface LoweringContext {
    * with `classes`.
    */
   classHierarchy: ClassHierarchy;
+  /**
+   * The source file's `let` and `var` declarations that need boxed storage, decided from every write
+   * before any statement lowers. Set per source file with `classes`.
+   */
+  storagePlan: StoragePlan;
   /**
    * The program's type checker, for the questions a type answers that lowering state cannot: which
    * class an identifier's static type names, and what a call returns.

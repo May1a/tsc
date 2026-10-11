@@ -351,6 +351,11 @@ export type JsIrOperationNode =
       readonly value: JsIrCondition;
     }
   | {
+      readonly kind: "assignValue";
+      readonly name: string;
+      readonly value: JsIrValueExpression;
+    }
+  | {
       readonly kind: "arrayStore";
       readonly arrayName: string;
       readonly index: JsIrNumberExpression;
