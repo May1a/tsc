@@ -191,13 +191,38 @@ property of that name. `for (const row of [[1, 2], [3]]) print(row.join("-"))` t
 `TypeError: value is not a function`. A runtime array receiver has to reach the array builtins,
 either by a tag check before the dynamic call or by array prototype methods in the runtime.
 
+Done. `runtime/prototypes.ll` defines each `Array.prototype` method that a statically lowered call
+supports, plus `toString`, as a function of the uniform ABI. They are thin wrappers over the array
+helpers and the callback helpers. A property read on an array that finds no own property looks the
+key up in `@arrayPrototypeMethods`. That table replaces the chain of key comparisons that served
+only `keys`, `values`, `entries` and `Symbol.iterator`. A loop item, an `any` parameter and a boxed
+`let` now run the real method. `runtime-ir.test.ts` checks the table's sizes against its keys, and
+checks that it lists every supported prototype method. Fixtures: `boxed-array-methods.ts` and
+`boxed-array-method-receivers.ts`.
+
+Also fixed: `arrayIndexOf` and `arrayLastIndexOf` clamped a negative start position to 0 instead of
+counting it from the end. `[3, 1, 2, 3].indexOf(3, -1)` returned `0`; it now returns `3`. The fixture
+is `array-index-of-negative-start.ts`.
+
+Still open:
+
+- A property read whose receiver is not an identifier or `this` is refused, so `f().m()` and
+  `v.slice(1).join()` do not compile. `lowerAggregatePropertyValueAccess` admits only those two
+  receivers. The non-spread `callValue` evaluates its receiver once in `callee` and again in
+  `thisValue`. Before admitting other receivers, it must take `methodReceiver`/`methodKey` as the
+  spread form does, or `f().m()` would call `f` twice.
+- `Object.prototype` methods (`toString`, `valueOf`, `isPrototypeOf`, `propertyIsEnumerable`) on
+  objects and class instances. They need a lookup that knows a key is missing from the whole
+  prototype chain, not just that it reads `undefined`. They also need `Error.prototype.toString` for
+  error objects.
+
 **0h. Class methods missing from the prototype.** Found while verifying workstream 2. 0b installed only
 overridden methods on a class prototype, so `obj["m"]()` threw `TypeError: value is not a function`
 for any other method, and `inst.hasOwnProperty(k)` did the same. Every instance method is now
 installed (`lowerPrototypeMethodStores`), and `hasOwnProperty` on a boxed receiver lowers to
 `runtimeObjectHas`. Other `Object.prototype` methods called through a class instance, such as
 `toString` or `isPrototypeOf`, still throw, because the runtime has no `Object.prototype` functions.
-That belongs with 0g. The fixture is `class-method-dynamic-access.ts`.
+0g lists them as open. The fixture is `class-method-dynamic-access.ts`.
 
 0d drops the Test262 floor from 1,013 to 1,012, and 0e restores it to 1,013. `language/statements/function/S13.2.1_A7_T2.js` passed
 only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never

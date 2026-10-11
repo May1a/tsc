@@ -412,4 +412,7 @@ export const oracleFixtures: readonly string[] = [
   "const-primitive-wrapper-identity.ts",
   "const-element-read-snapshot.ts",
   "catch-array-pattern-iterator.ts",
+  "boxed-array-methods.ts",
+  "boxed-array-method-receivers.ts",
+  "array-index-of-negative-start.ts",
 ] as const;
