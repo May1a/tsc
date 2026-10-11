@@ -467,7 +467,7 @@ describe("tscn CLI", () => {
       ["typeof-instance-unsupported.ts", "`typeof c` cannot be answered statically yet"],
       ["map-in-let-unsupported.ts", "`new Map()` constructs a `Map`, which a `let` or `var` binding cannot hold yet"],
       ["member-read-argument-unsupported.ts", "The argument `Math.max` is not an expression this build can evaluate"],
-      ["for-of-var-binding-unsupported.ts", "A `for...of` statement must declare one item with `const` or `let`, without an initializer"],
+      ["let-destructuring-fixed-array-unsupported.ts", "A `let` destructuring cannot read `xs` yet"],
       ["for-update-clause-unsupported.ts", "A `for` statement update clause must be an assignment or update expression"],
       ["unary-plus-unsupported.ts", "Unary `+` expressions are not supported yet"],
       ["nested-class-unsupported.ts", "Class declarations inside function and block bodies are not supported yet"]

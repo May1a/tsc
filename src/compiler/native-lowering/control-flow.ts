@@ -1,6 +1,6 @@
 import type { ResolvedOperation } from "../binding-resolution/index.js";
 import { type LlvmBlockLabel, type LlvmValue, llvm } from "../llvm-ir/index.js";
-import { declaredBinding } from "./declaration-sites.js";
+import { declaredHeaderBindings } from "./declaration-sites.js";
 import type { FunctionCapabilities } from "./function-owner.js";
 import type { OperationContext } from "./operation-context.js";
 import type { ExceptionTarget } from "./completion.js";
@@ -233,11 +233,8 @@ export class ControlFlow implements FlowCapability {
     if (operation.kind !== "for") {
       return;
     }
-    for (const header of operation.initializer) {
-      const declared = declaredBinding(header);
-      if (declared !== undefined) {
-        context.writes.rotateCell(declared);
-      }
+    for (const declared of operation.initializer.flatMap(declaredHeaderBindings)) {
+      context.writes.rotateCell(declared);
     }
   }
 

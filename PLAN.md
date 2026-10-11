@@ -303,8 +303,24 @@ Make storage a fact derived from all writes and uses before native lowering:
   where the checker proves its type is `number`.
 
   Still open in 2a: a `let` holding a `Map`, `Set` or error (a `const` keeps those in aggregate
-  storage); a `var` loop item; and `typeof` on a boxed value, which only the string tier answers, at
-  compile time. A runtime `typeof` belongs with workstream 5.
+  storage); and `typeof` on a boxed value, which only the string tier answers, at compile time. A
+  runtime `typeof` belongs with workstream 5.
+
+- Done for destructuring and `var` loop items. `let` and `var` patterns are admitted:
+  - Every name they bind lives in a boxed slot (`letValue`).
+  - An array pattern iterates its source through `arrayDestructureProtocol`.
+  - An object pattern reads properties from a temporary.
+  - `DeclarationKind` threads `const`/`let`/`var` through nested patterns. A `var` marks its
+    operations `functionScoped`, so its names resolve as one `var` binding.
+  - A `for (let [...] = ...)` header rotates every name it destructures (`declaredHeaderBindings`).
+
+  A `var` loop item marks its loop `functionScoped` in the same way, so every iteration and closure
+  shares the one binding. A `var` that redeclares a binding of its own scope is refused, for both
+  forms.
+
+  Still open:
+  - A `let` or `var` pattern over a fixed-layout array or object, which has no boxed value yet (2c).
+  - A `var` read after the block or loop that declares it, which no `var` form models yet.
 
 Where it lives: Lowering records a `JsIrBindingValue` per declaration. A pre-pass over the function body
 or module collects the writes and uses per declaration and chooses the representation before the

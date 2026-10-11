@@ -6,6 +6,7 @@ import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrOperation } from "./types.js";
 import type { JsIrObjectValue, JsIrValueExpression } from "./expressions.js";
 import { updateBindings } from "./binding-updates.js";
+import type { DeclarationKind } from "./declaration-kind.js";
 import { objectPathExists } from "./builtins/object-producers.js";
 
 // eslint-disable-next-line complexity, max-statements -- Object destructuring routes fixed and runtime sources plus rest, rename, default, and nested shapes.
@@ -15,11 +16,16 @@ export function lowerObjectDestructuringElements(
   source: DestructuringSource,
   working: Map<string, JsIrBindingValue>,
   operations: JsIrOperation[],
-  lazyDefaults = false
+  lazyDefaults = false,
+  kind: DeclarationKind = "const"
 ): Produced<boolean> {
   const sourceBinding = source.binding;
   if (sourceBinding.kind !== "runtimeObject" && sourceBinding.kind !== "object"
     && sourceBinding.kind !== "valueVariable" && sourceBinding.kind !== "runtimeArray") {
+    return produced(false);
+  }
+  // The fixed-layout and rest forms below declare `const` storage, which a `let` or `var` cannot use.
+  if (kind !== "const" && sourceBinding.kind !== "valueVariable") {
     return produced(false);
   }
   if (sourceBinding.kind === "valueVariable") {
@@ -46,7 +52,7 @@ export function lowerObjectDestructuringElements(
       }
       const nestedResult = lowerNestedBindingFromValue(
         context, element, `destructure.property.${element.pos}`,
-        destructuredPropertyAccess(source, key), working, operations
+        destructuredPropertyAccess(source, key), working, operations, kind
       );
       if (nestedResult.kind === "unsupported") {
         return nestedResult;
@@ -68,7 +74,7 @@ export function lowerObjectDestructuringElements(
       continue;
     }
     const operation = lowerDestructuredValueBinding(
-      context, element.name.text, destructuredPropertyAccess(source, key), element.initializer, working, lazyDefaults
+      context, element.name.text, destructuredPropertyAccess(source, key), element.initializer, working, lazyDefaults, kind
     );
     if (operation.kind !== "lowered") {
       return withRefusal(operation, produced(false));

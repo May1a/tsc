@@ -7,6 +7,7 @@ import type { JsIrOperation } from "./types.js";
 import { updateBindings } from "./binding-updates.js";
 import { isBoxedDeclaration } from "./storage-plan.js";
 import { lowerDestructuringBinding } from "./destructuring.js";
+import { type DeclarationScope, declarationKindOf, declarationScope } from "./declaration-kind.js";
 import { lowerClosureFactoryCall, lowerFunctionObjectValue } from "./closures.js";
 import { errorConstructorNames, isUndefinedExpression, isUnsupportedSymbolExpression, unwrapTypeOnlyExpression } from "./predicates.js";
 import { expressionSnippet, unsupportedNewExpressionMessage } from "./diagnostics.js";
@@ -20,16 +21,6 @@ import { lowerJsonParseBinding } from "./json-bindings.js";
 import { lowerRuntimeObjectCreateBinding, lowerRuntimeObjectGetPrototypeBinding, lowerRuntimeObjectKeysBinding, lowerRuntimeObjectOwnPropertyDescriptorsBinding, lowerRuntimeObjectOwnPropertyNamesBinding, lowerRuntimeObjectValuesBinding } from "./builtins/object-producers.js";
 import { lowerRuntimeAggregateExpansionBinding } from "./aggregate-bindings.js";
 import { lowerRuntimeCollectionBinding, lowerRuntimeIteratorBinding } from "./collection-bindings.js";
-
-/**
- * Which scope a `let`-path declaration binds in. A `var` marks its operation `functionScoped`, so
- * resolution keeps one binding per function frame instead of a fresh one per loop iteration.
- */
-interface DeclarationScope {
-  readonly functionScoped?: true;
-}
-
-const varScope: DeclarationScope = { functionScoped: true };
 
 export function lowerVariableBinding(
   context: LoweringContext,
@@ -62,18 +53,20 @@ export function lowerVariableDeclarator(
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   promotedAggregates: ReadonlySet<string>
 ): Lowered {
-  const isConst = (declarationList.flags & ts.NodeFlags.Const) !== 0;
-  const isVar = (declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) === 0;
+  const kind = declarationKindOf(declarationList);
+  const isConst = kind === "const";
+  const isVar = kind === "var";
   const { initializer } = declaration;
 
   if (ts.isArrayBindingPattern(declaration.name) || ts.isObjectBindingPattern(declaration.name)) {
-    if (!isConst) {
-      return unsupported("Destructuring bindings must be declared with `const`");
-    }
     if (initializer === undefined) {
       return unsupported("A destructuring declaration must have an initializer");
     }
-    return lowerDestructuringBinding(context, declaration.name, initializer, bindings);
+    const redeclared = isVar ? redeclaredVarName(context.typeChecker, declaration.name, bindings) : undefined;
+    if (redeclared !== undefined) {
+      return unsupported(`A \`var\` destructuring that redeclares \`${redeclared}\` is not supported yet`);
+    }
+    return lowerDestructuringBinding(context, declaration.name, initializer, bindings, kind);
   }
 
   if (!ts.isIdentifier(declaration.name)) {
@@ -102,7 +95,7 @@ export function lowerVariableDeclarator(
   // that shadows an outer binding declares a new one: the checker merges same-scope `var`
   // declarations (and a `var` with its parameter) into one symbol, so a lone declaration with
   // an outer name in scope is a shadowing declaration rather than a merge.
-  const scope = isVar ? varScope : {};
+  const scope = declarationScope(kind);
   if (isVar && bindings.has(name) && isSameScopeVarRedeclaration(context.typeChecker, declaration.name)) {
     // `var x;` again leaves the binding's value alone.
     return initializer === undefined
@@ -153,6 +146,27 @@ function lowerBoxedLetBinding(
  * its first still binds anew. Without a checker there is nothing to order, so the declaration
  * merges with the binding in scope, as every `var` redeclaration did before shadowing was modeled.
  */
+/** The first name a `var` declaration binds that redeclares a binding from its own scope. */
+export function redeclaredVarName(
+  typeChecker: ts.TypeChecker | undefined,
+  name: ts.BindingName,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
+  if (ts.isIdentifier(name)) {
+    return bindings.has(name.text) && isSameScopeVarRedeclaration(typeChecker, name) ? name.text : undefined;
+  }
+  for (const element of name.elements) {
+    if (ts.isOmittedExpression(element)) {
+      continue;
+    }
+    const redeclared = redeclaredVarName(typeChecker, element.name, bindings);
+    if (redeclared !== undefined) {
+      return redeclared;
+    }
+  }
+  return undefined;
+}
+
 function isSameScopeVarRedeclaration(typeChecker: ts.TypeChecker | undefined, name: ts.Identifier): boolean {
   const declarations = typeChecker?.getSymbolAtLocation(name)?.declarations;
   if (declarations === undefined) {

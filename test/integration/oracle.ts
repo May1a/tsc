@@ -415,4 +415,11 @@ export const oracleFixtures: readonly string[] = [
   "boxed-array-methods.ts",
   "boxed-array-method-receivers.ts",
   "array-index-of-negative-start.ts",
+  "let-destructuring-array.ts",
+  "let-var-destructuring-object.ts",
+  "destructuring-closures.ts",
+  "destructuring-nullish-source.ts",
+  "for-let-header-pattern.ts",
+  "var-loop-items.ts",
+  "for-of-var-binding.ts",
 ] as const;
