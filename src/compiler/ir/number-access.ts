@@ -4,7 +4,7 @@ import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrNumberExpression } from "./expressions.js";
 import { lowerClassValueExpression } from "./class-values.js";
-import { isBoxedAggregateCandidateBinding, lowerObjectAccessPath } from "./builtins/object-producers.js";
+import { isBoxedAggregateCandidateBinding, isBoxedPrimitiveBinding, lowerObjectAccessPath } from "./builtins/object-producers.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
 
 // Reads a class instance member (field or getter) as a number by unboxing the
@@ -107,7 +107,7 @@ function lowerLengthPropertyAccessExpression(
   if (value.kind !== "lowered") {
     return value;
   }
-  if (binding?.kind === "value" && binding.value.kind === "boxedPrimitive") {
+  if (isBoxedPrimitiveBinding(binding)) {
     return produced({ kind: "valueObjectLength", value: value.operation });
   }
   if (context.typeChecker?.getTypeAtLocation(expression.expression).getCallSignatures().length
@@ -117,11 +117,15 @@ function lowerLengthPropertyAccessExpression(
   return produced({ kind: "valueArrayLength", value: value.operation });
 }
 
-export function isProvenBoxedAggregateBinding(binding: JsIrBindingValue | undefined): boolean {
-  if (binding?.kind !== "value") {
-    return false;
-  }
-  return binding.value.kind === "objectRef" || binding.value.kind === "arrayRef" || binding.value.kind === "objectDynamicAccess" || binding.value.kind === "arrayAccess" || binding.value.kind === "valueObjectDynamicAccess" || binding.value.kind === "valueArrayAccess";
+/**
+ * A binding that reads as a boxed JSValue from its slot, whatever the slot holds.
+ *
+ * The runtime stores now dispatch on the receiver's tag and throw a `TypeError` for a nullish or
+ * primitive receiver, so any `value` or `valueVariable` binding is a safe receiver: an aggregate
+ * takes the store, anything else throws instead of writing through a non-pointer.
+ */
+export function isBoxedStoreReceiverBinding(binding: JsIrBindingValue | undefined): boolean {
+  return binding?.kind === "value" || binding?.kind === "valueVariable";
 }
 
 function lowerValueElementAccessNumber(

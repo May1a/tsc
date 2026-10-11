@@ -53,25 +53,25 @@ export const arraysContracts = {
     effects: { allocates: false, collects: false, completion: "none" }
   },
   "valueArraySet": {
-    resultKind: "void",
+    resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
-    name: "valueArraySet", parameters: [llvm.i64, llvm.i64, llvm.i64], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    name: "valueArraySet", parameters: [llvm.i64, llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
   },
   "valueArraySetLength": {
-    resultKind: "void",
+    resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
-    name: "valueArraySetLength", parameters: [llvm.i64, llvm.i64], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    name: "valueArraySetLength", parameters: [llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
   },
   "valueArrayDelete": {
-    resultKind: "void",
+    resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
-    name: "valueArrayDelete", parameters: [llvm.i64, llvm.i64], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    name: "valueArrayDelete", parameters: [llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
   },
   "arrayNew": {
     resultKind: "pointer",

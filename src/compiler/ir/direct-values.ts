@@ -9,7 +9,7 @@ import { lowerRegexValueExpression } from "./regex.js";
 import { lowerFunctionObjectValue, lowerPlainConstructorArguments } from "./closures.js";
 import { lowerOptionalChainValueExpression } from "./optional-chains.js";
 import { classPrototypeName, resolveReceiverClass } from "./class-info.js";
-import { lowerBoxedPrimitiveReceiver } from "./builtin-conditions.js";
+import { isBoxedPrimitiveReceiver } from "./builtin-conditions.js";
 import { lowerValueCallExpression, lowerValueConditionalExpression } from "./value-calls.js";
 import { lowerJsonParseCall, lowerJsonStringifyCall } from "./json-values.js";
 import { lowerArrayValueMethodCall } from "./array-values.js";
@@ -150,7 +150,7 @@ export function lowerDirectValueExpression(
         // own property's value and `o.valueOf()` returned it too, where JavaScript returns
         // "[object Object]" and the object. A plain object now declines and is reported, rather
         // than compiled to the wrong answer.
-        if (lowerBoxedPrimitiveReceiver(expression.expression.expression, bindings) === undefined) {
+        if (!isBoxedPrimitiveReceiver(expression.expression.expression, bindings)) {
           return notApplicable;
         }
         const receiver = context.lowerValueExpression(context, expression.expression.expression, bindings);

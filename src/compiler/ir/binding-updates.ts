@@ -21,23 +21,6 @@ import { isStableExpression } from "./stable-expressions.js";
  *
  */
 
-/**
- * A receiver form that recognizers match by shape, which a `const` still re-evaluates at every read.
- *
- * Element and property reads of aggregates are accepted as mutation receivers
- * (`isProvenBoxedAggregateBinding`) and passed to runtime stores that do not check the value is an
- * object. A `new Number`/`Boolean`/`String` wrapper is recognized by shape for `valueOf` and
- * `toString`, which the runtime wrapper does not provide. Reading such a `const` from its slot would
- * hand those recognizers a plain value binding, which they refuse or call generically. Until the
- * runtime checks its receivers and wrappers carry their methods, these forms keep the old aliasing:
- * a later write to the element is visible through the `const`, and each read of a wrapper allocates
- * a new one. PLAN.md 0f tracks removing this exception.
- */
-function isShapeRecognizedReceiver(value: JsIrValueExpression): boolean {
-  return value.kind === "arrayAccess" || value.kind === "valueArrayAccess" || value.kind === "objectDynamicAccess" ||
-    value.kind === "valueObjectDynamicAccess" || value.kind === "boxedPrimitive";
-}
-
 export function updateConstBindings(
   operation: JsIrOperation,
   bindings: Map<string, JsIrBindingValue>
@@ -63,9 +46,9 @@ export function updateConstBindings(
       value: isStableExpression(operation.value) ? operation.value : { kind: "booleanVariable", name: operation.name } });
   }
   if (operation.kind === "constValue") {
-    bindings.set(operation.name, isStableExpression(operation.value) || isShapeRecognizedReceiver(operation.value)
+    bindings.set(operation.name, isStableExpression(operation.value)
       ? { kind: "value", value: operation.value }
-      : { kind: "valueVariable", name: operation.name });
+      : { kind: "valueVariable", name: operation.name, ...(operation.value.kind === "boxedPrimitive" ? { boxedPrimitive: true } : {}) });
   }
   if (operation.kind === "letValue") {
     let valueType: "function" | "regex" | undefined;

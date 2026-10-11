@@ -89,6 +89,10 @@ export type JsIrBindingValue =
       // receivers resolve their class even when the checker cannot name the
       // class type (anonymous class expressions).
       readonly className?: string;
+      // Set on a `const` initialized by `new Number`/`Boolean`/`String`: the slot holds the
+      // wrapper object, whose `valueOf`, `toString` and `length` the wrapper recognizers lower.
+      // A `let` never carries it, because a later write can replace the wrapper.
+      readonly boxedPrimitive?: true;
     }
   | {
       readonly kind: "number";

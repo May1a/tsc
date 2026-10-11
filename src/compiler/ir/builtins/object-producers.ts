@@ -293,6 +293,13 @@ export function lowerRuntimeObjectStateCondition(
   }
   return { kind: "runtimeObjectState", objectName: target.text, state };
 }
+/** A binding that holds a `new Number`/`Boolean`/`String` wrapper, inline or in its slot. */
+export function isBoxedPrimitiveBinding(binding: JsIrBindingValue | undefined): boolean {
+  if (binding?.kind === "valueVariable") {
+    return binding.boxedPrimitive === true;
+  }
+  return binding?.kind === "value" && binding.value.kind === "boxedPrimitive";
+}
 export function isBoxedAggregateCandidateBinding(binding: JsIrBindingValue | undefined): boolean {
   if (binding?.kind === "valueVariable") {
     return true;

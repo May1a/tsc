@@ -11,7 +11,7 @@ import { lowerPrintExpression } from "./print.js";
 import { lowerUpdateNumberExpression } from "./number-expressions.js";
 import type { JsIrNumberExpression, JsIrNumberOperator } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
-import { isProvenBoxedAggregateBinding } from "./number-access.js";
+import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 
@@ -234,7 +234,7 @@ function lowerDeleteExpression(
     if (binding?.kind === "runtimeObject") {
       return produced({ kind: "runtimeObjectDelete", objectName: target.expression.text, key: { kind: "literal", value: target.name.text } });
     }
-    if (isProvenBoxedAggregateBinding(binding)) {
+    if (isBoxedStoreReceiverBinding(binding)) {
       return produced({ kind: "valueObjectDelete", targetName: target.expression.text, key: { kind: "literal", value: target.name.text } });
     }
   }
@@ -261,7 +261,7 @@ function lowerDeleteExpression(
         return produced({ kind: "runtimeArrayNamedDelete", arrayName: target.expression.text, key: key.operation });
       }
     }
-    if (isProvenBoxedAggregateBinding(binding)) {
+    if (isBoxedStoreReceiverBinding(binding)) {
       const indexResult = context.lowerNumberExpression(context, target.argumentExpression, bindings);
       if (indexResult.kind === "unsupported") {
         return indexResult;

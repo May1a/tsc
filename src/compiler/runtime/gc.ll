@@ -406,6 +406,9 @@ walk.function:
   %fn.name.ptr = getelementptr i8, ptr %cell, i64 40
   %fn.name = load i64, ptr %fn.name.ptr
   call void @gcMarkValue(i64 %fn.name)
+  %fn.props.ptr = getelementptr i8, ptr %cell, i64 64
+  %fn.props = load ptr, ptr %fn.props.ptr
+  call void @gcMarkPayloadPtr(ptr %fn.props)
   br label %skip
 walk.environment:
   ; Environment cell: payload+0 holds slot count (i64), payload+8 holds a pointer

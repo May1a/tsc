@@ -7,7 +7,7 @@ import { lowerObjectAccessPath, objectPathExists } from "./builtins/object-produ
 import { lowerSymbolIteratorKeyExpression } from "./class-info.js";
 import { isUndefinedExpression, lowerCanonicalArrayIndexString } from "./predicates.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
-import { isProvenBoxedAggregateBinding } from "./number-access.js";
+import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { lowerStringExpression } from "./string-constants.js";
 import { lowerClassPrivateFieldStore } from "./class-values.js";
 import { lowerClassPropertyAssignment } from "./class-mutations.js";
@@ -314,7 +314,7 @@ function lowerElementAssignment(
       return produced({ kind: "runtimeArrayNamedStore", arrayName: left.expression.text, key: key.operation, value: runtimeValue });
     }
   }
-  if (isProvenBoxedAggregateBinding(arrayBinding) && runtimeValue !== undefined) {
+  if (isBoxedStoreReceiverBinding(arrayBinding) && runtimeValue !== undefined) {
     if (index !== undefined) {
       return produced({ kind: "valueArrayStore", targetName: left.expression.text, index, value: runtimeValue });
     }
@@ -407,7 +407,7 @@ function lowerObjectPropertyAssignment(
         return produced({ kind: "runtimeArraySetLength", arrayName: left.expression.text, length: length.operation });
       }
     }
-    if (isProvenBoxedAggregateBinding(binding) && left.name.text === "length") {
+    if (isBoxedStoreReceiverBinding(binding) && left.name.text === "length") {
       const length = context.lowerNumberExpression(context, right, bindings);
       if (length.kind === "unsupported") {
         return length;
@@ -425,7 +425,7 @@ function lowerObjectPropertyAssignment(
         return produced({ kind: "runtimeObjectStore", objectName: left.expression.text, key: { kind: "literal", value: left.name.text }, value: value.operation });
       }
     }
-    if (isProvenBoxedAggregateBinding(binding)) {
+    if (isBoxedStoreReceiverBinding(binding)) {
       const value = context.lowerValueExpression(context, right, bindings);
       if (value.kind === "unsupported") {
         return value;

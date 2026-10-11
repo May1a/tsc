@@ -126,7 +126,12 @@ function store(operation: OperationNode<"runtimeObjectStore" | "valueObjectStore
   const key = context.expressions.string(operation.key);
   boxString(key, context);
   const value = keep(context.expressions.value(operation.value), context);
-  context.runtime.callVoid(operation.kind === "runtimeObjectStore" ? "objectSet" : "valueObjectSet", [target, key.length, key.bytes, value]);
+  if (operation.kind === "runtimeObjectStore") {
+    context.runtime.callVoid("objectSet", [target, key.length, key.bytes, value]);
+    return;
+  }
+  context.runtime.callWithCompletion("valueObjectSet", [target, key.length, key.bytes, value],
+    context.cursor.uniqueName("object.store"), context.exceptionTarget());
 }
 
 function privateStore(operation: OperationNode<"privateFieldStore">, context: OperationContext): void {
@@ -142,14 +147,16 @@ function privateStore(operation: OperationNode<"privateFieldStore">, context: Op
     context.cursor.uniqueName("private.error"), context.exceptionTarget());
   context.cursor.currentBlock().unreachable();
   context.cursor.openBlock(valid);
-  context.runtime.callVoid("valueObjectSet", [receiver, key.length, key.bytes, value]);
+  context.runtime.callWithCompletion("valueObjectSet", [receiver, key.length, key.bytes, value],
+    context.cursor.uniqueName("private.store"), context.exceptionTarget());
 }
 
 function deleteProperty(operation: OperationNode<"runtimeObjectDelete" | "valueObjectDelete">, context: OperationContext): void {
   const reference = operation.kind === "runtimeObjectDelete" ? operation.objectName : operation.targetName;
   const receiver = keep(context.bindings.value(reference), context);
   const key = context.expressions.string(operation.key);
-  context.runtime.callVoid("valueObjectDelete", [receiver, key.length, key.bytes]);
+  context.runtime.callWithCompletion("valueObjectDelete", [receiver, key.length, key.bytes],
+    context.cursor.uniqueName("object.delete"), context.exceptionTarget());
 }
 
 const stateHelpers = {

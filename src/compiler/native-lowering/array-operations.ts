@@ -222,17 +222,20 @@ function valueStore(operation: OperationNode<"valueArrayStore">, context: Operat
   const array = keep(context.bindings.value(operation.targetName), context);
   const index = numberIndex(operation.index, context);
   const value = keep(context.expressions.value(operation.value), context);
-  context.runtime.callVoid("valueArraySet", [array, index, value]);
+  context.runtime.callWithCompletion("valueArraySet", [array, index, value],
+    context.cursor.uniqueName("array.store"), context.exceptionTarget());
 }
 
 function valueDelete(operation: OperationNode<"valueArrayDelete">, context: OperationContext): void {
   const array = keep(context.bindings.value(operation.targetName), context);
-  context.runtime.callVoid("valueArrayDelete", [array, numberIndex(operation.index, context)]);
+  context.runtime.callWithCompletion("valueArrayDelete", [array, numberIndex(operation.index, context)],
+    context.cursor.uniqueName("array.delete"), context.exceptionTarget());
 }
 
 function valueLength(operation: OperationNode<"valueArraySetLength">, context: OperationContext): void {
   const array = keep(context.bindings.value(operation.targetName), context);
-  context.runtime.callVoid("valueArraySetLength", [array, numberIndex(operation.length, context)]);
+  context.runtime.callWithCompletion("valueArraySetLength", [array, numberIndex(operation.length, context)],
+    context.cursor.uniqueName("array.length"), context.exceptionTarget());
 }
 
 export const arrayOperationHandlers = {
