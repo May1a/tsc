@@ -1,5 +1,6 @@
 import type { ResolvedOperation } from "../binding-resolution/index.js";
 import { type LlvmBlockLabel, type LlvmValue, llvm } from "../llvm-ir/index.js";
+import { declaredBinding } from "./declaration-sites.js";
 import type { FunctionCapabilities } from "./function-owner.js";
 import type { OperationContext } from "./operation-context.js";
 import type { ExceptionTarget } from "./completion.js";
@@ -116,7 +117,10 @@ export class ControlFlow implements FlowCapability {
     if (operation.hasCatch) {
       const payload = values.forBlock(cursor.currentBlock()).fromBoundary(cursor.currentBlock().load(llvm.i64, this.#payload, cursor.uniqueName("caught.value")));
       roots.push(payload);
-      if (operation.catchVariable !== undefined) { context.writes.storeValue(operation.catchVariable, payload); }
+      if (operation.catchVariable !== undefined) {
+        context.writes.renewCell(operation.catchVariable);
+        context.writes.storeValue(operation.catchVariable, payload);
+      }
       context.operations.operations(operation.catchOperations);
     } else { cursor.currentBlock().unreachable(); }
     const catchLive = this.#join(normal);
@@ -154,7 +158,10 @@ export class ControlFlow implements FlowCapability {
 
   public loop(operation: Node<"while" | "doWhile" | "for">, context: OperationContext): void {
     const { cursor, roots, runtime } = this.#capabilities;
-    if (operation.kind === "for") { context.operations.operations(operation.initializer); }
+    if (operation.kind === "for") {
+      context.operations.operations(operation.initializer);
+      this.#rotateHeader(operation, context);
+    }
     const header = cursor.reserveBlock("loop.header");
     const body = cursor.reserveBlock("loop.body");
     const step = cursor.reserveBlock("loop.step");
@@ -181,7 +188,9 @@ export class ControlFlow implements FlowCapability {
       this.#join(step);
       cursor.openBlock(step);
       // An omitted update does nothing: the step still exists so `continue` reaches the condition
-      // through it, exactly as a `while` continue does.
+      // through it, exactly as a `while` continue does. The header bindings move to fresh cells
+      // first, so the update writes the next iteration's binding, not the one this body captured.
+      this.#rotateHeader(operation, context);
       if (operation.kind === "for" && operation.increment !== undefined) { context.operations.operation(operation.increment); }
       const condition = operation.kind === "doWhile" ? context.expressions.condition(operation.condition) : undefined;
       runtime.callVoid("gcSafepoint", []);
@@ -209,6 +218,27 @@ export class ControlFlow implements FlowCapability {
     if (block.terminated) { return false; }
     block.br(target);
     return true;
+  }
+
+  /**
+   * Copies a C-style `for` header's bindings into fresh per-iteration cells.
+   *
+   * ECMA-262 ForBodyEvaluation runs CreatePerIterationEnvironment once after the initializer and
+   * then after every body, before the update: each new binding starts with the previous value, the
+   * update writes the new one, and closures created in a body keep the binding of their iteration.
+   * Only per-iteration bindings have slot storage, so rotation is a no-op for a `var` header,
+   * which is one binding shared by every iteration, and for a header no closure captures.
+   */
+  #rotateHeader(operation: Node<"while" | "doWhile" | "for">, context: OperationContext): void {
+    if (operation.kind !== "for") {
+      return;
+    }
+    for (const header of operation.initializer) {
+      const declared = declaredBinding(header);
+      if (declared !== undefined) {
+        context.writes.rotateCell(declared);
+      }
+    }
   }
 
   #abrupt(completion: Completion, depth: number): void {

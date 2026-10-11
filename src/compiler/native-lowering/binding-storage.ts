@@ -2,6 +2,7 @@ import type { LlvmDoubleType, LlvmGlobalReference, LlvmPointerType, LlvmValue, l
 
 export type BindingStorage =
   | EnvironmentStorage
+  | EnvironmentSlotStorage
   | NumberSlotStorage
   | NumberRegisterStorage
   | StringSlotStorage
@@ -119,4 +120,21 @@ export interface EnvironmentStorage {
   readonly kind: "environment";
   readonly cell: LlvmValue<LlvmPointerType>;
   readonly owner: LlvmValue<typeof llvm.i64>;
+}
+
+/**
+ * A captured binding whose declaration may execute more than once.
+ *
+ * A `let` or `const` declared in a loop body is a fresh binding on every iteration, so one cell
+ * allocated at frame entry would make every iteration's closures share the last value. The storage
+ * therefore holds the *current* cell behind two pointers: `cellSlot` points at the cell itself and
+ * `ownerSlot` at its boxed GC owner. Executing the declaration renews both (see `renewCell`); reads,
+ * writes, and captures load the current cell first. At function scope the slots are entry-block
+ * `alloca`s; at module scope they are globals. A `var` header binding of a C-style `for` shares one
+ * cell across iterations instead, which the loop's rotation skips (see `rotateCell`).
+ */
+export interface EnvironmentSlotStorage {
+  readonly kind: "environmentSlot";
+  readonly cellSlot: LlvmValue<LlvmPointerType>;
+  readonly ownerSlot: LlvmValue<LlvmPointerType>;
 }

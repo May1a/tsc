@@ -54,7 +54,7 @@ export function collectFunctionDeclarationEnclosingCaptureNames(
   const captures: string[] = [];
   const seen = new Set<string>();
   const visit = (node: ts.Node): void => {
-    if (node !== declaration && ts.isFunctionLike(node)) {
+    if (node !== declaration && ts.isFunctionLike(node) && !ts.isArrowFunction(node)) {
       return;
     }
     if (
@@ -160,10 +160,16 @@ export function collectFunctionExpressionCaptureNames(
     }
     ts.forEachChild(node, visit);
   };
-  ts.forEachChild(expression.body, visit);
+  visit(expression.body);
   return captures;
 }
 export function lowerCapturedBindingValue(
+  binding: JsIrBindingValue | undefined
+): { readonly valueKind: JsIrValueKind; readonly value: JsIrValueExpression } | undefined {
+  return lowerCapturedScalarValue(binding) ?? lowerCapturedAggregateValue(binding);
+}
+
+function lowerCapturedScalarValue(
   binding: JsIrBindingValue | undefined
 ): { readonly valueKind: JsIrValueKind; readonly value: JsIrValueExpression } | undefined {
   if (binding?.kind === "number") {
@@ -178,6 +184,27 @@ export function lowerCapturedBindingValue(
   if (binding?.kind === "stringVariable") {
     return { valueKind: "string", value: { kind: "string", value: { kind: "variable", name: binding.name } } };
   }
+  return lowerCapturedBooleanValue(binding);
+}
+
+function lowerCapturedBooleanValue(
+  binding: JsIrBindingValue | undefined
+): { readonly valueKind: JsIrValueKind; readonly value: JsIrValueExpression } | undefined {
+  if (binding?.kind === "booleanVariable") {
+    return { valueKind: "value", value: { kind: "boolean", value: { kind: "booleanVariable", name: binding.name } } };
+  }
+  if (binding?.kind === "boolean") {
+    return { valueKind: "value", value: { kind: "boolean", value: { kind: "boolean", value: binding.value } } };
+  }
+  if (binding?.kind === "booleanExpression") {
+    return { valueKind: "value", value: { kind: "boolean", value: binding.value } };
+  }
+  return undefined;
+}
+
+function lowerCapturedAggregateValue(
+  binding: JsIrBindingValue | undefined
+): { readonly valueKind: JsIrValueKind; readonly value: JsIrValueExpression } | undefined {
   if (binding?.kind === "value") {
     return { valueKind: "value", value: binding.value };
   }
@@ -236,4 +263,102 @@ export function isFunctionObjectContainer(value: object): value is { readonly ki
     return false;
   }
   return "codeName" in value.definition && typeof value.definition.codeName === "string";
+}
+
+/**
+ * Whether a binding is a mutable scalar whose reads and writes must share one cell.
+ *
+ * Only `let`/`var` number, string, and boolean slots qualify: every other binding either
+ * inlines (const scalars) or already travels by reference (boxed values, aggregates).
+ */
+export function isMutableScalarBinding(binding: JsIrBindingValue | undefined): boolean {
+  return binding?.kind === "stringVariable" || binding?.kind === "booleanVariable" ||
+    (binding?.kind === "number" && binding.value.kind === "variable");
+}
+
+/**
+ * The environment reads a nested function carries for the outer names it mentions.
+ *
+ * Returns `undefined` when a capture has no cell representation (a fixed aggregate, an
+ * unlowered shape), so the caller declines the function form instead of emitting a closure
+ * that drops the name.
+ */
+export function lowerInlineFunctionCaptures(
+  captureNames: readonly string[],
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): { readonly name: string; readonly valueKind: JsIrValueKind; readonly value: JsIrValueExpression }[] | undefined {
+  const captures: { readonly name: string; readonly valueKind: JsIrValueKind; readonly value: JsIrValueExpression }[] = [];
+  for (const name of captureNames) {
+    const binding = bindings.get(name);
+    const capture = lowerCapturedBindingValue(binding);
+    if (capture === undefined) {
+      // A mutable scalar must travel in the environment, so a missing cell representation declines
+      // the function form. Any other binding keeps its previous resolution: the body still reads
+      // the outer identity, which is what marks it captured.
+      if (isMutableScalarBinding(binding)) {
+        return undefined;
+      }
+      continue;
+    }
+    captures.push({ name, ...capture });
+  }
+  return captures;
+}
+
+/**
+ * Which outer names a method or constructor body reads, for its `enclosingCaptureNames`.
+ *
+ * Function declarations answer this with `collectFunctionDeclarationEnclosingCaptureNames`; methods
+ * have no declaration node of their own, so this walks the body instead. Nested non-arrow functions
+ * close over their own frame and are skipped, while nested arrows read through this frame and are
+ * included, which is what makes a capture transitive to the closure that needs it. A name shadowed
+ * by a parameter is never a capture; a name shadowed by a body local is over-captured without a
+ * checker, which costs an environment slot rather than a wrong answer.
+ */
+export function collectMethodEnclosingCaptureNames(
+  typeChecker: ts.TypeChecker | undefined,
+  container: ts.Node,
+  body: ts.Node,
+  parameters: readonly ts.ParameterDeclaration[],
+  outerBindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly string[] {
+  const parameterNames = new Set<string>();
+  for (const parameter of parameters) {
+    if (ts.isIdentifier(parameter.name)) {
+      parameterNames.add(parameter.name.text);
+    }
+  }
+  const captures: string[] = [];
+  const seen = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (node !== container && ts.isFunctionLike(node) && !ts.isArrowFunction(node)) {
+      return;
+    }
+    if (ts.isIdentifier(node) && outerBindings.has(node.text) && !parameterNames.has(node.text) && !seen.has(node.text) &&
+      isRuntimeIdentifierReference(node) && identifierResolvesOutsideContainer(typeChecker, node, container)) {
+      seen.add(node.text);
+      captures.push(node.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+  for (const parameter of parameters) {
+    visit(parameter.name);
+    if (parameter.initializer !== undefined) {
+      visit(parameter.initializer);
+    }
+  }
+  return captures;
+}
+
+function identifierResolvesOutsideContainer(
+  typeChecker: ts.TypeChecker | undefined,
+  identifier: ts.Identifier,
+  container: ts.Node
+): boolean {
+  const symbol = typeChecker?.getSymbolAtLocation(identifier);
+  if (symbol?.declarations === undefined) {
+    return true;
+  }
+  return symbol.declarations.some((symbolDeclaration) => symbolDeclaration.pos < container.pos || symbolDeclaration.end > container.end);
 }

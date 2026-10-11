@@ -9,6 +9,7 @@ import { bindFunctionParameter, functionFrameBindings } from "./function-paramet
 import { isNonExecutableDeclaration } from "./comparisons.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { updateBindings } from "./binding-updates.js";
+import { collectMethodEnclosingCaptureNames } from "./captures.js";
 
 export function lowerClassAccessor(
   context: LoweringContext,
@@ -45,7 +46,9 @@ export function lowerClassAccessor(
     if (body.kind !== "lowered") {
       return body;
     }
-    return produced({ kind: "function", name: functionName, parameters: fnParameters, body: body.operation });
+    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, accessor, accessor.body, [...accessor.parameters], bindings);
+    return produced({ kind: "function", name: functionName, parameters: fnParameters, body: body.operation,
+      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }) });
   } finally {
     context.classThisInScope = previousThis;
     context.activeEnclosingClass = previousClass;
@@ -74,10 +77,7 @@ export function lowerClassMethod(
   }
   const fnBindings = functionFrameBindings(bindings);
   const fnParameters: JsIrFunctionParameter[] = [];
-  if (!isStatic) {
-    fnParameters.push({ name: CLASS_THIS_NAME, valueKind: "value" });
-    fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-  }
+  bindClassMethodReceiver(fnBindings, fnParameters, isStatic);
   for (const parameter of parameters.operation) {
     fnParameters.push(parameter);
     bindFunctionParameter(parameter.name, parameter.valueKind, false, fnBindings);
@@ -94,11 +94,13 @@ export function lowerClassMethod(
     if (body.kind !== "lowered") {
       return body;
     }
+    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, declaration, declaration.body, [...declaration.parameters], bindings);
     return produced({
       kind: "function",
       name: classMethodFunctionName(info.name, methodName, isStatic),
       parameters: fnParameters,
-      body: body.operation
+      body: body.operation,
+      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] })
     });
   } finally {
     context.classThisInScope = previousThis;
@@ -109,6 +111,17 @@ export function lowerClassMethod(
 
 // Lowers a constructor-or-method body, normalizing every `return` to a JSValue
 // result so method calls are uniformly value-typed at their call sites.
+function bindClassMethodReceiver(
+  fnBindings: Map<string, JsIrBindingValue>,
+  fnParameters: JsIrFunctionParameter[],
+  isStatic: boolean
+): void {
+  if (!isStatic) {
+    fnParameters.push({ name: CLASS_THIS_NAME, valueKind: "value" });
+    fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
+  }
+}
+
 function lowerClassMethodBody(
   context: LoweringContext,
   block: ts.Block,

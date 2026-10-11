@@ -10,7 +10,7 @@ import { functionExpressionKind } from "./returns.js";
 import { containsLexicalThis, parameterValueKind, runtimeParameters } from "./class-info.js";
 import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
-import { functionExpressionSelfReferences } from "./captures.js";
+import { collectFunctionExpressionCaptureNames, functionExpressionSelfReferences, lowerInlineFunctionCaptures } from "./captures.js";
 import { lowerInlineFunctionBody } from "./array-callbacks.js";
 import { functionReturnKind } from "./binding-updates.js";
 
@@ -157,9 +157,21 @@ export function lowerFunctionObjectValue(
   if (selfNames.size > 0 && functionExpressionSelfReferences(expression.body, selfNames)) {
     return notApplicable;
   }
+  const localNames = new Set<string>(parameters.map((parameter) => parameter.name));
+  for (const name of selfNames) {
+    localNames.add(name);
+  }
+  if (functionKind === "ordinary") {
+    localNames.add(CLASS_THIS_NAME);
+  }
+  const captureNames = collectFunctionExpressionCaptureNames(expression, localNames, bindings);
   const body = lowerInlineFunctionBody(context, expression.body, functionBindings);
   if (body.kind !== "lowered") {
     return body;
+  }
+  const captures = lowerInlineFunctionCaptures(captureNames, bindings);
+  if (captures === undefined) {
+    return notApplicable;
   }
   const runtimeName = expression.name?.text ?? inferredName;
   const displayName = runtimeName ?? "anonymous";
@@ -173,7 +185,8 @@ export function lowerFunctionObjectValue(
       functionKind,
       returnKind: functionReturnKind(body.operation),
       body: body.operation,
-      inferredName: runtimeName
+      inferredName: runtimeName,
+      ...(captures.length === 0 ? {} : { captures })
     }
   });
 }

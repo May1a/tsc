@@ -398,6 +398,33 @@ describe("loops, catch and destructuring", () => {
   });
 });
 
+describe("per-iteration bindings", () => {
+  test("a captured let or const declared in a loop body is fresh per iteration", async () => {
+    const module = await resolve(
+      "function f() { const fns: any[] = []; for (const k of [1, 2]) { const d = k; let e = k; fns.push(() => d + e + k); } return fns; }"
+    );
+    expect(declaration(module, "d").perIteration).toBe(true);
+    expect(declaration(module, "e").perIteration).toBe(true);
+    expect(declaration(module, "k").perIteration).toBe(true);
+  });
+
+  test("a var in a loop body, an uncaptured let, and a binding outside the loop are shared", async () => {
+    const module = await resolve(
+      "function f() { const fns: any[] = []; let outer = 0; for (let i = 0; i < 2; i++) { var v = i; let local = i; outer += local; fns.push(() => v + outer); } return fns; }"
+    );
+    expect(declaration(module, "v").perIteration).toBe(false);
+    expect(declaration(module, "local").perIteration).toBe(false);
+    expect(declaration(module, "outer").perIteration).toBe(false);
+  });
+
+  test("a declaration in a function defined inside a loop is fresh per call, not per iteration", async () => {
+    const module = await resolve(
+      "const fns: any[] = []; for (const k of [1, 2]) { fns.push(() => { const inner = k; return () => inner; }); }"
+    );
+    expect(declaration(module, "inner").perIteration).toBe(false);
+  });
+});
+
 describe("what is not a binding", () => {
   test("a property path stays a list of strings", async () => {
     const module = await resolve("const point = { x: 1 };\npoint.x = 2;\n");

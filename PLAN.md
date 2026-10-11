@@ -229,6 +229,13 @@ Make storage a fact derived from all writes and uses before native lowering:
   describes as already supported. Find out why `let n = 0; const inc = () => ++n;` and the counter
   closure are still refused.
 
+  Done (2b). Lowering removed every mutable scalar from a nested function's bindings, and most
+  nested-function forms carried no capture list, so no environment cell was ever created. Captured
+  `let`, `const`, loop items and `catch` bindings declared inside a loop now get a fresh cell each
+  time their declaration runs (`perIteration`). A `for (let ...)` header is copied into a fresh cell
+  before each update, as ECMA-262 CreatePerIterationEnvironment requires. A `var` is one cell per
+  frame: `let`-path operations carry `functionScoped`, and resolution gives them the `var` kind.
+
 Where it lives: Lowering records a `JsIrBindingValue` per declaration. A pre-pass over the function body
 or module collects the writes and uses per declaration and chooses the representation before the
 statements are lowered. The representation must not be patched afterwards. Native lowering continues

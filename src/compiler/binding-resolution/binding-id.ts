@@ -17,7 +17,7 @@ export interface BindingRef {
 }
 
 /** What sort of declaration this is. It decides how the slot is allocated, not how it is read. */
-export type BindingKind = "const" | "let" | "function" | "parameter" | "loopItem" | "catch" | "destination";
+export type BindingKind = "const" | "let" | "var" | "function" | "parameter" | "loopItem" | "catch" | "destination";
 
 export type BindingRepresentation =
   /** A `double` in a register or an `alloca`. The Number tier's direct form. */
@@ -78,6 +78,18 @@ export interface BindingDeclaration {
   readonly owner: LexicalOwner;
   /** True when a function other than the owner reads it, which is what forces an environment slot. */
   readonly captured: boolean;
+  /**
+   * True when the declaration may execute more than once with a fresh binding per execution.
+   *
+   * A `let`, `const`, loop-item, catch, or destructuring binding declared inside a loop body (or a
+   * loop-item binding itself) is a new binding on every iteration, so a closure created in one
+   * iteration must keep that iteration's cell rather than sharing the frame's single slot. Native
+   * lowering renews such a binding's environment cell when its declaration executes; reads, writes,
+   * and captures go through the current cell. A function declaration inside a loop is likewise
+   * fresh per iteration, so its object is materialized when its statement executes rather than only
+   * at frame entry. A `var` is one binding per function frame, so it is never per-iteration.
+   */
+  readonly perIteration: boolean;
 }
 
 export interface BindingTable {
@@ -91,6 +103,29 @@ function locationFor(owner: LexicalOwner, captured: boolean): BindingLocation {
   return captured ? { kind: "environment" } : { kind: "frame" };
 }
 
+/**
+ * Whether a declaration needs a fresh environment cell on every execution.
+ *
+ * Only declarations inside a loop can execute more than once. Value-like declarations (`let`,
+ * `const`, loop items, catch bindings, destructuring destinations) renew only when captured,
+ * because an uncaptured binding is a frame slot no closure can observe across iterations. A
+ * function declaration inside a loop renews unconditionally: its object is materialized when its
+ * statement executes, so its captures refresh even when nothing captures the function itself.
+ * Parameters are never per-iteration; a nested function's parameters belong to its own frame no
+ * matter how often the enclosing loop runs.
+ */
+function isPerIterationBinding(record: RecordedBinding): boolean {
+  if (!record.insideLoop) {
+    return false;
+  }
+  if (record.kind === "function") {
+    return true;
+  }
+  return record.captured &&
+    (record.kind === "let" || record.kind === "const" || record.kind === "loopItem" || record.kind === "catch" ||
+      record.kind === "destination");
+}
+
 /** A declaration as resolution records it, before the table decides where the slot lives. */
 interface RecordedBinding {
   readonly id: BindingId;
@@ -98,6 +133,8 @@ interface RecordedBinding {
   readonly kind: BindingKind;
   readonly representation: BindingRepresentation;
   readonly owner: LexicalOwner;
+  /** True when the declaration sits inside a loop scope, so it may execute more than once. */
+  readonly insideLoop: boolean;
   captured: boolean;
 }
 
@@ -117,10 +154,11 @@ export class BindingRegistry {
     spelling: string,
     kind: BindingKind,
     representation: BindingRepresentation,
-    owner: LexicalOwner
+    owner: LexicalOwner,
+    insideLoop = false
   ): BindingRef {
     const id: BindingId = { ordinal: this.#recorded.length, [bindingIdBrand]: true };
-    this.#recorded.push({ id, spelling, kind, representation, owner, captured: false });
+    this.#recorded.push({ id, spelling, kind, representation, owner, insideLoop, captured: false });
     return { binding: id };
   }
 
@@ -145,6 +183,7 @@ export class BindingRegistry {
       kind: record.kind,
       owner: record.owner,
       captured: record.captured,
+      perIteration: isPerIterationBinding(record),
       storage: { representation: record.representation, location: locationFor(record.owner, record.captured) }
     };
   }

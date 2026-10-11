@@ -43,7 +43,7 @@ export const declarationHandlers = {
   }),
   letValue: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "let", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "let", node, resolver),
     value: resolver.value(node.value)
   }),
   constClosure: (node, resolver) => ({
@@ -53,28 +53,28 @@ export const declarationHandlers = {
   }),
   letNumber: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "let", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "let", node, resolver),
     value: resolver.number(node.value)
   }),
   letString: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "let", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "let", node, resolver),
     value: resolver.string(node.value)
   }),
   letBoolean: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "let", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "let", node, resolver),
     value: resolver.condition(node.value)
   }),
 
   arrayLiteral: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "const", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver),
     elements: node.elements.map((element) => resolver.number(element))
   }),
   runtimeArrayLiteral: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "const", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver),
     elements: node.elements.map((element) => resolveRuntimeArrayElement(element, resolver))
   }),
   objectLiteral: (node, resolver) => ({

@@ -2,12 +2,12 @@ import { unsupportedFormMessage } from "./builtins/manifest.js";
 import { type Lowered, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
-import type { JsIrBindingValue, JsIrFunctionParameter, JsIrValueKind } from "./bindings.js";
+import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
 import { parameterValueKind, runtimeParameters } from "./class-info.js";
 import { bindFunctionParameter } from "./function-parameters.js";
-import { collectFunctionExpressionCaptureNames, lowerCapturedBindingValue } from "./captures.js";
+import { collectFunctionExpressionCaptureNames, lowerInlineFunctionCaptures } from "./captures.js";
 import { lowerInlineFunctionBody } from "./array-callbacks.js";
-import type { JsIrValueExpression } from "./expressions.js";
+import { CLASS_THIS_NAME } from "./class-names.js";
 import { expressionSnippet } from "./diagnostics.js";
 import { functionReturnKind } from "./binding-updates.js";
 
@@ -92,31 +92,22 @@ function lowerReturnedFunctionExpression(
     localNames.add(param.name.text);
     bindFunctionParameter(param.name.text, valueKind, false, nestedBindings);
   }
+  if (ts.isFunctionExpression(expression)) {
+    // An ordinary function expression has its own dynamic `this`, like a function declaration and
+    // the ordinary branch of a closure value: it must not capture the enclosing frame's.
+    nestedBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
+    localNames.add(CLASS_THIS_NAME);
+  }
 
   const captureNames = collectFunctionExpressionCaptureNames(expression, localNames, bindings);
-  for (const name of captureNames) {
-    const binding = bindings.get(name);
-    if (binding?.kind === "number") {
-      nestedBindings.set(name, { kind: "number", value: { kind: "parameter", name } });
-    } else if (binding?.kind === "string" || binding?.kind === "stringExpression" || binding?.kind === "stringVariable") {
-      nestedBindings.set(name, { kind: "stringVariable", name });
-    } else {
-      nestedBindings.set(name, { kind: "valueVariable", name });
-    }
-  }
 
   const body = lowerInlineFunctionBody(context, expression.body, nestedBindings);
   if (body.kind !== "lowered") {
     return body;
   }
-  const captures: { name: string; valueKind: JsIrValueKind; value: JsIrValueExpression }[] = [];
-  for (const name of captureNames) {
-    const binding = bindings.get(name);
-    const capture = lowerCapturedBindingValue(binding);
-    if (capture === undefined) {
-      return notApplicable;
-    }
-    captures.push({ name, ...capture });
+  const captures = lowerInlineFunctionCaptures(captureNames, bindings);
+  if (captures === undefined) {
+    return notApplicable;
   }
   const displayName = ts.isFunctionExpression(expression) ? expression.name?.text ?? "anonymous" : "arrow";
   const codeName = `__tscn_fnobj_${displayName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");

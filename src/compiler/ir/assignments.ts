@@ -109,6 +109,20 @@ function lowerCompoundAssignmentStatement(
     return notApplicable;
   }
   const binding = bindings.get(expression.left.text);
+  if (binding?.kind === "stringVariable") {
+    if (expression.operatorToken.kind !== ts.SyntaxKind.PlusEqualsToken) {
+      return unsupported(`Compound assignment to \`${expression.left.text}\` is only supported for mutable number bindings and \`+=\` on strings`);
+    }
+    const right = context.lowerStringRuntimeExpression(context, expression.right, bindings);
+    if (right.kind !== "lowered") {
+      return right;
+    }
+    return produced({
+      kind: "assignString",
+      name: expression.left.text,
+      value: { kind: "concat", left: { kind: "variable", name: expression.left.text }, right: right.operation }
+    });
+  }
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
     return unsupported(`Compound assignment to \`${expression.left.text}\` is only supported for mutable number bindings`);
   }

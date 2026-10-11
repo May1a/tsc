@@ -8,6 +8,7 @@ import { CLASS_THIS_NAME, classAbortReason, classConstructorName, classMemberKey
 import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
 import { isNonExecutableDeclaration } from "./comparisons.js";
 import { updateBindings } from "./binding-updates.js";
+import { collectMethodEnclosingCaptureNames } from "./captures.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { expressionSnippet } from "./diagnostics.js";
 import { SYMBOL_ITERATOR_SENTINEL } from "../symbols.js";
@@ -123,7 +124,13 @@ export function lowerClassConstructor(
         updateBindings(result.operation, fnBindings);
       }
     }
-    return produced({ kind: "function", name: classConstructorName(info.name), parameters, body });
+    const constructorCaptures = constructorDeclaration?.body === undefined ? [] :
+      collectMethodEnclosingCaptureNames(context.typeChecker, constructorDeclaration, constructorDeclaration.body,
+        [...constructorDeclaration.parameters], bindings);
+    const fieldCaptures = collectFieldInitializerCaptureNames(info, bindings);
+    const captureNames = [...constructorCaptures, ...fieldCaptures.filter((name) => !constructorCaptures.includes(name))];
+    return produced({ kind: "function", name: classConstructorName(info.name), parameters, body,
+      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }) });
   } finally {
     context.classThisInScope = previousThis;
     context.activeEnclosingClass = previousClass;
@@ -131,13 +138,6 @@ export function lowerClassConstructor(
   }
 }
 
-/**
- * The value a constructor parameter property stores onto `this`.
- *
- * The representation follows the parameter's own kind, the same way `forwardedClassArgument` chooses a
- * form to pass one along: a number is read as a number expression, and a string or boxed value as the
- * value it already is.
- */
 function parameterPropertyValue(parameter: JsIrFunctionParameter): JsIrValueExpression {
   if (parameter.valueKind === "number") {
     return { kind: "number", value: { kind: "parameter", name: parameter.name } };
@@ -146,6 +146,40 @@ function parameterPropertyValue(parameter: JsIrFunctionParameter): JsIrValueExpr
     return { kind: "string", value: { kind: "variable", name: parameter.name } };
   }
   return { kind: "variable", name: parameter.name };
+}
+
+/**
+ * Outer names a field initializer reads, for the constructor's `enclosingCaptureNames`.
+ *
+ * Field initializers run inside the constructor, so a read of an outer mutable binding needs the
+ * same environment slot as a read in the constructor body. The walk is conservative without a
+ * checker: any outer name mentioned is captured, which costs a slot rather than a wrong answer.
+ */
+function collectFieldInitializerCaptureNames(
+  info: ClassInfo,
+  outerBindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly string[] {
+  const captures: string[] = [];
+  const seen = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) {
+      return;
+    }
+    if (ts.isIdentifier(node) && outerBindings.has(node.text) && !seen.has(node.text)) {
+      const { parent } = node;
+      if (!(ts.isPropertyAccessExpression(parent) && parent.name === node)) {
+        seen.add(node.text);
+        captures.push(node.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const field of info.fields) {
+    if (field.initializer !== undefined) {
+      visit(field.initializer);
+    }
+  }
+  return captures;
 }
 
 export function forwardedClassArgument(parameter: JsIrFunctionParameter): JsIrCallArgument {

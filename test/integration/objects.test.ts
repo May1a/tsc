@@ -6,8 +6,7 @@ import {
   expectLlvmAsVerificationIfAvailable,
   expectNativeBehaviorIfAvailable,
   expectSuccessfulCompile,
-  expectToolBehaviorIfAvailable,
-  expectUnsupportedDiagnostic
+  expectToolBehaviorIfAvailable
 } from "./helpers.js";
 import { expectNativeMatchesNodeIfAvailable } from "./oracle.js";
 import {
@@ -550,16 +549,16 @@ describe("tscn JSValue ABI", () => {
 
 describe("object method function frames", () => {
   test.each([
-    "object-method-capture-let-number-unsupported.ts",
-    "object-method-capture-let-string-unsupported.ts",
-    "object-method-capture-let-boolean-unsupported.ts",
-    "object-method-capture-var-number-unsupported.ts",
-    "object-method-capture-var-string-unsupported.ts",
-    "object-method-capture-var-boolean-unsupported.ts",
-    "object-method-read-number-unsupported.ts",
-    "object-method-read-string-unsupported.ts",
-    "object-method-read-boolean-unsupported.ts"
-  ])("rejects an enclosing mutable binding in %s", async (fixture) => {
-    await expectUnsupportedDiagnostic(fixture);
+    "object-method-capture-let-number.ts",
+    "object-method-capture-let-string.ts",
+    "object-method-capture-let-boolean.ts",
+    "object-method-capture-var-number.ts",
+    "object-method-capture-var-string.ts",
+    "object-method-capture-var-boolean.ts",
+    "object-method-read-number.ts",
+    "object-method-read-string.ts",
+    "object-method-read-boolean.ts"
+  ])("shares an enclosing mutable binding in %s", async (fixture) => {
+    await expectNativeMatchesNodeIfAvailable(fixture);
   });
 });

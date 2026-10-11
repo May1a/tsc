@@ -1,4 +1,4 @@
-import type { BindingId, BindingRef, FunctionId, ResolvedClosureValue, ResolvedModule } from "../binding-resolution/index.js";
+import type { BindingId, BindingRef, FunctionId, ResolvedClosureValue, ResolvedModule, ResolvedOperation } from "../binding-resolution/index.js";
 import { type LlvmFunctionSpec, type LlvmGlobalReference, llvm } from "../llvm-ir/index.js";
 import type { BindingAccess } from "./binding-access.js";
 import { branchValue } from "./expression-branches.js";
@@ -36,7 +36,9 @@ export class GeneratedFunctions {
     for (const plan of collectFunctionPlans(resolved)) {
       const spec = module.declareFunction(nativeSpec(plan));
       const declaration = plan.binding === undefined ? undefined : resolved.bindings.declarations.at(plan.binding.binding.ordinal);
-      const singleton = declaration?.owner.kind === "module" ? this.#slot(`tscn.function.singleton.${plan.symbol}`) : undefined;
+      const singleton = declaration?.owner.kind === "module" && !capturesPerIterationCell(plan, resolved)
+        ? this.#slot(`tscn.function.singleton.${plan.symbol}`)
+        : undefined;
       const declared = { plan, spec, singleton };
       this.#plans.set(plan.functionId, declared);
       if (plan.binding !== undefined) { this.#bindings.set(plan.binding.binding, declared); }
@@ -68,6 +70,25 @@ export class GeneratedFunctions {
         : declaration.owner.kind === "function" && declaration.owner.function === owner;
       if (matches) { context.writes.storeValue(reference, this.#materialize(declared, context, context.writes)); }
     }
+    if (owner === "module") {
+      this.initializeModuleCells(context);
+    }
+  }
+
+  /**
+   * Gives every per-iteration module binding an initial cell before module code runs.
+   *
+   * Module cells live in globals, which zero-initialize to a null cell pointer. The declaration
+   * renews its cell when it executes, but a read before the first execution (use before a `var`
+   * declaration, which hoisting does not model) must still see `undefined` rather than fault, so
+   * each cell starts holding `undefined` like every frame-allocated cell does.
+   */
+  public initializeModuleCells(context: OperationContext): void {
+    for (const declaration of this.#resolved.bindings.declarations) {
+      if (declaration.owner.kind === "module" && declaration.perIteration) {
+        context.writes.renewCell({ binding: declaration.id });
+      }
+    }
   }
 
   public calls(context: ExpressionContext, writes: BindingAccess): OperationCalls {
@@ -90,6 +111,7 @@ export class GeneratedFunctions {
       functionObject: (expression) => expression.definition.directTarget === undefined
         ? this.#materialize(this.#require(expression.definition.functionId), context, writes)
         : this.#reference(expression.definition.directTarget, context, writes),
+      functionDeclaration: (operation) => this.#functionDeclaration(operation, context, writes),
       tagged: (expression) => {
         const callee = keep(this.#reference(expression.tag, context, writes), context);
         const template = this.#template(expression, context);
@@ -109,6 +131,25 @@ export class GeneratedFunctions {
 
   #reference(target: BindingRef, context: ExpressionContext, writes: BindingAccess): BoxedValue {
     return keep(writes.value(target), context);
+  }
+
+  /**
+   * The function object a `function` declaration statement binds.
+   *
+   * Outside loops the object is hoisted: entry initialization already stored it, so the statement
+   * re-reads that same object and every reader shares one identity. Inside a loop the declaration
+   * is a fresh binding per iteration, so the statement renews its cell and materializes a new
+   * object capturing the current cells; readers before the statement still see the hoisted object.
+   */
+  #functionDeclaration(operation: Extract<ResolvedOperation, { readonly kind: "function" }>, context: ExpressionContext, writes: BindingAccess): BoxedValue {
+    const declared = this.#require(operation.functionId);
+    const declaration = this.#resolved.bindings.declarations.at(operation.name.binding.ordinal);
+    if (declaration?.id !== operation.name.binding) { throw new Error("Function binding belongs to another resolution"); }
+    if (!declaration.perIteration) {
+      return this.#reference(operation.name, context, writes);
+    }
+    writes.renewCell(operation.name);
+    return keep(this.#materialize(declared, context, writes), context);
   }
 
   #require(identity: FunctionId | undefined): DeclaredPlan {
@@ -203,4 +244,19 @@ function nativeSpec(plan: FunctionPlan): NativeFunctionSpec & { readonly returns
     { name: "argc", type: llvm.i64 }, { name: "argv", type: llvm.ptr }, { name: "env", type: llvm.ptr },
     { name: "this", type: llvm.i64, representation: "boxed", protection: "borrowed" }
   ] };
+}
+
+/**
+ * Whether a function object must be built fresh on every materialization.
+ *
+ * Module-level functions are singletons cached in a global, which is sound only while their
+ * captures never change. A per-iteration module binding renews its cell on every iteration, so a
+ * cached object would keep the first iteration's cell forever; such functions build a new object
+ * (capturing the current cell) each time instead.
+ */
+function capturesPerIterationCell(plan: FunctionPlan, resolved: ResolvedModule): boolean {
+  return plan.captures.some((capture) => {
+    const declaration = resolved.bindings.declarations.at(capture.binding.ordinal);
+    return declaration?.id === capture.binding && declaration.perIteration;
+  });
 }

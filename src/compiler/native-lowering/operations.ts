@@ -2,6 +2,7 @@ import type { ResolvedOperation } from "../binding-resolution/index.js";
 import { type VariantHandlers, type VariantOfKind, dispatchKind } from "../dispatch.js";
 import { aggregateOperationHandlers } from "./aggregate-operations.js";
 import { callbackOperationHandlers } from "./callback-operations.js";
+import { declaredBinding } from "./declaration-sites.js";
 import type { OperationContext } from "./operation-context.js";
 import { protocolOperationHandlers } from "./protocol-operations.js";
 import { scalarOperationHandlers } from "./scalar-operations.js";
@@ -16,5 +17,13 @@ const handlers: VariantHandlers<OperationVariants, OperationContext, void> = {
 };
 
 export function lowerOperation(operation: ResolvedOperation, context: OperationContext): void {
+  // A declaration inside a loop is a fresh binding on every execution, so it renews its
+  // per-iteration cell before evaluating its initializer; closures created in an earlier execution
+  // keep the previous cell. Assignments never renew: they must write the cell closures observe.
+  // The renewal is a no-op for bindings without slot storage.
+  const declared = declaredBinding(operation);
+  if (declared !== undefined) {
+    context.writes.renewCell(declared);
+  }
   dispatchKind(handlers, operation, context);
 }

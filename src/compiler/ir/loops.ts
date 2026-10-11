@@ -346,6 +346,9 @@ function lowerForInitializer(
     return unsupportedIn("A `for` statement initializer must be a `let` or `var` declaration, not `const`");
   }
 
+  // A `var` header is one function-scoped binding that every iteration shares; a `let` header is
+  // copied into a fresh binding per iteration, which resolution decides from this marker.
+  const scope = (initializer.flags & ts.NodeFlags.Let) === 0 ? { functionScoped: true as const } : {};
   const declarations: JsIrOperation[] = [];
   for (const declaration of initializer.declarations) {
     if (!ts.isIdentifier(declaration.name)) {
@@ -361,7 +364,8 @@ function lowerForInitializer(
     const operation: JsIrOperation = {
       kind: "letNumber",
       name: declaration.name.text,
-      value: value.operation
+      value: value.operation,
+      ...scope
     };
     declarations.push(operation);
     updateBindings(operation, bindings);

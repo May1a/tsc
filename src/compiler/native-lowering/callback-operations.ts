@@ -81,7 +81,7 @@ function fromCollection(operation: CallbackNode<"runtimeArrayFromCollection">, c
 
 export const callbackOperationHandlers: VariantHandlers<CallbackVariants, OperationContext, void> = {
   constClosure: (operation, context) => context.writes.storeValue(operation.name, context.calls.closure(operation.value)),
-  function: (operation, context) => context.writes.storeValue(operation.name, context.calls.reference(operation.name)),
+  function: (operation, context) => context.writes.storeValue(operation.name, context.calls.functionDeclaration(operation)),
   returnClosure: (operation, context) => context.returnValue(context.calls.returnedClosure(operation)),
   runtimeArrayMapCallback: (operation, context) => named(operation, "map", context),
   runtimeArrayFlatMapCallback: (operation, context) => named(operation, "flatMap", context),

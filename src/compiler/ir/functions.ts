@@ -9,6 +9,7 @@ import type { JsIrOperation } from "./types.js";
 import { isPlainObjectReturningConstructor } from "./class-info.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { collectFunctionDeclarationEnclosingCaptureNames } from "./captures.js";
+import { CLASS_THIS_NAME } from "./class-names.js";
 
 export function lowerFunctionDeclaration(
   context: LoweringContext,
@@ -31,6 +32,10 @@ export function lowerFunctionDeclaration(
   }
   const { parameters, bindings: fnBindings, prelude } = loweredParameters.operation;
 
+  // A nested `function` declaration has its own dynamic `this`: it must not read the enclosing
+  // frame's through the bindings, or uses of `this` inside it would capture an environment cell
+  // the callee never fills. Without a binding the uses are refused instead of miscompiled.
+  fnBindings.delete(CLASS_THIS_NAME);
   fnBindings.set(statement.name.text, {
     kind: "functionReference",
     parameters,
