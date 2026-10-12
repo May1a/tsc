@@ -22,6 +22,10 @@ export function lowerExpressionStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
+  // A statement's parentheses change nothing it does, so `({ a } = source);` is the assignment.
+  if (ts.isParenthesizedExpression(expression)) {
+    return lowerExpressionStatement(context, expression.expression, bindings);
+  }
   const constWrite = constWriteRefusal(context.typeChecker, expression);
   if (constWrite !== undefined) {
     return unsupportedIn(constWrite);

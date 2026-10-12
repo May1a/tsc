@@ -31,7 +31,11 @@ export function isBoxedDeclaration(plan: StoragePlan, declaration: ts.VariableDe
   return plan.boxed.has(declaration);
 }
 
-export type StorageWriteKind = "number" | "string" | "boolean" | "nullish" | "nonScalar" | "unknown";
+/**
+ * The kind of value one write stores. `dynamic` is a write whose value comes from an iteration or a
+ * destructuring source, such as a loop head or an assignment pattern, so it may be any value.
+ */
+export type StorageWriteKind = "number" | "string" | "boolean" | "nullish" | "nonScalar" | "dynamic" | "unknown";
 
 /** The kind of value one write stores, or `unknown` when the syntax does not decide it. */
 export function classifyStorageWrite(expression: ts.Expression): StorageWriteKind {
@@ -157,6 +161,11 @@ class StoragePlanWalk {
       this.#assignment(node.left, node.operatorToken.kind, node.right, scope);
       return true;
     }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && isAssignmentPattern(node.left)) {
+      this.#patternTargets(node.left, scope);
+      this.#node(node.right, scope);
+      return true;
+    }
     if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && isUpdateOperator(node.operator) &&
       ts.isIdentifier(node.operand)) {
       resolve(scope, node.operand.text)?.writes.push("number");
@@ -226,10 +235,53 @@ class StoragePlanWalk {
     if (ts.isVariableDeclarationList(initializer)) {
       const owner = isVarList(initializer) ? functionScope(loop) : loop;
       for (const declaration of initializer.declarations) this.#bindingName(declaration.name, owner);
-    } else if (ts.isIdentifier(initializer)) {
-      resolve(loop, initializer.text)?.writes.push("unknown");
     } else {
-      this.#node(initializer, loop);
+      this.#patternTargets(initializer, loop);
+    }
+  }
+
+  /**
+   * Records a `dynamic` write to every name an assignment target writes: an identifier, or each
+   * target of an array or object pattern, nested ones included. Defaults and other targets, such as a
+   * member, are walked as ordinary expressions.
+   */
+  #patternTargets(target: ts.Expression, scope: PlanScope): void {
+    const unwrapped = ts.isParenthesizedExpression(target) ? target.expression : target;
+    if (ts.isIdentifier(unwrapped)) {
+      if (isRuntimeIdentifierReference(unwrapped)) resolve(scope, unwrapped.text)?.writes.push("dynamic");
+      return;
+    }
+    if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      this.#patternTargets(unwrapped.left, scope);
+      this.#node(unwrapped.right, scope);
+      return;
+    }
+    if (ts.isSpreadElement(unwrapped)) {
+      this.#patternTargets(unwrapped.expression, scope);
+      return;
+    }
+    if (ts.isArrayLiteralExpression(unwrapped)) {
+      for (const element of unwrapped.elements) this.#patternTargets(element, scope);
+      return;
+    }
+    if (ts.isObjectLiteralExpression(unwrapped)) {
+      for (const property of unwrapped.properties) this.#objectPatternProperty(property, scope);
+      return;
+    }
+    if (!ts.isOmittedExpression(unwrapped)) this.#node(unwrapped, scope);
+  }
+
+  #objectPatternProperty(property: ts.ObjectLiteralElementLike, scope: PlanScope): void {
+    if (ts.isShorthandPropertyAssignment(property)) {
+      resolve(scope, property.name.text)?.writes.push("dynamic");
+      if (property.objectAssignmentInitializer !== undefined) this.#node(property.objectAssignmentInitializer, scope);
+    } else if (ts.isPropertyAssignment(property)) {
+      if (ts.isComputedPropertyName(property.name)) this.#node(property.name.expression, scope);
+      this.#patternTargets(property.initializer, scope);
+    } else if (ts.isSpreadAssignment(property)) {
+      this.#patternTargets(property.expression, scope);
+    } else {
+      this.#node(property, scope);
     }
   }
 
@@ -295,7 +347,7 @@ function needsBoxedStorage(binding: PlannedBinding): boolean {
   if (binding.writes.length === 1) {
     return false;
   }
-  if (binding.writes.some((kind) => kind === "nullish" || kind === "nonScalar")) {
+  if (binding.writes.some((kind) => kind === "nullish" || kind === "nonScalar" || kind === "dynamic")) {
     return true;
   }
   const scalarKinds = new Set(binding.writes.filter((kind) => kind === "number" || kind === "string" || kind === "boolean"));
@@ -340,4 +392,9 @@ export function collectStoragePlan(sourceFile: ts.SourceFile): StoragePlan {
   const walk = new StoragePlanWalk();
   walk.statements(sourceFile.statements, { parent: undefined, isFunction: true, names: new Map() });
   return walk.plan();
+}
+
+/** An array or object literal on the left of `=`: a destructuring assignment pattern. */
+function isAssignmentPattern(expression: ts.Expression): boolean {
+  return ts.isArrayLiteralExpression(expression) || ts.isObjectLiteralExpression(expression);
 }

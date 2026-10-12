@@ -90,6 +90,14 @@ describe("storage plan", () => {
     expect(boxed("let x = 1; for (const x of [1]) { print(x); } x = 2;", "x")).toEqual([false, false]);
   });
 
+  test("an assignment pattern or a loop head writes any value, which boxes the binding", () => {
+    expect(boxed("let a = 1; [a] = [2];", "a")).toEqual([true]);
+    expect(boxed("let a = 1; ({ a } = { a: 2 });", "a")).toEqual([true]);
+    expect(boxed("let a = 1; [{ b: a = 3 }] = [{}];", "a")).toEqual([true]);
+    expect(boxed("let a = 1; for (a of [2]) {}", "a")).toEqual([true]);
+    expect(boxed("let a = 1; for ([a] of [[2]]) {}", "a")).toEqual([true]);
+  });
+
   test("a var is one binding per function, across blocks and redeclarations", () => {
     expect(boxed("var v = 1; { v = null; }", "v")).toEqual([true]);
     expect(boxed('function g() { { var v = 1; } v = "s"; }', "v")).toEqual([true]);
