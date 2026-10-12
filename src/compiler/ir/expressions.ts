@@ -196,6 +196,14 @@ export type JsIrValueExpression =
       readonly kind: "optionalTarget";
     }
   | {
+      /**
+       * A read of a name nothing declares, which throws a ReferenceError carrying `message`. Only a
+       * name the checker resolves to no declaration at all lowers to this.
+       */
+      readonly kind: "unresolvableReference";
+      readonly message: string;
+    }
+  | {
       /** A builtin error constructor read as a value, such as `TypeError` passed to a function. */
       readonly kind: "errorConstructor";
       readonly errorName: string;

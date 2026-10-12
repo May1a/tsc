@@ -604,6 +604,11 @@ export type JsIrOperationNode =
       readonly value: JsIrValueExpression;
     }
   | {
+      /** An expression statement evaluated only for its effects, such as a read that may throw. */
+      readonly kind: "discardValue";
+      readonly value: JsIrValueExpression;
+    }
+  | {
       readonly kind: "block";
       readonly operations: readonly JsIrOperation[];
     }
