@@ -461,7 +461,7 @@ describe("tscn CLI", () => {
 
   test("names the refused shape instead of reporting a generic slice diagnostic", async () => {
     const expectations = new Map([
-      ["call-argument-unsupported.ts", "`ReferenceError` cannot be used as a value yet"],
+      ["call-argument-unsupported.ts", "`eval` cannot be used as a value yet"],
       ["new-unknown-constructor-unsupported.ts", "`new Test262Error(...)` constructs `Test262Error`, which is not a class declared in this module"],
       ["eval-source-unsupported.ts", "Calling `eval` with source text is not supported yet"],
       ["typeof-instance-unsupported.ts", "`typeof c` cannot be answered statically yet"],

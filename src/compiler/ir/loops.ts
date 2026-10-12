@@ -15,6 +15,7 @@ import { updateBindings } from "./binding-updates.js";
 import { lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
 import { lowerVariableDeclarator, redeclaredVarName } from "./variable-bindings.js";
 import { type DeclarationKind, declarationKindOf, declarationScope } from "./declaration-kind.js";
+import { bindingDeclarations, constWriteRefusal, uninitializedReadRefusal } from "./throwing-forms.js";
 
 /**
  * Lower one loop's body, taking a label frame for the loop being entered.
@@ -105,6 +106,10 @@ function lowerForIncrement(
   if (incrementor === undefined) {
     return produced(undefined);
   }
+  const constWrite = constWriteRefusal(context.typeChecker, incrementor);
+  if (constWrite !== undefined) {
+    return unsupportedIn(constWrite);
+  }
   const assignment = lowerAssignmentStatement(context, incrementor, bindings);
   if (assignment.kind === "unsupported") {
     return assignment;
@@ -132,12 +137,19 @@ function loopItemDeclaration(
   context: LoweringContext,
   list: ts.VariableDeclarationList,
   declaration: ts.VariableDeclaration,
+  source: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<DeclarationKind> {
   const kind = declarationKindOf(list);
   const redeclared = kind === "var" ? redeclaredVarName(context.typeChecker, declaration.name, bindings) : undefined;
   if (redeclared !== undefined) {
     return unsupportedIn(`A \`var\` loop item that redeclares \`${redeclared}\` is not supported yet`);
+  }
+  // The source of a `let` or `const` loop evaluates where its item is declared but not initialized.
+  const uninitialized = kind === "var" ? undefined
+    : uninitializedReadRefusal(context.typeChecker, source, new Set(bindingDeclarations(declaration.name)));
+  if (uninitialized !== undefined) {
+    return unsupportedIn(uninitialized);
   }
   return produced(kind);
 }
@@ -155,7 +167,7 @@ export function lowerForOfStatement(
   if (declaration.initializer !== undefined) {
     return unsupported(loopItemRefusal("for...of"));
   }
-  const declared = loopItemDeclaration(context, statement.initializer, declaration, bindings);
+  const declared = loopItemDeclaration(context, statement.initializer, declaration, statement.expression, bindings);
   if (declared.kind !== "lowered") {
     return declared;
   }
@@ -330,7 +342,7 @@ export function lowerForInStatement(
   if (declaration.initializer !== undefined) {
     return unsupported(loopItemRefusal("for...in"));
   }
-  const declared = loopItemDeclaration(context, statement.initializer, declaration, bindings);
+  const declared = loopItemDeclaration(context, statement.initializer, declaration, statement.expression, bindings);
   if (declared.kind !== "lowered") {
     return declared;
   }

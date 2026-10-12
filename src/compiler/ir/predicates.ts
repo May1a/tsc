@@ -10,7 +10,7 @@ export function isInlineCppTaggedTemplate(expression: ts.Expression): expression
   return ts.isTaggedTemplateExpression(expression) && ts.isIdentifier(expression.tag) && expression.tag.text === inlineCppTag;
 }
 
-export const errorConstructorNames: ReadonlySet<string> = new Set(["Error", "TypeError", "RangeError", "EvalError", "URIError", "SyntaxError"]);
+export const errorConstructorNames: ReadonlySet<string> = new Set(["Error", "TypeError", "RangeError", "EvalError", "URIError", "SyntaxError", "ReferenceError"]);
 
 /**
  * Erasing every wrapper whose only content is a type.

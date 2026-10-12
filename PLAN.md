@@ -240,6 +240,26 @@ and `valuePrivateAdd` check the brand. An add runs at construction (`privateFiel
 `define`) and throws if the element already exists. Fixtures: `private-field-brand.ts` and
 `private-field-not-a-property.ts`.
 
+**0k. Errors held as values.** Found while making error constructors values (3.4):
+- `new Error(undefined)` got the message `"undefined"`; it now gets an empty one.
+- `String(e)` printed `[object Object]` for an error held in a boxed value.
+- `e.toString()` threw `TypeError: value is not a function`.
+- `new Error(msg, { cause })` would have dropped its cause.
+
+`errorMessageFrom` now normalizes every message. `valueToString` formats error objects like
+`errorToString`. Errors inherit `toString` and `constructor` (`errorInheritedProperty`), and
+`errorInstallCause` implements InstallErrorCause.
+
+**0l. Forms that always throw.** TypeScript reports these as type errors, so only Test262 reaches
+them, because it suppresses semantic diagnostics. They compiled to code that did not throw:
+- a write to a `const`
+- a parameter default reading its own or a later parameter
+- a `let`/`const` loop whose source reads the loop's own item
+
+`throwing-forms.ts` now refuses them by name. The frontend reports TS18030 (`?.` before a private
+name, valid ECMAScript TypeScript cannot parse) as an unsupported feature. A statement call to a
+class without `new`, or to a name nothing declares, is refused; before, it crashed binding resolution.
+
 0d drops the Test262 floor from 1,013 to 1,012, and 0e restores it to 1,013. `language/statements/function/S13.2.1_A7_T2.js` passed
 only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never
 reads `x`. It is now refused, because a `var` cannot hold a boxed value yet. Workstream 2 admits it.
@@ -380,6 +400,15 @@ Ordered by Test262 gap counts:
 4. Classes as boxed values: `const K = A`, unbound class expressions (66), and `extends` of a class not
    declared in the module (115), starting with `Error`. The manifest names this as the prerequisite
    for `new.target` and decorators.
+
+   Done for builtin error constructors. `Error`, `TypeError`, `RangeError`, `EvalError`, `URIError`,
+   `SyntaxError` and the new `ReferenceError` class are values (`errorConstructor`). The runtime
+   creates each one once (`errorConstructorValue`) and keeps it as a GC root. Every error of a
+   class names that value as its `constructor`, so `e.constructor === TypeError` holds. Calling one,
+   with or without `new`, creates an error. That admits `assert.throws(TypeError, ...)` in Test262,
+   and with 0k and 0l the floor rises from 1,689 to 1,813. An uncaught error now reports as
+   `Name: message`, keeping the colon for an empty message, so the report tells it apart from a
+   thrown string (`valuePrintUncaught`).
 
 ### 4. Generators, then async
 

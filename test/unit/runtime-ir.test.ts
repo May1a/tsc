@@ -113,3 +113,23 @@ describe("Array.prototype method table", () => {
     }
   });
 });
+
+/** The bytes an LLVM `c"..."` literal holds, with `\XX` escapes decoded. */
+const decodedLength = (literal: string): number => literal.replace(/\\[0-9A-Fa-f]{2}/g, "x").length;
+
+describe("runtime string constants", () => {
+  it("boxes every constant with the length of its text", () => {
+    const text = runtimeIrText();
+    const constants = new Map([...text.matchAll(/^@([\w.]+) = private unnamed_addr constant \[(\d+) x i8\] c"(.*)"$/gm)]
+      .map(([, name, size, literal]) => [name, { size: Number(size), length: decodedLength(literal) }]));
+    const boxed = [...text.matchAll(/@valueBoxString\(ptr @([\w.]+), i64 (\d+)\)/g)];
+    expect(boxed.length).toBeGreaterThan(0);
+    for (const [, name, length] of boxed) {
+      const constant = constants.get(name);
+      expect(constant, name).toBeDefined();
+      expect(constant?.length, `${name} array size`).toBe(constant?.size);
+      // The boxed length excludes the terminating NUL.
+      expect(Number(length), name).toBe((constant?.size ?? 0) - 1);
+    }
+  });
+});

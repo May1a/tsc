@@ -1,9 +1,10 @@
-import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
+import { lowerValueCallArguments } from "./call-arguments.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
-import { isUnsupportedSymbolExpression, lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
+import { errorConstructorNames, isUnsupportedSymbolExpression, lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
 import { callTargetMessage, isKnownGlobalCallee, isPlannedBuiltinCall, isRecognizedGlobalCallee, plannedBuiltinMessageFor } from "./builtins/index.js";
 import { expressionSnippet, unsupportedNewExpressionMessage, unsupportedSymbolMessage, unsupportedUnboundValueMessage } from "./diagnostics.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
@@ -95,9 +96,40 @@ function lowerValueCallAndSymbol(
     return plannedMember;
   }
   if (ts.isNewExpression(expression)) {
-    return unsupportedIn(newExpressionRefusal(expression));
+    return lowerBuiltinErrorConstruction(context, expression, bindings);
+  }
+  if (isErrorConstructorReference(expression, bindings)) {
+    return produced({ kind: "errorConstructor", errorName: expression.text });
   }
   return unboundValueRefusal(context, expression, bindings);
+}
+
+/**
+ * `new TypeError(message)` as a value. A builtin error constructor creates the same error whether or
+ * not it is called with `new`, so the construction is a call of its constructor value.
+ */
+function lowerBuiltinErrorConstruction(
+  context: LoweringContext,
+  expression: ts.NewExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrValueExpression> {
+  const refusal: Lowered<JsIrValueExpression> = unsupportedIn(newExpressionRefusal(expression));
+  if (!isErrorConstructorReference(expression.expression, bindings)) {
+    return refusal;
+  }
+  const args = lowerValueCallArguments(context, expression.arguments ?? ts.factory.createNodeArray(), bindings, expression.expression.text);
+  if (args.kind !== "lowered") {
+    return withRefusal(args, refusal);
+  }
+  return produced({ kind: "callValue", callee: { kind: "errorConstructor", errorName: expression.expression.text }, arguments: args.operation });
+}
+
+/** A builtin error constructor named as a value, which no binding of the same name shadows. */
+function isErrorConstructorReference(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): expression is ts.Identifier {
+  return ts.isIdentifier(expression) && !bindings.has(expression.text) && errorConstructorNames.has(expression.text);
 }
 
 /**

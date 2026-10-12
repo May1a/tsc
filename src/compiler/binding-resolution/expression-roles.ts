@@ -42,6 +42,7 @@ export const valueExpressionRoles = {
   runtimeMapGet: { mapName: reference },
   optionalChain: {},
   optionalTarget: {},
+  errorConstructor: { errorName: preserved("errorName") },
   void: {},
   sequence: {},
   stringStartsWith: {},

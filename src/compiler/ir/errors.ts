@@ -53,9 +53,6 @@ function lowerErrorMessageValue(
   if (stringValue.kind === "lowered") {
     return produced({ kind: "string", value: stringValue.operation });
   }
-  const value = context.lowerValueExpression(context, argument, bindings);
-  if (value.kind !== "lowered") {
-    return value;
-  }
-  return produced({ kind: "string", value: { kind: "stringConversion", value: value.operation } });
+  // The runtime converts the message (`errorMessageFrom`), so an undefined one becomes empty.
+  return context.lowerValueExpression(context, argument, bindings);
 }

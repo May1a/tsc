@@ -1103,8 +1103,7 @@ describe("tscn expanded runtime roadmap", () => {
       "number-to-fixed-range-error-unsupported.ts",
       "number-to-locale-string-unsupported.ts",
       "parse-int-radix-unsupported.ts",
-      "array-runtime-map-noarg-unsupported.ts",
-      "error-constructor-unsupported.ts"
+      "array-runtime-map-noarg-unsupported.ts"
     ].map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 

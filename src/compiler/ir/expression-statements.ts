@@ -13,6 +13,7 @@ import type { JsIrNumberExpression, JsIrNumberOperator } from "./expressions.js"
 import type { JsIrOperation } from "./types.js";
 import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
+import { constWriteRefusal } from "./throwing-forms.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 
 // eslint-disable-next-line max-statements -- Statement expression routing is centralized for the current lowering slice.
@@ -21,6 +22,10 @@ export function lowerExpressionStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
+  const constWrite = constWriteRefusal(context.typeChecker, expression);
+  if (constWrite !== undefined) {
+    return unsupportedIn(constWrite);
+  }
   const update = lowerUpdateExpressionStatement(expression, bindings);
   if (update.kind !== "notApplicable") {
     return update;

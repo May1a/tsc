@@ -429,4 +429,6 @@ export const oracleFixtures: readonly string[] = [
   "private-methods.ts",
   "private-accessors.ts",
   "class-empty-members.ts",
+  "error-constructor-cause.ts",
+  "error-constructor-argument.ts",
 ] as const;
