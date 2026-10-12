@@ -365,7 +365,13 @@ check.object:
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.result = call i64 @objectGet(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
+  %object.missing = icmp eq i64 %object.result, 9222246136947933184
+  br i1 %object.missing, label %object.inherited, label %object.found
+object.found:
   ret i64 %object.result
+object.inherited:
+  %object.inherited.result = call i64 @errorInheritedProperty(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
+  ret i64 %object.inherited.result
 check.array:
   %is.array = call i1 @valueIsArray(i64 %value)
   br i1 %is.array, label %array, label %check.string
@@ -630,6 +636,15 @@ null:
   %null.1 = insertvalue { ptr, i64 } %null.0, i64 4, 1
   ret { ptr, i64 } %null.1
 object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %object.class.slot = getelementptr i8, ptr %object.ptr, i64 48
+  %object.class = load i64, ptr %object.class.slot
+  %object.is.error = icmp ne i64 %object.class, 0
+  br i1 %object.is.error, label %object.error, label %object.plain
+object.error:
+  %object.error.string = call { ptr, i64 } @errorToString(ptr %object.ptr)
+  ret { ptr, i64 } %object.error.string
+object.plain:
   %object.0 = insertvalue { ptr, i64 } undef, ptr @.tostring.object, 0
   %object.1 = insertvalue { ptr, i64 } %object.0, i64 15, 1
   ret { ptr, i64 } %object.1

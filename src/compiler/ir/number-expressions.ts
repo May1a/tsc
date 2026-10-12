@@ -1,4 +1,5 @@
 import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
+import { constWriteRefusal } from "./throwing-forms.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
@@ -146,6 +147,10 @@ export function lowerNumberExpression(
     return produced({ kind: "unary", operator: "bitNot", value: value.operation });
   }
 
+  const constWrite = constWriteRefusal(context.typeChecker, expression);
+  if (constWrite !== undefined) {
+    return unsupportedIn(constWrite);
+  }
   const update = lowerUpdateNumberExpression(expression, bindings);
   if (update !== undefined) {
     return produced(update);

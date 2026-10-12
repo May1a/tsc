@@ -6,6 +6,7 @@ import { type Produced, produced, unsupportedIn, withRefusal } from "./lowered.j
 import type { JsIrValueExpression } from "./expressions.js";
 import { lowerFunctionObjectValue } from "./closures.js";
 import { expressionSnippet } from "./diagnostics.js";
+import { uninitializedParameterRefusal } from "./throwing-forms.js";
 import { parameterSlotName, parameterValueKind, runtimeParameters } from "./class-info.js";
 import { lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
 import { updateBindings } from "./binding-updates.js";
@@ -29,6 +30,11 @@ export function lowerFunctionParameters(
   for (const [index, declaration] of declaredParameters.entries()) {
     if (declaration.dotDotDotToken !== undefined && index !== declaredParameters.length - 1) {
       return unsupportedIn("A rest parameter must be the last parameter in a function declaration");
+    }
+    // A default runs before its own parameter and every later one is initialized.
+    const uninitialized = uninitializedParameterRefusal(context.typeChecker, declaredParameters, index);
+    if (uninitialized !== undefined) {
+      return unsupportedIn(uninitialized);
     }
     const result = lowerFunctionParameter(context, declaration, index, fnBindings);
     if (result.kind === "unsupported") {

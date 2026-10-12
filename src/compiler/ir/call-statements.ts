@@ -9,6 +9,7 @@ import { lowerCallThisValue, lowerSpreadCallValue } from "./value-calls.js";
 import { unlowerableCallee } from "./builtins/index.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
 import { discardOptionalCall, optionalReceiverGuard, optionalStatementCallee } from "./optional-call.js";
+import { unsupportedUnboundValueMessage } from "./diagnostics.js";
 
 export function lowerCallStatement(
   context: LoweringContext,
@@ -56,13 +57,26 @@ export function lowerCallStatement(
   if (!ts.isIdentifier(expression.expression) || identifierBinding?.kind === "value" || identifierBinding?.kind === "valueVariable") {
     return lowerDynamicCallStatement(context, expression, bindings);
   }
+  return lowerNamedCallStatement(context, expression.expression, expression.arguments, identifierBinding === undefined, bindings);
+}
 
-  const args = lowerCallArguments(context, expression.expression.text, expression.arguments, bindings);
+/** A direct call of a named function, which an unbound name only reaches when resolution can find it. */
+function lowerNamedCallStatement(
+  context: LoweringContext,
+  callee: ts.Identifier,
+  arguments_: ts.NodeArray<ts.Expression>,
+  unbound: boolean,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const refusal = unbound ? unboundCalleeRefusal(context.typeChecker, callee) : undefined;
+  if (refusal !== undefined) {
+    return unsupportedIn(refusal);
+  }
+  const args = lowerCallArguments(context, callee.text, arguments_, bindings);
   if (args.kind !== "lowered") {
     return args;
   }
-
-  return produced({ kind: "call", name: expression.expression.text, arguments: args.operation });
+  return produced({ kind: "call", name: callee.text, arguments: args.operation });
 }
 
 function lowerClassMethodCallStatement(
@@ -128,4 +142,24 @@ function lowerDynamicCallStatement(
     return produced(discardOptionalCall(context, guarded));
   }
   return produced(built);
+}
+
+/**
+ * Why a call of a name with no binding cannot be lowered, or `undefined` when resolution can still
+ * find its function: an imported one, or a declaration hoisted from later in the scope. A class
+ * called without `new` and a name nothing declares both throw at runtime, which this build does not
+ * lower yet.
+ */
+function unboundCalleeRefusal(typeChecker: ts.TypeChecker | undefined, callee: ts.Identifier): string | undefined {
+  if (typeChecker === undefined) {
+    return undefined;
+  }
+  const symbol = typeChecker.getSymbolAtLocation(callee);
+  if (symbol === undefined) {
+    return unsupportedUnboundValueMessage(callee.text);
+  }
+  if ((symbol.flags & ts.SymbolFlags.Class) !== 0) {
+    return `Calling the class \`${callee.text}\` without \`new\` throws a TypeError, which this build does not lower yet`;
+  }
+  return undefined;
 }

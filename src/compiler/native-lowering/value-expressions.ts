@@ -8,6 +8,8 @@ import { jsonParse, jsonStringify, regexCompile, regexMatch, stringCodeUnit, str
 import { callValue, newInstance } from "./value-invocations.js";
 import { type ValueNode, arrayPointer, keep, numericValue, property, undefinedValue } from "./value-support.js";
 import { numberIndex } from "./numbers.js";
+import { errorClassId } from "./error-classes.js";
+import { llvm } from "../llvm-ir/index.js";
 
 type ValueVariants = { readonly [K in ResolvedValueExpression["kind"]]: ValueNode<K> };
 
@@ -68,6 +70,8 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   nullishCoalesce: coalesce,
   optionalChain,
   optionalTarget: (_expression, context) => context.optional.current(),
+  errorConstructor: (expression, context) => context.runtime.callBoxed("errorConstructorValue",
+    [context.cursor.currentBlock().int(llvm.i64, BigInt(errorClassId(expression.errorName)))], context.cursor.uniqueName("error.constructor")),
   void: (expression, context) => {
     context.expressions.value(expression.expression);
     return undefinedValue(context);

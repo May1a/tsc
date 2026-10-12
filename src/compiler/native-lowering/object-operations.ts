@@ -36,7 +36,8 @@ function create(operation: OperationNode<"runtimeObjectCreate">, context: Operat
 }
 
 function errorLiteral(operation: OperationNode<"runtimeErrorLiteral">, context: OperationContext): void {
-  const message = keep(context.expressions.value(operation.message), context);
+  const argument = keep(context.expressions.value(operation.message), context);
+  const message = keep(context.runtime.callBoxed("errorMessageFrom", [argument], context.cursor.uniqueName("error.message")), context);
   const name = literalString(operation.errorName, context);
   const pointer = context.runtime.callPointer("errorNew", [integer(BigInt(errorClassId(operation.errorName)), context), name.length, name.bytes, message],
     context.cursor.uniqueName("error.new"));

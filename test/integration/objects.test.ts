@@ -489,7 +489,7 @@ describe("tscn JSValue ABI", () => {
       await expectNativeBehaviorIfAvailable(result, expected);
       // The print helper is Static Runtime IR defined once; emitting it twice would be a duplicate
       // symbol, so linking at all is the uniqueness check.
-      expect(countOccurrences(await result.readArtifact("main.ll"), "define void @valuePrint")).toBe(1);
+      expect(countOccurrences(await result.readArtifact("main.ll"), "define void @valuePrint(")).toBe(1);
       const lli = await expectToolBehaviorIfAvailable("lli", [path.join(result.outDir, "main.ll")], expected);
       if (lli.skipped) {
         expect(lli.reason).toContain("lli was not found");

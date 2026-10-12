@@ -75,17 +75,25 @@ const defaultCompilerOptions = (): ts.ParsedCommandLine => ({
   errors: []
 });
 
+// TypeScript diagnostics that reject valid ECMAScript. They report a form this build cannot parse,
+// not an error in the program, so they surface as unsupported features.
+const optionalChainPrivateNameDiagnosticCode = 18_030;
+const frontendLimitations: ReadonlyMap<number, string> = new Map([
+  [optionalChainPrivateNameDiagnosticCode, "TypeScript does not parse a private name after `?.`, which ECMAScript allows"]
+]);
+
 const tsDiagnosticsToCompiler = (diagnostics: readonly ts.Diagnostic[]): readonly CompilerDiagnostic[] =>
   diagnostics.map((diagnostic) => {
     let span;
     if (diagnostic.file && diagnostic.start !== undefined) {
       span = sourceSpan(diagnostic.file, diagnostic.start);
     }
+    const limitation = frontendLimitations.get(diagnostic.code);
 
     return {
-      code: `TS${diagnostic.code}`,
+      code: limitation === undefined ? `TS${diagnostic.code}` : "TSCN1002",
       category: "error",
-      message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+      message: limitation ?? ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
       span
     };
   });

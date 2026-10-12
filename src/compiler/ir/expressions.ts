@@ -196,6 +196,11 @@ export type JsIrValueExpression =
       readonly kind: "optionalTarget";
     }
   | {
+      /** A builtin error constructor read as a value, such as `TypeError` passed to a function. */
+      readonly kind: "errorConstructor";
+      readonly errorName: string;
+    }
+  | {
       readonly kind: "void";
       readonly expression: JsIrValueExpression;
     }
