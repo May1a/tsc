@@ -84,16 +84,9 @@ export function arrayIncludes(expression: ValueNode<"arrayIncludes">, context: E
 export function privateField(expression: ValueNode<"privateFieldAccess">, context: ExpressionContext): BoxedValue {
   const receiver = keep(context.expressions.value(expression.receiver), context);
   const key = literalString(expression.key, context);
-  const branded = context.runtime.call("valueObjectHasOwn", [receiver, key.length, key.bytes], context.cursor.uniqueName("private.brand"));
-  const valid = context.cursor.reserveBlock("private.valid");
-  const invalid = context.cursor.reserveBlock("private.invalid");
-  context.cursor.currentBlock().condBr(branded, valid, invalid);
-  context.cursor.openBlock(invalid);
   const message = stringValue(expression.message, context);
-  context.runtime.callWithCompletion("iteratorTypeError", [message], context.cursor.uniqueName("private.error"), context.exceptionTarget());
-  context.cursor.currentBlock().unreachable();
-  context.cursor.openBlock(valid);
-  return property(receiver, key, context);
+  return context.runtime.callWithCompletion("valuePrivateGet", [receiver, key.length, key.bytes, message],
+    context.cursor.uniqueName("private.read"), context.exceptionTarget());
 }
 
 export function boxedPrimitive(expression: ValueNode<"boxedPrimitive">, context: ExpressionContext): BoxedValue {

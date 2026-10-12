@@ -2,7 +2,7 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
-import { type ClassInfo, classPrototypeName, findClassInChain, lowerClassStaticFieldAccess, resolveReceiverClass } from "./class-info.js";
+import { type ClassInfo, type ClassPrivateAccessorInfo, classPrototypeName, findClassInChain, lowerClassStaticFieldAccess, resolveReceiverClass } from "./class-info.js";
 import { CLASS_THIS_NAME, classGetterFunctionName, classPrivateFieldReadMessage, classPrivateFieldWriteMessage } from "./class-names.js";
 import { lowerClassInstanceExpression, lowerClassMethodCall } from "./class-calls.js";
 import { type Lowered, type Produced, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
@@ -110,7 +110,12 @@ function lowerClassPrivateFieldAccess(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<JsIrValueExpression> {
   const fieldName = expression.name.text;
-  const storageKey = context.activeEnclosingClass?.privateFields.get(fieldName);
+  const enclosing = context.activeEnclosingClass;
+  const accessor = enclosing?.privateAccessors.get(fieldName);
+  if (accessor !== undefined) {
+    return lowerPrivateGetterCall(context, expression, accessor, bindings);
+  }
+  const storageKey = enclosing?.privateFields.get(fieldName) ?? enclosing?.privateMethods.get(fieldName)?.storageKey;
   if (storageKey === undefined) {
     return unsupportedIn(`\`#${fieldName}\` is not declared by the lexically enclosing class`);
   }
@@ -124,6 +129,47 @@ function lowerClassPrivateFieldAccess(
     key: storageKey,
     message: classPrivateFieldReadMessage(fieldName)
   });
+}
+
+/**
+ * `recv.#x` for a private accessor calls its getter with `recv` as `this`. The receiver is read twice,
+ * for the brand check and as `this`, so it must be one without side effects.
+ */
+function lowerPrivateGetterCall(
+  context: LoweringContext,
+  expression: ts.PropertyAccessExpression,
+  accessor: ClassPrivateAccessorInfo,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<JsIrValueExpression> {
+  const fieldName = expression.name.text;
+  if (accessor.getter === undefined) {
+    return unsupportedIn(`\`${fieldName}\` has no getter, so reading it always throws a TypeError, which is not supported yet`);
+  }
+  const receiver = lowerPrivateAccessorReceiver(context, expression.expression, bindings);
+  if (receiver.kind !== "lowered") {
+    return receiver;
+  }
+  return produced({
+    kind: "callValue",
+    callee: { kind: "privateFieldAccess", receiver: receiver.operation, key: accessor.getter.storageKey, message: classPrivateFieldReadMessage(fieldName) },
+    arguments: [],
+    thisValue: receiver.operation
+  });
+}
+
+/** `this` or a named value variable: the receivers a private accessor may read twice. */
+function lowerPrivateAccessorReceiver(
+  context: LoweringContext,
+  receiver: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<JsIrValueExpression> {
+  if (receiver.kind === ts.SyntaxKind.ThisKeyword && context.classThisInScope) {
+    return produced({ kind: "variable", name: CLASS_THIS_NAME });
+  }
+  if (ts.isIdentifier(receiver) && bindings.get(receiver.text)?.kind === "valueVariable") {
+    return produced({ kind: "variable", name: receiver.text });
+  }
+  return unsupportedIn("The receiver of a private accessor must be `this` or a value variable");
 }
 
 // Resolves the receiver of a private field access to a stable instance value:
@@ -155,6 +201,13 @@ export function lowerClassPrivateFieldStore(
     return notApplicable;
   }
   const fieldName = left.name.text;
+  const accessor = context.activeEnclosingClass?.privateAccessors.get(fieldName);
+  if (accessor !== undefined) {
+    return lowerPrivateSetterCall(context, left, right, accessor, bindings);
+  }
+  if (context.activeEnclosingClass?.privateMethods.has(fieldName) === true) {
+    return unsupportedIn(`Assigning to the private method \`${fieldName}\`, which always throws a TypeError, is not supported yet`);
+  }
   const storageKey = context.activeEnclosingClass?.privateFields.get(fieldName);
   if (storageKey === undefined) {
     return unsupportedIn(`\`#${fieldName}\` is not declared by the lexically enclosing class`);
@@ -178,5 +231,33 @@ export function lowerClassPrivateFieldStore(
     key: storageKey,
     value: value.operation,
     message: classPrivateFieldWriteMessage(fieldName)
+  });
+}
+
+/** `recv.#x = value` for a private accessor calls its setter with `recv` as `this`. */
+function lowerPrivateSetterCall(
+  context: LoweringContext,
+  left: ts.PropertyAccessExpression,
+  right: ts.Expression,
+  accessor: ClassPrivateAccessorInfo,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const fieldName = left.name.text;
+  if (accessor.setter === undefined) {
+    return unsupportedIn(`\`${fieldName}\` has no setter, so writing it always throws a TypeError, which is not supported yet`);
+  }
+  const receiver = lowerPrivateAccessorReceiver(context, left.expression, bindings);
+  if (receiver.kind !== "lowered") {
+    return receiver;
+  }
+  const value = context.lowerValueExpression(context, right, bindings);
+  if (value.kind !== "lowered") {
+    return withRefusal(value, unsupportedIn("The value written to a private accessor is not an expression this build can evaluate"));
+  }
+  return produced({
+    kind: "callValue",
+    callee: { kind: "privateFieldAccess", receiver: receiver.operation, key: accessor.setter.storageKey, message: classPrivateFieldWriteMessage(fieldName) },
+    arguments: [{ valueKind: "value", value: value.operation }],
+    thisValue: receiver.operation
   });
 }

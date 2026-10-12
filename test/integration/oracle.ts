@@ -424,4 +424,9 @@ export const oracleFixtures: readonly string[] = [
   "for-of-var-binding.ts",
   "function-parameter-value-defaults.ts",
   "class-member-parameter-defaults.ts",
+  "private-field-brand.ts",
+  "private-field-not-a-property.ts",
+  "private-methods.ts",
+  "private-accessors.ts",
+  "class-empty-members.ts",
 ] as const;

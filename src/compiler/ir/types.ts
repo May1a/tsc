@@ -533,6 +533,11 @@ export type JsIrOperationNode =
       readonly key: string;
       readonly value: JsIrValueExpression;
       readonly message: string;
+      /**
+       * Set when construction adds the element (PrivateFieldAdd), which requires that the instance
+       * does not hold it yet. Otherwise the store writes an element the instance must already hold.
+       */
+      readonly define?: true;
     }
   | {
       readonly kind: "valueArrayStore";

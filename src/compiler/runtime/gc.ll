@@ -337,6 +337,9 @@ walk.object.proto:
   %obj.proto.ptr = getelementptr i8, ptr %cell, i64 40
   %obj.proto = load ptr, ptr %obj.proto.ptr
   call void @gcMarkPayloadPtr(ptr %obj.proto)
+  %obj.private.ptr = getelementptr i8, ptr %cell, i64 64
+  %obj.private = load ptr, ptr %obj.private.ptr
+  call void @gcMarkPayloadPtr(ptr %obj.private)
   br label %skip
 walk.array:
   %arr.length.ptr = getelementptr i8, ptr %cell, i64 8

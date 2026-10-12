@@ -14,7 +14,7 @@ const scalarWordFunctions = new Set([
 ]);
 const externalPointerFunctions = new Set(["malloc", "memcpy", "getenv", "indexToString", "strConcat", "arrayJoin", "arrayPrototypeMethod"]);
 const borrowedPointerFunctions = new Set([
-  "valueArrayPtr", "valueObjectPtr", "valueFunctionPtr", "valueStringPtr", "objectGetPrototype", "arrayGetPrototype"
+  "valueArrayPtr", "valueObjectPtr", "valueFunctionPtr", "valueStringPtr", "objectGetPrototype", "arrayGetPrototype", "objectPrivateTable"
 ]);
 // These foreign functions cannot enter the compiler's collector. Unknown declarations may.
 const nonGcForeignFunctions = new Set([
