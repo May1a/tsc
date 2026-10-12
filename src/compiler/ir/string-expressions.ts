@@ -218,8 +218,8 @@ function lowerStringConcatExpression(
   }
   return produced({
     kind: "concat",
-    left: { kind: "stringConversion", value: leftValue },
-    right: { kind: "stringConversion", value: rightValue }
+    left: { kind: "stringConversion", value: leftValue, preferValue: true },
+    right: { kind: "stringConversion", value: rightValue, preferValue: true }
   });
 }
 

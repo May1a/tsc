@@ -189,7 +189,7 @@ describe("tscn expanded runtime roadmap", () => {
 
     const refs = await expectSuccessfulCompile("value-runtime-aggregate-references.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(refs, { status: 0, stdout: "true\ntrue\ntrue\n[object Object]\n[object Array]\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(refs, { status: 0, stdout: "true\ntrue\ntrue\n[object Object]\n[object Object]\n", stderr: "" });
     } finally {
       await refs.cleanup();
     }
@@ -623,7 +623,7 @@ describe("tscn expanded runtime roadmap", () => {
   test("supports runtime array flat with default and zero depth", async () => {
     const flat = await expectSuccessfulCompile("array-runtime-flat.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(flat, { status: 0, stdout: "5\n1\n2\n3\n[object Array]\n[object Array]\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(flat, { status: 0, stdout: "5\n1\n2\n3\n4\n5\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(flat);
     } finally {
       await flat.cleanup();

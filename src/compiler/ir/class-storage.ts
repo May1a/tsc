@@ -8,7 +8,8 @@ import { forwardedClassArgument, lowerClassFieldInitializer } from "./class-cons
 import { CLASS_THIS_NAME, classMemberKeyStringExpression, classMethodFunctionName } from "./class-names.js";
 
 // Emits the module-init slot holding a runtime-computed member name: the name
-// expression is evaluated exactly once, at class-definition time.
+// expression is evaluated and converted to a property key exactly once, at
+// class-definition time, so a key object's `toString` runs once.
 export function lowerClassComputedKeySlot(
   context: LoweringContext,
   computedKey: ClassComputedKeyInfo,
@@ -18,7 +19,12 @@ export function lowerClassComputedKeySlot(
   if (value.kind !== "lowered") {
     return withRefusal(value, unsupportedIn("A computed class member name must be an expression this build can evaluate"));
   }
-  return produced({ kind: "letValue", name: computedKey.slotName, moduleGlobal: true, value: value.operation });
+  return produced({
+    kind: "letValue",
+    name: computedKey.slotName,
+    moduleGlobal: true,
+    value: { kind: "string", value: { kind: "stringConversion", value: value.operation } }
+  });
 }
 
 function classComputedMethodTargetName(info: ClassInfo, isStatic: boolean): string {

@@ -16,6 +16,8 @@ export interface BindingReads {
   string(reference: BindingRef): NativeString;
   boolean(reference: BindingRef): LlvmValue<typeof llvm.i1>;
   value(reference: BindingRef): BoxedValue;
+  /** Whether the binding's storage holds a Number, String or Boolean, which is never an object. */
+  holdsPrimitive(reference: BindingRef): boolean;
   pointer(reference: BindingRef): LlvmValue<typeof llvm.ptr>;
   fixedArrayLength(reference: BindingRef): number | undefined;
   arrayElement(reference: BindingRef, index: LlvmValue<typeof llvm.i64>): LlvmValue<typeof llvm.ptr>;
