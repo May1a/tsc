@@ -573,6 +573,12 @@ export type JsIrCondition =
       readonly regex: JsIrValueExpression;
       readonly input: JsIrStringExpression;
     }
+  /** `Object.prototype.hasOwnProperty.call(value, key)`: throws on a nullish value. */
+  | {
+      readonly kind: "valueHasOwnProperty";
+      readonly value: JsIrValueExpression;
+      readonly key: JsIrStringExpression;
+    }
   | {
       readonly kind: "numberComparison";
       readonly operator: "===" | "!==" | "<" | "<=" | ">" | ">=";

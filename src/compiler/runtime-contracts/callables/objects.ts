@@ -12,6 +12,7 @@ export function createObjectsCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "valueObjectSet": registerRuntimeContract(module, objectsContracts.valueObjectSet),
     "valueObjectDelete": registerRuntimeContract(module, objectsContracts.valueObjectDelete),
     "valueObjectHasOwn": registerRuntimeContract(module, objectsContracts.valueObjectHasOwn),
+    "valueHasOwnProperty": registerRuntimeContract(module, objectsContracts.valueHasOwnProperty),
     "valueObjectKeys": registerRuntimeContract(module, objectsContracts.valueObjectKeys),
     "valueObjectValues": registerRuntimeContract(module, objectsContracts.valueObjectValues),
     "valueObjectEntries": registerRuntimeContract(module, objectsContracts.valueObjectEntries),

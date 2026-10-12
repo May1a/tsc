@@ -27,6 +27,11 @@ export const conditionHandlers = tierHandlers<JsIrCondition, ResolvedCondition>(
     regex: resolver.value(node.regex),
     input: resolver.string(node.input)
   }),
+  valueHasOwnProperty: (node, resolver) => ({
+    kind: "valueHasOwnProperty",
+    value: resolver.value(node.value),
+    key: resolver.string(node.key)
+  }),
   numberComparison: (node, resolver) => ({
     kind: "numberComparison",
     operator: node.operator,

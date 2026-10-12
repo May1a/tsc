@@ -1408,7 +1408,8 @@ describe("tscn expanded runtime roadmap", () => {
       ["class-expression-instance.ts", "1\ntrue\n"],
       ["class-expression-named.ts", "inner\ntrue\ninner\n"],
       ["class-computed-field.ts", "1\n"],
-      ["class-computed-members.ts", "first\nthird\ndefined\n2\nconstructed\n"]
+      ["class-computed-members.ts", "first\nthird\ndefined\n2\nconstructed\n"],
+      ["class-prototype-method-lookup.ts", "5\nfalse\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
@@ -1428,10 +1429,6 @@ describe("tscn expanded runtime roadmap", () => {
       await privateField.cleanup();
     }
 
-    // With the compile-time interpreter deleted, class files that native
-    // lowering cannot handle are hard compile errors instead of being
-    // evaluated at compile time.
-    await expectUnsupportedDiagnostic("class-prototype-method-lookup.ts");
     await expectUnsupportedMessage(
       "class-instanceof-non-constructor-unsupported.ts",
       "instanceof right-hand sides are only supported for built-in error constructors"

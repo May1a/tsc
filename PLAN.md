@@ -311,6 +311,15 @@ checker resolves to no declaration at all lowers to `unresolvableReference`, whi
 `typeof` answers statically and never evaluates its operand this way. Test262 rises from 1,813 to
 2,066.
 
+A `new` statement and a call statement that no statement tier claims now go through the value tier
+and discard the result as well. `Object.prototype.hasOwnProperty.call(value, key)` is a condition on
+any value (`valueHasOwnProperty`). It converts the key before a nullish value throws, and it answers
+for a string's `length` and indices and an array's `length`, elements and named properties. Running a
+`new` statement exposed that a constructor's return value was ignored: `return null` in a derived
+constructor did not throw, and an object a base constructor returned did not replace the instance.
+Calls on `new C()` bind to C's methods statically, which a replacement object would make wrong, so a
+constructor that returns a value is refused until classes are values (3.4). The fixture is
+`has-own-property-call.ts`. Test262 rises from 2,182 to 2,184.
 
 **Lint proposal.** Add `fixture-name-matches-outcome`: a fixture named `-unsupported` must be refused,
 and a `defect-` fixture must be listed in a test that asserts the defect.

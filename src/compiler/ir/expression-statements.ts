@@ -89,25 +89,41 @@ export function lowerExpressionStatement(
     return callOp;
   }
 
-  return lowerPrintCallStatement(context, expression, bindings);
+  const printCall = lowerPrintCallStatement(context, expression, bindings);
+  if (printCall.kind !== "notApplicable") {
+    return printCall;
+  }
+  return lowerDiscardedCall(context, expression, bindings);
 }
 
 /**
- * A discarded `new` runs its constructor for side effects, which the value tier already knows how
- * to lower; the statement tier only refuses to drop the instance, and reports an inner failure (an
- * unknown class, an unlowerable argument) in that failure's own words.
+ * A discarded `new` runs its constructor for side effects and drops the instance. An inner failure
+ * (an unknown class, an unlowerable argument) is reported in that failure's own words.
  */
 function lowerDiscardedNewExpression(
   context: LoweringContext,
   expression: ts.NewExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  const reason = "A `new` expression as a statement is not supported yet";
   const newValue = context.lowerValueExpression(context, expression, bindings);
-  if (newValue.kind === "lowered") {
-    return unsupported(reason);
+  if (newValue.kind !== "lowered") {
+    return withRefusal(newValue, unsupportedIn("A `new` expression as a statement must construct a value this build can evaluate"));
   }
-  return withRefusal(newValue, unsupportedIn(reason));
+  return produced({ kind: "discardValue", value: newValue.operation });
+}
+
+/**
+ * A call no statement tier claimed, evaluated by the value tier and discarded, such as
+ * `Object.prototype.hasOwnProperty.call(value, key);`. A call the value tier declines keeps the
+ * diagnostic's reason, which names a planned builtin or an unrecognized target.
+ */
+function lowerDiscardedCall(
+  context: LoweringContext,
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const value = context.lowerValueExpression(context, expression, bindings);
+  return value.kind === "lowered" ? produced({ kind: "discardValue", value: value.operation }) : notApplicable;
 }
 
 /**
