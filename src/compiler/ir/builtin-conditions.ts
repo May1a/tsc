@@ -4,7 +4,7 @@ import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrCondition, JsIrStringExpression } from "./expressions.js";
 import { lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
-import { lowerPropertyKeyExpression } from "./string-expressions.js";
+import { lowerPropertyKeyExpression, lowerValuePropertyKeyExpression } from "./string-expressions.js";
 import { isBoxedAggregateCandidateBinding, isBoxedPrimitiveBinding } from "./builtins/object-producers.js";
 import { classifyObjectLiteral } from "./object-literals.js";
 import { classifyArrayLiteral } from "./array-literals.js";
@@ -197,6 +197,44 @@ export function lowerHasOwnConditionExpression(
     return lowerOwnArrayPropertyCondition(context, target.text, keyExpression, bindings);
   }
   return notApplicable;
+}
+
+/**
+ * `Object.prototype.hasOwnProperty.call(value, key)` on any value. The arguments are evaluated in
+ * order, then the key is converted, and only then does a nullish value throw, as in JavaScript.
+ */
+export function lowerHasOwnPropertyCallCondition(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrCondition> {
+  if (!ts.isCallExpression(expression) || expression.arguments.length !== 2 || !isHasOwnPropertyCall(expression.expression, bindings)) {
+    return notApplicable;
+  }
+  const [target, keyExpression] = expression.arguments;
+  const value = context.lowerValueExpression(context, target, bindings);
+  if (value.kind !== "lowered") {
+    return value;
+  }
+  const key = lowerValuePropertyKeyExpression(context, keyExpression, bindings);
+  if (key.kind !== "lowered") {
+    return key;
+  }
+  return produced({ kind: "valueHasOwnProperty", value: value.operation, key: key.operation });
+}
+
+/** Whether `callee` is `Object.prototype.hasOwnProperty.call` with the global `Object`. */
+function isHasOwnPropertyCall(callee: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean {
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "call") {
+    return false;
+  }
+  const method = callee.expression;
+  if (!ts.isPropertyAccessExpression(method) || method.name.text !== "hasOwnProperty") {
+    return false;
+  }
+  const prototype = method.expression;
+  return ts.isPropertyAccessExpression(prototype) && prototype.name.text === "prototype" &&
+    ts.isIdentifier(prototype.expression) && prototype.expression.text === "Object" && !bindings.has("Object");
 }
 
 export function lowerObjectMethodSugarConditionExpression(

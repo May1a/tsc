@@ -676,6 +676,119 @@ number:
   %number.text = call { ptr, i64 } @numberToShortestString(double %number.value)
   ret { ptr, i64 } %number.text
 }
+@.toprimitive.tostring = private unnamed_addr constant [9 x i8] c"toString\00"
+@.toprimitive.valueof = private unnamed_addr constant [8 x i8] c"valueOf\00"
+@.toprimitive.refused = private unnamed_addr constant [41 x i8] c"Cannot convert object to primitive value\00"
+
+; Whether `value` is an object, array or function: a value ToPrimitive converts.
+define i1 @valueIsObjectLike(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %at.least.object = icmp uge i64 %tag, 9221120237041090560
+  %at.most.function = icmp ule i64 %tag, 9221964661971222528
+  %is.string = icmp eq i64 %tag, 9221683186994511872
+  %is.reference = and i1 %at.least.object, %at.most.function
+  %not.string = xor i1 %is.string, true
+  %is.object = and i1 %is.reference, %not.string
+  ret i1 %is.object
+}
+
+; OrdinaryToPrimitive: calls `toString` then `valueOf`, or `valueOf` first when %prefer.value is
+; set, and answers the first primitive one returns. A method that returns an object is passed over,
+; and a TypeError follows when every method found did. The runtime has no `Object.prototype`, so an
+; object without either method answers itself, and `valueToString` gives its built-in form.
+define { i64, i1 } @valueOrdinaryToPrimitive(i64 %value, i1 %prefer.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %value)
+  %argv = alloca i64, i64 0
+  %first.ptr = select i1 %prefer.value, ptr @.toprimitive.valueof, ptr @.toprimitive.tostring
+  %first.len = select i1 %prefer.value, i64 7, i64 8
+  %second.ptr = select i1 %prefer.value, ptr @.toprimitive.tostring, ptr @.toprimitive.valueof
+  %second.len = select i1 %prefer.value, i64 8, i64 7
+  %first.method = call i64 @valuePropertyGet(i64 %value, i64 %first.len, ptr %first.ptr)
+  %first.callable = call i1 @valueIsFunction(i64 %first.method)
+  br i1 %first.callable, label %first.call, label %second
+first.call:
+  %first.result = call { i64, i1 } @jsCall(i64 %first.method, i64 0, ptr %argv, i64 %value)
+  %first.threw = extractvalue { i64, i1 } %first.result, 1
+  %first.value = extractvalue { i64, i1 } %first.result, 0
+  %first.object = call i1 @valueIsObjectLike(i64 %first.value)
+  %first.final = xor i1 %first.object, true
+  %first.answers = or i1 %first.threw, %first.final
+  br i1 %first.answers, label %first.done, label %second
+first.done:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %first.result
+second:
+  %found.first = phi i1 [ false, %entry ], [ true, %first.call ]
+  %second.method = call i64 @valuePropertyGet(i64 %value, i64 %second.len, ptr %second.ptr)
+  %second.callable = call i1 @valueIsFunction(i64 %second.method)
+  br i1 %second.callable, label %second.call, label %no.second
+second.call:
+  %second.result = call { i64, i1 } @jsCall(i64 %second.method, i64 0, ptr %argv, i64 %value)
+  %second.threw = extractvalue { i64, i1 } %second.result, 1
+  %second.value = extractvalue { i64, i1 } %second.result, 0
+  %second.object = call i1 @valueIsObjectLike(i64 %second.value)
+  %second.final = xor i1 %second.object, true
+  %second.answers = or i1 %second.threw, %second.final
+  br i1 %second.answers, label %second.done, label %refused
+second.done:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %second.result
+no.second:
+  br i1 %found.first, label %refused, label %builtin
+builtin:
+  call void @gcRootRestore(i64 %frame)
+  %builtin.0 = insertvalue { i64, i1 } undef, i64 %value, 0
+  %builtin.1 = insertvalue { i64, i1 } %builtin.0, i1 false, 1
+  ret { i64, i1 } %builtin.1
+refused:
+  call void @gcRootRestore(i64 %frame)
+  %message = call i64 @valueBoxString(ptr @.toprimitive.refused, i64 40)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+}
+
+; ToPrimitive(value): an object converts through `valueOrdinaryToPrimitive`, and any other value
+; is already primitive. %prefer.value selects the default hint `+` uses, which tries `valueOf` first.
+define { i64, i1 } @valueToPrimitive(i64 %value, i1 %prefer.value) {
+entry:
+  %is.object = call i1 @valueIsObjectLike(i64 %value)
+  br i1 %is.object, label %convert, label %primitive
+convert:
+  %converted = call { i64, i1 } @valueOrdinaryToPrimitive(i64 %value, i1 %prefer.value)
+  ret { i64, i1 } %converted
+primitive:
+  %primitive.0 = insertvalue { i64, i1 } undef, i64 %value, 0
+  %primitive.1 = insertvalue { i64, i1 } %primitive.0, i1 false, 1
+  ret { i64, i1 } %primitive.1
+}
+
+; ToString(value) as a boxed string, after `valueToPrimitive` runs an object's own `toString` or
+; `valueOf`.
+define { i64, i1 } @valueToStringObservable(i64 %value, i1 %prefer.value) {
+entry:
+  %converted = call { i64, i1 } @valueToPrimitive(i64 %value, i1 %prefer.value)
+  %threw = extractvalue { i64, i1 } %converted, 1
+  %primitive = extractvalue { i64, i1 } %converted, 0
+  %is.string = call i1 @valueIsString(i64 %primitive)
+  %answers = or i1 %threw, %is.string
+  br i1 %answers, label %done, label %format
+done:
+  ret { i64, i1 } %converted
+format:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %primitive)
+  %text = call { ptr, i64 } @valueToString(i64 %primitive)
+  %text.ptr = extractvalue { ptr, i64 } %text, 0
+  %text.len = extractvalue { ptr, i64 } %text, 1
+  %boxed = call i64 @valueBoxString(ptr %text.ptr, i64 %text.len)
+  call void @gcRootRestore(i64 %frame)
+  %boxed.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %boxed.1 = insertvalue { i64, i1 } %boxed.0, i1 false, 1
+  ret { i64, i1 } %boxed.1
+}
 define ptr @indexToString(i64 %index) {
 entry:
   br label %count.loop

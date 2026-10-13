@@ -21,6 +21,11 @@ export function lowerClassConstructor(
   constructorDeclaration: ts.ConstructorDeclaration | undefined,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<JsIrOperation> {
+  const constructorBody = constructorDeclaration?.body;
+  const returnedValue = constructorBody === undefined ? undefined : valueReturnIn(constructorBody);
+  if (returnedValue !== undefined) {
+    return unsupportedIn(`A class constructor that returns a value (\`return ${expressionSnippet(returnedValue)}\`) is not supported yet`);
+  }
   const receiverBindings = functionFrameBindings(bindings);
   receiverBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
 
@@ -146,6 +151,29 @@ export function lowerClassConstructor(
     context.activeEnclosingClass = previousClass;
     context.activeClassMethodStatic = previousStatic;
   }
+}
+
+/**
+ * The first value a constructor body returns, outside its nested functions.
+ *
+ * `new` produces an object the constructor returns in place of the instance, and a derived
+ * constructor that returns another value throws. Lowering binds calls on `new C()` to C's methods
+ * statically, which would be wrong for a replacement object, so such a constructor is refused.
+ */
+function valueReturnIn(body: ts.Block): ts.Expression | undefined {
+  let found: ts.Expression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (found !== undefined || ts.isFunctionLike(node) || ts.isClassLike(node)) {
+      return;
+    }
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      found = node.expression;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(body, visit);
+  return found;
 }
 
 /**

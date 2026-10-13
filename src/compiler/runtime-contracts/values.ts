@@ -157,6 +157,34 @@ export const valuesContracts = {
     name: "valueToString", parameters: [llvm.i64], returns: llvm.struct([llvm.ptr, llvm.i64]), variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "valueIsObjectLike": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueIsObjectLike", parameters: [llvm.i64], returns: llvm.i1, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "valueOrdinaryToPrimitive": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueOrdinaryToPrimitive", parameters: [llvm.i64, llvm.i1], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "valueToPrimitive": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueToPrimitive", parameters: [llvm.i64, llvm.i1], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "valueToStringObservable": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueToStringObservable", parameters: [llvm.i64, llvm.i1], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
   "indexToString": {
     resultKind: "pointer",
     pointerResult: { kind: "external" },

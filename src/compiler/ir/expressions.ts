@@ -459,9 +459,14 @@ export type JsIrStringExpression =
       readonly kind: "typeof";
       readonly value: string;
     }
+  /**
+   * ToString. An object converts through its own `toString` and `valueOf`, which may throw;
+   * `preferValue` tries `valueOf` first, as the default hint of `+` does.
+   */
   | {
       readonly kind: "stringConversion";
       readonly value: JsIrValueExpression;
+      readonly preferValue?: true;
     }
   | {
       readonly kind: "stringMethod";
@@ -567,6 +572,12 @@ export type JsIrCondition =
       readonly kind: "regexTest";
       readonly regex: JsIrValueExpression;
       readonly input: JsIrStringExpression;
+    }
+  /** `Object.prototype.hasOwnProperty.call(value, key)`: throws on a nullish value. */
+  | {
+      readonly kind: "valueHasOwnProperty";
+      readonly value: JsIrValueExpression;
+      readonly key: JsIrStringExpression;
     }
   | {
       readonly kind: "numberComparison";

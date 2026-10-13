@@ -52,6 +52,13 @@ export const objectsContracts = {
     name: "valueObjectHasOwn", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.i1, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "valueHasOwnProperty": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueHasOwnProperty", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
   "valueObjectKeys": {
     resultKind: "pointer",
     pointerResult: { kind: "heap" },

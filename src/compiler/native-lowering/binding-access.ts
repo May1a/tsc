@@ -6,6 +6,10 @@ import type { FunctionCapabilities } from "./function-owner.js";
 import type { BoxedValue } from "./value-boundary.js";
 import { type VariantHandlers, type VariantOfKind, dispatchKind } from "../dispatch.js";
 
+const primitiveStorageKinds: ReadonlySet<BindingStorage["kind"]> = new Set([
+  "numberSlot", "numberRegister", "stringSlot", "stringRegister", "booleanSlot", "booleanRegister"
+]);
+
 export class BindingAccess implements BindingReads {
   readonly #storage: ReadonlyMap<BindingId, BindingStorage>;
   readonly #capabilities: FunctionCapabilities;
@@ -61,6 +65,10 @@ export class BindingAccess implements BindingReads {
       case "booleanSlot": { return cursor.currentBlock().load(llvm.i1, storage.slot, cursor.uniqueName("binding.boolean")); }
       default: { return runtime.call("valueTruthy", [this.value(reference)], cursor.uniqueName("binding.boolean")); }
     }
+  }
+
+  public holdsPrimitive(reference: BindingRef): boolean {
+    return primitiveStorageKinds.has(this.#require(reference).kind);
   }
 
   public value(reference: BindingRef): BoxedValue {

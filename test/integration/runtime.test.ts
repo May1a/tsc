@@ -189,7 +189,7 @@ describe("tscn expanded runtime roadmap", () => {
 
     const refs = await expectSuccessfulCompile("value-runtime-aggregate-references.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(refs, { status: 0, stdout: "true\ntrue\ntrue\n[object Object]\n[object Array]\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(refs, { status: 0, stdout: "true\ntrue\ntrue\n[object Object]\n[object Object]\n", stderr: "" });
     } finally {
       await refs.cleanup();
     }
@@ -623,7 +623,7 @@ describe("tscn expanded runtime roadmap", () => {
   test("supports runtime array flat with default and zero depth", async () => {
     const flat = await expectSuccessfulCompile("array-runtime-flat.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(flat, { status: 0, stdout: "5\n1\n2\n3\n[object Array]\n[object Array]\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(flat, { status: 0, stdout: "5\n1\n2\n3\n4\n5\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(flat);
     } finally {
       await flat.cleanup();
@@ -1408,7 +1408,8 @@ describe("tscn expanded runtime roadmap", () => {
       ["class-expression-instance.ts", "1\ntrue\n"],
       ["class-expression-named.ts", "inner\ntrue\ninner\n"],
       ["class-computed-field.ts", "1\n"],
-      ["class-computed-members.ts", "first\nthird\ndefined\n2\nconstructed\n"]
+      ["class-computed-members.ts", "first\nthird\ndefined\n2\nconstructed\n"],
+      ["class-prototype-method-lookup.ts", "5\nfalse\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
@@ -1428,10 +1429,6 @@ describe("tscn expanded runtime roadmap", () => {
       await privateField.cleanup();
     }
 
-    // With the compile-time interpreter deleted, class files that native
-    // lowering cannot handle are hard compile errors instead of being
-    // evaluated at compile time.
-    await expectUnsupportedDiagnostic("class-prototype-method-lookup.ts");
     await expectUnsupportedMessage(
       "class-instanceof-non-constructor-unsupported.ts",
       "instanceof right-hand sides are only supported for built-in error constructors"

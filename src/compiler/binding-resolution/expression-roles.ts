@@ -115,6 +115,7 @@ export const conditionRoles = {
   classInstanceOf: { prototypeName: reference },
   errorInstanceOf: { errorName: preserved("errorName") },
   regexTest: {},
+  valueHasOwnProperty: {},
   numberComparison: {},
   negate: {},
   and: {},

@@ -260,6 +260,26 @@ them, because it suppresses semantic diagnostics. They compiled to code that did
 name, valid ECMAScript TypeScript cannot parse) as an unsupported feature. A statement call to a
 class without `new`, or to a name nothing declares, is refused; before, it crashed binding resolution.
 
+**0m. ToString ignored an object's own `toString`.** Found while converting a computed property
+key. `String(o)`, `` `${o}` ``, `"a" + o` and
+`print(o)` formatted every object with the runtime's built-in form, so a class with its own
+`toString` printed `[object Object]` in a template literal, and `print([[4]])` printed
+`[object Array]`.
+
+`valueOrdinaryToPrimitive` now calls `toString` then `valueOf`, or `valueOf` first for the default
+hint `+` uses (`stringConversion.preferValue`). It passes over a method that returns an object and
+throws a TypeError when every method found did. The runtime has no `Object.prototype`, so an object
+with neither method keeps its built-in form. A string conversion is now a completion, because the
+method may throw. A computed class member name converts once, when the class is defined, not at
+every instance. `print` converts any value that may be an object. Two latent GC defects surfaced
+once a conversion could collect: `concat` passed its left bytes across the right operand, and
+`regexSearch` boxed borrowed bytes; both now use an owned string. The fixture is
+`object-to-string-conversion.ts`.
+
+Still open: `Array.prototype.join` and an array's built-in form convert elements without their own
+`toString`, because `arrayJoin` cannot throw. ToNumber of an object still ignores `valueOf`, and
+arithmetic on boxed operands stays refused (0d).
+
 0d drops the Test262 floor from 1,013 to 1,012, and 0e restores it to 1,013. `language/statements/function/S13.2.1_A7_T2.js` passed
 only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never
 reads `x`. It is now refused, because a `var` cannot hold a boxed value yet. Workstream 2 admits it.
@@ -290,6 +310,16 @@ checker resolves to no declaration at all lowers to `unresolvableReference`, whi
 `ReferenceError: x is not defined`. A declared name that lowering cannot read is still refused.
 `typeof` answers statically and never evaluates its operand this way. Test262 rises from 1,813 to
 2,066.
+
+A `new` statement and a call statement that no statement tier claims now go through the value tier
+and discard the result as well. `Object.prototype.hasOwnProperty.call(value, key)` is a condition on
+any value (`valueHasOwnProperty`). It converts the key before a nullish value throws, and it answers
+for a string's `length` and indices and an array's `length`, elements and named properties. Running a
+`new` statement exposed that a constructor's return value was ignored: `return null` in a derived
+constructor did not throw, and an object a base constructor returned did not replace the instance.
+Calls on `new C()` bind to C's methods statically, which a replacement object would make wrong, so a
+constructor that returns a value is refused until classes are values (3.4). The fixture is
+`has-own-property-call.ts`. Test262 rises from 2,182 to 2,184.
 
 **Lint proposal.** Add `fixture-name-matches-outcome`: a fixture named `-unsupported` must be refused,
 and a `defect-` fixture must be listed in a test that asserts the defect.

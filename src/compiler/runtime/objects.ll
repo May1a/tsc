@@ -213,6 +213,56 @@ array.has.index:
 missing:
   ret i1 false
 }
+; `Object.prototype.hasOwnProperty.call(value, key)`, once the key is a string. ToObject throws on
+; undefined and null. A string owns its `length` and its indices, and an array owns its `length`,
+; its present indices and its named properties.
+define { i64, i1 } @valueHasOwnProperty(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %coercible = call { i64, i1 } @requireObjectCoercible(i64 %value)
+  %exception = extractvalue { i64, i1 } %coercible, 1
+  br i1 %exception, label %refused, label %check.string
+refused:
+  ret { i64, i1 } %coercible
+check.string:
+  %is.string = call i1 @valueIsString(i64 %value)
+  br i1 %is.string, label %string, label %check.array
+string:
+  %string.property = call i64 @stringPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  %string.has = icmp ne i64 %string.property, 9222246136947933184
+  br label %answer
+check.array:
+  %is.array = call i1 @valueIsArray(i64 %value)
+  br i1 %is.array, label %array, label %other
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %maybe.length = icmp eq i64 %key.len, 6
+  br i1 %maybe.length, label %array.length.compare, label %array.index
+array.length.compare:
+  %length.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.array.desc.length, i64 6)
+  %is.length = icmp eq i32 %length.cmp, 0
+  br i1 %is.length, label %answer, label %array.index
+array.index:
+  %index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %is.index = icmp sge i64 %index, 0
+  br i1 %is.index, label %array.element, label %array.named
+array.element:
+  %element.has = call i1 @arrayHasOwnIndex(ptr %array.ptr, i64 %index)
+  br label %answer
+array.named:
+  %properties.slot = getelementptr i8, ptr %array.ptr, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named.has = call i1 @objectHasOwn(ptr %properties, i64 %key.len, ptr %key.ptr)
+  br label %answer
+other:
+  %other.has = call i1 @valueObjectHasOwn(i64 %value, i64 %key.len, ptr %key.ptr)
+  br label %answer
+answer:
+  %has = phi i1 [ %string.has, %string ], [ true, %array.length.compare ], [ %element.has, %array.element ], [ %named.has, %array.named ], [ %other.has, %other ]
+  %boxed = select i1 %has, i64 9222246136947933186, i64 9222246136947933185
+  %result.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %result = insertvalue { i64, i1 } %result.0, i1 false, 1
+  ret { i64, i1 } %result
+}
 define ptr @valueObjectKeys(i64 %value) {
 entry:
   %tag = and i64 %value, -281474976710656

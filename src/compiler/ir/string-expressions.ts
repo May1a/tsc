@@ -182,6 +182,26 @@ export function lowerPropertyKeyExpression(
   return context.lowerStringRuntimeExpression(context, expression, bindings);
 }
 
+/**
+ * The property key `expression` converts to, for any expression this build can evaluate: a key the
+ * string tiers lower directly, or any other value converted with `String`.
+ */
+export function lowerValuePropertyKeyExpression(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrStringExpression> {
+  const key = lowerPropertyKeyExpression(context, expression, bindings);
+  if (key.kind !== "notApplicable") {
+    return key;
+  }
+  const value = context.lowerValueExpression(context, expression, bindings);
+  if (value.kind !== "lowered") {
+    return value;
+  }
+  return produced({ kind: "stringConversion", value: value.operation });
+}
+
 function lowerStringConcatExpression(
   context: LoweringContext,
   expression: ts.BinaryExpression,
@@ -218,8 +238,8 @@ function lowerStringConcatExpression(
   }
   return produced({
     kind: "concat",
-    left: { kind: "stringConversion", value: leftValue },
-    right: { kind: "stringConversion", value: rightValue }
+    left: { kind: "stringConversion", value: leftValue, preferValue: true },
+    right: { kind: "stringConversion", value: rightValue, preferValue: true }
   });
 }
 
