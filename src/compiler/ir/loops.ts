@@ -16,6 +16,7 @@ import { lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
 import { lowerVariableDeclarator, redeclaredVarName } from "./variable-bindings.js";
 import { type DeclarationKind, declarationKindOf, declarationScope } from "./declaration-kind.js";
 import { bindingDeclarations, constWriteRefusal, uninitializedReadRefusal } from "./throwing-forms.js";
+import { lowerAssignmentTarget } from "./destructuring-assignment.js";
 
 /**
  * Lower one loop's body, taking a label frame for the loop being entered.
@@ -160,7 +161,10 @@ export function lowerForOfStatement(
   statement: ts.ForOfStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  if (!ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1) {
+  if (!ts.isVariableDeclarationList(statement.initializer)) {
+    return lowerForOfAssignmentHead(context, statement, statement.initializer, bindings);
+  }
+  if (statement.initializer.declarations.length !== 1) {
     return unsupported(loopItemRefusal("for...of"));
   }
   const [declaration] = statement.initializer.declarations;
@@ -455,5 +459,40 @@ export function lowerDoWhileStatement(
     kind: "doWhile",
     condition: condition.operation,
     body
+  });
+}
+
+/**
+ * `for (target of source)` with an existing target: a variable or an assignment pattern. Each item
+ * goes to a private loop item first and is then assigned to the target, which is what the target
+ * of a `for...of` head is: an assignment, once per iteration.
+ */
+function lowerForOfAssignmentHead(
+  context: LoweringContext,
+  statement: ts.ForOfStatement,
+  target: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const iterable = context.lowerValueExpression(context, statement.expression, bindings);
+  if (iterable.kind !== "lowered") {
+    return withRefusal(iterable, unsupportedIn("The source of a `for...of` statement must be an expression this build can evaluate"));
+  }
+  const itemName = `for.of.item.${target.pos}`;
+  const bodyBindings = new Map(bindings);
+  bodyBindings.set(itemName, { kind: "valueVariable", name: itemName });
+  const assigned = lowerAssignmentTarget(context, target, { kind: "variable", name: itemName }, bodyBindings);
+  if (assigned.kind !== "lowered") {
+    return assigned;
+  }
+  const body = lowerLoopBody(context, statement.statement, bodyBindings);
+  if (body.kind === "unsupported") {
+    return body;
+  }
+  return produced({
+    kind: "forOfProtocol",
+    itemName,
+    iterable: iterable.operation,
+    notIterableMessage: `${iteratorErrorSubject(statement.expression)} is not iterable`,
+    body: [...assigned.operation, ...body.operation]
   });
 }

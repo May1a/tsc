@@ -29,7 +29,8 @@ function isUpdateOperator(operator: ts.SyntaxKind): boolean {
   return operator === ts.SyntaxKind.PlusPlusToken || operator === ts.SyntaxKind.MinusMinusToken;
 }
 
-function constAssignmentRefusal(typeChecker: ts.TypeChecker | undefined, target: ts.Expression): string | undefined {
+/** A write to `target`, when it names a `const` binding, throws a TypeError. */
+export function constAssignmentRefusal(typeChecker: ts.TypeChecker | undefined, target: ts.Expression): string | undefined {
   if (typeChecker === undefined || !ts.isIdentifier(target)) {
     return undefined;
   }

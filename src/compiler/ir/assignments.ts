@@ -11,6 +11,7 @@ import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { lowerStringExpression } from "./string-constants.js";
 import { lowerClassPrivateFieldStore } from "./class-values.js";
 import { lowerClassPropertyAssignment } from "./class-mutations.js";
+import { isAssignmentPattern, lowerDestructuringAssignment } from "./destructuring-assignment.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
 
 // eslint-disable-next-line max-statements -- Assignment routing handles scalar, aggregate, nullish, and compound stores together.
@@ -36,6 +37,10 @@ export function lowerAssignmentStatement(
     return notApplicable;
   }
 
+  if (isAssignmentPattern(expression.left)) {
+    return lowerDestructuringAssignmentStatement(context, expression.left, expression.right, bindings);
+  }
+
   if (ts.isElementAccessExpression(expression.left)) {
     return lowerElementAssignment(context, expression.left, expression.right, bindings);
   }
@@ -47,44 +52,53 @@ export function lowerAssignmentStatement(
   if (!ts.isIdentifier(expression.left)) {
     return notApplicable;
   }
+  return lowerIdentifierAssignment(context, expression.left, expression.right, bindings);
+}
 
-  const binding = bindings.get(expression.left.text);
+/** `name = value`, in the representation the binding's storage holds. */
+function lowerIdentifierAssignment(
+  context: LoweringContext,
+  left: ts.Identifier,
+  right: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const binding = bindings.get(left.text);
   if (binding?.kind === "stringVariable") {
-    const value = context.lowerStringRuntimeExpression(context, expression.right, bindings);
+    const value = context.lowerStringRuntimeExpression(context, right, bindings);
     if (value.kind !== "lowered") {
-      return withRefusal(value, unsupportedIn(`Assigning a non-string value to \`${expression.left.text}\`, which holds a string, is not supported: a binding keeps the representation of its initializer`));
+      return withRefusal(value, unsupportedIn(`Assigning a non-string value to \`${left.text}\`, which holds a string, is not supported: a binding keeps the representation of its initializer`));
     }
 
-    return produced({ kind: "assignString", name: expression.left.text, value: value.operation });
+    return produced({ kind: "assignString", name: left.text, value: value.operation });
   }
 
   if (binding?.kind === "booleanVariable") {
-    const value = context.lowerConditionExpression(context, expression.right, bindings);
+    const value = context.lowerConditionExpression(context, right, bindings);
     if (value.kind !== "lowered") {
-      return withRefusal(value, unsupportedIn(`Assigning a non-boolean value to \`${expression.left.text}\`, which holds a boolean, is not supported: a binding keeps the representation of its initializer`));
+      return withRefusal(value, unsupportedIn(`Assigning a non-boolean value to \`${left.text}\`, which holds a boolean, is not supported: a binding keeps the representation of its initializer`));
     }
 
-    return produced({ kind: "assignBoolean", name: expression.left.text, value: value.operation });
+    return produced({ kind: "assignBoolean", name: left.text, value: value.operation });
   }
 
   if (binding?.kind === "valueVariable") {
-    return lowerBoxedAssignment(context, expression.left.text, expression.right, bindings);
+    return lowerBoxedAssignment(context, left.text, right, bindings);
   }
 
   if (binding === undefined) {
-    return unsupported(`Assignment to \`${expression.left.text}\`, which has no declared binding, is not supported`);
+    return unsupported(`Assignment to \`${left.text}\`, which has no declared binding, is not supported`);
   }
 
   if (binding.kind !== "number" || binding.value.kind !== "variable") {
-    return unsupported(`Cannot assign to \`${expression.left.text}\` because it does not hold a mutable number`);
+    return unsupported(`Cannot assign to \`${left.text}\` because it does not hold a mutable number`);
   }
 
-  const value = context.lowerNumberExpression(context, expression.right, bindings);
+  const value = context.lowerNumberExpression(context, right, bindings);
   if (value.kind !== "lowered") {
-    return withRefusal(value, unsupportedIn(`Assigning ${assignedValueDescription(expression.right)} to \`${expression.left.text}\`, which holds a number, is not supported: a binding keeps the representation of its initializer`));
+    return withRefusal(value, unsupportedIn(`Assigning ${assignedValueDescription(right)} to \`${left.text}\`, which holds a number, is not supported: a binding keeps the representation of its initializer`));
   }
 
-  return produced({ kind: "assignNumber", name: expression.left.text, value: value.operation });
+  return produced({ kind: "assignNumber", name: left.text, value: value.operation });
 }
 
 /**
@@ -475,4 +489,19 @@ function lowerThisPropertyAssignment(
     key: { kind: "literal", value: left.name.text },
     value: value.operation
   });
+}
+
+/** `[a, b] = source` or `({ a } = source)` as a statement: the source, then each target in order. */
+function lowerDestructuringAssignmentStatement(
+  context: LoweringContext,
+  pattern: ts.ArrayLiteralExpression | ts.ObjectLiteralExpression,
+  right: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const source = context.lowerValueExpression(context, right, bindings);
+  if (source.kind !== "lowered") {
+    return withRefusal(source, unsupportedIn("The source of a destructuring assignment must be an expression this build can evaluate"));
+  }
+  const operations = lowerDestructuringAssignment(context, pattern, source.operation, bindings);
+  return operations.kind === "lowered" ? produced({ kind: "bindingGroup", operations: [...operations.operation] }) : operations;
 }

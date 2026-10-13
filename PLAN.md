@@ -362,6 +362,19 @@ Make storage a fact derived from all writes and uses before native lowering:
   shares the one binding. A `var` that redeclares a binding of its own scope is refused, for both
   forms.
 
+- Done for destructuring assignment. `[a, b] = [b, a]`, `({ a, b: c = 1 } = source)` and
+  `for (target of source)` heads lower through `destructuring-assignment.ts`:
+  - An array pattern iterates with `arrayDestructureProtocol`. Each target is a `nested` element
+    whose operations assign it before the next item is pulled, so a default reads the target's old
+    value.
+  - An object pattern reads properties from a temporary.
+  - The storage plan records a `dynamic` write for every target, which boxes the binding.
+  - Member targets, object rest and computed keys in assignment patterns are refused.
+
+  The Test262 runner now classifies a TypeScript syntax error (TS1xxx) on a test Test262 calls valid
+  as a frontend gap. TypeScript cannot parse `for ([x = 'x' in {}] of ...)`. Test262 rises from
+  2,066 to 2,182.
+
   Still open:
   - A `let` or `var` pattern over a fixed-layout array or object, which has no boxed value yet (2c).
   - A `var` read after the block or loop that declares it, which no `var` form models yet.

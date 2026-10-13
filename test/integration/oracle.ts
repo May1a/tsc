@@ -432,4 +432,5 @@ export const oracleFixtures: readonly string[] = [
   "error-constructor-cause.ts",
   "error-constructor-argument.ts",
   "discarded-expression-statements.ts",
+  "destructuring-assignment.ts",
 ] as const;
