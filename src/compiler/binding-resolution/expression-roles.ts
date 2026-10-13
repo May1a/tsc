@@ -43,6 +43,7 @@ export const valueExpressionRoles = {
   optionalChain: {},
   optionalTarget: {},
   errorConstructor: { errorName: preserved("errorName") },
+  unresolvableReference: { message: preserved("message") },
   void: {},
   sequence: {},
   stringStartsWith: {},

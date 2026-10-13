@@ -8,7 +8,7 @@ import { literalString } from "./value-support.js";
 type ScalarKind =
   | "constNumber" | "letNumber" | "assignNumber" | "constString" | "constStringExpression" | "letString" | "assignString"
   | "constBoolean" | "constBooleanExpression" | "letBoolean" | "assignBoolean" | "constValue" | "letValue" | "assignValue"
-  | "print" | "throwValue" | "returnNumber" | "returnString" | "returnValue" | "call" | "callValue" | "inlineCpp"
+  | "print" | "throwValue" | "discardValue" | "returnNumber" | "returnString" | "returnValue" | "call" | "callValue" | "inlineCpp"
   | "requireObjectCoercible" | "block" | "bindingGroup" | "if" | "tryCatch" | "switch" | "while" | "doWhile" | "for" | "break" | "continue";
 
 type ScalarVariants = { readonly [K in ScalarKind]: VariantOfKind<ResolvedOperation, K> };
@@ -31,6 +31,7 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
   assignValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
   print: (operation, context) => context.runtime.callVoid("valuePrint", [context.expressions.expression(operation.expression)]),
   throwValue: (operation, context) => context.throwValue(context.expressions.value(operation.value)),
+  discardValue: (operation, context) => { context.expressions.value(operation.value); },
   returnNumber: (operation, context) => {
     const value = context.expressions.number(operation.expression);
     context.returnValue(context.values.forBlock(context.cursor.currentBlock()).boxNumber(value));

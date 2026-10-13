@@ -77,7 +77,7 @@ export function lowerExpressionStatement(
   }
 
   if (!ts.isCallExpression(expression)) {
-    return unsupported("Only calls, assignments, update expressions, and `delete` expressions are supported as statements");
+    return lowerDiscardedValue(context, expression, bindings);
   }
 
   const callOp = lowerCallStatement(context, expression, bindings);
@@ -298,4 +298,17 @@ function lowerDeleteExpression(
   }
 
   return notApplicable;
+}
+
+/** Any other expression statement evaluates its expression for its effects, such as a throwing read. */
+function lowerDiscardedValue(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const value = context.lowerValueExpression(context, expression, bindings);
+  if (value.kind !== "lowered") {
+    return withRefusal(value, unsupportedIn("Only calls, assignments, update expressions, and `delete` expressions are supported as statements"));
+  }
+  return produced({ kind: "discardValue", value: value.operation });
 }

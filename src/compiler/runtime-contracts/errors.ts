@@ -115,4 +115,11 @@ export const errorsContracts = {
     name: "valuePrintUncaught", parameters: [llvm.i64], returns: llvm.void, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "errorThrowReference": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "errorThrowReference", parameters: [llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

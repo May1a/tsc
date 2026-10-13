@@ -195,6 +195,10 @@ function unboundValueRefusal(
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
     return notApplicable;
   }
+  // With a checker that finds no declaration at all, the read is unresolvable and throws.
+  if (context.typeChecker !== undefined && symbol === undefined) {
+    return produced({ kind: "unresolvableReference", message: `${expression.text} is not defined` });
+  }
   return unsupportedIn(unsupportedUnboundValueMessage(expression.text));
 }
 

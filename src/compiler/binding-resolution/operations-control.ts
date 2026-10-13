@@ -4,6 +4,7 @@ import { declareFromOperation, optional, resolveCallArguments, resolveFunctionPa
 export const controlHandlers = {
   print: (node, resolver) => ({ ...node, expression: resolver.expression(node.expression) }),
   throwValue: (node, resolver) => ({ ...node, value: resolver.value(node.value) }),
+  discardValue: (node, resolver) => ({ ...node, value: resolver.value(node.value) }),
   block: (node, resolver) => ({
     ...node,
     operations: resolver.state.inScope("block", () => resolver.operations(node.operations))

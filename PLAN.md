@@ -283,6 +283,14 @@ In the same step:
   `class-private-field-unsupported`, `class-computed-field-unsupported`). Rename those, and add them to
   the oracle, since they now compile.
 
+**Follow-up: expression statements and undeclared names.** An expression statement no recognizer
+claimed was refused. It now evaluates its expression as a value and discards it (`discardValue`), so
+`o.a;` reads and `value.missing;` through `null` throws, as in JavaScript. A read of a name that the
+checker resolves to no declaration at all lowers to `unresolvableReference`, which throws
+`ReferenceError: x is not defined`. A declared name that lowering cannot read is still refused.
+`typeof` answers statically and never evaluates its operand this way. Test262 rises from 1,813 to
+2,066.
+
 **Lint proposal.** Add `fixture-name-matches-outcome`: a fixture named `-unsupported` must be refused,
 and a `defect-` fixture must be listed in a test that asserts the defect.
 

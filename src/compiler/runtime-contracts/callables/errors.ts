@@ -21,5 +21,6 @@ export function createErrorsCallees(module: LlvmModuleBuilder): RuntimeCalleeTab
     "errorToStringMethod": registerRuntimeContract(module, errorsContracts.errorToStringMethod),
     "errorInstallCause": registerRuntimeContract(module, errorsContracts.errorInstallCause),
     "valuePrintUncaught": registerRuntimeContract(module, errorsContracts.valuePrintUncaught),
+    "errorThrowReference": registerRuntimeContract(module, errorsContracts.errorThrowReference),
   };
 }

@@ -294,3 +294,16 @@ plain:
   call void @valuePrint(i64 %value)
   ret void
 }
+
+; The completion of reading a name nothing declares: a thrown ReferenceError with `message`.
+define { i64, i1 } @errorThrowReference(i64 %message) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %message)
+  %error = call ptr @errorNew(i64 7, i64 14, ptr @.errorctor.name.ReferenceError, i64 %message)
+  %error.value = call i64 @valueBoxObject(ptr %error)
+  call void @gcRootRestore(i64 %frame)
+  %thrown.0 = insertvalue { i64, i1 } undef, i64 %error.value, 0
+  %thrown = insertvalue { i64, i1 } %thrown.0, i1 true, 1
+  ret { i64, i1 } %thrown
+}

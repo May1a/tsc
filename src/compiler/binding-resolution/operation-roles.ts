@@ -134,6 +134,7 @@ export const operationRoles = {
   // Control flow.
   print: {},
   throwValue: {},
+  discardValue: {},
   block: {},
   // `catchVariable` is empty when there is no catch clause, so it declares only when it has a name.
   tryCatch: { catchVariable: optionalDeclaration },
