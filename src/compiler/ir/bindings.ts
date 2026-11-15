@@ -19,6 +19,8 @@ export interface JsIrFunctionParameter {
    * is bound, so it may read them.
    */
   readonly defaultValue?: JsIrValueExpression;
+  /** Runs after this parameter is bound, before the next parameter starts. */
+  readonly bindingOperations?: readonly JsIrOperation[];
   readonly isRest?: boolean;
   /** An omitted optional parameter receives undefined in boxed storage. */
   readonly isOptional?: boolean;

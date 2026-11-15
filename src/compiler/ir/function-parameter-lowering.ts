@@ -15,7 +15,6 @@ import { bindFunctionParameter, functionFrameBindings } from "./function-paramet
 interface LoweredParameters {
   readonly parameters: readonly JsIrFunctionParameter[];
   readonly bindings: Map<string, JsIrBindingValue>;
-  readonly prelude: readonly JsIrOperation[];
 }
 
 export function lowerFunctionParameters(
@@ -25,7 +24,6 @@ export function lowerFunctionParameters(
 ): Produced<LoweredParameters> {
   const parameters: JsIrFunctionParameter[] = [];
   const fnBindings = functionFrameBindings(bindings);
-  const prelude: (readonly JsIrOperation[])[] = [];
   const declaredParameters = runtimeParameters(declarations);
   for (const [index, declaration] of declaredParameters.entries()) {
     if (declaration.dotDotDotToken !== undefined && index !== declaredParameters.length - 1) {
@@ -41,15 +39,14 @@ export function lowerFunctionParameters(
       return result;
     }
     const parameter = result.operation;
-    parameters.push(parameter);
     bindFunctionParameter(parameter.name, parameter.isOptional === true ? "value" : parameter.valueKind, parameter.isRest === true, fnBindings);
     const destructured = lowerParameterDestructuring(context, declaration.name, parameter.name, fnBindings);
     if (destructured.kind === "unsupported") {
       return destructured;
     }
-    prelude.push(destructured.operation);
+    parameters.push({ ...parameter, bindingOperations: destructured.operation });
   }
-  return produced({ parameters, bindings: fnBindings, prelude: prelude.flat() });
+  return produced({ parameters, bindings: fnBindings });
 }
 
 function lowerFunctionParameter(

@@ -6,7 +6,7 @@ import type { CompilerDiagnostic } from "../diagnostics.js";
 import type { LoweringContext } from "./context.js";
 import type ts from "typescript";
 import { createInlineCppCompilation, inlineCppDisabledDiagnostic } from "./inline-cpp.js";
-import type { JsIrBindingValue, JsIrFunctionObjectDefinition } from "./bindings.js";
+import type { JsIrBindingValue, JsIrFunctionObjectDefinition, JsIrFunctionParameter } from "./bindings.js";
 import { collectFunctionObjectDefinitions, collectPromotedAggregateNames } from "./captures.js";
 import { type ClassInfo, appendClassOperations } from "./class-info.js";
 import { collectClassHierarchy } from "./class-hierarchy.js";
@@ -45,6 +45,13 @@ function finalizeOperationTraces(operations: readonly JsIrOperation[], nextTrace
   return operations.map((operation) => tracedOperation(operation, undefined, nextTraceId));
 }
 
+function traceParameterBindings(
+  parameters: readonly JsIrFunctionParameter[],
+  rebuild: (operation: JsIrOperation) => JsIrOperation
+): readonly JsIrFunctionParameter[] {
+  return parameters.map((parameter) => ({ ...parameter, bindingOperations: parameter.bindingOperations?.map(rebuild) }));
+}
+
 /** One operation with its trace filled in, then the same for everything nested inside it. */
 function tracedOperation(
   operation: JsIrOperation,
@@ -78,7 +85,9 @@ function withTracedChildren(operation: JsIrOperation, nextTraceId: () => string)
       };
     }
     case "runtimeArrayMapFunctionObject": {
-      return { ...operation, callbackBody: operation.callbackBody.map(tracedOperationChild(operation, nextTraceId)) };
+      const rebuild = tracedOperationChild(operation, nextTraceId);
+      return { ...operation, callbackParameters: traceParameterBindings(operation.callbackParameters, rebuild),
+        callbackBody: operation.callbackBody.map(rebuild) };
     }
     case "block":
     case "bindingGroup": {
@@ -107,6 +116,12 @@ function withTracedChildren(operation: JsIrOperation, nextTraceId: () => string)
       const rebuild = tracedOperationChild(operation, nextTraceId);
       return { ...operation, clauses: operation.clauses.map(tracedSwitchClause(rebuild)) };
     }
+    case "function": {
+      const rebuild = tracedOperationChild(operation, nextTraceId);
+      return { ...operation,
+        parameters: traceParameterBindings(operation.parameters, rebuild),
+        body: operation.body.map(rebuild) };
+    }
     case "while":
     case "doWhile":
     case "forOfArray":
@@ -116,7 +131,6 @@ function withTracedChildren(operation: JsIrOperation, nextTraceId: () => string)
     case "forOfProtocol":
     case "forInObject":
     case "forInArray":
-    case "function":
     case "returnClosure": {
       return { ...operation, body: operation.body.map(tracedOperationChild(operation, nextTraceId)) };
     }
@@ -251,6 +265,7 @@ export function lowerToJsIr(
     const operations = finalizeOperationTraces(lowered.operations, nextTraceId);
     const finalizeDefinition = (definition: JsIrFunctionObjectDefinition) => ({
       ...definition,
+      parameters: traceParameterBindings(definition.parameters, (operation) => tracedOperation(operation, undefined, nextTraceId)),
       ...(definition.body === undefined ? {} : { body: finalizeOperationTraces(definition.body, nextTraceId) })
     });
     const functionObjects = collectFunctionObjectDefinitions(operations).map(finalizeDefinition);

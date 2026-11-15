@@ -46,7 +46,7 @@ export function lowerClassAccessor(
     }
     const fnParameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...parameters.operation.parameters];
     const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, accessor, accessor.body, [...accessor.parameters], bindings);
-    return produced({ kind: "function", name: functionName, parameters: fnParameters, body: [...parameters.operation.prelude, ...body.operation],
+    return produced({ kind: "function", name: functionName, parameters: fnParameters, body: body.operation,
       ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }) });
   } finally {
     context.classThisInScope = previousThis;
@@ -99,7 +99,7 @@ export function lowerClassMethod(
       kind: "function",
       name: classMethodFunctionName(info.name, methodName, isStatic),
       parameters: fnParameters,
-      body: [...parameters.operation.prelude, ...body.operation],
+      body: body.operation,
       ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] })
     });
   } finally {

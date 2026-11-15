@@ -83,7 +83,7 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
       });
     }
     case "runtimeArrayMapFunctionObject": {
-      return operation.callbackBody;
+      return [...operation.callbackParameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...operation.callbackBody];
     }
     case "block":
     case "bindingGroup": {
@@ -105,6 +105,9 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
     case "switch": {
       return operation.clauses.flatMap((clause) => clause.operations);
     }
+    case "function": {
+      return [...operation.parameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...operation.body];
+    }
     case "while":
     case "doWhile":
     case "forOfArray":
@@ -114,7 +117,6 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
     case "forOfProtocol":
     case "forInObject":
     case "forInArray":
-    case "function":
     case "returnClosure": {
       return operation.body;
     }

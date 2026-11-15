@@ -40,9 +40,9 @@ export function lowerClassConstructor(
     if (lowered.kind !== "lowered") {
       return lowered;
     }
-    const { bindings: fnBindings, prelude } = lowered.operation;
+    const { bindings: fnBindings } = lowered.operation;
     const parameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...lowered.operation.parameters];
-    const body: JsIrOperation[] = [...prelude];
+    const body: JsIrOperation[] = [];
     let remainingStatements: readonly ts.Statement[] = constructorDeclaration?.body?.statements ?? [];
     if (info.baseName !== undefined) {
       const base = context.classes.get(info.baseName);
@@ -189,7 +189,6 @@ function lowerConstructorParameters(
 ): Produced<{
   readonly parameters: readonly JsIrFunctionParameter[];
   readonly bindings: Map<string, JsIrBindingValue>;
-  readonly prelude: readonly JsIrOperation[];
 }> {
   if (constructorDeclaration !== undefined) {
     return lowerFunctionParameters(context, constructorDeclaration.parameters, receiverBindings);
@@ -198,7 +197,7 @@ function lowerConstructorParameters(
   for (const parameter of info.constructorParameters) {
     bindFunctionParameter(parameter.name, parameter.isOptional === true ? "value" : parameter.valueKind, false, fnBindings);
   }
-  return produced({ parameters: info.constructorParameters, bindings: fnBindings, prelude: [] });
+  return produced({ parameters: info.constructorParameters, bindings: fnBindings });
 }
 
 /** A public field is an own property of the instance; a private one is a private element. */

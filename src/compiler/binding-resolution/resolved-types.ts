@@ -133,6 +133,8 @@ export interface ResolvedFunctionParameter {
   readonly name: BindingRef;
   readonly valueKind: JsIrValueKind;
   readonly defaultValue?: ResolvedValueExpression;
+  /** Runs after this parameter is bound, before the next parameter starts. */
+  readonly bindingOperations?: readonly ResolvedOperation[];
   readonly isRest?: boolean;
   readonly isOptional?: boolean;
 }

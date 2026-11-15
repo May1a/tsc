@@ -67,6 +67,7 @@ export function initializeParameters(plan: FunctionPlan, fn: NativeFunctionBuild
         return context.expressions.value(parameter.defaultValue);
       }, () => input, "parameter.default");
     initializeParameter(parameter, value, context);
+    context.operations.operations(parameter.bindingOperations ?? []);
   }
   if (plan.thisBinding !== undefined) { context.writes.storeValue(plan.thisBinding, fn.boxedParameter(thisParameterIndex)); }
 }

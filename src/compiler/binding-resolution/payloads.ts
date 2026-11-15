@@ -65,7 +65,8 @@ export function resolveFunctionParameters(
     ...parameter,
     name: resolver.state.declare(parameter.name, "parameter", parameter.isOptional === true && parameter.defaultValue === undefined
       ? { kind: "value" } : parameterRepresentation(parameter.valueKind)),
-    defaultValue: optional(parameter.defaultValue, resolver.value)
+    defaultValue: optional(parameter.defaultValue, resolver.value),
+    bindingOperations: optional(parameter.bindingOperations, resolver.operations)
   }));
 }
 

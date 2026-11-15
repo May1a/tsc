@@ -58,7 +58,7 @@ export function collectFunctionPlans(resolved: ResolvedModule): readonly Functio
       if (definition.directTarget !== undefined) { continue; }
       const plan = objectPlan(definition);
       plans.set(plan.functionId, plan);
-      collect(plan.body);
+      collect([...plan.parameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...plan.body]);
     }
   }
   return Object.freeze([...plans.values()].map((plan) => normalizeCaptures(plan, resolved)));

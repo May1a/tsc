@@ -5,7 +5,6 @@ import type { JsIrBindingValue } from "./bindings.js";
 import { type Lowered, loweredOperation, unsupported } from "./lowered.js";
 import { declaredFunctionReturnKind } from "./function-parameters.js";
 import { lowerFunctionParameters } from "./function-parameter-lowering.js";
-import type { JsIrOperation } from "./types.js";
 import { isPlainObjectReturningConstructor } from "./class-info.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { collectFunctionDeclarationEnclosingCaptureNames } from "./captures.js";
@@ -30,7 +29,7 @@ export function lowerFunctionDeclaration(
   if (loweredParameters.kind === "unsupported") {
     return loweredParameters;
   }
-  const { parameters, bindings: fnBindings, prelude } = loweredParameters.operation;
+  const { parameters, bindings: fnBindings } = loweredParameters.operation;
 
   // A nested `function` declaration has its own dynamic `this`: it must not read the enclosing
   // frame's through the bindings, or uses of `this` inside it would capture an environment cell
@@ -48,15 +47,11 @@ export function lowerFunctionDeclaration(
   }
   const bodyStatements = loweredBody.operation;
 
-  const body: readonly JsIrOperation[] = prelude.length === 0
-    ? bodyStatements
-    : [{ kind: "bindingGroup", operations: [...prelude, ...bodyStatements] }];
-
   return loweredOperation({
     kind: "function",
     name: statement.name.text,
     parameters,
-    body,
+    body: bodyStatements,
     enclosingCaptureNames: collectFunctionDeclarationEnclosingCaptureNames(context.typeChecker, statement, bindings),
     constructibleByObjectReturn: isPlainObjectReturningConstructor(statement)
   });
