@@ -362,7 +362,7 @@ export const objectsContracts = {
   },
   "objectFindProperty": {
     resultKind: "pointer",
-    pointerResult: { kind: "heap" },
+    pointerResult: { kind: "borrowed", parameter: 0 },
     origin: "staticRuntime",
     name: "objectFindProperty", parameters: [llvm.ptr, llvm.i64, llvm.ptr], returns: llvm.ptr, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
