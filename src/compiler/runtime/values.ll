@@ -396,11 +396,7 @@ array.lookup:
 array.hit:
   ret i64 %array.result
 array.builtin:
-  %array.method.code = call ptr @arrayPrototypeMethod(i64 %key.len, ptr %key.ptr)
-  %array.method.missing = icmp eq ptr %array.method.code, null
-  br i1 %array.method.missing, label %missing, label %array.method.found
-array.method.found:
-  %array.method = call i64 @functionObjectNew(ptr %array.method.code, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  %array.method = call i64 @arrayPrototypeMethod(i64 %key.len, ptr %key.ptr)
   ret i64 %array.method
 check.string:
   %is.string = call i1 @valueIsString(i64 %value)

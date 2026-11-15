@@ -70,6 +70,7 @@ init:
   %trace.set = icmp ne ptr %trace.env, null
   %trace.flag = zext i1 %trace.set to i64
   store i64 %trace.flag, ptr @gcTrace
+  call void @arrayPrototypeInit()
   ret void
 }
 

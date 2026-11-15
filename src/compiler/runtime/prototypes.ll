@@ -36,42 +36,63 @@
 @.array.method.name.unshift = private unnamed_addr constant [8 x i8] c"unshift\00"
 @.array.method.name.values = private unnamed_addr constant [7 x i8] c"values\00"
 
-; { key length, key bytes, method } for every method a property read on an array can return.
-@arrayPrototypeMethods = private unnamed_addr constant [30 x { i64, ptr, ptr }] [
-  { i64, ptr, ptr } { i64 2, ptr @.array.method.name.at, ptr @arrayAtMethod },
-  { i64, ptr, ptr } { i64 6, ptr @.array.method.name.concat, ptr @arrayConcatMethod },
-  { i64, ptr, ptr } { i64 10, ptr @.array.method.name.copyWithin, ptr @arrayCopyWithinMethod },
-  { i64, ptr, ptr } { i64 7, ptr @.array.method.name.entries, ptr @arrayEntriesMethod },
-  { i64, ptr, ptr } { i64 4, ptr @.array.method.name.fill, ptr @arrayFillMethod },
-  { i64, ptr, ptr } { i64 6, ptr @.array.method.name.filter, ptr @arrayFilterMethod },
-  { i64, ptr, ptr } { i64 4, ptr @.array.method.name.find, ptr @arrayFindMethod },
-  { i64, ptr, ptr } { i64 9, ptr @.array.method.name.findIndex, ptr @arrayFindIndexMethod },
-  { i64, ptr, ptr } { i64 4, ptr @.array.method.name.flat, ptr @arrayFlatMethod },
-  { i64, ptr, ptr } { i64 7, ptr @.array.method.name.flatMap, ptr @arrayFlatMapMethod },
-  { i64, ptr, ptr } { i64 7, ptr @.array.method.name.forEach, ptr @arrayForEachMethod },
-  { i64, ptr, ptr } { i64 8, ptr @.array.method.name.includes, ptr @arrayIncludesMethod },
-  { i64, ptr, ptr } { i64 7, ptr @.array.method.name.indexOf, ptr @arrayIndexOfMethod },
-  { i64, ptr, ptr } { i64 4, ptr @.array.method.name.join, ptr @arrayJoinMethod },
-  { i64, ptr, ptr } { i64 4, ptr @.array.method.name.keys, ptr @arrayKeysMethod },
-  { i64, ptr, ptr } { i64 11, ptr @.array.method.name.lastIndexOf, ptr @arrayLastIndexOfMethod },
-  { i64, ptr, ptr } { i64 3, ptr @.array.method.name.map, ptr @arrayMapMethod },
-  { i64, ptr, ptr } { i64 3, ptr @.array.method.name.pop, ptr @arrayPopMethod },
-  { i64, ptr, ptr } { i64 4, ptr @.array.method.name.push, ptr @arrayPushMethod },
-  { i64, ptr, ptr } { i64 6, ptr @.array.method.name.reduce, ptr @arrayReduceMethod },
-  { i64, ptr, ptr } { i64 11, ptr @.array.method.name.reduceRight, ptr @arrayReduceRightMethod },
-  { i64, ptr, ptr } { i64 7, ptr @.array.method.name.reverse, ptr @arrayReverseMethod },
-  { i64, ptr, ptr } { i64 5, ptr @.array.method.name.shift, ptr @arrayShiftMethod },
-  { i64, ptr, ptr } { i64 5, ptr @.array.method.name.slice, ptr @arraySliceMethod },
-  { i64, ptr, ptr } { i64 4, ptr @.array.method.name.sort, ptr @arraySortMethod },
-  { i64, ptr, ptr } { i64 6, ptr @.array.method.name.splice, ptr @arraySpliceMethod },
-  { i64, ptr, ptr } { i64 8, ptr @.array.method.name.toString, ptr @arrayToStringMethod },
-  { i64, ptr, ptr } { i64 7, ptr @.array.method.name.unshift, ptr @arrayUnshiftMethod },
-  { i64, ptr, ptr } { i64 6, ptr @.array.method.name.values, ptr @arrayValuesMethod },
-  { i64, ptr, ptr } { i64 18, ptr @.symbol.iterator.key, ptr @arrayIteratorMethod }
+; { key length, key bytes, method, arity } for every method a property read on an array can return.
+@arrayPrototypeMethods = private unnamed_addr constant [30 x { i64, ptr, ptr, i64 }] [
+  { i64, ptr, ptr, i64 } { i64 2, ptr @.array.method.name.at, ptr @arrayAtMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 6, ptr @.array.method.name.concat, ptr @arrayConcatMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 10, ptr @.array.method.name.copyWithin, ptr @arrayCopyWithinMethod, i64 2 },
+  { i64, ptr, ptr, i64 } { i64 7, ptr @.array.method.name.entries, ptr @arrayEntriesMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 4, ptr @.array.method.name.fill, ptr @arrayFillMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 6, ptr @.array.method.name.filter, ptr @arrayFilterMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 4, ptr @.array.method.name.find, ptr @arrayFindMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 9, ptr @.array.method.name.findIndex, ptr @arrayFindIndexMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 4, ptr @.array.method.name.flat, ptr @arrayFlatMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 7, ptr @.array.method.name.flatMap, ptr @arrayFlatMapMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 7, ptr @.array.method.name.forEach, ptr @arrayForEachMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 8, ptr @.array.method.name.includes, ptr @arrayIncludesMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 7, ptr @.array.method.name.indexOf, ptr @arrayIndexOfMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 4, ptr @.array.method.name.join, ptr @arrayJoinMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 4, ptr @.array.method.name.keys, ptr @arrayKeysMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 11, ptr @.array.method.name.lastIndexOf, ptr @arrayLastIndexOfMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 3, ptr @.array.method.name.map, ptr @arrayMapMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 3, ptr @.array.method.name.pop, ptr @arrayPopMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 4, ptr @.array.method.name.push, ptr @arrayPushMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 6, ptr @.array.method.name.reduce, ptr @arrayReduceMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 11, ptr @.array.method.name.reduceRight, ptr @arrayReduceRightMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 7, ptr @.array.method.name.reverse, ptr @arrayReverseMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 5, ptr @.array.method.name.shift, ptr @arrayShiftMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 5, ptr @.array.method.name.slice, ptr @arraySliceMethod, i64 2 },
+  { i64, ptr, ptr, i64 } { i64 4, ptr @.array.method.name.sort, ptr @arraySortMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 6, ptr @.array.method.name.splice, ptr @arraySpliceMethod, i64 2 },
+  { i64, ptr, ptr, i64 } { i64 8, ptr @.array.method.name.toString, ptr @arrayToStringMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 7, ptr @.array.method.name.unshift, ptr @arrayUnshiftMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 6, ptr @.array.method.name.values, ptr @arrayValuesMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 18, ptr @.symbol.iterator.key, ptr @arrayIteratorMethod, i64 0 }
 ]
 
-; The method named by the key, or null when Array.prototype has no such method.
-define ptr @arrayPrototypeMethod(i64 %key.len, ptr %key.ptr) {
+; Cache slots are GC roots for the runtime lifetime, independent of any receiver or caller.
+; Zero means the lazy function object has not been allocated yet.
+@arrayPrototypeFunctions = private global [29 x i64] zeroinitializer
+
+define void @arrayPrototypeInit() {
+entry:
+  br label %loop
+loop:
+  %index = phi i64 [ 0, %entry ], [ %next, %body ]
+  %done = icmp eq i64 %index, 29
+  br i1 %done, label %finish, label %body
+body:
+  %slot = getelementptr [29 x i64], ptr @arrayPrototypeFunctions, i64 0, i64 %index
+  store i64 0, ptr %slot
+  call void @gcRegisterGlobalRoot(ptr %slot)
+  %next = add i64 %index, 1
+  br label %loop
+finish:
+  ret void
+}
+
+; The shared function named by the key, or undefined when no builtin matches.
+define i64 @arrayPrototypeMethod(i64 %key.len, ptr %key.ptr) {
 entry:
   br label %scan
 scan:
@@ -79,25 +100,47 @@ scan:
   %done = icmp eq i64 %index, 30
   br i1 %done, label %missing, label %check.length
 check.length:
-  %length.slot = getelementptr [30 x { i64, ptr, ptr }], ptr @arrayPrototypeMethods, i64 0, i64 %index, i32 0
+  %length.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %index, i32 0
   %length = load i64, ptr %length.slot
   %same.length = icmp eq i64 %length, %key.len
   br i1 %same.length, label %check.name, label %advance
 check.name:
-  %name.slot = getelementptr [30 x { i64, ptr, ptr }], ptr @arrayPrototypeMethods, i64 0, i64 %index, i32 1
+  %name.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %index, i32 1
   %name = load ptr, ptr %name.slot
   %comparison = call i32 @memcmp(ptr %key.ptr, ptr %name, i64 %key.len)
   %same.name = icmp eq i32 %comparison, 0
   br i1 %same.name, label %found, label %advance
 found:
-  %method.slot = getelementptr [30 x { i64, ptr, ptr }], ptr @arrayPrototypeMethods, i64 0, i64 %index, i32 2
+  ; Array.prototype[Symbol.iterator] is the same function as Array.prototype.values.
+  %is.iterator = icmp eq i64 %index, 29
+  %canonical = select i1 %is.iterator, i64 28, i64 %index
+  %cache.slot = getelementptr [29 x i64], ptr @arrayPrototypeFunctions, i64 0, i64 %canonical
+  %cached = load i64, ptr %cache.slot
+  %uninitialized = icmp eq i64 %cached, 0
+  br i1 %uninitialized, label %create, label %reuse
+reuse:
+  ret i64 %cached
+create:
+  %method.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 2
   %method = load ptr, ptr %method.slot
-  ret ptr %method
+  %arity.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 3
+  %arity = load i64, ptr %arity.slot
+  %canonical.name.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 1
+  %canonical.name = load ptr, ptr %canonical.name.slot
+  %canonical.length.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 0
+  %canonical.length = load i64, ptr %canonical.length.slot
+  %name.value = call i64 @valueBoxString(ptr %canonical.name, i64 %canonical.length)
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %name.value)
+  %function = call i64 @functionObjectNew(ptr %method, ptr null, i64 9222246136947933184, i64 %name.value, i64 %arity)
+  store i64 %function, ptr %cache.slot
+  call void @gcRootRestore(i64 %frame)
+  ret i64 %function
 advance:
   %next = add i64 %index, 1
   br label %scan
 missing:
-  ret ptr null
+  ret i64 9222246136947933184
 }
 
 ; The TypeError for a method whose `this` is not an array, for example after `.call(other)`.
