@@ -123,7 +123,7 @@ function lowerDiscardedCall(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
   const value = context.lowerValueExpression(context, expression, bindings);
-  return value.kind === "lowered" ? produced({ kind: "discardValue", value: value.operation }) : notApplicable;
+  return value.kind === "lowered" ? produced({ kind: "discardValue", value: value.operation }) : value;
 }
 
 /**
