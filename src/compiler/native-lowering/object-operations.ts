@@ -37,7 +37,7 @@ function create(operation: OperationNode<"runtimeObjectCreate">, context: Operat
 
 function errorLiteral(operation: OperationNode<"runtimeErrorLiteral">, context: OperationContext): void {
   const argument = keep(context.expressions.value(operation.message), context);
-  const message = keep(context.runtime.callBoxed("errorMessageFrom", [argument], context.cursor.uniqueName("error.message")), context);
+  const message = keep(context.runtime.callWithCompletion("errorMessageFrom", [argument], context.cursor.uniqueName("error.message"), context.exceptionTarget()), context);
   const name = literalString(operation.errorName, context);
   const pointer = context.runtime.callPointer("errorNew", [integer(BigInt(errorClassId(operation.errorName)), context), name.length, name.bytes, message],
     context.cursor.uniqueName("error.new"));
@@ -119,6 +119,16 @@ function valuePrototype(operation: OperationNode<"valueObjectSetPrototype">, con
 
 function numberStore(operation: OperationNode<"objectStore">, context: OperationContext): void {
   context.writes.storeObjectNumber(operation.objectName, operation.path, context.expressions.number(operation.value));
+}
+
+function defineAccessor(operation: OperationNode<"defineAccessor">, context: OperationContext): void {
+  const target = keep(context.bindings.value(operation.targetName), context);
+  const key = context.expressions.string(operation.key);
+  boxString(key, context);
+  const getter = keep(context.expressions.value(operation.getter), context);
+  const setter = keep(context.expressions.value(operation.setter), context);
+  const object = context.runtime.callPointer("valueObjectPtr", [target], context.cursor.uniqueName("accessor.object"));
+  context.runtime.callVoid("objectDefineAccessor", [object, key.length, key.bytes, getter, setter]);
 }
 
 function store(operation: OperationNode<"runtimeObjectStore" | "valueObjectStore">, context: OperationContext): void {
@@ -230,7 +240,7 @@ export const objectOperationHandlers = {
   runtimeObjectKeys: enumerate, runtimeObjectValues: enumerate, runtimeObjectEntries: enumerate,
   runtimeObjectOwnPropertyNames: enumerate, runtimeObjectOwnPropertyDescriptors: enumerate, runtimeObjectFromEntries: fromEntries,
   runtimeObjectOwnPropertyDescriptor: ownDescriptor, runtimeObjectGetPrototype: getPrototype, runtimeObjectSetPrototype: setPrototype,
-  valueObjectSetPrototype: valuePrototype, objectStore: numberStore, runtimeObjectStore: store, valueObjectStore: store,
+  defineAccessor, valueObjectSetPrototype: valuePrototype, objectStore: numberStore, runtimeObjectStore: store, valueObjectStore: store,
   privateFieldStore: privateStore, runtimeObjectDelete: deleteProperty, valueObjectDelete: deleteProperty,
   runtimeObjectPreventExtensions: state, runtimeObjectSeal: state, runtimeObjectFreeze: state,
   runtimeObjectAssign: assign, runtimeObjectDefineDataProperty: defineProperty, runtimeObjectDefineDataProperties: defineProperties

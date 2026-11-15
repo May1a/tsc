@@ -102,6 +102,7 @@ export function boxedPrimitive(expression: ValueNode<"boxedPrimitive">, context:
     const key = literalString("length", context);
     context.runtime.callVoid("objectSet", [object, key.length, key.bytes, numericValue(number, context)]);
   }
+  context.runtime.callVoid("boxedInstallConversionMethods", [object]);
   return boxed;
 }
 

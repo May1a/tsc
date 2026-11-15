@@ -161,8 +161,13 @@ const handlers: VariantHandlers<StringVariants, ExpressionContext, NativeString>
     const argument = context.expressions.number(expression.argument ?? { kind: "literal", value: formatDefaults[expression.method] });
     return context.runtime.callString(formatHelpers[expression.method], [receiver, argument], context.cursor.uniqueName("number.format"));
   },
-  errorToString: (expression, context) => context.runtime.callString("errorToString", [context.bindings.pointer(expression.objectName)],
-    context.cursor.uniqueName("error.string"))
+  errorToString: (expression, context) => {
+    const receiver = context.values.forBlock(context.cursor.currentBlock()).boxReference("object", context.bindings.pointer(expression.objectName));
+    context.roots.push(receiver);
+    const result = context.runtime.callWithCompletion("errorToStringObservable", [receiver],
+      context.cursor.uniqueName("error.string"), context.exceptionTarget());
+    return stringFromValue(result, context);
+  }
 };
 
 export function lowerString(expression: ResolvedStringExpression, context: ExpressionContext): NativeString {

@@ -230,6 +230,10 @@ export function collectOperationValueExpressions(operation: JsIrOperation, names
   if (operation.kind === "constValue" || operation.kind === "letValue" || operation.kind === "assignValue" || operation.kind === "requireObjectCoercible" || operation.kind === "throwValue" || operation.kind === "discardValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore" || operation.kind === "privateFieldStore") {
     collectValueExpressionObjectNames(operation.value, names);
   }
+  if (operation.kind === "defineAccessor") {
+    collectValueExpressionObjectNames(operation.getter, names);
+    collectValueExpressionObjectNames(operation.setter, names);
+  }
   if (operation.kind === "arrayDestructureProtocol") {
     if (operation.source.kind === "value") {
       collectValueExpressionObjectNames(operation.source.value, names);

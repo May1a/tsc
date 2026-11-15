@@ -3,12 +3,19 @@
 
 define ptr @errorNew(i64 %class.id, i64 %name.len, ptr %name.ptr, i64 %message) {
 entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %message)
+  %prototype = call ptr @errorPrototype(i64 %class.id)
   %object = call ptr @objectNew(i64 2)
+  call void @objectSetPrototype(ptr %object, ptr %prototype)
+  %owner = call i64 @valueBoxObject(ptr %object)
+  call void @gcRootPush(i64 %owner)
   %class.slot = getelementptr i8, ptr %object, i64 48
   store i64 %class.id, ptr %class.slot
   %name.value = call i64 @valueBoxString(ptr %name.ptr, i64 %name.len)
   call void @objectDefineDataProperty(ptr %object, i64 4, ptr @.error.key.name, i64 %name.value, i64 5)
   call void @objectDefineDataProperty(ptr %object, i64 7, ptr @.error.key.message, i64 %message, i64 5)
+  call void @gcRootRestore(i64 %frame)
   ret ptr %object
 }
 @.error.tostring.key.name = private unnamed_addr constant [5 x i8] c"name\00"
@@ -100,24 +107,18 @@ done:
 
 ; An error's message from the argument a constructor received: an undefined one is empty, as
 ; `Error.prototype.message` is, a string is kept, and anything else is converted to a string.
-define i64 @errorMessageFrom(i64 %argument) {
+define { i64, i1 } @errorMessageFrom(i64 %argument) {
 entry:
   %undefined = icmp eq i64 %argument, 9222246136947933184
-  br i1 %undefined, label %empty, label %check.string
-check.string:
-  %is.string = call i1 @valueIsString(i64 %argument)
-  br i1 %is.string, label %kept, label %convert
-kept:
-  ret i64 %argument
+  br i1 %undefined, label %empty, label %convert
 convert:
-  %converted = call { ptr, i64 } @valueToString(i64 %argument)
-  %converted.ptr = extractvalue { ptr, i64 } %converted, 0
-  %converted.len = extractvalue { ptr, i64 } %converted, 1
-  %converted.value = call i64 @valueCopyString(ptr %converted.ptr, i64 %converted.len)
-  ret i64 %converted.value
+  %converted = call { i64, i1 } @valueToStringObservable(i64 %argument, i1 false)
+  ret { i64, i1 } %converted
 empty:
-  %empty.value = call i64 @valueBoxString(ptr @.errorctor.empty, i64 0)
-  ret i64 %empty.value
+  %value = call i64 @valueBoxString(ptr @.errorctor.empty, i64 0)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %value, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }
 
 define { i64, i1 } @errorConstructorCall(i64 %class.id, i64 %argc, ptr %argv) {
@@ -129,7 +130,13 @@ load:
   br label %create
 create:
   %raw.message = phi i64 [ %argument, %load ], [ 9222246136947933184, %entry ]
-  %message = call i64 @errorMessageFrom(i64 %raw.message)
+  %message.result = call { i64, i1 } @errorMessageFrom(i64 %raw.message)
+  %message.threw = extractvalue { i64, i1 } %message.result, 1
+  br i1 %message.threw, label %message.error, label %allocate
+message.error:
+  ret { i64, i1 } %message.result
+allocate:
+  %message = extractvalue { i64, i1 } %message.result, 0
   %name.len.slot = getelementptr [8 x { ptr, i64, ptr }], ptr @errorConstructorTable, i64 0, i64 %class.id, i32 1
   %name.len = load i64, ptr %name.len.slot
   %name.ptr.slot = getelementptr [8 x { ptr, i64, ptr }], ptr @errorConstructorTable, i64 0, i64 %class.id, i32 2
@@ -144,8 +151,12 @@ create:
 options:
   %options.slot = getelementptr i64, ptr %argv, i64 1
   %options.value = load i64, ptr %options.slot
-  call void @errorInstallCause(ptr %error, i64 %options.value)
-  br label %done
+  %cause.result = call { i64, i1 } @errorInstallCause(ptr %error, i64 %options.value)
+  %cause.threw = extractvalue { i64, i1 } %cause.result, 1
+  br i1 %cause.threw, label %cause.error, label %done
+cause.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %cause.result
 done:
   call void @gcRootRestore(i64 %frame)
   %ok.0 = insertvalue { i64, i1 } undef, i64 %error.value, 0
@@ -232,14 +243,8 @@ entry:
   %is.object = call i1 @valueIsObject(i64 %this.value)
   br i1 %is.object, label %convert, label %not.object
 convert:
-  %object = call ptr @valueObjectPtr(i64 %this.value)
-  %string = call { ptr, i64 } @errorToString(ptr %object)
-  %string.ptr = extractvalue { ptr, i64 } %string, 0
-  %string.len = extractvalue { ptr, i64 } %string, 1
-  %boxed = call i64 @valueCopyString(ptr %string.ptr, i64 %string.len)
-  %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
-  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
-  ret { i64, i1 } %ok
+  %result = call { i64, i1 } @errorToStringObservable(i64 %this.value)
+  ret { i64, i1 } %result
 not.object:
   %message = call i64 @valueBoxString(ptr @.errorctor.not.error, i64 47)
   %error = call { i64, i1 } @iteratorTypeError(i64 %message)
@@ -249,20 +254,36 @@ not.object:
 @.errorctor.key.cause = private unnamed_addr constant [6 x i8] c"cause\00"
 ; InstallErrorCause: an options object that has a `cause`, own or inherited, gives the error an own,
 ; non-enumerable `cause` holding it.
-define void @errorInstallCause(ptr %error, i64 %options) {
+define { i64, i1 } @errorInstallCause(ptr %error, i64 %options) {
 entry:
+  %is.reference = call i1 @valueIsObjectLike(i64 %options)
+  br i1 %is.reference, label %classify, label %done
+classify:
   %is.object = call i1 @valueIsObject(i64 %options)
-  br i1 %is.object, label %check, label %done
+  br i1 %is.object, label %check, label %other
+other:
+  %has.own.result = call { i64, i1 } @valueHasOwnProperty(i64 %options, i64 5, ptr @.errorctor.key.cause)
+  %has.own.value = extractvalue { i64, i1 } %has.own.result, 0
+  %has.own = icmp eq i64 %has.own.value, 9222246136947933186
+  br i1 %has.own, label %install, label %done
 check:
   %options.ptr = call ptr @valueObjectPtr(i64 %options)
   %has.cause = call i1 @objectHas(ptr %options.ptr, i64 5, ptr @.errorctor.key.cause)
   br i1 %has.cause, label %install, label %done
 install:
-  %cause = call i64 @objectGet(ptr %options.ptr, i64 5, ptr @.errorctor.key.cause)
+  %cause.result = call { i64, i1 } @checkedValuePropertyGet(i64 %options, i64 5, ptr @.errorctor.key.cause)
+  %threw = extractvalue { i64, i1 } %cause.result, 1
+  br i1 %threw, label %cause.error, label %define
+cause.error:
+  ret { i64, i1 } %cause.result
+define:
+  %cause = extractvalue { i64, i1 } %cause.result, 0
   call void @objectDefineDataProperty(ptr %error, i64 5, ptr @.errorctor.key.cause, i64 %cause, i64 5)
   br label %done
 done:
-  ret void
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }
 
 @.uncaught.empty.message = private unnamed_addr constant [5 x i8] c"%s:\0A\00"
@@ -306,4 +327,111 @@ entry:
   %thrown.0 = insertvalue { i64, i1 } undef, i64 %error.value, 0
   %thrown = insertvalue { i64, i1 } %thrown.0, i1 true, 1
   ret { i64, i1 } %thrown
+}
+
+@errorPrototypeRoots = internal global [8 x i64] zeroinitializer
+
+define ptr @errorPrototype(i64 %class.id) {
+entry:
+  %slot = getelementptr [8 x i64], ptr @errorPrototypeRoots, i64 0, i64 %class.id
+  %cached = load i64, ptr %slot
+  %missing = icmp eq i64 %cached, 0
+  br i1 %missing, label %create, label %done
+create:
+  %object = call ptr @objectNew(i64 1)
+  %boxed = call i64 @valueBoxObject(ptr %object)
+  store i64 %boxed, ptr %slot
+  call void @gcRegisterGlobalRoot(ptr %slot)
+  %method = call i64 @functionObjectNew(ptr @errorToStringMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  call void @objectDefineDataProperty(ptr %object, i64 8, ptr @.toprimitive.tostring, i64 %method, i64 5)
+  ret ptr %object
+done:
+  %object.ptr = call ptr @valueObjectPtr(i64 %cached)
+  ret ptr %object.ptr
+}
+
+; Error.prototype.toString reads and converts name before reading message.
+define { i64, i1 } @errorToStringObservable(i64 %receiver) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %receiver)
+  %name.read = call { i64, i1 } @checkedValuePropertyGet(i64 %receiver, i64 4, ptr @.error.key.name)
+  %name.read.threw = extractvalue { i64, i1 } %name.read, 1
+  br i1 %name.read.threw, label %name.read.error, label %name.convert
+name.read.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %name.read
+name.convert:
+  %name.raw = extractvalue { i64, i1 } %name.read, 0
+  %name.undefined = icmp eq i64 %name.raw, 9222246136947933184
+  br i1 %name.undefined, label %name.default, label %name.coerce
+name.default:
+  %name.builtin = call i64 @valueBoxString(ptr @.errorctor.name.Error, i64 5)
+  br label %name.ready
+name.coerce:
+  %name.converted = call { i64, i1 } @valueToStringObservable(i64 %name.raw, i1 false)
+  %name.threw = extractvalue { i64, i1 } %name.converted, 1
+  br i1 %name.threw, label %name.error, label %name.string
+name.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %name.converted
+name.string:
+  %name.value = extractvalue { i64, i1 } %name.converted, 0
+  br label %name.ready
+name.ready:
+  %name = phi i64 [ %name.builtin, %name.default ], [ %name.value, %name.string ]
+  call void @gcRootPush(i64 %name)
+  %message.read = call { i64, i1 } @checkedValuePropertyGet(i64 %receiver, i64 7, ptr @.error.key.message)
+  %message.read.threw = extractvalue { i64, i1 } %message.read, 1
+  br i1 %message.read.threw, label %message.read.error, label %message.convert
+message.read.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %message.read
+message.convert:
+  %message.raw = extractvalue { i64, i1 } %message.read, 0
+  %message.converted = call { i64, i1 } @errorMessageFrom(i64 %message.raw)
+  %message.threw = extractvalue { i64, i1 } %message.converted, 1
+  br i1 %message.threw, label %message.error, label %join
+message.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %message.converted
+join:
+  %message = extractvalue { i64, i1 } %message.converted, 0
+  call void @gcRootPush(i64 %message)
+  %name.len = call i64 @valueStringLength(i64 %name)
+  %message.len = call i64 @valueStringLength(i64 %message)
+  %name.empty = icmp eq i64 %name.len, 0
+  %message.empty = icmp eq i64 %message.len, 0
+  br i1 %name.empty, label %message.only, label %check.message
+message.only:
+  br label %done
+check.message:
+  br i1 %message.empty, label %name.only, label %concatenate
+name.only:
+  br label %done
+concatenate:
+  %name.ptr = call ptr @valueStringPtr(i64 %name)
+  %message.ptr = call ptr @valueStringPtr(i64 %message)
+  %prefix.len = add i64 %name.len, 2
+  %length = add i64 %prefix.len, %message.len
+  %allocation = add i64 %length, 1
+  %bytes = call ptr @malloc(i64 %allocation)
+  call ptr @memcpy(ptr %bytes, ptr %name.ptr, i64 %name.len)
+  %colon = getelementptr i8, ptr %bytes, i64 %name.len
+  store i8 58, ptr %colon
+  %space.index = add i64 %name.len, 1
+  %space = getelementptr i8, ptr %bytes, i64 %space.index
+  store i8 32, ptr %space
+  %message.destination = getelementptr i8, ptr %bytes, i64 %prefix.len
+  call ptr @memcpy(ptr %message.destination, ptr %message.ptr, i64 %message.len)
+  %end = getelementptr i8, ptr %bytes, i64 %length
+  store i8 0, ptr %end
+  %joined = call i64 @valueBoxString(ptr %bytes, i64 %length)
+  br label %done
+done:
+  %answer = phi i64 [ %message, %message.only ], [ %name, %name.only ], [ %joined, %concatenate ]
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %answer, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok
 }

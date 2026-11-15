@@ -161,6 +161,13 @@ export const aggregateHandlers = {
     key: resolver.string(node.key),
     value: resolver.value(node.value)
   }),
+  defineAccessor: (node, resolver) => ({
+    ...node,
+    targetName: resolver.reference(node.targetName),
+    key: resolver.string(node.key),
+    getter: resolver.value(node.getter),
+    setter: resolver.value(node.setter)
+  }),
   valueObjectStore: (node, resolver) => ({
     ...node,
     targetName: resolver.reference(node.targetName),

@@ -116,6 +116,7 @@ export const operationRoles = {
   objectStore: { objectName: reference, path: preservedList("propertyKey") },
   runtimeObjectStore: { objectName: reference },
   valueObjectStore: { targetName: reference },
+  defineAccessor: { targetName: reference },
   privateFieldStore: { targetName: reference, key: preserved("privateKey"), message: preserved("message") },
   valueArrayStore: { targetName: reference },
   valueArraySetLength: { targetName: reference },

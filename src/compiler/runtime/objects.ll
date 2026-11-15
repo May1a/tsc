@@ -64,8 +64,9 @@ check.object:
   br i1 %is.object, label %object, label %check.function
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
-  call void @objectSet(ptr %object.ptr, i64 %key.len, ptr %key.ptr, i64 %stored)
-  br label %success
+  %object.result = call { i64, i1 } @objectPropertySet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %object.result
 check.function:
   %is.function = icmp eq i64 %tag, 9221964661971222528
   br i1 %is.function, label %function, label %check.array
@@ -397,6 +398,13 @@ empty:
 }
 define ptr @objectNew(i64 %capacity) {
 entry:
+  %prototype = call ptr @objectDefaultPrototype()
+  %object = call ptr @objectCreateWithCapacity(ptr %prototype, i64 %capacity)
+  ret ptr %object
+}
+
+define ptr @objectCreateWithCapacity(ptr %prototype, i64 %capacity) {
+entry:
   %entries.bytes = mul i64 %capacity, 32
   %cell = call ptr @gcAlloc(i64 2, i64 64)
   %object = getelementptr i8, ptr %cell, i64 8
@@ -409,7 +417,7 @@ entry:
   %shape.version.slot = getelementptr i8, ptr %object, i64 24
   store i64 0, ptr %shape.version.slot
   %prototype.slot = getelementptr i8, ptr %object, i64 32
-  store ptr null, ptr %prototype.slot
+  store ptr %prototype, ptr %prototype.slot
   %flags.slot = getelementptr i8, ptr %object, i64 40
   store i64 1, ptr %flags.slot
   %class.slot = getelementptr i8, ptr %object, i64 48
@@ -1179,8 +1187,21 @@ found:
   %enumerable.value = select i1 %enumerable.ok, i64 9222246136947933186, i64 9222246136947933185
   %configurable.value = select i1 %configurable.ok, i64 9222246136947933186, i64 9222246136947933185
   %desc = call ptr @objectNew(i64 4)
+  %accessor.bit = and i64 %flags, 8
+  %accessor = icmp ne i64 %accessor.bit, 0
+  br i1 %accessor, label %accessor.descriptor, label %data.descriptor
+accessor.descriptor:
+  %accessor.pointer = call ptr @valueObjectPtr(i64 %value)
+  %getter = call i64 @objectGet(ptr %accessor.pointer, i64 3, ptr @.accessor.get)
+  %setter = call i64 @objectGet(ptr %accessor.pointer, i64 3, ptr @.accessor.set)
+  call void @objectSet(ptr %desc, i64 3, ptr @.accessor.get, i64 %getter)
+  call void @objectSet(ptr %desc, i64 3, ptr @.accessor.set, i64 %setter)
+  br label %descriptor.attributes
+data.descriptor:
   call void @objectSet(ptr %desc, i64 5, ptr @.desc.value, i64 %value)
   call void @objectSet(ptr %desc, i64 8, ptr @.desc.writable, i64 %writable.value)
+  br label %descriptor.attributes
+descriptor.attributes:
   call void @objectSet(ptr %desc, i64 10, ptr @.desc.enumerable, i64 %enumerable.value)
   call void @objectSet(ptr %desc, i64 12, ptr @.desc.configurable, i64 %configurable.value)
   %boxed = call i64 @valueBoxObject(ptr %desc)
@@ -1559,4 +1580,137 @@ fill.advance:
   br label %fill.scan
 exit:
   ret ptr %array
+}
+
+@.accessor.get = private unnamed_addr constant [4 x i8] c"get\00"
+@.accessor.set = private unnamed_addr constant [4 x i8] c"set\00"
+
+; Accessor entries retain their getter and setter in a traced descriptor object, with flag bit 8.
+define void @objectDefineAccessor(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %owner = call i64 @valueBoxObject(ptr %object)
+  call void @gcRootPush(i64 %owner)
+  call void @gcRootPush(i64 %getter)
+  call void @gcRootPush(i64 %setter)
+  %descriptor = call ptr @objectCreateWithCapacity(ptr null, i64 2)
+  call void @objectSet(ptr %descriptor, i64 3, ptr @.accessor.get, i64 %getter)
+  call void @objectSet(ptr %descriptor, i64 3, ptr @.accessor.set, i64 %setter)
+  %boxed = call i64 @valueBoxObject(ptr %descriptor)
+  call void @objectDefineDataProperty(ptr %object, i64 %key.len, ptr %key.ptr, i64 %boxed, i64 12)
+  call void @gcRootRestore(i64 %frame)
+  ret void
+}
+
+; A borrowed property entry, including its flags, found along the actual prototype chain.
+define ptr @objectFindProperty(ptr %object, i64 %key.len, ptr %key.ptr) {
+entry:
+  br label %lookup
+lookup:
+  %current = phi ptr [ %object, %entry ], [ %prototype, %next.prototype ]
+  %is.null = icmp eq ptr %current, null
+  br i1 %is.null, label %missing, label %start
+start:
+  %count = load i64, ptr %current
+  %entries.slot = getelementptr i8, ptr %current, i64 16
+  %entries = load ptr, ptr %entries.slot
+  br label %scan
+scan:
+  %index = phi i64 [ 0, %start ], [ %next, %advance ]
+  %done = icmp eq i64 %index, %count
+  br i1 %done, label %next.prototype, label %check
+check:
+  %offset = mul i64 %index, 32
+  %property = getelementptr i8, ptr %entries, i64 %offset
+  %length = load i64, ptr %property
+  %same.length = icmp eq i64 %length, %key.len
+  br i1 %same.length, label %compare, label %advance
+compare:
+  %key.slot = getelementptr i8, ptr %property, i64 8
+  %key = load ptr, ptr %key.slot
+  %comparison = call i32 @memcmp(ptr %key, ptr %key.ptr, i64 %key.len)
+  %same.key = icmp eq i32 %comparison, 0
+  br i1 %same.key, label %found, label %advance
+advance:
+  %next = add i64 %index, 1
+  br label %scan
+next.prototype:
+  %prototype.slot = getelementptr i8, ptr %current, i64 32
+  %prototype = load ptr, ptr %prototype.slot
+  br label %lookup
+found:
+  ret ptr %property
+missing:
+  ret ptr null
+}
+
+define { i64, i1 } @objectPropertyGet(i64 %receiver, i64 %key.len, ptr %key.ptr) {
+entry:
+  %object = call ptr @valueObjectPtr(i64 %receiver)
+  %property = call ptr @objectFindProperty(ptr %object, i64 %key.len, ptr %key.ptr)
+  %missing = icmp eq ptr %property, null
+  br i1 %missing, label %absent, label %found
+found:
+  %value.slot = getelementptr i8, ptr %property, i64 16
+  %value = load i64, ptr %value.slot
+  %flags.slot = getelementptr i8, ptr %property, i64 24
+  %flags = load i64, ptr %flags.slot
+  %accessor.bit = and i64 %flags, 8
+  %accessor = icmp ne i64 %accessor.bit, 0
+  br i1 %accessor, label %get, label %data
+get:
+  %descriptor = call ptr @valueObjectPtr(i64 %value)
+  %getter = call i64 @objectGet(ptr %descriptor, i64 3, ptr @.accessor.get)
+  %undefined = icmp eq i64 %getter, 9222246136947933184
+  br i1 %undefined, label %no.getter, label %invoke
+invoke:
+  %result = call { i64, i1 } @jsCall(i64 %getter, i64 0, ptr null, i64 %receiver)
+  ret { i64, i1 } %result
+no.getter:
+  ret { i64, i1 } { i64 9222246136947933184, i1 false }
+absent:
+  %inherited = call i64 @errorInheritedProperty(ptr %object, i64 %key.len, ptr %key.ptr)
+  br label %data
+data:
+  %answer = phi i64 [ %value, %found ], [ %inherited, %absent ]
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %answer, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+}
+
+@.accessor.no.setter = private unnamed_addr constant [32 x i8] c"Cannot set getter-only property\00"
+
+define { i64, i1 } @objectPropertySet(i64 %receiver, i64 %key.len, ptr %key.ptr, i64 %stored) {
+entry:
+  %object = call ptr @valueObjectPtr(i64 %receiver)
+  %property = call ptr @objectFindProperty(ptr %object, i64 %key.len, ptr %key.ptr)
+  %missing = icmp eq ptr %property, null
+  br i1 %missing, label %data, label %found
+found:
+  %flags.slot = getelementptr i8, ptr %property, i64 24
+  %flags = load i64, ptr %flags.slot
+  %accessor.bit = and i64 %flags, 8
+  %accessor = icmp ne i64 %accessor.bit, 0
+  br i1 %accessor, label %set, label %data
+set:
+  %value.slot = getelementptr i8, ptr %property, i64 16
+  %value = load i64, ptr %value.slot
+  %descriptor = call ptr @valueObjectPtr(i64 %value)
+  %setter = call i64 @objectGet(ptr %descriptor, i64 3, ptr @.accessor.set)
+  %undefined = icmp eq i64 %setter, 9222246136947933184
+  br i1 %undefined, label %refused, label %invoke
+invoke:
+  %argv = alloca i64
+  store i64 %stored, ptr %argv
+  %result = call { i64, i1 } @jsCall(i64 %setter, i64 1, ptr %argv, i64 %receiver)
+  ret { i64, i1 } %result
+refused:
+  %message = call i64 @valueBoxString(ptr @.accessor.no.setter, i64 31)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+data:
+  call void @objectSet(ptr %object, i64 %key.len, ptr %key.ptr, i64 %stored)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %stored, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }

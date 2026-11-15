@@ -57,7 +57,7 @@ export const jsIrLeafOperationKinds: Readonly<Record<Exclude<JsIrOperation["kind
   "runtimeSetFromArray": true, "runtimeMapFromIterable": true, "runtimeSetFromIterable": true, "runtimeMapFromCollection": true, "runtimeSetFromCollection": true,
   "runtimeMapSet": true, "runtimeCollectionSetIterator": true, "runtimeSetAdd": true, "runtimeMapSetResult": true, "runtimeSetAddResult": true,
   "runtimeIteratorNew": true, "runtimeArrayCopyWithin": true, "runtimeArrayPop": true, "runtimeArrayShift": true, "objectStore": true,
-  "runtimeObjectStore": true, "valueObjectStore": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
+  "runtimeObjectStore": true, "valueObjectStore": true, "defineAccessor": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
   "runtimeObjectDelete": true, "valueObjectDelete": true, "valueArrayDelete": true, "runtimeObjectSetPrototype": true, "valueObjectSetPrototype": true,
   "runtimeObjectPreventExtensions": true, "runtimeObjectSeal": true, "runtimeObjectFreeze": true, "runtimeObjectAssign": true, "runtimeObjectDefineDataProperty": true,
   "runtimeObjectDefineDataProperties": true, "print": true, "throwValue": true, "discardValue": true, "break": true, "continue": true,

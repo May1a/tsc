@@ -29,7 +29,8 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   valuePlus: (expression, context) => {
     const left = keep(context.expressions.value(expression.left), context);
     const right = keep(context.expressions.value(expression.right), context);
-    return context.runtime.callBoxed("valuePlus", [left, right], context.cursor.uniqueName("value.plus"));
+    return keep(context.runtime.callWithCompletion("valuePlus", [left, right], context.cursor.uniqueName("value.plus"),
+      context.exceptionTarget()), context);
   },
   boxedMethodCall: boxedMethod,
   boxedPrimitive,

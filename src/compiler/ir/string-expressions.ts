@@ -237,9 +237,8 @@ function lowerStringConcatExpression(
     return notApplicable;
   }
   return produced({
-    kind: "concat",
-    left: { kind: "stringConversion", value: leftValue, preferValue: true },
-    right: { kind: "stringConversion", value: rightValue, preferValue: true }
+    kind: "stringConversion",
+    value: { kind: "valuePlus", left: leftValue, right: rightValue }
   });
 }
 

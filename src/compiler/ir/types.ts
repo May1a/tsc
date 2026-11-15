@@ -519,6 +519,13 @@ export type JsIrOperationNode =
       readonly value: JsIrValueExpression;
     }
   | {
+      readonly kind: "defineAccessor";
+      readonly targetName: string;
+      readonly key: JsIrStringExpression;
+      readonly getter: JsIrValueExpression;
+      readonly setter: JsIrValueExpression;
+    }
+  | {
       readonly kind: "valueObjectStore";
       readonly targetName: string;
       readonly key: JsIrStringExpression;

@@ -5,7 +5,7 @@ import { type Produced, loweredPayload, produced, unsupportedIn, withRefusal } f
 import type { JsIrOperation } from "./types.js";
 import type { JsIrRuntimeObjectField, JsIrValueExpression } from "./expressions.js";
 import { forwardedClassArgument, lowerClassFieldInitializer } from "./class-constructors.js";
-import { CLASS_THIS_NAME, classMemberKeyStringExpression, classMethodFunctionName } from "./class-names.js";
+import { CLASS_THIS_NAME, classAccessorFunctionName, classMemberKeyStringExpression, classMethodFunctionName } from "./class-names.js";
 
 // Emits the module-init slot holding a runtime-computed member name: the name
 // expression is evaluated and converted to a property key exactly once, at
@@ -126,10 +126,18 @@ export function lowerPrototypeMethodStores(
   info: ClassInfo,
   members: CollectedClassMembers
 ): readonly JsIrOperation[] {
-  return members.methodDeclarations.flatMap((entry) => {
+  const accessors: readonly JsIrOperation[] = [...new Set([...info.getters, ...info.setters])].map((name) => ({
+    kind: "defineAccessor",
+    targetName: classPrototypeName(info.name),
+    key: { kind: "literal", value: name },
+    getter: info.getters.has(name) ? dispatchWrapper(context, info, classAccessorFunctionName(info.name, name, true), []) : { kind: "undefined" },
+    setter: info.setters.has(name) ? dispatchWrapper(context, info, classAccessorFunctionName(info.name, name, false),
+      [{ name: "value", valueKind: "value" }]) : { kind: "undefined" }
+  }));
+  return [...accessors, ...members.methodDeclarations.flatMap((entry) => {
     const method = info.methods.get(entry.name);
     return method === undefined ? [] : [lowerPrototypeMethodStore(context, info, entry.name, method)];
-  });
+  })];
 }
 
 /**
