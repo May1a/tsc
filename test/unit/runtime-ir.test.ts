@@ -87,11 +87,11 @@ describe("Array.prototype method table", () => {
   const text = readFileSync(join(runtimeDir, "prototypes.ll"), "utf8");
   const names = new Map([...text.matchAll(/^@\.array\.method\.name\.(\w+) = private unnamed_addr constant \[(\d+) x i8\] c"(\w+)\\00"$/gm)]
     .map(([, symbol, size, bytes]) => [`.array.method.name.${symbol}`, { symbol, size: Number(size), bytes }]));
-  const rows = [...text.matchAll(/\{ i64 (\d+), ptr @([\w.]+), ptr @(\w+) \}/g)]
+  const rows = [...text.matchAll(/\{ i64 (\d+), ptr @([\w.]+), ptr @(\w+), i64 \d+ \}/g)]
     .map(([, length, name, method]) => ({ length: Number(length), name, method }));
 
   it("sizes the table, the lookup bound and every key by its contents", () => {
-    expect(text).toContain(`[${rows.length} x { i64, ptr, ptr }]`);
+    expect(text).toContain(`[${rows.length} x { i64, ptr, ptr, i64 }]`);
     expect(text).toContain(`%done = icmp eq i64 %index, ${rows.length}`);
     for (const { symbol, size, bytes } of names.values()) {
       expect(bytes).toBe(symbol);
