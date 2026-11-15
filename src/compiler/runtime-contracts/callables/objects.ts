@@ -20,6 +20,7 @@ export function createObjectsCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "valueObjectOwnPropertyNames": registerRuntimeContract(module, objectsContracts.valueObjectOwnPropertyNames),
     "valueObjectOwnPropertyDescriptors": registerRuntimeContract(module, objectsContracts.valueObjectOwnPropertyDescriptors),
     "objectNew": registerRuntimeContract(module, objectsContracts.objectNew),
+    "objectCreateWithCapacity": registerRuntimeContract(module, objectsContracts.objectCreateWithCapacity),
     "objectPrivateTable": registerRuntimeContract(module, objectsContracts.objectPrivateTable),
     "valuePrivateHas": registerRuntimeContract(module, objectsContracts.valuePrivateHas),
     "valuePrivateGet": registerRuntimeContract(module, objectsContracts.valuePrivateGet),
@@ -54,5 +55,9 @@ export function createObjectsCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "objectOwnPropertyDescriptors": registerRuntimeContract(module, objectsContracts.objectOwnPropertyDescriptors),
     "objectIs": registerRuntimeContract(module, objectsContracts.objectIs),
     "objectKeys": registerRuntimeContract(module, objectsContracts.objectKeys),
+    "objectDefineAccessor": registerRuntimeContract(module, objectsContracts.objectDefineAccessor),
+    "objectFindProperty": registerRuntimeContract(module, objectsContracts.objectFindProperty),
+    "objectPropertyGet": registerRuntimeContract(module, objectsContracts.objectPropertyGet),
+    "objectPropertySet": registerRuntimeContract(module, objectsContracts.objectPropertySet),
   };
 }

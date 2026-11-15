@@ -46,11 +46,11 @@ export const valuesContracts = {
     effects: { allocates: false, collects: false, completion: "none" }
   },
   "valuePlus": {
-    resultKind: "boxed",
+    resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
-    name: "valuePlus", parameters: [llvm.i64, llvm.i64], returns: llvm.i64, variadic: false,
-    effects: { allocates: true, collects: false, completion: "none" }
+    name: "valuePlus", parameters: [llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "valueBoxString": {
     resultKind: "boxed",
@@ -225,7 +225,7 @@ export const valuesContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "checkedValuePropertyGet", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "propertyKeyIndex": {
     resultKind: "scalar",
@@ -233,5 +233,61 @@ export const valuesContracts = {
     origin: "staticRuntime",
     name: "propertyKeyIndex", parameters: [llvm.i64, llvm.ptr], returns: llvm.i64, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "objectDefaultPrototype": {
+    resultKind: "pointer",
+    pointerResult: { kind: "heap" },
+    origin: "staticRuntime",
+    name: "objectDefaultPrototype", parameters: [], returns: llvm.ptr, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "objectDefaultToString": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectDefaultToString", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "objectDefaultValueOf": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectDefaultValueOf", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: false, collects: false, completion: "explicit" }
+  },
+  "valueConversionPropertyGet": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueConversionPropertyGet", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "conversionNativeToString": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "conversionNativeToString", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "boxedInstallConversionMethods": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "boxedInstallConversionMethods", parameters: [llvm.ptr], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "boxedValueOfMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "boxedValueOfMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "boxedToStringMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "boxedToStringMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

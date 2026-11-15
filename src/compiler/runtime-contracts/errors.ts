@@ -25,67 +25,67 @@ export const errorsContracts = {
     effects: { allocates: true, collects: false, completion: "none" }
   },
   "errorMessageFrom": {
-    resultKind: "boxed",
+    resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
-    name: "errorMessageFrom", parameters: [llvm.i64], returns: llvm.i64, variadic: false,
-    effects: { allocates: true, collects: false, completion: "none" }
+    name: "errorMessageFrom", parameters: [llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorConstructorCall": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorConstructorCall", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorConstructorError": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorConstructorError", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorConstructorTypeError": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorConstructorTypeError", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorConstructorRangeError": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorConstructorRangeError", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorConstructorEvalError": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorConstructorEvalError", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorConstructorURIError": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorConstructorURIError", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorConstructorSyntaxError": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorConstructorSyntaxError", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorConstructorReferenceError": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorConstructorReferenceError", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorInheritedProperty": {
     resultKind: "boxed",
@@ -99,14 +99,14 @@ export const errorsContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorToStringMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "errorInstallCause": {
-    resultKind: "void",
+    resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
-    name: "errorInstallCause", parameters: [llvm.ptr, llvm.i64], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    name: "errorInstallCause", parameters: [llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "valuePrintUncaught": {
     resultKind: "void",
@@ -121,5 +121,19 @@ export const errorsContracts = {
     origin: "staticRuntime",
     name: "errorThrowReference", parameters: [llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
     effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "errorPrototype": {
+    resultKind: "pointer",
+    pointerResult: { kind: "heap" },
+    origin: "staticRuntime",
+    name: "errorPrototype", parameters: [llvm.i64], returns: llvm.ptr, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "errorToStringObservable": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "errorToStringObservable", parameters: [llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

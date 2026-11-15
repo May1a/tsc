@@ -38,5 +38,13 @@ export function createValuesCallees(module: LlvmModuleBuilder): RuntimeCalleeTab
     "requireObjectCoercible": registerRuntimeContract(module, valuesContracts.requireObjectCoercible),
     "checkedValuePropertyGet": registerRuntimeContract(module, valuesContracts.checkedValuePropertyGet),
     "propertyKeyIndex": registerRuntimeContract(module, valuesContracts.propertyKeyIndex),
+    "objectDefaultPrototype": registerRuntimeContract(module, valuesContracts.objectDefaultPrototype),
+    "objectDefaultToString": registerRuntimeContract(module, valuesContracts.objectDefaultToString),
+    "objectDefaultValueOf": registerRuntimeContract(module, valuesContracts.objectDefaultValueOf),
+    "valueConversionPropertyGet": registerRuntimeContract(module, valuesContracts.valueConversionPropertyGet),
+    "conversionNativeToString": registerRuntimeContract(module, valuesContracts.conversionNativeToString),
+    "boxedInstallConversionMethods": registerRuntimeContract(module, valuesContracts.boxedInstallConversionMethods),
+    "boxedValueOfMethod": registerRuntimeContract(module, valuesContracts.boxedValueOfMethod),
+    "boxedToStringMethod": registerRuntimeContract(module, valuesContracts.boxedToStringMethod),
   };
 }

@@ -57,14 +57,14 @@ export const arraysContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "valueArraySet", parameters: [llvm.i64, llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "valueArraySetLength": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "valueArraySetLength", parameters: [llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "valueArrayDelete": {
     resultKind: "completion",

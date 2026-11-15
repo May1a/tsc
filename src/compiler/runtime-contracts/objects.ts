@@ -36,7 +36,7 @@ export const objectsContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "valueObjectSet", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: true, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "valueObjectDelete": {
     resultKind: "completion",
@@ -106,6 +106,13 @@ export const objectsContracts = {
     pointerResult: { kind: "heap" },
     origin: "staticRuntime",
     name: "objectNew", parameters: [llvm.i64], returns: llvm.ptr, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "objectCreateWithCapacity": {
+    resultKind: "pointer",
+    pointerResult: { kind: "heap" },
+    origin: "staticRuntime",
+    name: "objectCreateWithCapacity", parameters: [llvm.ptr, llvm.i64], returns: llvm.ptr, variadic: false,
     effects: { allocates: true, collects: false, completion: "none" }
   },
   "objectPrivateTable": {
@@ -345,5 +352,33 @@ export const objectsContracts = {
     origin: "staticRuntime",
     name: "objectKeys", parameters: [llvm.ptr], returns: llvm.ptr, variadic: false,
     effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "objectDefineAccessor": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectDefineAccessor", parameters: [llvm.ptr, llvm.i64, llvm.ptr, llvm.i64, llvm.i64], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "objectFindProperty": {
+    resultKind: "pointer",
+    pointerResult: { kind: "heap" },
+    origin: "staticRuntime",
+    name: "objectFindProperty", parameters: [llvm.ptr, llvm.i64, llvm.ptr], returns: llvm.ptr, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "objectPropertyGet": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectPropertyGet", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "objectPropertySet": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectPropertySet", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
   },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;
