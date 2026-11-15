@@ -21,7 +21,7 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
   letNumber: (operation, context) => context.writes.storeNumber(operation.name, context.expressions.number(operation.value)),
   assignNumber: (operation, context) => {
     const value = context.expressions.number(operation.value);
-    context.writes.checkInitialized(operation.name, context.exceptionTarget());
+    context.writes.checkInitialized(operation.name, () => context.exceptionTarget());
     context.writes.storeNumber(operation.name, value);
   },
   constString: (operation, context) => context.writes.storeString(operation.name, literalString(operation.value, context)),
@@ -29,7 +29,7 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
   letString: (operation, context) => context.writes.storeString(operation.name, context.expressions.string(operation.value)),
   assignString: (operation, context) => {
     const value = context.expressions.string(operation.value);
-    context.writes.checkInitialized(operation.name, context.exceptionTarget());
+    context.writes.checkInitialized(operation.name, () => context.exceptionTarget());
     context.writes.storeString(operation.name, value);
   },
   constBoolean: (operation, context) => context.writes.storeBoolean(operation.name,
@@ -38,14 +38,14 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
   letBoolean: (operation, context) => context.writes.storeBoolean(operation.name, context.expressions.condition(operation.value)),
   assignBoolean: (operation, context) => {
     const value = context.expressions.condition(operation.value);
-    context.writes.checkInitialized(operation.name, context.exceptionTarget());
+    context.writes.checkInitialized(operation.name, () => context.exceptionTarget());
     context.writes.storeBoolean(operation.name, value);
   },
   constValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
   letValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
   assignValue: (operation, context) => {
     const value = context.expressions.value(operation.value);
-    context.writes.checkInitialized(operation.name, context.exceptionTarget());
+    context.writes.checkInitialized(operation.name, () => context.exceptionTarget());
     context.writes.storeValue(operation.name, value);
   },
   print: (operation, context) => {

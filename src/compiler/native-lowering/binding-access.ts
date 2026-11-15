@@ -34,13 +34,13 @@ export class BindingAccess implements BindingReads {
     for (const binding of this.#storage.values()) this.#rootStorage(binding);
   }
 
-  public checkInitialized(reference: BindingRef, exception: ExceptionTarget): void {
+  public checkInitialized(reference: BindingRef, exception: () => ExceptionTarget): void {
     const name = this.#lexicalCells.get(reference.binding);
     if (name === undefined) return;
     const storage = this.#require(reference);
     if (storage.kind !== "environment" && storage.kind !== "environmentSlot") return;
     const cell = storage.kind === "environment" ? storage.cell : this.#resolveSlot(storage).cell;
-    checkCellInitialized(cell, name, this.#capabilities, this.#constant, exception);
+    checkCellInitialized(cell, name, this.#capabilities, this.#constant, exception());
   }
 
   public number(reference: BindingRef): LlvmValue<typeof llvm.double> {

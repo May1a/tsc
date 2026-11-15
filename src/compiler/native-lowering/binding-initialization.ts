@@ -29,15 +29,15 @@ export function checkCellInitialized(
 /** Reads check the captured cell; initialization stores and closure creation do not read it. */
 export function checkedBindingReads(writes: BindingAccess, exception: () => ExceptionTarget): BindingReads {
   return {
-    number: (reference) => { writes.checkInitialized(reference, exception()); return writes.number(reference); },
-    string: (reference) => { writes.checkInitialized(reference, exception()); return writes.string(reference); },
-    boolean: (reference) => { writes.checkInitialized(reference, exception()); return writes.boolean(reference); },
-    value: (reference) => { writes.checkInitialized(reference, exception()); return writes.value(reference); },
-    pointer: (reference) => { writes.checkInitialized(reference, exception()); return writes.pointer(reference); },
+    number: (reference) => { writes.checkInitialized(reference, exception); return writes.number(reference); },
+    string: (reference) => { writes.checkInitialized(reference, exception); return writes.string(reference); },
+    boolean: (reference) => { writes.checkInitialized(reference, exception); return writes.boolean(reference); },
+    value: (reference) => { writes.checkInitialized(reference, exception); return writes.value(reference); },
+    pointer: (reference) => { writes.checkInitialized(reference, exception); return writes.pointer(reference); },
     holdsPrimitive: (reference) => writes.holdsPrimitive(reference),
     fixedArrayLength: (reference) => writes.fixedArrayLength(reference),
     arrayElement: (reference, index) => writes.arrayElement(reference, index),
     objectField: (reference, path) => writes.objectField(reference, path),
-    storeNumber: (reference, value) => { writes.checkInitialized(reference, exception()); writes.storeNumber(reference, value); }
+    storeNumber: (reference, value) => { writes.checkInitialized(reference, exception); writes.storeNumber(reference, value); }
   };
 }
