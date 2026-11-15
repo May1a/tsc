@@ -78,7 +78,11 @@ export class ModuleBindings {
       }
       storage.set(alias.target.binding, global);
     }
-    return new BindingAccess(capabilities, storage, (text) => this.#module.stringConstant(text));
+    const lexicalCells = new Map(this.#declarations
+      .filter((declaration) => declaration.captured && declaration.owner.kind === "function" &&
+        (declaration.kind === "let" || declaration.kind === "const" || declaration.kind === "destination"))
+      .map((declaration) => [declaration.id, declaration.spelling]));
+    return new BindingAccess(capabilities, storage, (text) => this.#module.stringConstant(text), lexicalCells);
   }
 
   #collectLayouts(operations: readonly ResolvedOperation[]): void {

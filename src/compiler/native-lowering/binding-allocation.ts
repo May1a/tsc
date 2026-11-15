@@ -1,3 +1,4 @@
+import { createBindingCell } from "./binding-cell.js";
 import type { BindingDeclaration } from "../binding-resolution/index.js";
 import { type LlvmValue, llvm } from "../llvm-ir/index.js";
 import type { BindingStorage, FixedObjectStorage } from "./binding-storage.js";
@@ -5,18 +6,14 @@ import type { FunctionCapabilities } from "./function-owner.js";
 import type { GlobalBlueprint, ObjectLayout } from "./module-bindings.js";
 
 export function allocateBinding(declaration: BindingDeclaration, layout: ObjectLayout | undefined, capabilities: FunctionCapabilities): BindingStorage {
-  const { cursor, runtime, values, roots } = capabilities;
+  const { cursor, values } = capabilities;
   const block = cursor.currentBlock();
   const name = `binding.${declaration.id.ordinal}`;
   if (declaration.storage.location.kind === "environment") {
     if (declaration.perIteration) {
       return allocateRenewableCell(name, capabilities);
     }
-    const cell = runtime.callPointer("environmentNew", [block.int(llvm.i64, 1n)], `${name}.cell`);
-    const owner = values.forBlock(block).boxReference("object", cell);
-    roots.push(owner);
-    runtime.callVoid("environmentSet", [cell, block.int(llvm.i64, 0n), values.forBlock(block).immediate("undefined")]);
-    return { kind: "environment", cell, owner };
+    return createBindingCell(capabilities, values.forBlock(block).immediate("undefined"), false, `${name}.cell`);
   }
   const {representation} = declaration.storage;
   switch (representation.kind) {
@@ -68,13 +65,11 @@ function allocateRootSlot(name: string, capabilities: FunctionCapabilities): Llv
  * `materializeGlobal`).
  */
 function allocateRenewableCell(name: string, capabilities: FunctionCapabilities): BindingStorage {
-  const { cursor, runtime, values, roots } = capabilities;
+  const { cursor, values, roots } = capabilities;
   const block = cursor.currentBlock();
   const cellSlot = block.alloca(llvm.ptr, `${name}.cell.slot`);
   const ownerSlot = block.alloca(llvm.i64, `${name}.owner.slot`);
-  const cell = runtime.callPointer("environmentNew", [block.int(llvm.i64, 1n)], `${name}.cell`);
-  const owner = values.forBlock(block).boxReference("object", cell);
-  roots.push(owner);
+  const { cell, owner } = createBindingCell(capabilities, values.forBlock(block).immediate("undefined"), false, `${name}.cell`);
   block.store(cell, cellSlot);
   block.store(owner, ownerSlot);
   roots.pushSlot(ownerSlot);

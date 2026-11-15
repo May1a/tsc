@@ -1,5 +1,6 @@
 import type { BindingId, BindingRef, FunctionId, ResolvedClosureValue, ResolvedModule, ResolvedOperation } from "../binding-resolution/index.js";
 import { type LlvmFunctionSpec, type LlvmGlobalReference, llvm } from "../llvm-ir/index.js";
+import { createBindingCell } from "./binding-cell.js";
 import type { BindingAccess } from "./binding-access.js";
 import { branchValue } from "./expression-branches.js";
 import type { DirectCall, ExpressionContext } from "./expression-context.js";
@@ -201,12 +202,8 @@ export class GeneratedFunctions {
 
   #captureCell(source: CaptureSource, context: ExpressionContext, writes: BindingAccess): BoxedValue {
     if (source.kind === "binding") { return keep(writes.captureCell(source.reference), context); }
-    const { cursor, runtime, values } = context;
-    const cell = runtime.callPointer("environmentNew", [cursor.currentBlock().int(llvm.i64, 1n)], cursor.uniqueName("capture.cell"));
-    const owner = keep(values.forBlock(cursor.currentBlock()).boxReference("object", cell), context);
     const value = keep(context.expressions.value(source.value), context);
-    runtime.callVoid("environmentSet", [cell, cursor.currentBlock().int(llvm.i64, 0n), value]);
-    return owner;
+    return createBindingCell(context, value, true, context.cursor.uniqueName("capture.cell")).owner;
   }
 
   #closure(value: ResolvedClosureValue, context: ExpressionContext, writes: BindingAccess): BoxedValue {

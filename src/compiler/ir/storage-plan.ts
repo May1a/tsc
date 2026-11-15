@@ -113,6 +113,7 @@ interface PlanScope {
 
 class StoragePlanWalk {
   readonly #bindings: PlannedBinding[] = [];
+  readonly #declarations = new WeakSet<ts.VariableDeclarationList>();
 
   public plan(): StoragePlan {
     return { boxed: new Set(this.#bindings.filter(needsBoxedStorage).map((binding) => binding.declaration)) };
@@ -121,6 +122,7 @@ class StoragePlanWalk {
   public statements(statements: readonly ts.Statement[], scope: PlanScope): void {
     for (const statement of statements) {
       this.#hoistFunctionName(statement, scope);
+      if (ts.isVariableStatement(statement)) this.#registerDeclarationList(statement.declarationList, scope);
     }
     for (const statement of statements) {
       this.#node(statement, scope);
@@ -286,6 +288,15 @@ class StoragePlanWalk {
   }
 
   #declarationList(list: ts.VariableDeclarationList, scope: PlanScope): void {
+    this.#registerDeclarationList(list, scope);
+    for (const declaration of list.declarations) {
+      if (declaration.initializer !== undefined) this.#node(declaration.initializer, scope);
+    }
+  }
+
+  #registerDeclarationList(list: ts.VariableDeclarationList, scope: PlanScope): void {
+    if (this.#declarations.has(list)) return;
+    this.#declarations.add(list);
     const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
     for (const declaration of list.declarations) {
       if (isConst || !ts.isIdentifier(declaration.name)) {
@@ -293,7 +304,6 @@ class StoragePlanWalk {
       } else {
         this.#declare(declaration, declaration.name.text, isVarList(list) ? functionScope(scope) : scope);
       }
-      if (declaration.initializer !== undefined) this.#node(declaration.initializer, scope);
     }
   }
 

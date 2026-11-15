@@ -83,6 +83,11 @@ describe("storage plan", () => {
     expect(boxed("let a = 1; const g = () => { a = null; };", "a")).toEqual([true]);
   });
 
+  test("forward nested writes use the later declaration in their lexical scope", () => {
+    expect(boxed("function g() { x = null; } let x = 1;", "x")).toEqual([true]);
+    expect(boxed("let x = 1; { function g() { x = null; } let x = 2; }", "x")).toEqual([false, true]);
+  });
+
   test("a shadowing declaration takes the writes in its scope", () => {
     expect(boxed('let x = 1; { let x = 2; x = "s"; } x = 3;', "x")).toEqual([false, true]);
     expect(boxed("let x = 1; function g(x: any) { x = null; }", "x")).toEqual([false]);

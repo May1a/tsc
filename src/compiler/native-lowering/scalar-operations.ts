@@ -19,19 +19,35 @@ type ScalarVariants = { readonly [K in ScalarKind]: VariantOfKind<ResolvedOperat
 export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationContext, void> = {
   constNumber: (operation, context) => context.writes.storeNumber(operation.name, context.expressions.number(operation.value)),
   letNumber: (operation, context) => context.writes.storeNumber(operation.name, context.expressions.number(operation.value)),
-  assignNumber: (operation, context) => context.writes.storeNumber(operation.name, context.expressions.number(operation.value)),
+  assignNumber: (operation, context) => {
+    const value = context.expressions.number(operation.value);
+    context.writes.checkInitialized(operation.name, context.exceptionTarget());
+    context.writes.storeNumber(operation.name, value);
+  },
   constString: (operation, context) => context.writes.storeString(operation.name, literalString(operation.value, context)),
   constStringExpression: (operation, context) => context.writes.storeString(operation.name, context.expressions.string(operation.value)),
   letString: (operation, context) => context.writes.storeString(operation.name, context.expressions.string(operation.value)),
-  assignString: (operation, context) => context.writes.storeString(operation.name, context.expressions.string(operation.value)),
+  assignString: (operation, context) => {
+    const value = context.expressions.string(operation.value);
+    context.writes.checkInitialized(operation.name, context.exceptionTarget());
+    context.writes.storeString(operation.name, value);
+  },
   constBoolean: (operation, context) => context.writes.storeBoolean(operation.name,
     context.cursor.currentBlock().int(llvm.i1, operation.value ? 1n : 0n)),
   constBooleanExpression: (operation, context) => context.writes.storeBoolean(operation.name, context.expressions.condition(operation.value)),
   letBoolean: (operation, context) => context.writes.storeBoolean(operation.name, context.expressions.condition(operation.value)),
-  assignBoolean: (operation, context) => context.writes.storeBoolean(operation.name, context.expressions.condition(operation.value)),
+  assignBoolean: (operation, context) => {
+    const value = context.expressions.condition(operation.value);
+    context.writes.checkInitialized(operation.name, context.exceptionTarget());
+    context.writes.storeBoolean(operation.name, value);
+  },
   constValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
   letValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
-  assignValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
+  assignValue: (operation, context) => {
+    const value = context.expressions.value(operation.value);
+    context.writes.checkInitialized(operation.name, context.exceptionTarget());
+    context.writes.storeValue(operation.name, value);
+  },
   print: (operation, context) => {
     const { expression } = operation;
     const value = context.expressions.expression(expression);
