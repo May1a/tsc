@@ -272,10 +272,10 @@ leading.zeros:
   %leading.length = add i64 %leading.base, %scan.count
   br label %decimal.loop
 decimal.loop:
-  %decimal.point = phi i64 [ %point, %plain ], [ 1, %leading.zeros ]
-  %decimal.pointed = phi i1 [ %plain.fraction, %plain ], [ true, %leading.zeros ]
-  %decimal.base = phi i64 [ 0, %plain ], [ %leading.base, %leading.zeros ]
-  %decimal.length = phi i64 [ %plain.length, %plain ], [ %leading.length, %leading.zeros ]
+  %decimal.point = phi i64 [ %point, %plain ], [ 1, %leading.zeros ], [ %decimal.point, %decimal.body ]
+  %decimal.pointed = phi i1 [ %plain.fraction, %plain ], [ true, %leading.zeros ], [ %decimal.pointed, %decimal.body ]
+  %decimal.base = phi i64 [ 0, %plain ], [ %leading.base, %leading.zeros ], [ %decimal.base, %decimal.body ]
+  %decimal.length = phi i64 [ %plain.length, %plain ], [ %leading.length, %leading.zeros ], [ %decimal.length, %decimal.body ]
   %decimal.index = phi i64 [ 0, %plain ], [ 0, %leading.zeros ], [ %decimal.next, %decimal.body ]
   %decimal.done = icmp uge i64 %decimal.index, %decimal.length
   br i1 %decimal.done, label %decimal.result, label %decimal.body
