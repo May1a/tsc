@@ -92,6 +92,13 @@ export type JsIrOperationNode =
       readonly name: string;
       readonly value: JsIrValueExpression;
       readonly moduleGlobal?: boolean;
+      /**
+       * Set when the source declared the binding with `var`. A `var` is one binding per function
+       * frame, so a declaration that executes on every iteration of an enclosing loop writes the
+       * same binding each time, while a `let` or `const` there is a fresh binding per iteration.
+       * The operation kind alone does not tell them apart, because both lower to the same kinds.
+       */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "constClosure";
@@ -102,26 +109,36 @@ export type JsIrOperationNode =
       readonly kind: "letNumber";
       readonly name: string;
       readonly value: JsIrNumberExpression;
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "letString";
       readonly name: string;
       readonly value: JsIrStringExpression;
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "letBoolean";
       readonly name: string;
       readonly value: JsIrCondition;
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "arrayLiteral";
       readonly name: string;
       readonly elements: readonly JsIrNumberExpression[];
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "runtimeArrayLiteral";
       readonly name: string;
       readonly elements: readonly JsIrRuntimeArrayElement[];
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "objectLiteral";
@@ -334,6 +351,11 @@ export type JsIrOperationNode =
       readonly value: JsIrCondition;
     }
   | {
+      readonly kind: "assignValue";
+      readonly name: string;
+      readonly value: JsIrValueExpression;
+    }
+  | {
       readonly kind: "arrayStore";
       readonly arrayName: string;
       readonly index: JsIrNumberExpression;
@@ -497,6 +519,13 @@ export type JsIrOperationNode =
       readonly value: JsIrValueExpression;
     }
   | {
+      readonly kind: "defineAccessor";
+      readonly targetName: string;
+      readonly key: JsIrStringExpression;
+      readonly getter: JsIrValueExpression;
+      readonly setter: JsIrValueExpression;
+    }
+  | {
       readonly kind: "valueObjectStore";
       readonly targetName: string;
       readonly key: JsIrStringExpression;
@@ -511,6 +540,11 @@ export type JsIrOperationNode =
       readonly key: string;
       readonly value: JsIrValueExpression;
       readonly message: string;
+      /**
+       * Set when construction adds the element (PrivateFieldAdd), which requires that the instance
+       * does not hold it yet. Otherwise the store writes an element the instance must already hold.
+       */
+      readonly define?: true;
     }
   | {
       readonly kind: "valueArrayStore";
@@ -577,6 +611,11 @@ export type JsIrOperationNode =
       readonly value: JsIrValueExpression;
     }
   | {
+      /** An expression statement evaluated only for its effects, such as a read that may throw. */
+      readonly kind: "discardValue";
+      readonly value: JsIrValueExpression;
+    }
+  | {
       readonly kind: "block";
       readonly operations: readonly JsIrOperation[];
     }
@@ -618,11 +657,21 @@ export type JsIrOperationNode =
       /**
        * The `for` initializer's declarations, in source order. A list because the initializer is a
        * declaration list: `for (let i = 0, j = 1;;)` declares two bindings, and dropping all but the
-       * first would change which names the condition and body can see.
+       * first would change which names the condition and body can see. Empty when the source omitted
+       * the initializer, which declares nothing and reads the outer bindings instead.
        */
       readonly initializer: readonly JsIrOperation[];
-      readonly condition: JsIrCondition;
-      readonly increment: JsIrOperation;
+      /**
+       * The loop condition, absent when the source omitted it. Per ECMA-262 an omitted condition is
+       * `true`, which emission implements by entering the body without a test rather than by
+       * evaluating a synthesized constant.
+       */
+      readonly condition?: JsIrCondition;
+      /**
+       * The update step, absent when the source omitted it. An omitted update does nothing: `continue`
+       * then reaches the condition through the empty step.
+       */
+      readonly increment?: JsIrOperation;
       readonly body: readonly JsIrOperation[];
     }
   | {
@@ -630,24 +679,32 @@ export type JsIrOperationNode =
       readonly itemName: string;
       readonly arrayName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forOfString";
       readonly itemName: string;
       readonly source: JsIrStringExpression;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forOfSet";
       readonly itemName: string;
       readonly setName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forOfMap";
       readonly itemName: string;
       readonly mapName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forOfProtocol";
@@ -655,24 +712,32 @@ export type JsIrOperationNode =
       readonly iterable: JsIrValueExpression;
       readonly notIterableMessage: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "arrayDestructureProtocol";
       readonly source: JsIrDestructureSource;
       readonly elements: readonly JsIrArrayDestructureElement[];
       readonly notIterableMessage: string;
+      /** Set by a `var` pattern, whose names bind once per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forInObject";
       readonly itemName: string;
       readonly objectName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "forInArray";
       readonly itemName: string;
       readonly arrayName: string;
       readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "break";

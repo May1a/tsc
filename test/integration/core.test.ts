@@ -947,7 +947,7 @@ describe("tscn erasure forms", () => {
     const result = await expectSuccessfulCompile("form-admitted-parameter-property.ts", { link: true });
 
     try {
-      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n1xtrue\n7\n8\n101\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "7\n1xtrue\n7\n8\n101\n3\ne\n", stderr: "" });
     } finally {
       await result.cleanup();
     }

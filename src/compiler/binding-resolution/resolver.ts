@@ -9,7 +9,7 @@ import type {
   ResolvedStringExpression,
   ResolvedValueExpression
 } from "./resolved-types.js";
-import type { BindingRef } from "./binding-id.js";
+import type { BindingKind, BindingRef } from "./binding-id.js";
 import type { Resolution } from "./scopes.js";
 import { conditionHandlers } from "./conditions.js";
 import { expressionHandlers } from "./expressions.js";
@@ -51,9 +51,12 @@ export interface Resolver {
   readonly expression: (expression: JsIrExpression) => ResolvedExpression;
 }
 
-function declarationKind(operation: JsIrOperation) {
+function declarationKind(operation: JsIrOperation): BindingKind {
   if (operation.kind === "function") {
     return "function";
+  }
+  if ("functionScoped" in operation && operation.functionScoped === true) {
+    return "var";
   }
   return operation.kind === "letNumber" || operation.kind === "letString" || operation.kind === "letBoolean" || operation.kind === "letValue"
     ? "let" : "const";

@@ -5,7 +5,6 @@ import { readFileSync } from "node:fs";
 // unused definitions are inert.
 const runtimeIrFiles = [
   "declares.ll",
-  "globals.ll",
   "gc.ll",
   "values.ll",
   "numbers.ll",
@@ -16,6 +15,7 @@ const runtimeIrFiles = [
   "collections.ll",
   "functions.ll",
   "callbacks.ll",
+  "prototypes.ll",
   "json.ll",
   "errors.ll",
   "iterators.ll"

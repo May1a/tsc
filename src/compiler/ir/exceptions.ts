@@ -2,9 +2,9 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrOperation } from "./types.js";
-import { type Lowered, type LoweredStatementList, type Produced, loweredOperation, notApplicable, produced, unsupportedIn } from "./lowered.js";
+import { type Lowered, type LoweredStatementList, type Produced, loweredOperation, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerBlockStatements } from "./statement-lists.js";
-import { type DestructuringSource, lowerArrayDestructuringElements } from "./destructuring.js";
+import { type DestructuringSource, lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
 import { unwrapTypeOnlyExpression } from "./predicates.js";
 import { lowerRuntimeErrorLiteral } from "./errors.js";
 
@@ -14,11 +14,11 @@ export function lowerThrowStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
   if (context.finallyBlockDepth > 0 && context.tryRegionOfCatchFinallyDepth > 0) {
-    return notApplicable;
+    return unsupported("Throwing from a `finally` block inside a `try...catch...finally` is not supported yet");
   }
   const value = context.lowerValueExpression(context, statement.expression, bindings);
   if (value.kind !== "lowered") {
-    return value;
+    return withRefusal(value, unsupportedIn("The thrown expression is not a value this build can evaluate"));
   }
   return produced({ kind: "throwValue", value: value.operation });
 }
@@ -142,7 +142,10 @@ function lowerCatchClause(
     const source: DestructuringSource = { name: variable, binding: { kind: "valueVariable", name: variable } };
     let lowered: boolean;
     if (ts.isArrayBindingPattern(catchBinding)) {
-      const arrayDestructuringElementsResult = lowerArrayDestructuringElements(context, catchBinding, source, catchBindings, destructuringOperations, true);
+      // The thrown value is any iterable, so the pattern runs the iterator protocol, closing the
+      // iterator when the pattern does not exhaust it.
+      const arrayDestructuringElementsResult = lowerArrayProtocolDestructuringFromSource(context, catchBinding,
+        { kind: "value", value: { kind: "variable", name: variable } }, "Catch parameter is not iterable", catchBindings, destructuringOperations);
       if (arrayDestructuringElementsResult.kind === "unsupported") {
         return arrayDestructuringElementsResult;
       }

@@ -7,7 +7,8 @@ import { errorConstructorNames, unwrapTypeOnlyExpression } from "./predicates.js
 import { classPrototypeName } from "./class-info.js";
 import { lowerClassInstanceExpression } from "./class-calls.js";
 import { lowerRegexTestCondition } from "./regex.js";
-import { lowerArrayIsArrayConditionExpression, lowerHasOwnConditionExpression, lowerNumberPredicateCondition, lowerObjectIsConditionExpression, lowerObjectMethodSugarConditionExpression, lowerPresenceConditionExpression, lowerRuntimeArrayEverySomeConditionExpression, lowerRuntimeCollectionHasCondition, lowerRuntimeStringSearchCondition } from "./builtin-conditions.js";
+import { lowerArrayIsArrayConditionExpression, lowerHasOwnConditionExpression,
+  lowerHasOwnPropertyCallCondition, lowerNumberPredicateCondition, lowerObjectIsConditionExpression, lowerObjectMethodSugarConditionExpression, lowerPresenceConditionExpression, lowerRuntimeArrayEverySomeConditionExpression, lowerRuntimeCollectionHasCondition, lowerRuntimeStringSearchCondition } from "./builtin-conditions.js";
 import { lowerRuntimeCollectionIdentityCondition, lowerTruthyConditionExpression } from "./comparisons.js";
 import { lowerRuntimeObjectStateCondition } from "./builtins/object-producers.js";
 import { lowerComparisonConditionExpression } from "./comparisons-lowering.js";
@@ -155,6 +156,11 @@ export function lowerConditionExpression(
   const hasOwnCondition = lowerHasOwnConditionExpression(context, expression, bindings);
   if (hasOwnCondition.kind !== "notApplicable") {
     return hasOwnCondition;
+  }
+
+  const hasOwnPropertyCall = lowerHasOwnPropertyCallCondition(context, expression, bindings);
+  if (hasOwnPropertyCall.kind !== "notApplicable") {
+    return hasOwnPropertyCall;
   }
 
   const methodSugar = lowerObjectMethodSugarConditionExpression(context, expression, bindings);

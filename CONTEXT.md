@@ -85,6 +85,12 @@ numeric stores. General values use boxed slots. Captured mutable bindings use
 boxed environment cells shared by closures. Module GC owners are registered as
 global roots, so a value survives after its writer returns.
 
+Captured lexical bindings owned by functions carry an initialization flag in their
+environment cell. Reads and assignments check that flag and throw `ReferenceError`
+before initialization. An assignment evaluates its right operand before this check.
+`valueTypeOf` retains a binding read, so `typeof` also checks lexical initialization
+and observes the value of a hoisted `var` before its initializer runs.
+
 Generated functions use one thunk ABI:
 
 ```text
@@ -99,6 +105,10 @@ declarations and tagged template objects use registered global caches for stable
 identity. Function expressions and nested declarations create fresh objects each
 time their enclosing code runs.
 
+Each parameter's `bindingOperations` runs after its argument or default is stored
+and before the next parameter initializes. Binding resolution, operation traversal,
+trace construction, and Native lowering preserve that order for destructuring.
+
 **Completion** is `{ i64, i1 }`: a boxed payload and a throw flag. A call that
 returns completion branches to its continuation or exception destination.
 `finally`, IteratorClose, return, throw, break, and continue use explicit edges and
@@ -108,6 +118,11 @@ General property reads use `checkedValuePropertyGet`. It checks nullish receiver
 and dispatches by value kind. `valueObjectGet` assumes an object layout and belongs
 only in Static Runtime IR. Object destructuring starts with
 `requireObjectCoercible`, including an empty pattern.
+
+Ordinary objects inherit the shared `objectDefaultPrototype`; an explicit null
+prototype bypasses it. Class accessors enter prototypes through `defineAccessor`.
+Checked property access and observable conversion preserve getter completions.
+`valuePlus` converts its operands only after both operand expressions evaluate.
 
 ## LLVM construction, runtime, and GC
 
@@ -165,6 +180,10 @@ lli at the process boundary.
 style, pass boundaries, owned state, typed instruction construction, and runtime
 contract freshness. The dependency scanner rejects forbidden imports and runtime
 cycles. Oxlint enforces source file, function, and control-depth limits.
+
+`npm run runtime:verify` builds the compiler, constructs the complete runtime module,
+and verifies it with `llvm-as`. The command is part of `npm run lint` and requires
+an opaque-pointer-capable `llvm-as` on `PATH` or configured through `LLVM_AS`.
 
 The correctness oracle compiles fixtures and compares their native output with
 Node. Forms Node's strip-only mode cannot execute are checked against literal

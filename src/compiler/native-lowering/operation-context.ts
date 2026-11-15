@@ -15,6 +15,7 @@ export interface OperationCalls extends ExpressionCalls {
   closure(value: ResolvedClosureValue): BoxedValue;
   callback(operation: Extract<ResolvedOperation, { readonly kind: "runtimeArrayMapFunctionObject" }>): BoxedValue;
   returnedClosure(operation: Extract<ResolvedOperation, { readonly kind: "returnClosure" }>): BoxedValue;
+  functionDeclaration(operation: Extract<ResolvedOperation, { readonly kind: "function" }>): BoxedValue;
 }
 
 export interface OperationContext extends ExpressionContext {

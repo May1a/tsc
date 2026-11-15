@@ -49,7 +49,6 @@ function samples(counter: BindingRef, numbers: BindingRef, object: BindingRef, c
     { kind: "objectDynamicAccess", objectName: object, key: { kind: "literal", value: "x" } },
     { kind: "valueObjectDynamicAccess", value: { kind: "objectRef", name: object }, key: { kind: "literal", value: "x" } },
     { kind: "valueArrayAccess", value: array([7, 8]), index: { kind: "literal", value: 1 }, key: { kind: "literal", value: "1" } },
-    { kind: "privateFieldAccess", receiver: { kind: "objectRef", name: object }, key: "x", message: "wrong brand" },
     { kind: "boxedMethodCall", receiver: { kind: "boxedPrimitive", inner: number(8) }, method: "valueOf" },
     { kind: "boxedMethodCall", receiver: { kind: "boxedPrimitive", inner: string("wrapped"), storeLength: true }, method: "toString" },
     { kind: "runtimeMapGet", mapName: collection, key: number(1) },
@@ -181,7 +180,7 @@ test("typed value handlers preserve lazy evaluation, heap operands, and completi
     const result = await Effect.runPromise(captureCommand(executable, []).pipe(Effect.provide(commandExecutorLayer)));
     expect(result).toEqual({ status: 0, stderr: "", stdout: [
       "undefined", "null", "12", "true", "native", "a2", "9", "7", "null", "0", "1", "0", "undefined", "42", "undefined", "0",
-      "5", "undefined", "2", "[object Array]", "2", "3", "true", "1", "3", "1", "undefined", "[object Object]", "16", "16", "16", "8", "16", "8", "wrapped", "18",
+      "5", "undefined", "2", "[object Array]", "2", "3", "true", "1", "3", "1", "undefined", "[object Object]", "16", "16", "16", "8", "8", "wrapped", "18",
       "true", "true", "65", "66", "67", "3", "3", "[1,2]", "17", "bb", "null", "[object Array]", "13", "before2", "[12,7]", "12", "2", "undefined", "undefined", "undefined", "undefined", ""
     ].join("\n") });
   } finally { await rm(directory, { recursive: true, force: true }); }

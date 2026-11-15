@@ -93,6 +93,53 @@ function syntaxKindName(kind: ts.SyntaxKind): string {
   return syntaxKindNames.get(kind) ?? String(kind);
 }
 
+/**
+ * Why a general `Symbol` value did not lower.
+ *
+ * The diagnostic owns this sentence for the shapes no recognizer claims; the value tier reports it
+ * for the shapes it does, so an argument or initializer names the `Symbol` rather than its call.
+ */
+export const unsupportedSymbolMessage =
+  "General Symbol values are not supported; only the well-known Symbol.iterator key is available";
+
+/**
+ * The source text of an expression for a diagnostic, on one line and truncated.
+ *
+ * A synthesized node has no source position, so it reads as a fallback phrase instead.
+ */
+const snippetMaxLength = 48;
+export function expressionSnippet(expression: ts.Expression): string {
+  const sourceFile = expression.pos < 0 ? undefined : expression.getSourceFile();
+  if (sourceFile === undefined) {
+    return "this expression";
+  }
+  const singleLine = expression.getText(sourceFile).replace(/\s+/g, " ").trim();
+  if (singleLine.length <= snippetMaxLength) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, snippetMaxLength - 1)}…`;
+}
+
+/**
+ * Why a `new` expression did not lower.
+ *
+ * The class tier owns this sentence: a module class lowers to an instance, and anything else names
+ * the constructor it could not find in this module rather than the argument or initializer around it.
+ */
+export function unsupportedNewExpressionMessage(constructorName: string): string {
+  return `\`new ${constructorName}(...)\` constructs \`${constructorName}\`, which is not a class declared in this module`;
+}
+
+/**
+ * Why a bare identifier did not lower to a value.
+ *
+ * The value tier owns this sentence for the names no tier claims: bindings lower through their own
+ * recognizers, so an identifier that reaches the tail of the value chain has no value to read.
+ */
+export function unsupportedUnboundValueMessage(name: string): string {
+  return `\`${name}\` cannot be used as a value yet`;
+}
+
 function unsupportedExpressionMessage(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
@@ -102,7 +149,7 @@ function unsupportedExpressionMessage(
   }
 
   if (isUnsupportedSymbolExpression(expression, new Map())) {
-    return "General Symbol values are not supported; only the well-known Symbol.iterator key is available";
+    return unsupportedSymbolMessage;
   }
   const inlineCppMessage = unsupportedInlineCppExpressionMessage(expression);
   if (inlineCppMessage !== undefined) {

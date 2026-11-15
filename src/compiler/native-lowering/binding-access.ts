@@ -1,26 +1,46 @@
+import { createBindingCell } from "./binding-cell.js";
 import type { BindingId, BindingRef } from "../binding-resolution/index.js";
 import { type LlvmGlobalReference, type LlvmValue, llvm } from "../llvm-ir/index.js";
 import type { BindingStorage, FixedObjectStorage } from "./binding-storage.js";
 import type { BindingReads, NativeString } from "./expression-context.js";
 import type { FunctionCapabilities } from "./function-owner.js";
+import type { ExceptionTarget } from "./runtime-calls.js";
+import { checkCellInitialized } from "./binding-initialization.js";
 import type { BoxedValue } from "./value-boundary.js";
+import { type VariantHandlers, type VariantOfKind, dispatchKind } from "../dispatch.js";
+
+const primitiveStorageKinds: ReadonlySet<BindingStorage["kind"]> = new Set([
+  "numberSlot", "numberRegister", "stringSlot", "stringRegister", "booleanSlot", "booleanRegister"
+]);
 
 export class BindingAccess implements BindingReads {
   readonly #storage: ReadonlyMap<BindingId, BindingStorage>;
   readonly #capabilities: FunctionCapabilities;
+  readonly #lexicalCells: ReadonlyMap<BindingId, string>;
   readonly #constant: (text: string) => LlvmGlobalReference;
 
   public constructor(
     capabilities: FunctionCapabilities, storage: ReadonlyMap<BindingId, BindingStorage>,
-    stringConstant: (text: string) => LlvmGlobalReference
+    stringConstant: (text: string) => LlvmGlobalReference,
+    lexicalCells: ReadonlyMap<BindingId, string> = new Map()
   ) {
     this.#capabilities = capabilities;
     this.#storage = new Map(storage);
     this.#constant = stringConstant;
+    this.#lexicalCells = lexicalCells;
     if (capabilities.cursor.currentBlock().label.name !== "entry") {
       throw new Error("Binding roots must be registered in the function entry block");
     }
     for (const binding of this.#storage.values()) this.#rootStorage(binding);
+  }
+
+  public checkInitialized(reference: BindingRef, exception: () => ExceptionTarget): void {
+    const name = this.#lexicalCells.get(reference.binding);
+    if (name === undefined) return;
+    const storage = this.#require(reference);
+    if (storage.kind !== "environment" && storage.kind !== "environmentSlot") return;
+    const cell = storage.kind === "environment" ? storage.cell : this.#resolveSlot(storage).cell;
+    checkCellInitialized(cell, name, this.#capabilities, this.#constant, exception());
   }
 
   public number(reference: BindingRef): LlvmValue<typeof llvm.double> {
@@ -34,30 +54,7 @@ export class BindingAccess implements BindingReads {
   }
 
   #rootStorage(storage: BindingStorage): void {
-    const { roots, values, cursor } = this.#capabilities;
-    switch (storage.kind) {
-      case "boxedSlot": { roots.pushSlot(storage.slot); return; }
-      case "stringSlot": { roots.pushSlot(storage.ownerSlot); return; }
-      case "fixedObject": {
-        if (storage.shadowed) roots.pushSlot(storage.shadowSlot);
-        for (const field of storage.fields) this.#rootStorage(field.storage);
-        return;
-      }
-      case "environment": case "runtimeArray": case "runtimeObject": case "collection": {
-        roots.push(values.forBlock(cursor.currentBlock()).fromBoundary(storage.owner));
-        return;
-      }
-      case "boxedRegister": case "closure": case "function": {
-        roots.push(values.forBlock(cursor.currentBlock()).fromBoundary(storage.value));
-        return;
-      }
-      case "numberSlot": case "numberRegister": case "booleanSlot": case "booleanRegister":
-      case "stringRegister": case "boxedGlobal": case "fixedArray": { return; }
-      default: {
-        const exhaustive: never = storage;
-        throw new Error(`Unknown binding storage ${String(exhaustive)}`);
-      }
-    }
+    rootStorage(storage, this.#capabilities);
   }
 
   public string(reference: BindingRef): NativeString {
@@ -85,6 +82,10 @@ export class BindingAccess implements BindingReads {
     }
   }
 
+  public holdsPrimitive(reference: BindingRef): boolean {
+    return primitiveStorageKinds.has(this.#require(reference).kind);
+  }
+
   public value(reference: BindingRef): BoxedValue {
     const storage = this.#require(reference);
     const { cursor, runtime, values, roots } = this.#capabilities;
@@ -105,6 +106,9 @@ export class BindingAccess implements BindingReads {
       }
       case "environment": {
         return this.#environmentValue(storage);
+      }
+      case "environmentSlot": {
+        return this.#environmentValue(this.#resolveSlot(storage));
       }
       case "boxedSlot": { return this.#loaded(storage.slot); }
       case "boxedGlobal": { return this.#loaded(cursor.currentBlock().globalPointer(storage.global)); }
@@ -221,7 +225,15 @@ export class BindingAccess implements BindingReads {
       }
       case "environment": {
         roots.push(storage.owner);
-        this.#capabilities.runtime.callVoid("environmentSet", [storage.cell, cursor.currentBlock().int(llvm.i64, 0n), value]);
+        runtime.callVoid("environmentSet", [storage.cell, cursor.currentBlock().int(llvm.i64, 0n), value]);
+        runtime.callVoid("environmentSet", [storage.cell, cursor.currentBlock().int(llvm.i64, 1n), this.#capabilities.values.forBlock(cursor.currentBlock()).immediate("true")]);
+        return;
+      }
+      case "environmentSlot": {
+        const current = this.#resolveSlot(storage);
+        roots.push(current.owner);
+        runtime.callVoid("environmentSet", [current.cell, cursor.currentBlock().int(llvm.i64, 0n), value]);
+        runtime.callVoid("environmentSet", [current.cell, cursor.currentBlock().int(llvm.i64, 1n), this.#capabilities.values.forBlock(cursor.currentBlock()).immediate("true")]);
         return;
       }
       case "boxedSlot": { cursor.currentBlock().store(value, storage.slot); return; }
@@ -232,11 +244,58 @@ export class BindingAccess implements BindingReads {
 
   public captureCell(reference: BindingRef): BoxedValue {
     const storage = this.#require(reference);
+    if (storage.kind === "environmentSlot") {
+      return this.#captureCellValue(this.#resolveSlot(storage));
+    }
     if (storage.kind !== "environment") throw new Error("Only environment bindings have capture cells");
-    const { cursor, values, roots } = this.#capabilities;
-    const value = values.forBlock(cursor.currentBlock()).fromBoundary(storage.owner);
-    roots.push(value);
-    return value;
+    return this.#captureCellValue(storage);
+  }
+
+  /**
+   * Renews a per-iteration binding's cell before its declaration stores the initial value.
+   *
+   * Every execution of a `let`/`const` declaration inside a loop is a fresh binding, so the
+   * declaration first replaces the current cell with a new one holding `undefined`; closures
+   * created earlier keep the previous cell, and closures created afterwards capture the new one.
+   * Bindings without slot storage (declared outside loops, never captured, or `var`-shared) keep
+   * their single cell, so this is a no-op for them. The caller is always a declaration handler or
+   * a loop-item store, never an assignment: renewing on assignment would detach closures that must
+   * observe the write.
+   */
+  public renewCell(reference: BindingRef): void {
+    const storage = this.#require(reference);
+    if (storage.kind !== "environmentSlot") {
+      return;
+    }
+    const { cursor, values } = this.#capabilities;
+    const block = cursor.currentBlock();
+    const { cell, owner } = createBindingCell(this.#capabilities, values.forBlock(block).immediate("undefined"),
+      false, cursor.uniqueName("binding.cell"));
+    block.store(cell, storage.cellSlot);
+    block.store(owner, storage.ownerSlot);
+  }
+
+  /**
+   * Copies a C-style `for` header binding's value into a fresh per-iteration cell.
+   *
+   * Per ECMA-262 the header `let` is a fresh binding on every iteration, initialized by copying the
+   * previous iteration's value; the increment then updates the new cell, and closures created in
+   * the body capture it. Emission calls this before each body. A `var` header is one shared binding
+   * and is never rotated; anything without slot storage is a no-op.
+   */
+  public rotateCell(reference: BindingRef): void {
+    const storage = this.#require(reference);
+    if (storage.kind !== "environmentSlot") {
+      return;
+    }
+    const { cursor, runtime, roots } = this.#capabilities;
+    const block = cursor.currentBlock();
+    const current = this.#resolveSlot(storage);
+    const carried = runtime.callBoxed("environmentGet", [current.cell, block.int(llvm.i64, 0n)], cursor.uniqueName("binding.carried"));
+    roots.push(carried);
+    const { cell, owner } = createBindingCell(this.#capabilities, carried, true, cursor.uniqueName("binding.cell"));
+    block.store(cell, storage.cellSlot);
+    block.store(owner, storage.ownerSlot);
   }
 
   public initializeFixedArray(reference: BindingRef, elements: readonly LlvmValue<typeof llvm.double>[]): void {
@@ -283,6 +342,23 @@ export class BindingAccess implements BindingReads {
     return value;
   }
 
+  /** The cell a slot currently points at, with its owner rooted for the collecting calls below. */
+  #resolveSlot(storage: Extract<BindingStorage, { readonly kind: "environmentSlot" }>): Extract<BindingStorage, { readonly kind: "environment" }> {
+    const { cursor, values, roots } = this.#capabilities;
+    const block = cursor.currentBlock();
+    const cell = block.load(llvm.ptr, storage.cellSlot, cursor.uniqueName("binding.cell"));
+    const owner = values.forBlock(block).fromBoundary(block.load(llvm.i64, storage.ownerSlot, cursor.uniqueName("binding.owner")));
+    roots.push(owner);
+    return { kind: "environment", cell, owner };
+  }
+
+  #captureCellValue(storage: Extract<BindingStorage, { readonly kind: "environment" }>): BoxedValue {
+    const { cursor, values, roots } = this.#capabilities;
+    const value = values.forBlock(cursor.currentBlock()).fromBoundary(storage.owner);
+    roots.push(value);
+    return value;
+  }
+
   #loaded(slot: LlvmValue<typeof llvm.ptr>): BoxedValue {
     const { cursor, values, roots } = this.#capabilities;
     const value = values.forBlock(cursor.currentBlock()).fromBoundary(cursor.currentBlock().load(llvm.i64, slot, cursor.uniqueName("binding.value")));
@@ -324,4 +400,47 @@ export class BindingAccess implements BindingReads {
     if (storage === undefined) throw new Error(`No allocated storage for binding ${reference.binding.ordinal}`);
     return storage;
   }
+}
+
+type StorageVariants = { readonly [Kind in BindingStorage["kind"]]: VariantOfKind<BindingStorage, Kind> };
+
+const unrooted = (): void => undefined;
+
+/**
+ * What keeps each storage form's heap owner reachable for the collector.
+ *
+ * A slot is rooted by address, so whatever it holds later stays reachable; a register or a fixed
+ * owner is rooted by value. Boxed globals are registered as module roots, and the other `unrooted`
+ * forms hold no owner for this access to root.
+ */
+const storageRooting: VariantHandlers<StorageVariants, FunctionCapabilities, void> = {
+  boxedSlot: (storage, { roots }) => { roots.pushSlot(storage.slot); },
+  stringSlot: (storage, { roots }) => { roots.pushSlot(storage.ownerSlot); },
+  environmentSlot: (storage, { roots }) => { roots.pushSlot(storage.ownerSlot); },
+  fixedObject: (storage, capabilities) => {
+    if (storage.shadowed) capabilities.roots.pushSlot(storage.shadowSlot);
+    for (const field of storage.fields) rootStorage(field.storage, capabilities);
+  },
+  environment: (storage, capabilities) => { rootOwner(storage.owner, capabilities); },
+  runtimeArray: (storage, capabilities) => { rootOwner(storage.owner, capabilities); },
+  runtimeObject: (storage, capabilities) => { rootOwner(storage.owner, capabilities); },
+  collection: (storage, capabilities) => { rootOwner(storage.owner, capabilities); },
+  boxedRegister: (storage, capabilities) => { rootOwner(storage.value, capabilities); },
+  closure: (storage, capabilities) => { rootOwner(storage.value, capabilities); },
+  function: (storage, capabilities) => { rootOwner(storage.value, capabilities); },
+  numberSlot: unrooted,
+  numberRegister: unrooted,
+  booleanSlot: unrooted,
+  booleanRegister: unrooted,
+  stringRegister: unrooted,
+  boxedGlobal: unrooted,
+  fixedArray: unrooted
+};
+
+function rootStorage(storage: BindingStorage, capabilities: FunctionCapabilities): void {
+  dispatchKind(storageRooting, storage, capabilities);
+}
+
+function rootOwner(owner: LlvmValue<typeof llvm.i64>, { roots, values, cursor }: FunctionCapabilities): void {
+  roots.push(values.forBlock(cursor.currentBlock()).fromBoundary(owner));
 }

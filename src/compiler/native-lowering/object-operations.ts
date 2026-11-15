@@ -36,7 +36,8 @@ function create(operation: OperationNode<"runtimeObjectCreate">, context: Operat
 }
 
 function errorLiteral(operation: OperationNode<"runtimeErrorLiteral">, context: OperationContext): void {
-  const message = keep(context.expressions.value(operation.message), context);
+  const argument = keep(context.expressions.value(operation.message), context);
+  const message = keep(context.runtime.callWithCompletion("errorMessageFrom", [argument], context.cursor.uniqueName("error.message"), context.exceptionTarget()), context);
   const name = literalString(operation.errorName, context);
   const pointer = context.runtime.callPointer("errorNew", [integer(BigInt(errorClassId(operation.errorName)), context), name.length, name.bytes, message],
     context.cursor.uniqueName("error.new"));
@@ -120,36 +121,45 @@ function numberStore(operation: OperationNode<"objectStore">, context: Operation
   context.writes.storeObjectNumber(operation.objectName, operation.path, context.expressions.number(operation.value));
 }
 
+function defineAccessor(operation: OperationNode<"defineAccessor">, context: OperationContext): void {
+  const target = keep(context.bindings.value(operation.targetName), context);
+  const key = context.expressions.string(operation.key);
+  boxString(key, context);
+  const getter = keep(context.expressions.value(operation.getter), context);
+  const setter = keep(context.expressions.value(operation.setter), context);
+  const object = context.runtime.callPointer("valueObjectPtr", [target], context.cursor.uniqueName("accessor.object"));
+  context.runtime.callVoid("objectDefineAccessor", [object, key.length, key.bytes, getter, setter]);
+}
+
 function store(operation: OperationNode<"runtimeObjectStore" | "valueObjectStore">, context: OperationContext): void {
   const target = operation.kind === "runtimeObjectStore" ? objectPointer(operation.objectName, context)
     : keep(context.bindings.value(operation.targetName), context);
   const key = context.expressions.string(operation.key);
   boxString(key, context);
   const value = keep(context.expressions.value(operation.value), context);
-  context.runtime.callVoid(operation.kind === "runtimeObjectStore" ? "objectSet" : "valueObjectSet", [target, key.length, key.bytes, value]);
+  if (operation.kind === "runtimeObjectStore") {
+    context.runtime.callVoid("objectSet", [target, key.length, key.bytes, value]);
+    return;
+  }
+  context.runtime.callWithCompletion("valueObjectSet", [target, key.length, key.bytes, value],
+    context.cursor.uniqueName("object.store"), context.exceptionTarget());
 }
 
 function privateStore(operation: OperationNode<"privateFieldStore">, context: OperationContext): void {
   const receiver = keep(context.bindings.value(operation.targetName), context);
   const value = keep(context.expressions.value(operation.value), context);
   const key = literalString(operation.key, context);
-  const branded = context.runtime.call("valueObjectHasOwn", [receiver, key.length, key.bytes], context.cursor.uniqueName("private.brand"));
-  const valid = context.cursor.reserveBlock("private.valid");
-  const invalid = context.cursor.reserveBlock("private.invalid");
-  context.cursor.currentBlock().condBr(branded, valid, invalid);
-  context.cursor.openBlock(invalid);
-  context.runtime.callWithCompletion("iteratorTypeError", [stringValue(operation.message, context)],
-    context.cursor.uniqueName("private.error"), context.exceptionTarget());
-  context.cursor.currentBlock().unreachable();
-  context.cursor.openBlock(valid);
-  context.runtime.callVoid("valueObjectSet", [receiver, key.length, key.bytes, value]);
+  const message = stringValue(operation.message, context);
+  context.runtime.callWithCompletion(operation.define === true ? "valuePrivateAdd" : "valuePrivateSet",
+    [receiver, key.length, key.bytes, value, message], context.cursor.uniqueName("private.store"), context.exceptionTarget());
 }
 
 function deleteProperty(operation: OperationNode<"runtimeObjectDelete" | "valueObjectDelete">, context: OperationContext): void {
   const reference = operation.kind === "runtimeObjectDelete" ? operation.objectName : operation.targetName;
   const receiver = keep(context.bindings.value(reference), context);
   const key = context.expressions.string(operation.key);
-  context.runtime.callVoid("valueObjectDelete", [receiver, key.length, key.bytes]);
+  context.runtime.callWithCompletion("valueObjectDelete", [receiver, key.length, key.bytes],
+    context.cursor.uniqueName("object.delete"), context.exceptionTarget());
 }
 
 const stateHelpers = {
@@ -230,7 +240,7 @@ export const objectOperationHandlers = {
   runtimeObjectKeys: enumerate, runtimeObjectValues: enumerate, runtimeObjectEntries: enumerate,
   runtimeObjectOwnPropertyNames: enumerate, runtimeObjectOwnPropertyDescriptors: enumerate, runtimeObjectFromEntries: fromEntries,
   runtimeObjectOwnPropertyDescriptor: ownDescriptor, runtimeObjectGetPrototype: getPrototype, runtimeObjectSetPrototype: setPrototype,
-  valueObjectSetPrototype: valuePrototype, objectStore: numberStore, runtimeObjectStore: store, valueObjectStore: store,
+  defineAccessor, valueObjectSetPrototype: valuePrototype, objectStore: numberStore, runtimeObjectStore: store, valueObjectStore: store,
   privateFieldStore: privateStore, runtimeObjectDelete: deleteProperty, valueObjectDelete: deleteProperty,
   runtimeObjectPreventExtensions: state, runtimeObjectSeal: state, runtimeObjectFreeze: state,
   runtimeObjectAssign: assign, runtimeObjectDefineDataProperty: defineProperty, runtimeObjectDefineDataProperties: defineProperties

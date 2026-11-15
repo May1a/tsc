@@ -157,6 +157,8 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     access: resolver.value(node.access)
   }),
   optionalTarget: () => ({ kind: "optionalTarget" }),
+  errorConstructor: (node) => ({ kind: "errorConstructor", errorName: node.errorName }),
+  unresolvableReference: (node) => ({ kind: "unresolvableReference", message: node.message }),
   void: (node, resolver) => ({ kind: "void", expression: resolver.value(node.expression) }),
   sequence: (node, resolver) => ({
     kind: "sequence",

@@ -70,6 +70,7 @@ init:
   %trace.set = icmp ne ptr %trace.env, null
   %trace.flag = zext i1 %trace.set to i64
   store i64 %trace.flag, ptr @gcTrace
+  call void @arrayPrototypeInit()
   ret void
 }
 
@@ -337,6 +338,9 @@ walk.object.proto:
   %obj.proto.ptr = getelementptr i8, ptr %cell, i64 40
   %obj.proto = load ptr, ptr %obj.proto.ptr
   call void @gcMarkPayloadPtr(ptr %obj.proto)
+  %obj.private.ptr = getelementptr i8, ptr %cell, i64 64
+  %obj.private = load ptr, ptr %obj.private.ptr
+  call void @gcMarkPayloadPtr(ptr %obj.private)
   br label %skip
 walk.array:
   %arr.length.ptr = getelementptr i8, ptr %cell, i64 8
@@ -406,6 +410,9 @@ walk.function:
   %fn.name.ptr = getelementptr i8, ptr %cell, i64 40
   %fn.name = load i64, ptr %fn.name.ptr
   call void @gcMarkValue(i64 %fn.name)
+  %fn.props.ptr = getelementptr i8, ptr %cell, i64 64
+  %fn.props = load ptr, ptr %fn.props.ptr
+  call void @gcMarkPayloadPtr(ptr %fn.props)
   br label %skip
 walk.environment:
   ; Environment cell: payload+0 holds slot count (i64), payload+8 holds a pointer

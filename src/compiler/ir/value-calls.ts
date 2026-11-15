@@ -1,11 +1,11 @@
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrRuntimeArrayElement, JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
 import { isKnownGlobalCallee, isPlannedBuiltinCall } from "./builtins/index.js";
-import { optionalStatementCallee } from "./optional-call.js";
+import { optionalReceiverGuard, optionalStatementCallee } from "./optional-call.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 import { iteratorErrorSubject } from "./iterator-subject.js";
 
@@ -40,6 +40,9 @@ export function lowerValueCallExpression(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
   const spreadCall = lowerSpreadCallValue(context, expression, bindings);
+  if (spreadCall.kind === "lowered") {
+    return produced(optionalReceiverGuard(spreadCall.operation) ?? spreadCall.operation);
+  }
   if (spreadCall.kind !== "notApplicable") {
     return spreadCall;
   }
@@ -63,25 +66,31 @@ export function lowerValueCallExpression(
     return calleeValueResult;
   }
   const calleeValue = loweredPayload(calleeValueResult);
-  const argsResult = lowerValueCallArguments(context, expression.arguments, bindings);
+  const argsResult = lowerValueCallArguments(context, expression.arguments, bindings, expression.expression.getText());
   if (argsResult.kind === "unsupported") {
     return argsResult;
   }
   const args = loweredPayload(argsResult);
   if (calleeValue === undefined || args === undefined) {
+    // As in the statement path, an unlowered callee is reported by name at the diagnostic, while an
+    // unlowered argument of a lowered callee is this call's own refusal.
+    if (calleeValue !== undefined && argsResult.kind !== "lowered") {
+      return withRefusal(argsResult, unsupportedIn(`Arguments to \`${expression.expression.getText()}\` must be expressions this build can evaluate`));
+    }
     return notApplicable;
   }
   const callThisValueResult = lowerCallThisValue(context, expression.expression, bindings);
   if (callThisValueResult.kind === "unsupported") {
     return callThisValueResult;
   }
-  return produced({
+  const built: Extract<JsIrValueExpression, { readonly kind: "callValue" }> = {
     kind: "callValue",
     callee: calleeValue,
     arguments: args,
     thisValue: loweredPayload(callThisValueResult),
     optionalCallee: optionalStatementCallee(expression)
-  });
+  };
+  return produced(optionalReceiverGuard(built) ?? built);
 }
 
 function lowerNamedValueCall(
@@ -102,8 +111,11 @@ function lowerNamedValueCall(
   if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Alias) === 0) {
     return notApplicable;
   }
-  const args = lowerValueCallArguments(context, arguments_, bindings);
-  return args.kind === "lowered" ? produced({ kind: "call", name: target.text, arguments: args.operation }) : args;
+  const args = lowerValueCallArguments(context, arguments_, bindings, target.text);
+  if (args.kind === "lowered") {
+    return produced({ kind: "call", name: target.text, arguments: args.operation });
+  }
+  return withRefusal(args, unsupportedIn(`Arguments to \`${target.text}\` must be expressions this build can evaluate`));
 }
 
 export function lowerCallThisValue(

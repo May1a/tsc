@@ -1,765 +1,520 @@
-# Declare the support set, then widen the front door
+# Make ordinary programs compile, and compile correctly
 
 ## Goal
 
-Make "what does tscn support" a fact the compiler can state, prove, and grow, instead of
-something you discover by running it on a file and reading `TSCN1002`.
+Two silent miscompiles reach ordinary programs today. Fix those first. Then admit the shapes that
+ordinary TypeScript programs hit in their first ten lines: a counter closure, a `number[]` literal
+that is later sorted, a field that holds an array, and a variable that is later assigned `null`.
 
-Then use that machinery to admit the roughly 30 TypeScript forms that already typecheck and are
-already erased, so real programs stop bouncing off the compiler.
+The previous plan covered the support manifest, `Lowered`, total handler tables and the module split. It is in
+git as `ff1513f:PLAN.md`.
 
-## What the compiler supports today
+## Evidence
 
-Measured on 2026-09-29, not estimated. 111 hand-written TypeScript programs were compiled with
-`dist/cli/main.js` and every one that produced a binary was run and compared against the same
-source transpiled to ESM and run under Node.
+Measured on 2026-10-11 against `ff1513f`. About 75 small probe programs were compiled with
+`dist/cli/main.js`. Each one that produced a binary was run and compared against the same source
+transpiled by TypeScript and run under Node. Test262 was rerun with `--classification coverage-gap`
+so that each refused test carries its diagnostic.
 
-- 70 of 111 compiled. 41 did not.
-- 33 of those 41 reported nothing but `TSCN1002: Unsupported statement in the current lowering
-  slice: <SyntaxKind>`. The other 8 named a specific limitation. One code and one message shape
-  for 80% of the failures, naming the TS `SyntaxKind` rather than the feature.
-- 8 of the 33 print `FirstStatement` where the source is a `const` declaration.
-  `ts.SyntaxKind[kind]` resolves the reverse enum alias, and TypeScript declares
-  `FirstStatement = VariableStatement` after `VariableStatement`, so the lookup lands on the
-  alias. The user is told their variable declaration is not a variable declaration.
-- Of the 70 that compiled, 3 produced wrong output. Details in the preflight section.
-- Everything that did not corrupt output agreed with Node, including generics on functions,
-  union annotations, mapped and conditional and infer types, `keyof`, tuples, index signatures,
-  `super.m()`, class fields, computed member keys, `as const`, non-null assertions, optional
-  chaining, rest parameters, `catch` without a binding, and cross-module import and export.
+**Test262.** 987 pass, 0 fail, 3,280 coverage-gap, 19,719 skip. The `class` family alone accounts
+for 1,559 of the gaps. Generators account for 1,324 skips, and the async families for about 1,400 more.
 
-So the language core is further along than a glance at the fixture directory suggests. What is
-missing is almost entirely erasure and desugaring, and the diagnostics hide that.
+**Half the gaps do not name their cause.** 1,652 of the 3,280 gap tests report only
+`Unsupported statement in the current lowering slice: <Kind>` or
+`Unrecognized call target: __t262SameValue()`. The specific refusal is lost on the way out and is
+attributed to the enclosing statement or call. Two of them, read by hand:
 
-## Why the current shape does not scale to "over time"
+- `language/statements/continue/no-label-continue.js` is refused because its `for` has no update
+  clause.
+- `language/statements/for-of/array-expand.js` is refused because `var second = 1` is later
+  assigned `null`.
 
-Three things make each new feature riskier than it needs to be.
+**Probe results.**
 
-**The support set is control flow, not data.** `src/compiler/ir.ts` holds 116
-`lower*Binding`/`lower*Expression`/`lower*Statement` recognizers, 33 of them binding
-recognizers, and 468 `ts.isX` guards. Each one pattern-matches an AST shape and returns
-`undefined` when it does not match. That single `undefined` means both "this is not my shape,
-ask the next recognizer" and "this is my shape and I cannot handle it". The two cases are
-indistinguishable at the call site, so a recognizer that matched and then gave up looks
-identical to one that never applied.
+| Program | Result |
+| --- | --- |
+| `print(1234567)` | prints `1.23457e+06` |
+| `String(12586269025) === "12586269025"` | `false` |
+| `print(0.1 + 0.2)` | prints `0.3` |
+| `this.area()` in a base method, overridden in a subclass | `TypeError: value is not a function` |
+| `const xs: S[] = [new Sq()]; xs[0].area()` with `area` overridden | base result `0`, not `4` |
+| `let a: number \| null = 0; a = null;` | refused |
+| `const a = [3, 1, 2]; a.join(",")` | refused: array method calls need a runtime array |
+| `class B { items: number[] = []; add(x) { this.items.push(x) } }` | refused |
+| `let n = 0; const inc = () => ++n;` | refused |
+| `counts[w] = (counts[w] ?? 0) + 1` on `Record<string, number>` | refused |
+| `for (let x = 0; x < 3;) { x++; }` | refused |
+| `class MyErr extends Error {}` | refused: `Error` is not a class declared in this module |
+| `console.log("hi")` | refused |
 
-**The file is lowered twice.** `lowerStatements` (ir.ts:2003) runs the whole file in strict mode
-where any `undefined` aborts, and if that aborts it runs the whole file again in non-strict mode
-where the same `undefined` becomes a `TSCN1002` diagnostic. The allowlist is the strict pass.
-That is why 41 distinct features produce one indistinguishable message: the diagnostic is
-generated after the fact by `unsupportedStatementMessage` (ir.ts:12014), which re-walks the AST
-trying to guess why, and falls back to the `SyntaxKind` name.
-
-**Emission dispatches by if-chain too.** `emitOperation` (llvm.ts:1235) sorts 120 operation
-kinds into 12 helper predicates (`emitBindingOperation`, `emitMutationOperation`,
-`emitCallLikeOperation`, and so on) that each re-test the kind. A new operation can be
-forgotten in any of them. `AGENTS.md` already names this as the blocker for
-`no-open-union-narrowing` and says the fix is a `Record<JsIrOperation["kind"], Handler>` table.
-
-The two god-files are 12,424 and 8,229 lines by `wc`, or 11,426 and 7,452 once blanks and comments
-are skipped. `npm run lint` reports both on `max-lines` today, plus `max-lines-per-function` on
-`emitValueExpression` at 505 lines. The 89 `eslint-disable` comments between the two files are 46
-`complexity` and 43 `max-statements`, all but three of them on recognizers, which is the honest
-measure of how tangled the dispatch is. `oxlint.config.ts` already flags
-this as Phase 2 debt and names `runtime-helpers.ts`, a file that no longer exist after the `.ll`
-extraction, along with a `src/runtime/**` entry that is also gone.
+Getters, setters, private fields, `Map`, `Set`, `JSON`, regular expressions, object spread, optional
+chaining, destructured parameters, higher-order generic functions and parameter properties all
+agreed with Node.
 
 ## Non-goals
 
-- No change to emitted behavior for any program that compiles today. The oracle must stay green
-  on all 122 fixtures.
-- No new runtime capability. That is a separate plan. This one only makes room.
-- No use of the type checker for representation choice. Narrowing and monomorphized generics
-  are direction D and they want a settled frontend.
+- No new value representation. Boxed JSValues, Number, String and fixed aggregates stay the storage
+  kinds. Workstream 2 changes which kind a binding *receives*, not the set of kinds.
+- No use of the type checker for representation choice. Storage is derived from the writes the
+  lowering sees.
+- No regression in the Test262 baseline (`test262/baseline.json`): `minimumPass` only rises,
+  `maximumFail` and `maximumBehaviorMismatch` stay 0.
 
-## Data model
+## Workstreams
 
-Three new types carry the whole design.
+Each step ends green and is separately revertable. Each admitted feature lands with an oracle
+fixture in `test/fixtures/` that is listed in `oracleFixtures` (`test/integration/oracle.ts`), and with
+any support manifest entry it moves from `"planned"` to `"supported"`.
 
-**A three-way lowering result.** Every recognizer stops returning `JsIrOperation | undefined` and
-returns:
+### 0. The two miscompiles
 
-```ts
-type Lowered =
-  | { readonly kind: "lowered"; readonly operation: JsIrOperation }
-  | { readonly kind: "notApplicable" }
-  | { readonly kind: "unsupported"; readonly reason: string };
-```
+**0a. Number to String.** ECMA-262 `Number::toString(10)` produces the shortest decimal string that
+round-trips to the same double. The runtime uses `%g`, which keeps six significant digits, at four
+sites:
 
-`notApplicable` continues the recognizer chain. `unsupported` stops it and carries the reason to
-the diagnostic. This is the fix for both of the first two problems above: the strict pass
-disappears, because a recognizer that matched and gave up now says so, and the reason is
-available at the point of failure instead of reconstructed afterwards. A recognizer that
-returns `notApplicable` for something it actually recognizes becomes a type error once the
-builtin table below exists, because the table entry for that builtin is a `Lowered` producer.
+- `values.ll:637` (`print` of a number, through `@.value.fmt.number`)
+- `values.ll:720` (`valueToString`, through `@.tostring.fmt.number`)
+- `numbers.ll:160` (`@.number.fmt.default`)
+- `json.ll:303` (`JSON.stringify`, through `@.json.fmt.number`)
 
-**A builtin support table.** One entry per recognized builtin, keyed by owner and name, with the
-lowering that implements it. A `Record` keyed by the entry union so a new builtin without a
-lowering will not compile:
+`globals.ll:2` declares a fifth `%g` constant.
 
-```ts
-type ArrayBuiltin = "slice" | "splice" | "map" | "flatMap" | "with" | "at" | ...;
-type ArraySupport = Readonly<Record<ArrayBuiltin, BuiltinEntry<"array">>>;
-```
+Add one runtime function to `numbers.ll`, `numberToShortestString(double) -> { ptr, i64 }`, and
+route all four sites through it. Find the shortest precision `p` in 1 through 17 whose `%.*e` output
+parses back to the same double through `strtod`. Then lay out its digits and exponent following the
+`Number::toString` steps:
 
-`BuiltinEntry` carries the owner, the name, the arity or arity range, the `Lowered` producer, and
-a `state` of `"supported"` or `"planned"`. A `"planned"` entry is the important half: it is how
-the compiler says "this is a builtin I know about and have not written yet", which is a far more
-useful diagnostic than `Unsupported statement: CallExpression`, and it is free to generate once
-the table exists.
+- `NaN`, `Infinity`, `-Infinity`, and `"0"` for both zeros
+- plain decimal for exponents 1e-7 ≤ |x| < 1e21
+- otherwise `d.ddde+N` or `d.ddde-N`
 
-**A support manifest**, derived from the tables, never hand-maintained. One entry per builtin
-with its state, and one entry per erasure-only TypeScript form with whether it is admitted. The
-manifest is what the test reads, so it cannot drift from the code.
+Regenerate the contract catalog with `npm run runtime:contracts`.
 
-## Target design
+The fixture covers 1234567, 12586269025, 0.1 + 0.2, 1e21, 1e-7, 123e-20, -0, 2 ** 53, 5e-324,
+`Number.MAX_VALUE` and the `String`, template and `JSON.stringify` paths. `toFixed`, `toPrecision` and
+`toExponential` keep their explicit-precision formats.
 
-### 1. Split "not mine" from "mine but no"
+**0b. Overridden methods.** `lowerClassMethodCall` (`ir/class-calls.ts`) resolves the method through
+`findClassInChain` on the receiver's static class and emits a direct `call` to
+`classMethodFunctionName(definingClass.name, ...)`. That is correct only when no class declared in the
+module overrides the method below the receiver's static class. In every other case it binds the
+base implementation:
 
-Convert the 33 binding recognizers and the expression and statement dispatchers to `Lowered`.
-This is mechanical but not trivial: the tricky part is that several recognizers currently
-*fall through* to a later one after partially matching. Each of those becomes an explicit
-`unsupported` with the reason the fallthrough was happening, and the fallthrough is removed. That
-is where most of the diagnostic quality improvement comes from, and it will surface cases the old
-code silently dropped.
+- `this.m()` inside a base method
+- a call through a base-typed binding
+- a call on an element of a base-typed array
 
-Delete `lowerTopLevelStatements`'s `strict` parameter, `tryLowerStatementsWithClasses`, and
-`ClassLoweringUnsupportedError` once nothing throws. The class path used the exception to abort a
-strict attempt; with `Lowered` it can just report `unsupported` and let the chain continue. Done — see
-the step 5 status block for how the four remaining sites got there.
+When some subclass overrides the method, the call must dispatch through the instance's prototype
+chain, the object `classPrototypeName` names. The direct call stays when no override exists, which
+keeps today's fast path and byte-identical output for every existing fixture.
 
-### 2. Build the builtin tables
+Find out why `this.area()` reports `TypeError: value is not a function` rather than the base result.
+The two symptoms may have one cause or two.
 
-Group the 33 recognizers by owner into `array`, `object`, `string`, `number`, `collection`,
-`json`, `regexp`, `date`, `math`, `function`, `error`, `iterator`. That is 12 modules, and it is
-the natural seam the file is already sorted by, which is a good sign the split is along existing
-seams rather than invented ones.
+The fixture includes a three-level chain, an override that calls `super.m()`, dispatch through `this`,
+through a base-typed `const`, and through a `for...of` over a base-typed array.
 
-Each module exports its owner type, its `Support` record, and its `lower*` producers. The
-`Record` key is checked for completeness, so deleting a builtin and forgetting the table entry
-does not compile, and adding a table entry without a producer does not compile.
+**0c. Optional calls on a nullish receiver.** Found while verifying 0b. `o?.f()` throws
+`TypeError: value is not a function` when `o` is `undefined`. This happens for a plain object, for a
+class instance, and with or without an override. Node yields `undefined` without evaluating the
+arguments. The optional-call lowering (`ir/optional-call.ts`, `ir/optional-chains.ts`) has to
+short-circuit on the receiver's nullish check, not only on the callee's.
 
-### 3. A total operation emitter table
+The fixture covers `o?.f()` and `o?.f(sideEffect())` on `undefined` and `null`, the chained form
+`a?.b.f()`, and the optional call `o.f?.()`.
 
-This is the one that is a pure win and should land early, because it is small and it makes the
-IR closed-world property real in emission the way `jsIrLeafOperationKinds` already makes it for
-the container and leaf split:
+**0d. Untyped call results printed as numbers.** Found while verifying workstream 2.
+`const f: any = () => "x"; print(f())` prints `NaN`. The same happens for `for (const f of fns) f()`
+over an `any[]`, for a callee typed `() => unknown`, and for a spread call to a function returning
+`any`. `lowerNumberCallExpression` claimed every call whose checker type is `any` or `unknown`, and
+coerced the result with `valueToNumber`. `print` tries the number tier before the value tier.
 
-```ts
-type OperationEmitter<T extends JsIrOperation["kind"]> =
-  (operation: Extract<JsIrOperation, { readonly kind: T }>, context: EmitContext) => string[];
+A call through a boxed callee is now claimed only when its static type is a number. A call to a
+declared function is still claimed under `any`, because its return kind is known and the checker
+types a recursive call in an unannotated function as `any`. The fixture is
+`call-untyped-result-not-number.ts`.
 
-function operationEmitters<T extends JsIrOperation["kind"]>(
-  handlers: { readonly [K in T]: OperationEmitter<K> }
-): { readonly [K in T]: OperationEmitter<K> } {
-  return handlers;
-}
+`f() * 2` with an `any`-typed `f` is now refused, as `v * 2` with an `any`-typed `v` already was.
+Arithmetic operands need a ToNumber coercion of boxed values, including `valueOf`, before either can
+be admitted.
 
-const emitters = operationEmitters({
-  "arrayLiteral": emitArrayLiteralOperation,
-  "runtimeArrayLiteral": emitRuntimeArrayLiteralOperation,
-  // ... all 120
-});
-```
+**0e. `const` re-evaluated at every read.** Found while verifying workstream 2. `updateConstBindings`
+recorded a `const` by its initializer expression, and every read through an expression tier inlined
+it. `let n = 1; const m = n * 10; n = 2; return m` returned `20`, and `const a = ++i` incremented `i`
+at every read of `a`. This affected numbers, strings, booleans and values, inside functions and at
+module scope through another `const`. The Test262 harness already worked around it in
+`verifyProperty`.
 
-`Extract` gives each handler its narrowed operation, and the mapped parameter type forces all
-120 keys. Replace the 12 helper predicates in `emitOperation` with the table. Deleting the
-predicates is the point; keeping them alongside the table would leave two dispatchers, and the
-if-chain would still be the one that runs when a key is missing at runtime.
+A `const` is now inlined only when its initializer is stable: constants, parameters, aggregate
+references and effect-free operators over them (`stable-expressions.ts`). Any other `const` is
+read from the slot its declaration stored. The fixture is `const-snapshot.ts`.
 
-### 4. The manifest and its test
+**0f. Stores through an unchecked boxed receiver.** Found with 0e. `valueObjectSet`, `valueArraySet`,
+`valueArraySetLength` and `valueArrayDelete` turn the receiver's bits into a pointer without
+checking its tag. `isProvenBoxedAggregateBinding` admits an element read of an `any[]` as proof of an
+object, so `const t = xs[0]; t["k"] = 1` with `xs = [5]` writes through a number and the process
+dies silently. Assigning to a property of `undefined` dies instead of throwing a `TypeError`.
 
-`test/unit/support-manifest.test.ts` reads the manifest and asserts:
+Make those helpers dispatch on the receiver's tag with the language's semantics, then accept any boxed
+binding as a receiver. Then remove the 0e exception in `isShapeRecognizedReceiver`. For now, a
+`const` initialized by an element read, or by `new Number`/`Boolean`/`String`, is still re-evaluated
+at every read, so `n === n` is `false` for such a wrapper.
 
-- Every `"supported"` builtin has a fixture, and the fixture name follows
-  `<owner>-runtime-<name>.ts`. 138 of the 704 fixtures already match that shape, so the
-  convention exists, it was just never written down. Note that the existing `-unsupported`
-  fixtures do *not* follow a rejection convention: `array-runtime-map-unsupported-callback.ts` is
-  a passing program where the callback is not inlined. Do not derive the manifest from filenames.
-- Every `"planned"` builtin has a fixture that asserts the specific `unsupported` reason, so
-  deleting a `"planned"` state has to delete a test with it.
-- Every erasure-only form the plan admits is listed.
+Done. Each store helper now dispatches on the receiver's tag and returns a completion, which native
+lowering checks:
 
-This test is the thing that would have caught two of the three preflight bugs. Each of those sits
-one shape away from a fixture that exists and passes today.
+- `valueObjectSet` stores into an object, an array (element, named key or `length`), or a function.
+- `valueObjectDelete` also deletes from arrays.
+- `valueArraySet`, `valueArraySetLength` and `valueArrayDelete` handle an array receiver and give
+  any other receiver to the object helpers under the index's key.
 
-### 5. Decompose
+A nullish receiver throws a `TypeError`. So does a store on a primitive, as a module's strict code
+does. Deleting from a primitive succeeds. Function objects carry a lazily created property object, so
+`f.tag = 1` stores and reads back. The GC marks it, and a store to `name` or `length` throws.
+`isBoxedStoreReceiverBinding` admits every `value` and `valueVariable` binding.
 
-`ir.ts` into `src/compiler/ir/`:
+The 0e exception is gone, so every `const` with an unstable initializer is read from its slot. A
+`const` holding a primitive wrapper keeps its recognizers through the `boxedPrimitive` flag on its
+`valueVariable` binding (`isBoxedPrimitiveBinding`).
 
-- `types.ts`: the IR unions, `jsIrLeafOperationKinds`, `jsIrOperationChildren`,
-  `visitJsIrOperations`
-- `module.ts`: `lowerToJsIr`, `lowerStatements`, trace plumbing, `JsIrResult`
-- `statements.ts`, `functions.ts`, `classes.ts`, `destructuring.ts`, `expressions.ts`
-- `bindings.ts`: `JsIrBindingValue` classification, `aggregateBindingForOperation`,
-  `updateBindings`
-- `builtins/*.ts`, one per owner, holding the support table and its producers
+Test262 then compiled `catch ([x])` tests, which showed that a catch clause's array pattern read
+elements by index instead of iterating. It now runs the iterator protocol, as `for...of` patterns do,
+so it closes an iterator it does not exhaust.
 
-`llvm.ts` into `src/compiler/llvm/`: `module.ts` (`emitLlvmModule`, function definitions),
-`context.ts` (`EmitContext`, `JsValue`, layout), `completion.ts` (cleanup frames, completion
-transfer, throw entry), `operations.ts` (the table), `trace.ts`.
+Fixtures: `boxed-receiver-store-*.ts`, `const-primitive-wrapper-identity.ts`,
+`const-element-read-snapshot.ts` and `catch-array-pattern-iterator.ts`. Test262 rises from 1,242 to
+1,275.
 
-Split by concept, not by line range. Each cut is a separate commit that ends green, so a bad
-cut is one `git revert` away rather than a 12,000-line merge conflict. Once both files are under
-800 lines, promote `max-lines` and `max-lines-per-function` from `warn` to `error`, and enable
-`max-len` at 140, which `AGENTS.md` records as an open proposal blocked on exactly this. Delete
-the two `oxlint.config.ts` entries naming `runtime-helpers.ts` and `src/runtime/**`, which no
-longer exist after the `.ll` extraction. `CONTEXT.md` needs a matching update, since it currently
-tells readers the IR lives in `src/compiler/ir.ts`.
+**0g. Array methods through a boxed value.** Found while verifying workstream 2. A method call on a
+boxed value that holds an array takes the generic dynamic-call path, and the runtime array has no
+property of that name. `for (const row of [[1, 2], [3]]) print(row.join("-"))` throws
+`TypeError: value is not a function`. A runtime array receiver has to reach the array builtins,
+either by a tag check before the dynamic call or by array prototype methods in the runtime.
 
-### 6. Fix the diagnostics
+Done. `runtime/prototypes.ll` defines each `Array.prototype` method that a statically lowered call
+supports, plus `toString`, as a function of the uniform ABI. They are thin wrappers over the array
+helpers and the callback helpers. A property read on an array that finds no own property looks the
+key up in `@arrayPrototypeMethods`. That table replaces the chain of key comparisons that served
+only `keys`, `values`, `entries` and `Symbol.iterator`. A loop item, an `any` parameter and a boxed
+`let` now run the real method. `runtime-ir.test.ts` checks the table's sizes against its keys, and
+checks that it lists every supported prototype method. Fixtures: `boxed-array-methods.ts` and
+`boxed-array-method-receivers.ts`.
 
-- `TSCN1002` for a recognized-but-unimplemented builtin reads `Array.prototype.with is a known
-  builtin that this build does not implement yet` and cites the manifest id.
-- `TSCN1002` for an unrecognized call target reads `Unrecognized call target: arr.foo()`. A
-  call the compiler does not recognize at all is a different failure from a builtin it has not
-  written, and today they are the same string.
-- Keep the `SyntaxKind` fallback for genuinely unknown statements, but stop using it for
-  expressions, where it is never the useful part of the message.
-- Render the kind through a name table rather than `ts.SyntaxKind[kind]`. The enum declares 33
-  range aliases, and the reverse lookup lands on whichever was declared last, so `const` prints
-  `FirstStatement`. A `Record<ts.SyntaxKind, string>` over the statement range is enough.
-- Add a new code for "compiled and miscompiled". Not part of this plan's scope, but the
-  preflight bugs show the current codes have no room for "we produced this and it was wrong".
+Also fixed: `arrayIndexOf` and `arrayLastIndexOf` clamped a negative start position to 0 instead of
+counting it from the end. `[3, 1, 2, 3].indexOf(3, -1)` returned `0`; it now returns `3`. The fixture
+is `array-index-of-negative-start.ts`.
 
-### 7. Fix `TS5110`
+Still open:
 
-`defaultCompilerOptions` (frontend.ts:56) pairs `module: ESNext` with
-`moduleResolution: NodeNext`, which TypeScript rejects. Every compile without a tsconfig prints
-a spurious `error TS5110` before the real diagnostics. One line, and it was in the way of reading
-the preflight output.
+- A property read whose receiver is not an identifier or `this` is refused, so `f().m()` and
+  `v.slice(1).join()` do not compile. `lowerAggregatePropertyValueAccess` admits only those two
+  receivers. The non-spread `callValue` evaluates its receiver once in `callee` and again in
+  `thisValue`. Before admitting other receivers, it must take `methodReceiver`/`methodKey` as the
+  spread form does, or `f().m()` would call `f` twice.
+- `Object.prototype` methods (`toString`, `valueOf`, `isPrototypeOf`, `propertyIsEnumerable`) on
+  objects and class instances. They need a lookup that knows a key is missing from the whole
+  prototype chain, not just that it reads `undefined`. They also need `Error.prototype.toString` for
+  error objects.
 
-## Preflight: three miscompiles
+**0h. Class methods missing from the prototype.** Found while verifying workstream 2. 0b installed only
+overridden methods on a class prototype, so `obj["m"]()` threw `TypeError: value is not a function`
+for any other method, and `inst.hasOwnProperty(k)` did the same. Every instance method is now
+installed (`lowerPrototypeMethodStores`), and `hasOwnProperty` on a boxed receiver lowers to
+`runtimeObjectHas`. Other `Object.prototype` methods called through a class instance, such as
+`toString` or `isPrototypeOf`, still throw, because the runtime has no `Object.prototype` functions.
+0g lists them as open. The fixture is `class-method-dynamic-access.ts`.
 
-These are not part of the support work. They are in the plan because they are the argument for
-it, and because fixing them first proves the fixtures can catch a regression of this class.
+**0i. Parameter defaults that are not numbers.** Found while starting 3.1. A parameter's default was
+recorded only when it lowered as a number. Any other default was dropped, so `function f(x = "s")`
+returned `undefined` when called through a function value. A direct call omitting the argument was
+refused, which hid the bug. Every default is now a value-tier expression (`lowerParameterDefault`).
+The callee evaluates it when the argument is missing or `undefined`, after binding the parameters
+before it. A default this build cannot evaluate is refused by name. `= undefined` makes the
+parameter omittable without a default. The fixture is `function-parameter-value-defaults.ts`.
 
-**Array-literal spread into a call.** `function f(...a: number[]) {} f(...[1, 2])` segfaults with
-exit 139. `f(...a)` with `a` a named binding works, and the four-argument `show(1, ...iterable, 4)`
-in `call-iterable-spread.ts` works. `f(...["a"])` into `(...a: string[])` prints
-`1.04858e+06`. No fixture covers the literal form; `call-spread-into-rest.ts` uses a named
-binding. Add three fixtures and find the argv buffer sizing.
+**0j. Private fields were properties.** Found while starting 3.2. A private field was an ordinary own
+property under a mangled key. `Object.keys` counted it, and `JSON.stringify(new C())` printed
+`{" private C #x":1}`. Each object now has a private-element table at payload offset 56, which the
+GC marks and which no enumeration, reflection or copy reaches. `valuePrivateGet`, `valuePrivateSet`
+and `valuePrivateAdd` check the brand. An add runs at construction (`privateFieldStore` with
+`define`) and throws if the element already exists. Fixtures: `private-field-brand.ts` and
+`private-field-not-a-property.ts`.
 
-**Optional members on an object literal.** `const o: { m?(): void } = {}; o.m?.()` segfaults.
-The same program without the annotation works, and the unannotated `o.m()` and even `const o: {
-m?(): void } = {}; print(typeof o.m)` fail to compile. An object literal with an optional member
-is a sparse shape and it is being lowered as a dense one.
+**0k. Errors held as values.** Found while making error constructors values (3.4):
+- `new Error(undefined)` got the message `"undefined"`; it now gets an empty one.
+- `String(e)` printed `[object Object]` for an error held in a boxed value.
+- `e.toString()` threw `TypeError: value is not a function`.
+- `new Error(msg, { cause })` would have dropped its cause.
 
-**The `this` parameter reaches the call site.** `runtimeParameters` filters type-only `this`
-parameters at three sites, but `lowerFunctionDeclaration` (ir.ts:4753) iterates
-`statement.parameters` directly, so it records a runtime slot named `this`, and
-`parameterValueKind` types it `number` because `this: void` is not `string`, `unknown`, or `any`.
-The declaration and the call site then disagree about arity. One call to an existing helper
-fixes it.
+`errorMessageFrom` now normalizes every message. `valueToString` formats error objects like
+`errorToString`. Errors inherit `toString` and `constructor` (`errorInheritedProperty`), and
+`errorInstallCause` implements InstallErrorCause.
 
-## Feature batches
+**0l. Forms that always throw.** TypeScript reports these as type errors, so only Test262 reaches
+them, because it suppresses semantic diagnostics. They compiled to code that did not throw:
+- a write to a `const`
+- a parameter default reading its own or a later parameter
+- a `let`/`const` loop whose source reads the loop's own item
 
-These are the payload the new machinery carries. Ordered so each batch is independently
-shippable and each is mostly erasure, which is why they are cheap once the table exists.
+`throwing-forms.ts` now refuses them by name. The frontend reports TS18030 (`?.` before a private
+name, valid ECMAScript TypeScript cannot parse) as an unsupported feature. A statement call to a
+class without `new`, or to a name nothing declares, is refused; before, it crashed binding resolution.
 
-**Batch 1, pure erasure.** These are one missing `SyntaxKind` in an existing function, and
-several already have partial support.
+**0m. ToString ignored an object's own `toString`.** Found while converting a computed property
+key. `String(o)`, `` `${o}` ``, `"a" + o` and
+`print(o)` formatted every object with the runtime's built-in form, so a class with its own
+`toString` printed `[object Object]` in a template literal, and `print([[4]])` printed
+`[object Array]`.
 
-- `satisfies`: add to `unwrapTypeOnlyExpression` (ir.ts:6537), which already handles `as`,
-  `<T>`, `!` and parens. One line.
-- `this` parameter: the preflight fix, plus routing all declaration sites through
-  `runtimeParameters`.
-- Optional parameters: lower to a parameter with a default of `undefined`.
-- `abstract`, `implements`, `override`, `declare`, `readonly`, `public`, `private`, `protected` on
-  members: `override` already works. The rest are modifier filtering.
-- Type parameters on classes: erase, keeping the `extends` clause.
-- Function overload signatures: lower only the implementation signature.
-- `accessor` keyword: desugar to a getter and setter pair, which the class path already has.
+`valueOrdinaryToPrimitive` now calls `toString` then `valueOf`, or `valueOf` first for the default
+hint `+` uses (`stringConversion.preferValue`). It passes over a method that returns an object and
+throws a TypeError when every method found did. The runtime has no `Object.prototype`, so an object
+with neither method keeps its built-in form. A string conversion is now a completion, because the
+method may throw. A computed class member name converts once, when the class is defined, not at
+every instance. `print` converts any value that may be an object. Two latent GC defects surfaced
+once a conversion could collect: `concat` passed its left bytes across the right operand, and
+`regexSearch` boxed borrowed bytes; both now use an owned string. The fixture is
+`object-to-string-conversion.ts`.
 
-**Batch 2, desugaring to shapes that already work.** Each of these becomes an object literal or a
-`switch`, and both are supported.
+Still open: `Array.prototype.join` and an array's built-in form convert elements without their own
+`toString`, because `arrayJoin` cannot throw. ToNumber of an object still ignores `valueOf`, and
+arithmetic on boxed operands stays refused (0d).
 
-- `enum`: an object literal with the forward and reverse mappings, following the C-style
-  semantics. Numeric and string members separately, since a string member has no reverse entry.
-- `namespace`: an object literal, hoisted for the IIFE form and lazy for the non-IIFE form.
-- Labeled statements: the one item here that adds a form rather than reusing one. `break` and
-  `continue` currently carry a target depth, and the `LoopLabels` type at llvm.ts:144 is an
-  exception-unwinding depth stack for `try`/`finally`, not a source label. A label is a named
-  target the IR does not represent, so this needs one first.
-- Comma declarators in `for` initializers: currently `lowerForInitializer` handles one
-  declarator.
-- Object literal `get`/`set` accessors: the class path has `lowerClassAccessor`; the object
-  literal path does not.
-- `new.target`: a synthetic binding initialized from a runtime call.
+0d drops the Test262 floor from 1,013 to 1,012, and 0e restores it to 1,013. `language/statements/function/S13.2.1_A7_T2.js` passed
+only because `var x = __func()` bound `x` to `valueToNumber(null)`, which is `0`, and the test never
+reads `x`. It is now refused, because a `var` cannot hold a boxed value yet. Workstream 2 admits it.
 
-**Batch 3, narrowing the known-wrong shapes.** These are the ones where the honest answer is that
-the current lowering is wrong for a shape it accepts, not that it is missing.
+### 1. Refusal reasons reach the diagnostic
 
-- Array-literal spread into a call (preflight).
-- Sparse object literals with optional members (preflight).
-- Computed method names in object literals. `const o = { m() {} }` lowers, `const o = {
-  [Symbol.iterator]() {} }` reports `Object methods are not supported by known-shape numeric
-  objects`, which is both a different limitation and a misleading name, since the array is
-  numeric and the object is not. Class members already handle computed keys through
-  `ClassComputedKeyInfo`; the object literal path does not.
+1,652 Test262 gaps carry only a generic message. Find each place where an inner `unsupported` is
+replaced by `Unsupported statement in the current lowering slice` or `Unrecognized call target`. These
+include call-argument lowering for user functions and the statement-list fallback. Propagate the inner
+reason with `withRefusal`, which `class-calls.ts` already does for method arguments.
 
-Runtime breadth is deliberately out of scope. Generators and `async`, `Symbol` beyond `iterator`,
-`Intl`, full `Date`, `WeakMap`, `Proxy`, `TypedArray`, `BigInt` each need a new `.ll` domain plus
-a table entry plus fixtures, and they are a good fit for the table once it exists. That is the
-next plan.
+The generic message stays only for a shape that no recognizer claimed.
 
-## Implementation sequence
+Rerun the gap census when this lands. Its counts are the input for ordering workstreams 2 and 3.
 
-Each step ends green and is separately revertable.
+In the same step:
 
-1. `TS5110` fix. One line. **[DONE]**
-2. The three preflight miscompiles, each with its fixtures. **[DONE]**
-3. `operationEmitters` table in llvm.ts, the 12 predicates deleted. Emitted text must be
-   byte-identical for every fixture. **[DONE]**
-4. `Lowered` introduced. Mechanical, no behavior change. The double-lower is still there.
-   **[DONE at the statement tier and, since, through the whole assignment path and the
-   call-statement path.]**
-5. The double-lower removed. `strict`, `tryLowerStatementsWithClasses` and
-   `ClassLoweringUnsupportedError` go. **[DONE. `strict`, `tryLowerStatementsWithClasses` and
-   `sourceFileContainsClass` are deleted and each file is traversed once. All nine
-   `throw new ClassLoweringUnsupportedError` sites are gone, the class and the file-level `try` in
-   `lowerStatements` with them. The condition tier and the whole assignment and call-statement paths
-   are converted.]**
+- Admit a `for` statement without an update clause, and without a condition. Both are refused today.
+- Add a test asserting that every fixture named `*-unsupported.ts` produces `TSCN1002`. At least
+  four of them no longer do (`class-expression-unsupported`, `class-getter-unsupported`,
+  `class-private-field-unsupported`, `class-computed-field-unsupported`). Rename those, and add them to
+  the oracle, since they now compile.
 
-   The value tier is one atomic change rather than a sequence, and it is worth saying so before someone
-   starts it. Converting `lowerValueExpression` alone produced **164 type errors across 144 lines and
-   about 60 functions** — the seven tiers hang off it (`lowerNumberExpression` 82 sites,
-   `lowerStringRuntimeExpression` 52), and they hang off each other. 72 of the 127 `lowerValueExpression`
-   call sites are the same mechanical shape (`const x = f(..); if (x === undefined) return undefined;`),
-   which is what makes it tractable at all; the rest are per-function judgements about whether a `return`
-   is an operation or a decline. The condition tier, by comparison, was 34 errors and one window.
-6. The builtin tables, one owner at a time, `array` first because it has the most entries.
-   **[DONE — 12 owners under `src/compiler/ir/builtins/`.]**
-7. The manifest and `support-manifest.test.ts`. **[DONE]**
-8. Decomposition of both files, one cut per commit. **[DONE for `llvm.ts` — 34 modules, no file
-   over 800 lines. `ir.ts` is not: it is one file at ~8.4k lines, because its lowering graph is a
-   cycle (`lowerRuntimeObjectOwnPropertyDescriptorBinding` → `lowerNumberExpression` → call
-   arguments → `lowerValueExpression` → back), and cutting it means boxing the entry points on a
-   lowering context, which is ~236 call sites.]**
-9. Promote `max-lines` and `max-lines-per-function` to `error`, enable `max-len` at 140. Delete
-   the stale `oxlint.config.ts` entries. Update `CONTEXT.md`. **[PARTIALLY DONE. The stale entries
-   were already gone and `CONTEXT.md` now names the modules that exist. The promotion is blocked on
-   `ir.ts`. `max-len` cannot be done at all: oxlint 1.66 does not ship the rule.]**
-10. Batches 1 and 2, one feature per fixture pair, so each is a revertable commit.
-    **[Batch 1 is complete. Of batch 2, `enum`, `namespace`, `for` comma declarators and labelled
-    statements are admitted; `object-literal-accessor` and `new-target` are not, and the manifest
-    records why.]**
+**Follow-up: expression statements and undeclared names.** An expression statement no recognizer
+claimed was refused. It now evaluates its expression as a value and discards it (`discardValue`), so
+`o.a;` reads and `value.missing;` through `null` throws, as in JavaScript. A read of a name that the
+checker resolves to no declaration at all lowers to `unresolvableReference`, which throws
+`ReferenceError: x is not defined`. A declared name that lowering cannot read is still refused.
+`typeof` answers statically and never evaluates its operand this way. Test262 rises from 1,813 to
+2,066.
 
-Steps 3 through 5 are the ones that pay for steps 6 through 10. If the plan has to be cut short,
-cut it after step 5 and the next person inherits a compiler that can state what it supports.
+A `new` statement and a call statement that no statement tier claims now go through the value tier
+and discard the result as well. `Object.prototype.hasOwnProperty.call(value, key)` is a condition on
+any value (`valueHasOwnProperty`). It converts the key before a nullish value throws, and it answers
+for a string's `length` and indices and an array's `length`, elements and named properties. Running a
+`new` statement exposed that a constructor's return value was ignored: `return null` in a derived
+constructor did not throw, and an object a base constructor returned did not replace the instance.
+Calls on `new C()` bind to C's methods statically, which a replacement object would make wrong, so a
+constructor that returns a value is refused until classes are values (3.4). The fixture is
+`has-own-property-call.ts`. Test262 rises from 2,182 to 2,184.
+
+**Lint proposal.** Add `fixture-name-matches-outcome`: a fixture named `-unsupported` must be refused,
+and a `defect-` fixture must be listed in a test that asserts the defect.
+
+**Census after workstream 1** (2026-10-11): 1,013 pass, 0 fail, 3,254 coverage-gap. 4 gap tests carry
+only a generic message. Each figure below is the number of tests whose *first* diagnostic, which is the
+likely root cause, is that reason.
+
+| Tests | First diagnostic | Workstream |
+| --- | --- | --- |
+| 520 | a `let` or `var` binding cannot hold an object literal (199), a class instance (177), or another value (144) | 2 |
+| 467 | `X` cannot be used as a value yet: builtin constructors such as `ReferenceError` or `Test262Error` used as values | 3.4 |
+| 255 | method names must be identifiers, string literals, or computable from constants | 3.3 |
+| 205 | a variable declaration without an initializer | 2 |
+| 255 | parameters with defaults (137) and destructuring parameters (118) on class members | 3.1 |
+| 134 | a `for...of` item declared with something other than `const` | 2 |
+| 129 | multiple bindings in one declaration | 1 (follow-up) |
+
+Workstream 2 comes first, as planned. Every `let` or `var` that holds a non-scalar is refused, and that
+is the largest single cause.
+
+### 2. Storage from every write
+
+A binding's storage is chosen from its initializer and never widened. Each write or use that does not
+fit the initializer's kind is refused rather than demoting the binding to a boxed slot.
+
+Make storage a fact derived from all writes and uses before native lowering:
+
+- A Number or String binding stays specialized only when every write produces that kind. Any other
+  write demotes it to a boxed `value` binding.
+- A fixed numeric array stays fixed only when every use is an indexed numeric read or write, or
+  `length`. A method call, an escape to a function, or a non-number element demotes it to a runtime
+  array.
+- The same rule applies to fixed-shape objects that gain a dynamic key, and to class fields that hold
+  arrays.
+- A mutable `let` captured by a closure receives a boxed environment cell, which `CONTEXT.md`
+  describes as already supported. Find out why `let n = 0; const inc = () => ++n;` and the counter
+  closure are still refused.
+
+  Done (2b). Lowering removed every mutable scalar from a nested function's bindings, and most
+  nested-function forms carried no capture list, so no environment cell was ever created. Captured
+  `let`, `const`, loop items and `catch` bindings declared inside a loop now get a fresh cell each
+  time their declaration runs (`perIteration`). A `for (let ...)` header is copied into a fresh cell
+  before each update, as ECMA-262 CreatePerIterationEnvironment requires. A `var` is one cell per
+  frame: `let`-path operations carry `functionScoped`, and resolution gives them the `var` kind.
+
+- Done (2a) for scalars and boxed values. `storage-plan.ts` reads every write to every `let` and
+  `var` of a source file before it lowers, classifying each write from syntax. A binding written
+  only by its initializer keeps the representation its initializer chooses. A binding without an
+  initializer, or with a later nullish, non-scalar or differently-typed scalar write, is boxed
+  (`letValue`, `assignValue`). Undecided writes, such as a call, change nothing and are refused
+  where they do not fit. A non-scalar `let` initializer with no later write lowers to a boxed slot.
+  A statement may declare several bindings, a `for` header may declare any of them, and a
+  `for...of` or `for...in` item may be a `let`. The number tier reads a boxed binding as a number
+  where the checker proves its type is `number`.
+
+  Still open in 2a: a `let` holding a `Map`, `Set` or error (a `const` keeps those in aggregate
+  storage); and `typeof` on a boxed value, which only the string tier answers, at compile time. A
+  runtime `typeof` belongs with workstream 5.
+
+- Done for destructuring and `var` loop items. `let` and `var` patterns are admitted:
+  - Every name they bind lives in a boxed slot (`letValue`).
+  - An array pattern iterates its source through `arrayDestructureProtocol`.
+  - An object pattern reads properties from a temporary.
+  - `DeclarationKind` threads `const`/`let`/`var` through nested patterns. A `var` marks its
+    operations `functionScoped`, so its names resolve as one `var` binding.
+  - A `for (let [...] = ...)` header rotates every name it destructures (`declaredHeaderBindings`).
+
+  A `var` loop item marks its loop `functionScoped` in the same way, so every iteration and closure
+  shares the one binding. A `var` that redeclares a binding of its own scope is refused, for both
+  forms.
+
+- Done for destructuring assignment. `[a, b] = [b, a]`, `({ a, b: c = 1 } = source)` and
+  `for (target of source)` heads lower through `destructuring-assignment.ts`:
+  - An array pattern iterates with `arrayDestructureProtocol`. Each target is a `nested` element
+    whose operations assign it before the next item is pulled, so a default reads the target's old
+    value.
+  - An object pattern reads properties from a temporary.
+  - The storage plan records a `dynamic` write for every target, which boxes the binding.
+  - Member targets, object rest and computed keys in assignment patterns are refused.
+
+  The Test262 runner now classifies a TypeScript syntax error (TS1xxx) on a test Test262 calls valid
+  as a frontend gap. TypeScript cannot parse `for ([x = 'x' in {}] of ...)`. Test262 rises from
+  2,066 to 2,182.
+
+  Still open:
+  - A `let` or `var` pattern over a fixed-layout array or object, which has no boxed value yet (2c).
+  - A `var` read after the block or loop that declares it, which no `var` form models yet.
+
+Where it lives: Lowering records a `JsIrBindingValue` per declaration. A pre-pass over the function body
+or module collects the writes and uses per declaration and chooses the representation before the
+statements are lowered. The representation must not be patched afterwards. Native lowering continues
+to read resolved storage descriptions and gains no source-name lookup.
+
+The fixtures cover every probe row of this kind in the evidence table.
+
+### 3. Class members, then classes as values
+
+Ordered by Test262 gap counts:
+
+1. Class members get function parameter parity: default parameters (173 gaps) and destructured
+   parameters (146). Function declarations already support both.
+
+   Done. Constructors, methods, static methods and accessors lower their parameters with
+   `lowerFunctionParameters`, so defaults and destructuring work as they do for function
+   declarations. This happens inside the member's scope, so a default can read `this`.
+   `classCallableParameters` gives call sites the signature without defaults: an optional or
+   defaulted parameter is omittable, and a pattern's slot is named by `parameterSlotName`, as the
+   lowering names it. An implicit derived constructor forwards the base signature, and the base
+   applies its defaults. Rest parameters on class members are still refused. The fixture is
+   `class-member-parameter-defaults.ts`. With 0i, Test262 rises from 1,438 to 1,600.
+2. Static accessors (36), private methods and accessors (22), and static private fields (82).
+
+   Done for instance private methods and accessors. A private method, getter or setter is a
+   function the class definition stores once in a module slot (`classPrivateFunctions`).
+   Construction adds it to every instance as a private element, before any field initializer
+   runs, so instances share one function object. `this.#m` reads it through the brand check, and a
+   call passes the receiver as `this`. Reading a private accessor calls its getter, and writing it
+   calls its setter. Writing a private method, and reading or writing a missing accessor half, is
+   refused rather than lowered to its `TypeError`. A stray `;` and an index signature in a class
+   body are skipped. Fixtures: `private-methods.ts`, `private-accessors.ts` and
+   `class-empty-members.ts`. With 0j, Test262 rises from 1,600 to 1,689.
+
+   Still open: static private fields, methods and accessors (235 gap tests). 202 of them read
+   `this.#x` in a static method, so they need `this` there to be the class itself, which comes with
+   classes as values (3.4). Static accessors and static blocks are also open.
+3. Computed method and accessor names (287 + 118). Class fields already handle computed keys through
+   `ClassComputedKeyInfo`.
+4. Classes as boxed values: `const K = A`, unbound class expressions (66), and `extends` of a class not
+   declared in the module (115), starting with `Error`. The manifest names this as the prerequisite
+   for `new.target` and decorators.
+
+   Done for builtin error constructors. `Error`, `TypeError`, `RangeError`, `EvalError`, `URIError`,
+   `SyntaxError` and the new `ReferenceError` class are values (`errorConstructor`). The runtime
+   creates each one once (`errorConstructorValue`) and keeps it as a GC root. Every error of a
+   class names that value as its `constructor`, so `e.constructor === TypeError` holds. Calling one,
+   with or without `new`, creates an error. That admits `assert.throws(TypeError, ...)` in Test262,
+   and with 0k and 0l the floor rises from 1,689 to 1,813. An uncaught error now reports as
+   `Name: message`, keeping the colon for an empty message, so the report tells it apart from a
+   thrown string (`valuePrintUncaught`).
+
+### 4. Generators, then async
+
+Lower a generator to a state machine whose locals live in a heap frame object traced by the GC, with
+`yield` points as resumption labels. Do not use LLVM coroutine intrinsics: their frames would hide
+live heap values from the GC-root verifier. `return` and `throw` on the generator object reuse the
+completion edges `ControlFlow` already owns.
+
+Async then becomes generator lowering plus `Promise` and a microtask queue that drains before `main`
+exits.
+
+Generators unblock `*[Symbol.iterator]()` in classes and 1,324 Test262 skips. Remove `generators` from
+`unsupportedFeatures` in `test262/filters.json` when they land.
+
+### 5. Builtin breadth
+
+`console.log` first: almost every real program uses it, and it is refused outright. Its formatting of
+objects and arrays follows Node's `util.inspect` closely enough for the oracle, so start with
+primitives and arrays of primitives.
+
+Then the `"planned"` manifest entries:
+
+- Array: `every`, `some`, `findLast`, `findLastIndex`, `toSorted`, `toReversed`, `toSpliced`, `with`
+- Function: `call`, `apply`, `bind`
+- Math: `tan`, `asin`, `acos`, `atan`
+
+### 6. Frontend: ambient types from the working directory
+
+Compiling a standalone file without a tsconfig from inside this repository loads `bun-types` from
+the repository's own `node_modules`, and the compile fails with TS2694 before lowering. The default
+compiler options in `frontend.ts` should not pick up `@types` from the working directory when no
+tsconfig selects them.
+
+## Sequence
+
+1. 0a, 0b and 0c, independently.
+2. 1, then rerun the census.
+3. 2.
+4. 3.1 and 3.2, then 3.3, then 3.4.
+5. 6, and 5's `console.log`, whenever convenient. Both are independent of everything above.
+6. 4.
 
 ## Verification
 
-Run after every step, not just at the end.
+After every step:
 
-1. `npm test`
-2. `npm run check`
-3. `npm run lint`
-4. `npm run test262:run`, which is gated on `minimumPass: 955` and `maximumFail: 0` in
-   `test262/baseline.json`. A step that does not change behavior must not move either number.
-5. For step 3 specifically, diff `main.ll` for every oracle fixture against the pre-step
-   output. Byte-identical or revert.
-6. For step 4 and 5, `npm test` must pass with the same 122 oracle fixtures and the same
-   diagnostics for the 3 currently-asserted rejections in `core.test.ts`.
-
-The baseline was green when this plan was written, on 2026-09-29: `npm run check` clean,
-`npm run lint` clean apart from the three size warnings named above, and 605 tests across 18
-files passing.
-
-An earlier revision referred to a "111-probe matrix" and to "the 41 probes that failed to compile at
-the start". Neither list survives in this file, so neither can be checked against, and a criterion that
-points at evidence nobody can find is not a criterion. What replaced them is the support manifest: it
-enumerates every erasure-only form this plan names with the state the code is in, and
-`test/unit/support-manifest.test.ts` asserts a test per state — a `"supported"` builtin needs a fixture,
-a `"planned"` one needs a fixture the compiler refuses, an admitted form needs one that compiles and is
-compared against Node or asserted natively. That is the probe list, derived rather than transcribed, which
-is the point of the manifest.
+1. `npm run check`
+2. `npm run lint`
+3. `npm test`
+4. `npm run test262:run -- --baseline test262/baseline.json` must report no regressions. Raise
+   `minimumPass` when a step admits tests.
 
 ## Completion criteria
 
-- A single lowering pass. No `strict` flag, no exception-based abort, no second traversal.
-- Emission dispatches through one total `Record` table, and the 12 if-chain predicates are gone.
-- The support manifest is derived from the tables, and a test fails if a table entry has no
-  fixture.
-- A program using a `"planned"` builtin gets a diagnostic naming the builtin.
-- All 122 oracle fixtures pass, and the Test262 baseline is unmoved.
-- Neither god-file warns on `max-lines`, `max-lines-per-function` or `max-len`, and `npm run lint`
-  enforces all three.
-- Every erasure-only form in the support manifest either compiles and agrees with Node, or reports
-  a diagnostic that names the specific feature.
-
-## Step 5 remainder: converting the class and expression tiers
-
-The statement tier returns `Lowered`; the class tier is converted and the value tier it hands
-reasons to is not. The shape and the four things that went wrong are here so neither is
-rediscovered.
-
-**Three shapes, not one.** `Lowered` has three cases because a *chain* recognizer needs
-`notApplicable` to mean "try the next one". Once a chain has matched, the steps below it have
-no next one, and a `notApplicable` there would be a bug dressed as a fallback. So:
-
-```ts
-export type Lowered<T = JsIrOperation> =
-  | { readonly kind: "lowered"; readonly operation: T }
-  | { readonly kind: "notApplicable" }
-  | { readonly kind: "unsupported"; readonly reason: string };
-
-export type Produced<T> =
-  | { readonly kind: "lowered"; readonly operation: T }
-  | { readonly kind: "unsupported"; readonly reason: string };
-
-type LoweredStatementList = Produced<readonly JsIrOperation[]>;
-```
-
-`Produced` is for the class tier and its per-member producers. `Lowered` is for the value-tier
-recognizers, which are genuinely in a chain.
-
-**`notApplicable` has to fit every `Lowered<T>`.** One shared constant typed `Lowered` pins it
-to `Lowered<JsIrOperation>` and makes every other return site a type error.
-`const notApplicable: Lowered<never>` works, because `Lowered<never>`'s lowered branch carries
-`operation: never`, which fits `operation: T` for every `T`.
-
-**Name the constructor for its shape, not its verb.** `const lowered = <T>(...)` collides with
-the many local `lowered` bindings in `ir.ts` and `no-shadow` fires. `produced` does not.
-
-**A registration that outlives its refusal is a dangling reference.** A class registers itself
-in the registry *before* its body lowers, because `this`, `super` and a self-referencing
-receiver all resolve through it. When the body refuses, the registration must be rolled back,
-or a later `class Derived extends Base` sees a base whose `Base$prototype` slot was never
-emitted and emission dies on `Expected JSValue binding`. This was invisible before because a
-refusal threw out of the whole file and the registry died with it; returning makes the rollback
-explicit. `lowerClassDeclaration` is split around it: snapshot the registry, and restore it on
-`unsupported`.
-
-**Splitting a function can silently drop half of it.** Splitting `lowerClassDeclaration` put the
-heritage-clause read behind the class-*expression* branch, so every derived class got
-`baseName: undefined` and lost `super`. Four oracle fixtures caught it; no unit test did. When a
-function is split, the first thing to check is that every branch of the original still reads the
-thing it read.
-
-**"Not mine" and "mine but no" are different answers, and the diff is the only evidence.**
-`lowerClassMethodCall`'s `receiverValue === undefined` returned `undefined` in the base tree.
-Converting it to a refusal looked like an improvement and broke **81 Test262 class tests**: the
-receiver is a named instance that path cannot resolve, and a later recognizer may still handle
-the call. Before converting a site, check whether the base tree *threw* there or returned
-`undefined`. Only a throw becomes a refusal.
-
-Two smaller ones: `ts.isExpressionStatement` reads `node.kind` unconditionally, so an empty
-constructor body has to be checked for `undefined` rather than passed; and the static generated
-name is `` `${className}$static$${methodName}` `` — one `$` before `static`, one after.
-
-**What is left, and why it is its own piece.** Nine `throw`s remain, all at one seam: a class
-recognizer returns `unsupported`, and a value-tier recognizer that returns `X | undefined` swallows
-it. Removing them means the value tier carries reasons, and that is not a mechanical sweep:
-
-- `lowerValueExpression` has **126** call sites.
-- Converting `lowerConditionExpression` alone fans out to **28** further sites — the condition tier,
-  the assignment tier, `for` initializers, the statement dispatch. It is a multi-commit project on its
-  own, and doing it in one commit is the merge conflict the decomposition section warns about.
-
-Three ways of removing the seam without converting the value tier were built and measured:
-
-1. *Re-run the class recognizers from the diagnostic.* Does not fire. The class recognizers only know
-   what they think while the enclosing class scope is installed, which is during the attempt; by the
-   time a diagnostic is being built that scope has already unwound.
-2. *Ask the class recognizer from `lowerStatementList`, where a refusal already propagates as a
-   value.* Same problem: the refusal is produced at the inner statement, and re-asking it there sees
-   no class scope.
-3. *Re-derive the recognizer's conditions inside the diagnostic.* It fires, but it is a second
-   implementation of "is this receiver a class instance" and the two drift. It also produced a
-   *worse* diagnostic — it silently skipped a case and reported the blanket message instead.
-
-There is a behavioural trap in replacing the exception. The exception aborted the whole file, and
-that is load-bearing: a refused function body leaves its name unbound, so continuing past it makes
-every later call to that function a second diagnostic. Removing the throw without an equivalent abort
-turns one fact into a cascade. The replacement has to abort the file, or produce one diagnostic per
-statement and accept that a consequence reads as a new finding.
-
-**[RESOLVED: the second option.]** The throw is gone and lowering does not abort. The four sites
-recorded a reason in `classLoweringState.refusal` instead, and the statement tier took it read-and-cleared
-when it declined in turn — so the reason is the class tier's own words, it is reported against the
-statement that caused it rather than at position 0 for the file, and it cannot leak onto a later
-statement. Read-and-cleared is what makes the continuation safe in the one way it had to be: the
-recorded reason belongs to the refusal that just happened, not to the file.
-
-The cascade the trap warns about does still happen — a refused class leaves its constructor unbound, so
-a later `new A()` reads as a second finding. That was accepted, because it is exactly what a
-statement-tier refusal has already done since the statement tier became `Lowered`, and the alternative
-was a bespoke abort for one tier only: a second way for lowering to stop, which is the thing step 5 is
-removing. Consistency won; `class-refusal-reason-survives.ts` pins the behaviour.
-
-Converting the value tier to `Produced` — so the reason travels in the return value instead of a holder —
-is still the next multi-commit cut. `lowerValueExpression` reaches 203 functions transitively. The
-holder is the four sites' interim address, not the destination.
-
-**The value tier was attempted, and this is what it costs.** Measured, then abandoned at a known point:
-
-| | |
-| --- | --- |
-| transitive closure of `lowerValueExpression` | 264 declarations, 258 functions |
-| of those, returning `undefined` | 174 |
-| sites that are a *chain step* (`if (x.kind !== "notApplicable") return x;`) | 147 |
-| sites that are not | 57 |
-
-The closure is one strongly connected component, so there is no smaller subset to convert: the entry,
-its six direct recognisers and everything they reach are mutually recursive. The 174 is all of it or
-none of it.
-
-Most of the conversion is mechanical, and was done and then reverted rather than left half-applied.
-Rewriting the annotations was compiler-directed and total — 174 return types, 36 local annotations — and
-so were 463 guard rewrites and 235 payload wraps. Those four passes are the easy half and they compose;
-running them repeatedly converges, with nothing left that they can reach.
-
-**The residue is a judgement, and working it out produced the one result worth keeping.** There are 204
-guards of the shape
-
-```ts
-if (x === undefined) { ...decline... }
-```
-
-and they mean two different things:
-
-- In a **chain step**, `undefined` means *try the next recogniser*, so the guard becomes
-  `x.kind === "notApplicable"` and the value is dead afterwards.
-- At a **use site**, the value is final and gets read as the payload, so `unsupported` has to be returned
-  first and the guard becomes `x.kind === "notApplicable"` *after* an early
-  `if (x.kind === "unsupported") return x;`. Without that second guard `x.operation` does not exist.
-
-The tempting test for which kind a guard is -- *is the next statement another recogniser call?* -- is
-wrong, and it is worth recording why. It fires whenever the next statement merely **uses** `x`, because
-that use is itself a call: `if (method === undefined)` followed by
-`lowerTypedCallArguments(method.parameters, ...)` is a use site, and the test says chain. It classified
-147 guards as chain steps; auditing the first five found genuine use sites among them.
-
-The test that works is the opposite one, and it is a proof rather than a heuristic: **a guard is a use
-site only when the value it guards is referenced again after it.** Referenced means use site, and that is
-checkable. Not referenced means chain step, and a wrong guess in *that* direction does not compile,
-because `.operation` is then absent. The default is the safe one to get wrong, and both branches are
-decidable from the AST.
-
-With that rule the mechanical half is complete and correct -- 176 return types, 28 locals, 343 guards, 337
-inserted `unsupported` early-returns, 507 payload wraps -- and it runs to a fixed point. **The fixed point
-is 1,177 diagnostics, not zero, and that is the actual finding.**
-
-The reason is not the remaining guards. It is that the conversion does not stop at the 174. Roughly 200 of
-the call sites live in functions that were *not* in the closure -- `lowerClassMethodBody`,
-`lowerTopLevelStatements`, the class-constructor paths -- and those now hold a `Lowered<T>` in a variable
-annotated `T | undefined`, or pass one where a `T` is wanted. So the value tier cannot land without the
-callers converting too, and the callers are the statement and class tiers. The 174 were never the unit of
-work: the unit is the 185-declaration strongly connected component the cut graph found, and it has to land
-as one change or not at all.
-
-That is why this is a sequence of reviewed commits and not a codemod, and it is the honest reason the tier
-is still `| undefined`: not an undecided judgement, but a conversion whose unit of work is larger than the
-tier it is named after.
-
-## Known gap: a function body referring to an outer object binding
-
-A function that reads a field of an outer *object* — an object literal, or a namespace, which is one —
-resolves the reference as a frame slot rather than through the capture environment, and nothing allocated
-that slot inside the generated function. `lowerCapturedBindingValue` does record the capture, as an
-`objectRef`; the loss is in emission, where `emitReferenceValueExpression` turns an `objectRef` into
-`emitRuntimeObjectPointer`, which is a plain SSA name derived from the binding. The read then names a
-value that does not exist.
-
-It fails two different ways depending on the shape. A fixed-shape object reaches the emitter's
-unhandled-variant path, which is a defect; a runtime object — a namespace — reaches clang, which rejects
-the module and surfaces as a link failure. Both witnesses are fixtures:
-`defect-closure-over-object-literal.ts` and `defect-closure-over-namespace.ts`, each with a test in
-`cli.test.ts`.
-
-**A wrong reason was recorded here first, and is worth recording as such.** The first version blamed the
-emission order in `src/compiler/llvm/module.ts` — that `fnLines` is assembled before `mainLines` while both
-consume the same counters. Reordering was tried: it changes every `main.ll` and it does not fix this,
-because the layout was never the problem. That trade would have cost the byte-identity signal this project
-relies on for nothing.
-
-## Step 8: cut order for `ir.ts`
-
-Measured, not guessed. Each cut below ends green on its own.
-
-**The recursion in `ir.ts` is measured now.** `scripts/ir-cut-graph.mjs` resolves the file with the
-compiler's own symbol resolution and prints the strongly connected components largest-first, so the two
-questions step 8 depends on are answered by measurement instead of argument. It says:
-
-| | |
-| --- | --- |
-| top-level declarations | 316, totalling 8,673 lines of declaration extent (the file is 8,884 non-blank: the difference is comments and the blank lines between declarations, which belong to no declaration) |
-| components | 131 |
-| root component | **185 declarations, 6,977 lines** |
-| declarations nothing else in the file uses | 26, totalling 63 lines |
-
-The tool is checked against modules known to be acyclic: `ir/lowered.ts` reports 12 declarations in 12
-components, `llvm/names.ts` 7 in 7, `builtins/manifest.ts` 10 in 10 — one component each, as it must be.
-`ir.ts` reporting 131 components for 316 declarations is therefore a real knot and not an artefact.
-
-Those 26 are almost entirely one-line constants (`CLASS_THIS_NAME`, `jsonMaxIndent`,
-`arrayCallbackArgumentCount`, the loop-depth and label trackers), and they are the only genuinely free
-cuts. Everything else is one knot: 185 declarations that reach each other, so no domain can be cut first
-and no file ordering fixes it. This is the situation `llvm.ts` was in, and it was resolved the same way.
-
-**Four entries, and the recursion moves onto a context.** Called from outside the root component:
-
-| entry | called by |
-| --- | --- |
-| `lowerStatement` | `lowerTopLevelStatements`, `lowerClassMethodBody`, `lowerClassConstructor` |
-| `lowerObjectMethodFunctionValue` | `lowerClassComputedMethodStore`, `lowerClassIteratorStore` |
-| `lowerTypedCallArguments` | `lowerClassConstructor` |
-| `lowerValueExpression` | `lowerClassComputedKeySlot`, `lowerClassMethodBody`, `lowerClassFieldInitializer` |
-
-So the cut before any domain can be cut is the one the plan already names for the emitter, applied to the
-lowerer: a `LoweringContext` holding these four, which every callee already reaches. Threading it is
-cheaper than it looks, because all 283 top-level declarations in the file are hoisted `function`
-declarations — there is not one closure — so `context.lowerValueExpression = lowerValueExpression` is a
-plain reference, and there is no `this` to rebind. Measured: 145 bare call sites of the four entries, in
-**90 distinct functions**, each of which gains one leading parameter.
-
-That is the whole of the load-bearing cut. After it, the root component's 185 declarations can be grouped
-by domain exactly as `llvm/` was — `statements`, `values`, `numbers`, `strings`, `calls`, `classes`,
-`objects` — with each group importing the context type instead of reaching back into one file. `class-info.ts`
-is at 835 non-blank lines and is over the cap on its own, so it needs the same treatment.
-
-
-
-1. **`builtins/owners.ts` — done** (`a78c663`). Which support table answers for a call target. It
-   was one concept in three places and depends on nothing but TypeScript nodes and a bindings map.
-   `ir.ts` is 350 lines shorter.
-
-2. **The message builders cannot be cut before the predicates they read.** `unsupportedExpressionMessage`
-   and its eleven siblings are a clean 330-line concept, but they read seven predicates from the
-   lowering, and only two of those are exclusive to the messages:
-
-   | predicate | line | shared with the lowering? |
-   | --- | --- | --- |
-   | `isLiteralElementAccessArgument` | 10687 | no — used only by the messages |
-   | `isUnsupportedSymbolExpression` | 7412 | no — used only by the messages |
-   | `unwrapTypeOnlyExpression` | 5422 | yes, 28 call sites |
-   | `lowerCanonicalArrayIndexString` | 10719 | yes, 13 call sites |
-   | `errorConstructorNames` | 2907 | yes, 4 call sites |
-   | `isInlineCppTaggedTemplate` | 462 | yes |
-   | `definePropertyArgumentCount` | 135 | yes |
-
-   Moving the five shared ones into the new module is what makes the messages cuttable at all.
-   Exporting them from `ir.ts` instead would leave `diagnostics.ts` importing `ir.ts` while `ir.ts`
-   imports `diagnostics.ts` — a value cycle, and `errorConstructorNames` is a `const` set evaluated at
-   module load, so the cycle is a temporal-dead-zone error rather than merely untidy.
-
-3. **So cut 2 is the predicates, into `ir/expressions.ts`**, which currently holds only the expression
-   *types* and has no dependency on the lowering. All seven are small and take TypeScript nodes;
-   `isUnsupportedSymbolExpression` also needs `isSymbolIteratorPropertyName` moved or passed.
-
-4. **Cut 3 is then the messages**, into `ir/diagnostics.ts`, which by then depends only on `ts`, the
-   binding and expression types, and `builtins/owners.ts`.
-
-5. **`completion.ts` is the return-and-completion protocol, and its leaves come first.** `done`, in
-   two commits. The cleanup emitters are a clean concept, but they read `emitRootStackPush` (29 call
-   sites), `jsValueUndefined` (38), `emitPackedGeneratedReturn` (6) and `generatedReturnType`. Those
-   are not helpers the cleanup code happens to call — they *are* how every generated function returns
-   and unwinds. So the module holds GC-root push/restore, the packed return and the completion
-   transfer together: 340 lines rather than the 236 of the cleanup emitters alone, which is the
-   honest size.
-
-   The one real dependency is `jsValueUndefined`, and `llvm/values.ts` (17 lines) resolved it: the
-   legacy-LLVM view of the js-value ABI, five constants that are otherwise `i64` literals scattered
-   across sixty sites. A reader can see the whole encoding surface on one screen, and the completion
-   module names "an absent completion value is `undefined`" instead of building a second
-   `immediate("undefined")`.
-
-   `CleanupFrame` and `CompletionSlots` moved with it, which makes `context.ts` import them back.
-   That is the emitter's only two-way relation and both edges are `import type`, so
-   `verbatimModuleSyntax` erases them.
-
-   **One note here was wrong and is corrected.** The `context.ts` cut recorded that
-   `verbatimModuleSyntax` and `no-duplicate-imports` are in conflict and that the second has no
-   option to allow separate type imports, so no boundary could mix values and types from one
-   specifier. That was not tested. Probing the linter shows one statement per specifier with inline
-   `type` modifiers satisfies both it and `consistent-type-imports`; the pair is not in conflict and
-   no boundary was ever forced by it. The cuts so far are still right — `predicates.ts` could not
-   live in a type-only module and `values.ts` really did unblock `completion.ts` — but for different
-   reasons than were written down, and a wrong reason recorded in the plan is worse than no reason.
-
-6. **`llvm/operations.ts` needs a third tier, and the plan's five modules do not reach the cap.**
-   Measured on `llvm.ts` at 7,667 lines: `emitLlvmModule` and the function-definition emitters end at
-   line 837, the emitter table is 838–1041, and lines 1042–7667 — 6,626 of them — are operation
-   handlers and their helpers. The IR has ~120 operation kinds, so the emitter is thousands of lines
-   by nature; `module.ts` alone would still be about 1,000.
-
-   Step 9 promotes `max-lines` to `error` for *every* file, so a 6,600-line `operations.ts` would
-   block the promotion it is supposed to enable. The split that reaches the cap is by emitter domain:
-   a `llvm/operations.ts` that holds the table and `operationEmitterFor`, over handler groups
-   (`arrays`, `objects`, `collections`, `strings`, `calls`, `control`, `values`), each under 800. That
-   is the same grouping step 6 already uses for the support tables, and for the same reason: the file
-   is sorted by it.
-
-6. **The order of the remaining `llvm/` cuts is forced, and the reason is the recursion.** `done` for
-   the leaves. `emitValueExpression` and `emitOperations` are mutually recursive with the operation
-   table — every handler reaches back through them into the dispatch that called it. So a handler
-   *domain* cannot be cut first: an "arrays" module needing `emitValueExpression` would import
-   `llvm.ts` while `llvm.ts` imports it. `module.ts` is blocked the same way, since it needs
-   `emitOperation`.
-
-   What can be cut is the layer below the recursion, and that is what `values.ts`, `trace.ts`,
-   `completion.ts` and `names.ts` are. Measured, rather than assumed:
-
-   | module | lines | back-edges to `llvm.ts` |
-   | --- | --- | --- |
-   | `llvm/values.ts` | 17 | none |
-   | `llvm/names.ts` | 48 | none |
-   | `llvm/trace.ts` | 46 | none |
-   | `llvm/completion.ts` | 340 | none (needs `values.ts`, one-way) |
-
-   So the remaining sequence is: finish the leaves, lift the recursion out of `llvm.ts` into its own
-   module, and only then do the domains and `module.ts` have anywhere to land. Cutting a domain
-   before that produces a cycle, not a module.
-
-6. **The scalar knot was real, and boxing it a second time split it. `done`.** The earlier note here
-   said the number and string tiers were irreducible. They were not — the fix was the same one that
-   broke the main recursion, applied to the second cycle. Measured, before and after:
-
-   | closure | before | after |
-   | --- | --- | --- |
-   | `emitNumberExpression` | 30 decls, 1,093 lines | 17 decls, 546 lines |
-   | `emitStringExpression` | 30 decls, 1,093 lines | 8 decls, 452 lines |
-   | `emitCallArguments` | 30 decls, 1,093 lines | 2 decls, 37 lines |
-   | `emitCondition` | 46 decls, 1,607 lines | 15 decls, 522 lines |
-
-   Breaking one direction was not enough: arguments need the *raw* scalar so they can box it, and both
-   scalar tiers need the argument ABI for a call, so it is a three-way cycle. All five of those entries
-   went on `EmitContext` together — 92 call sites, no signature changes — and every resulting tier is
-   now under the 800-line cap step 9 promotes to an error.
-
-   The generalisable finding, and the reason it is written down: **`EmitContext` is the place cycles
-   get broken in this emitter.** A cycle between two modules is an import problem and no file ordering
-   fixes it; the same cycle through a value every callee already has is a field. Three times now —
-   the four recursion entries, the five scalar entries, and `OperationOf` for a type both sides needed.
-
-6. **`llvm/` is 33 modules and `llvm.ts` is gone. `done`.** From 8,089 lines in one file:
-
-   | cut | module | what it is |
-   | --- | --- | --- |
-   | 1 | `context.ts` | `EmitContext`, `JsValue`, the per-tier result types, `OperationOf` |
-   | 2 | `values.ts` | the legacy-LLVM js-value immediates |
-   | 3 | `completion.ts` | GC roots, the packed return, the completion protocol |
-   | 4 | `trace.ts` | the `; tscn-trace-*` markers |
-   | 5 | `names.ts` | the six SSA naming rules |
-   | 6 | `strings.ts` | C-string escaping and `@.str.N` interning |
-   | 7 | `layout.ts` | loading the `ptr` for an array, collection or object |
-   | 8 | `paths.ts` | `a.b.c` as one `getelementptr` over a static layout |
-   | 9–14 | `numbers.ts`, `string-expressions.ts`, `calls.ts`, `conditions.ts`, `error-ids.ts`, `collections.ts` | the scalar tiers and their shared ABI |
-   | 15–20 | `objects.ts`, `print.ts`, `loops.ts`, `loop-statements.ts`, `inline-cpp.ts`, `branches.ts` | the aggregate and statement tiers |
-   | 21–24 | `array-mutators.ts`, `array-callbacks.ts`, `known-shape-objects.ts`, `value-calls.ts` | the array tiers and the known-shape object |
-   | 25–27 | `value-expressions.ts`, `function-objects.ts`, `bindings.ts` | the value tier and the binding statements |
-   | 28–30 | `aggregate-constructors.ts`, `statements.ts`, `contexts.ts`, `function-definitions.ts` | the remaining statements and the function tier |
-   | 31–33 | `operations.ts`, `module.ts` | the table, and the module that walks it |
-
-   Three things had to be true before any of it worked, and all three were found by measuring:
-
-   - **The recursion had to move onto `EmitContext`.** The closure from the three recursive entry points
-     was 265 of 267 top-level declarations; no ordering of files fixes that.
-   - **The scalar cycle had to be broken the same way.** `emitNumberExpression` and `emitStringExpression`
-     each closed over 30 declarations and 1,093 lines, and the closure of either was the closure of both.
-   - **A closure is a legal cut, not always a good one.** `llvm/inline-cpp.ts` landed inside the loop
-     module because the closure reached it. Correct about legality, wrong about cohesion.
-
-   The remaining warning under `llvm/` is one function: `emitValueExpression` at 505 lines against the
-   400-line limit. Step 9's promotion of `max-lines-per-function` needs it split.
+- Every row of the evidence table either agrees with Node or names its specific limitation.
+- No Test262 gap reports only a generic message.
+- The `class` family's coverage gap is below 600.
+- Generators are removed from `unsupportedFeatures` and their tests pass.

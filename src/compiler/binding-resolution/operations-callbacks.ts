@@ -91,7 +91,7 @@ export const callbackHandlers = {
   arrayDestructureProtocol: (node, resolver) => ({
     ...node,
     source: resolveDestructureSource(node.source, resolver),
-    elements: node.elements.map((element) => resolveDestructureElement(element, resolver))
+    elements: node.elements.map((element) => resolveDestructureElement(element, node.functionScoped === true ? "var" : "destination", resolver))
   })
 } satisfies Partial<OperationHandlers>;
 

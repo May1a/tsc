@@ -4,6 +4,7 @@ import type { FlowCapability } from "./control-flow.js";
 import { type ExpressionContext, createExpressionContext } from "./expression-context.js";
 import type { FunctionCapabilities, NativeFunctionBuilder } from "./function-owner.js";
 import type { OperationCalls, OperationContext } from "./operation-context.js";
+import { checkedBindingReads } from "./binding-initialization.js";
 import { lowerOperation } from "./operations.js";
 import { lowerNumber } from "./numbers.js";
 import { lowerString } from "./string-expressions.js";
@@ -22,7 +23,7 @@ export interface OperationOwnerOptions {
 export function createOperationContext(options: OperationOwnerOptions): OperationContext {
   const { flow, writes } = options;
   const expression = createExpressionContext({
-    capabilities: options.capabilities, bindings: writes, calls: options.calls, stringConstant: options.stringConstant,
+    capabilities: options.capabilities, bindings: checkedBindingReads(writes, () => flow.exceptionTarget()), calls: options.calls, stringConstant: options.stringConstant,
     exceptionTarget: () => flow.exceptionTarget(),
     handlers: { number: lowerNumber, string: lowerString, condition: lowerCondition, value: lowerValueExpression }
   });

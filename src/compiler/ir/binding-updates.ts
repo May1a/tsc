@@ -3,6 +3,7 @@ import type { JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 import { jsIrOperationChildren } from "./visit.js";
 import { aggregateBindingForOperation } from "./operation-bindings.js";
+import { isStableExpression } from "./stable-expressions.js";
 
 /**
  * The binding map: what name means what, and how that changes as operations are emitted.
@@ -27,20 +28,27 @@ export function updateConstBindings(
   if (operation.kind === "constString") {
     bindings.set(operation.name, { kind: "string", value: operation.value });
   }
+  // An initializer that is not stable is read back from the slot the declaration stored, so a read
+  // after a later write, or after a side effect, sees the value the `const` captured.
   if (operation.kind === "constStringExpression") {
-    bindings.set(operation.name, { kind: "stringExpression", value: operation.value });
+    bindings.set(operation.name, { kind: "stringExpression",
+      value: isStableExpression(operation.value) ? operation.value : { kind: "variable", name: operation.name } });
   }
   if (operation.kind === "constNumber") {
-    bindings.set(operation.name, { kind: "number", value: operation.value });
+    bindings.set(operation.name, { kind: "number",
+      value: isStableExpression(operation.value) ? operation.value : { kind: "parameter", name: operation.name } });
   }
   if (operation.kind === "constBoolean") {
     bindings.set(operation.name, { kind: "boolean", value: operation.value });
   }
   if (operation.kind === "constBooleanExpression") {
-    bindings.set(operation.name, { kind: "booleanExpression", value: operation.value });
+    bindings.set(operation.name, { kind: "booleanExpression",
+      value: isStableExpression(operation.value) ? operation.value : { kind: "booleanVariable", name: operation.name } });
   }
   if (operation.kind === "constValue") {
-    bindings.set(operation.name, { kind: "value", value: operation.value });
+    bindings.set(operation.name, isStableExpression(operation.value)
+      ? { kind: "value", value: operation.value }
+      : { kind: "valueVariable", name: operation.name, ...(operation.value.kind === "boxedPrimitive" ? { boxedPrimitive: true } : {}) });
   }
   if (operation.kind === "letValue") {
     let valueType: "function" | "regex" | undefined;
@@ -74,7 +82,7 @@ export function updateBindings(
       if (element.kind === "binding") {
         bindings.set(element.name, { kind: "valueVariable", name: element.name });
       } else if (element.kind === "rest") {
-        bindings.set(element.name, { kind: "runtimeArray", name: element.name });
+        bindings.set(element.name, { kind: element.mutable === true ? "valueVariable" : "runtimeArray", name: element.name });
       } else if (element.kind === "nested") {
         for (const nested of element.operations) {
           updateBindings(nested, bindings);
@@ -179,11 +187,12 @@ export function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObject
     };
   }
   if (operation.kind === "for") {
+    const { increment } = operation;
     return {
       ...operation,
       initializer: operation.initializer.map((declaration) => markRuntimeObjectShadow(declaration, shadowedObjects)),
       body: markRuntimeObjectShadows(operation.body),
-      increment: markRuntimeObjectShadow(operation.increment, shadowedObjects)
+      ...(increment === undefined ? {} : { increment: markRuntimeObjectShadow(increment, shadowedObjects) })
     };
   }
   if (operation.kind === "function") {
@@ -218,8 +227,12 @@ export function collectRuntimeShadowObjectNames(operation: JsIrOperation, names:
 }
 // eslint-disable-next-line complexity, max-statements -- Transitional aggregate JSValue tracking centralizes all operation variants.
 export function collectOperationValueExpressions(operation: JsIrOperation, names: Set<string>): void {
-  if (operation.kind === "constValue" || operation.kind === "requireObjectCoercible" || operation.kind === "throwValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore" || operation.kind === "privateFieldStore") {
+  if (operation.kind === "constValue" || operation.kind === "letValue" || operation.kind === "assignValue" || operation.kind === "requireObjectCoercible" || operation.kind === "throwValue" || operation.kind === "discardValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore" || operation.kind === "privateFieldStore") {
     collectValueExpressionObjectNames(operation.value, names);
+  }
+  if (operation.kind === "defineAccessor") {
+    collectValueExpressionObjectNames(operation.getter, names);
+    collectValueExpressionObjectNames(operation.setter, names);
   }
   if (operation.kind === "arrayDestructureProtocol") {
     if (operation.source.kind === "value") {
@@ -317,7 +330,9 @@ export function collectOperationValueExpressions(operation: JsIrOperation, names
     for (const nested of operation.body) {
       collectRuntimeShadowObjectNames(nested, names);
     }
-    collectRuntimeShadowObjectNames(operation.increment, names);
+    if (operation.increment !== undefined) {
+      collectRuntimeShadowObjectNames(operation.increment, names);
+    }
   }
 }
 export function collectValueExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {

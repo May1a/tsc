@@ -2,8 +2,9 @@ import { loweredStatementResult } from "./diagnostics.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, loweredOperation, notApplicable } from "./lowered.js";
+import { type Lowered, loweredOperation, notApplicable, produced, unsupported } from "./lowered.js";
 import { traceOperationFromNode } from "./class-info.js";
+import { lowerBlockStatements } from "./statement-lists.js";
 import { lowerVariableBinding } from "./variable-bindings.js";
 import { lowerIfStatement, lowerSwitchStatement } from "./branches.js";
 import { lowerDoWhileStatement, lowerForInStatement, lowerForOfStatement, lowerForStatement, lowerWhileStatement } from "./loops.js";
@@ -21,11 +22,55 @@ export function lowerStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   promotedAggregates: ReadonlySet<string> = new Set()
 ): Lowered {
-  const result = lowerStatementCore(context, statement, bindings, promotedAggregates);
+  const result = lowerNestedClassDeclaration(statement)
+    ?? lowerNonDispatchedStatement(context, statement, bindings)
+    ?? lowerStatementCore(context, statement, bindings, promotedAggregates);
   if (result.kind !== "lowered") {
     return result;
   }
   return loweredOperation(traceOperationFromNode(result.operation, statement));
+}
+
+/**
+ * Only top-level classes lower: the class tier runs on source-file statements, so a class
+ * declaration that reaches the statement tier is nested in a function or block body, which the
+ * module-level class storage has no representation for.
+ */
+function lowerNestedClassDeclaration(statement: ts.Statement): Lowered | undefined {
+  if (!ts.isClassDeclaration(statement)) {
+    return undefined;
+  }
+  return unsupported("Class declarations inside function and block bodies are not supported yet");
+}
+
+/**
+ * Statements that bypass the SyntaxKind dispatch: an empty statement does nothing, a bare block
+ * groups its statements with block-scoped bindings exactly as a loop or branch body does, and a
+ * `debugger` statement has no effect without an attached debugger.
+ *
+ * They are handled here so a stray semicolon never reports the semicolon instead of anything the
+ * user wrote. The block operation carries the lowered children and `updateBindings` does not leak
+ * them.
+ */
+function lowerNonDispatchedStatement(
+  context: LoweringContext,
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered | undefined {
+  if (ts.isEmptyStatement(statement)) {
+    return produced({ kind: "block", operations: [] });
+  }
+  if (statement.kind === ts.SyntaxKind.DebuggerStatement) {
+    return produced({ kind: "block", operations: [] });
+  }
+  if (ts.isBlock(statement)) {
+    const body = lowerBlockStatements(context, statement, bindings);
+    if (body.kind === "unsupported") {
+      return body;
+    }
+    return produced({ kind: "block", operations: body.operation });
+  }
+  return undefined;
 }
 
 // eslint-disable-next-line max-statements -- Statement dispatch covers all supported top-level node kinds in one place.

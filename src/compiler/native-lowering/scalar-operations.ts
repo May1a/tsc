@@ -1,14 +1,17 @@
-import type { ResolvedOperation } from "../binding-resolution/index.js";
+import type { ResolvedExpression, ResolvedOperation } from "../binding-resolution/index.js";
 import type { VariantHandlers, VariantOfKind } from "../dispatch.js";
 import type { OperationContext } from "./operation-context.js";
 import { llvm } from "../llvm-ir/index.js";
 import { boxString } from "./expression-context.js";
 import { literalString } from "./value-support.js";
 
+/** Print expression kinds that are primitive by construction, which `print` formats directly. */
+const primitiveExpressionKinds: ReadonlySet<ResolvedExpression["kind"]> = new Set(["string", "stringExpression", "number", "boolean"]);
+
 type ScalarKind =
   | "constNumber" | "letNumber" | "assignNumber" | "constString" | "constStringExpression" | "letString" | "assignString"
-  | "constBoolean" | "constBooleanExpression" | "letBoolean" | "assignBoolean" | "constValue" | "letValue"
-  | "print" | "throwValue" | "returnNumber" | "returnString" | "returnValue" | "call" | "callValue" | "inlineCpp"
+  | "constBoolean" | "constBooleanExpression" | "letBoolean" | "assignBoolean" | "constValue" | "letValue" | "assignValue"
+  | "print" | "throwValue" | "discardValue" | "returnNumber" | "returnString" | "returnValue" | "call" | "callValue" | "inlineCpp"
   | "requireObjectCoercible" | "block" | "bindingGroup" | "if" | "tryCatch" | "switch" | "while" | "doWhile" | "for" | "break" | "continue";
 
 type ScalarVariants = { readonly [K in ScalarKind]: VariantOfKind<ResolvedOperation, K> };
@@ -16,20 +19,49 @@ type ScalarVariants = { readonly [K in ScalarKind]: VariantOfKind<ResolvedOperat
 export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationContext, void> = {
   constNumber: (operation, context) => context.writes.storeNumber(operation.name, context.expressions.number(operation.value)),
   letNumber: (operation, context) => context.writes.storeNumber(operation.name, context.expressions.number(operation.value)),
-  assignNumber: (operation, context) => context.writes.storeNumber(operation.name, context.expressions.number(operation.value)),
+  assignNumber: (operation, context) => {
+    const value = context.expressions.number(operation.value);
+    context.writes.checkInitialized(operation.name, () => context.exceptionTarget());
+    context.writes.storeNumber(operation.name, value);
+  },
   constString: (operation, context) => context.writes.storeString(operation.name, literalString(operation.value, context)),
   constStringExpression: (operation, context) => context.writes.storeString(operation.name, context.expressions.string(operation.value)),
   letString: (operation, context) => context.writes.storeString(operation.name, context.expressions.string(operation.value)),
-  assignString: (operation, context) => context.writes.storeString(operation.name, context.expressions.string(operation.value)),
+  assignString: (operation, context) => {
+    const value = context.expressions.string(operation.value);
+    context.writes.checkInitialized(operation.name, () => context.exceptionTarget());
+    context.writes.storeString(operation.name, value);
+  },
   constBoolean: (operation, context) => context.writes.storeBoolean(operation.name,
     context.cursor.currentBlock().int(llvm.i1, operation.value ? 1n : 0n)),
   constBooleanExpression: (operation, context) => context.writes.storeBoolean(operation.name, context.expressions.condition(operation.value)),
   letBoolean: (operation, context) => context.writes.storeBoolean(operation.name, context.expressions.condition(operation.value)),
-  assignBoolean: (operation, context) => context.writes.storeBoolean(operation.name, context.expressions.condition(operation.value)),
+  assignBoolean: (operation, context) => {
+    const value = context.expressions.condition(operation.value);
+    context.writes.checkInitialized(operation.name, () => context.exceptionTarget());
+    context.writes.storeBoolean(operation.name, value);
+  },
   constValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
   letValue: (operation, context) => context.writes.storeValue(operation.name, context.expressions.value(operation.value)),
-  print: (operation, context) => context.runtime.callVoid("valuePrint", [context.expressions.expression(operation.expression)]),
+  assignValue: (operation, context) => {
+    const value = context.expressions.value(operation.value);
+    context.writes.checkInitialized(operation.name, () => context.exceptionTarget());
+    context.writes.storeValue(operation.name, value);
+  },
+  print: (operation, context) => {
+    const { expression } = operation;
+    const value = context.expressions.expression(expression);
+    if (primitiveExpressionKinds.has(expression.kind) || (expression.kind === "identifier" && context.bindings.holdsPrimitive(expression.name))) {
+      context.runtime.callVoid("valuePrint", [value]);
+      return;
+    }
+    // `print` writes `String(value)`, so an object's own `toString` decides what it prints.
+    const printable = context.runtime.callWithCompletion("valueToPrimitive", [value, context.cursor.currentBlock().int(llvm.i1, 0n)],
+      context.cursor.uniqueName("print.primitive"), context.exceptionTarget());
+    context.runtime.callVoid("valuePrint", [printable]);
+  },
   throwValue: (operation, context) => context.throwValue(context.expressions.value(operation.value)),
+  discardValue: (operation, context) => { context.expressions.value(operation.value); },
   returnNumber: (operation, context) => {
     const value = context.expressions.number(operation.expression);
     context.returnValue(context.values.forBlock(context.cursor.currentBlock()).boxNumber(value));

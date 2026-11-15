@@ -1,7 +1,7 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerAssignmentStatement } from "./assignments.js";
 import { lowerRuntimeObjectCallStatement } from "./object-mutations.js";
 import { lowerRuntimeArrayCallStatement } from "./array-mutations.js";
@@ -10,8 +10,10 @@ import { lowerCallStatement } from "./call-statements.js";
 import { lowerPrintExpression } from "./print.js";
 import { lowerUpdateNumberExpression } from "./number-expressions.js";
 import type { JsIrNumberExpression, JsIrNumberOperator } from "./expressions.js";
-import { isProvenBoxedAggregateBinding } from "./number-access.js";
+import type { JsIrOperation } from "./types.js";
+import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
+import { constWriteRefusal } from "./throwing-forms.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 
 // eslint-disable-next-line max-statements -- Statement expression routing is centralized for the current lowering slice.
@@ -20,6 +22,14 @@ export function lowerExpressionStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
+  // A statement's parentheses change nothing it does, so `({ a } = source);` is the assignment.
+  if (ts.isParenthesizedExpression(expression)) {
+    return lowerExpressionStatement(context, expression.expression, bindings);
+  }
+  const constWrite = constWriteRefusal(context.typeChecker, expression);
+  if (constWrite !== undefined) {
+    return unsupportedIn(constWrite);
+  }
   const update = lowerUpdateExpressionStatement(expression, bindings);
   if (update.kind !== "notApplicable") {
     return update;
@@ -59,8 +69,19 @@ export function lowerExpressionStatement(
     return produced({ kind: "inlineCpp", symbol: inlineCppValue.symbol });
   }
 
-  if (!ts.isCallExpression(expression)) {
+  // A discarded `new` runs its constructor for side effects; see `lowerDiscardedNewExpression`.
+  if (ts.isNewExpression(expression)) {
+    return lowerDiscardedNewExpression(context, expression, bindings);
+  }
+
+  // String directives and tagged templates keep the diagnostic's own reason, which names the string
+  // slice or the tag rather than the statement around them.
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression) || ts.isTaggedTemplateExpression(expression)) {
     return notApplicable;
+  }
+
+  if (!ts.isCallExpression(expression)) {
+    return lowerDiscardedValue(context, expression, bindings);
   }
 
   const callOp = lowerCallStatement(context, expression, bindings);
@@ -68,23 +89,73 @@ export function lowerExpressionStatement(
     return callOp;
   }
 
-  if (!ts.isIdentifier(expression.expression)) {
+  const printCall = lowerPrintCallStatement(context, expression, bindings);
+  if (printCall.kind !== "notApplicable") {
+    return printCall;
+  }
+  return lowerDiscardedCall(context, expression, bindings);
+}
+
+/**
+ * A discarded `new` runs its constructor for side effects and drops the instance. An inner failure
+ * (an unknown class, an unlowerable argument) is reported in that failure's own words.
+ */
+function lowerDiscardedNewExpression(
+  context: LoweringContext,
+  expression: ts.NewExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const newValue = context.lowerValueExpression(context, expression, bindings);
+  if (newValue.kind !== "lowered") {
+    return withRefusal(newValue, unsupportedIn("A `new` expression as a statement must construct a value this build can evaluate"));
+  }
+  return produced({ kind: "discardValue", value: newValue.operation });
+}
+
+/**
+ * A call no statement tier claimed, evaluated by the value tier and discarded, such as
+ * `Object.prototype.hasOwnProperty.call(value, key);`. A call the value tier declines keeps the
+ * diagnostic's reason, which names a planned builtin or an unrecognized target.
+ */
+function lowerDiscardedCall(
+  context: LoweringContext,
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const value = context.lowerValueExpression(context, expression, bindings);
+  return value.kind === "lowered" ? produced({ kind: "discardValue", value: value.operation }) : value;
+}
+
+/**
+ * A `print` call the general call tier declined: `print` is recognized by its own tier below, while
+ * any other declined call still belongs to the diagnostic, where a planned builtin or an
+ * unrecognized target is named.
+ */
+function lowerPrintCallStatement(
+  context: LoweringContext,
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (!ts.isIdentifier(expression.expression) || expression.expression.text !== "print") {
     return notApplicable;
   }
-
-  if (expression.expression.text !== "print" || expression.arguments.length !== 1) {
-    return notApplicable;
+  if (expression.arguments.length !== 1) {
+    return unsupported("`print` accepts exactly one argument");
   }
-
+  const reason = "The argument to `print` must be an expression this build can evaluate";
   const [argument] = expression.arguments;
   const printExpression = lowerPrintExpression(context, argument, bindings);
-  if (printExpression.kind === "unsupported") {
-    return printExpression;
-  }
   if (printExpression.kind === "lowered") {
     return produced({ kind: "print", expression: printExpression.operation });
   }
-
+  if (printExpression.kind === "unsupported") {
+    return printExpression;
+  }
+  // Only a bare identifier this build cannot evaluate is the print tier's own refusal: calls,
+  // literals, templates, and member reads keep the diagnostic's reason, which names the argument.
+  if (ts.isIdentifier(argument)) {
+    return unsupported(reason);
+  }
   return notApplicable;
 }
 
@@ -92,6 +163,10 @@ export function lowerUpdateExpressionStatement(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
+  const boxedUpdate = lowerBoxedUpdateStatement(expression, bindings);
+  if (boxedUpdate !== undefined) {
+    return produced(boxedUpdate);
+  }
   const update = lowerUpdateNumberExpression(expression, bindings);
   if (update === undefined) {
     return notApplicable;
@@ -99,6 +174,35 @@ export function lowerUpdateExpressionStatement(
   const step: JsIrNumberExpression = { kind: "literal", value: 1 };
   const operator: JsIrNumberOperator = update.operator === "decrement" ? "subtract" : "add";
   return produced({ kind: "assignNumber", name: update.name, value: { kind: "binary", operator, left: { kind: "variable", name: update.name }, right: step } });
+}
+
+const updateOperators: ReadonlyMap<ts.SyntaxKind, JsIrNumberOperator> = new Map([
+  [ts.SyntaxKind.PlusPlusToken, "add"],
+  [ts.SyntaxKind.MinusMinusToken, "subtract"]
+]);
+
+/**
+ * `x++` or `--x` as a statement on a boxed binding: the value converts to a number, as `++` does in
+ * JavaScript, and the result is stored back boxed.
+ */
+function lowerBoxedUpdateStatement(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Extract<JsIrOperation, { readonly kind: "assignValue" }> | undefined {
+  if (!(ts.isPrefixUnaryExpression(expression) || ts.isPostfixUnaryExpression(expression)) || !ts.isIdentifier(expression.operand)) {
+    return undefined;
+  }
+  const operator = updateOperators.get(expression.operator);
+  const name = expression.operand.text;
+  if (operator === undefined || bindings.get(name)?.kind !== "valueVariable") {
+    return undefined;
+  }
+  return {
+    kind: "assignValue",
+    name,
+    value: { kind: "number", value: { kind: "binary", operator, left: { kind: "valueToNumber", value: { kind: "variable", name } },
+      right: { kind: "literal", value: 1 } } }
+  };
 }
 
 function lowerRuntimeCollectionCallStatement(
@@ -155,7 +259,7 @@ function lowerDeleteExpression(
     if (binding?.kind === "runtimeObject") {
       return produced({ kind: "runtimeObjectDelete", objectName: target.expression.text, key: { kind: "literal", value: target.name.text } });
     }
-    if (isProvenBoxedAggregateBinding(binding)) {
+    if (isBoxedStoreReceiverBinding(binding)) {
       return produced({ kind: "valueObjectDelete", targetName: target.expression.text, key: { kind: "literal", value: target.name.text } });
     }
   }
@@ -182,7 +286,7 @@ function lowerDeleteExpression(
         return produced({ kind: "runtimeArrayNamedDelete", arrayName: target.expression.text, key: key.operation });
       }
     }
-    if (isProvenBoxedAggregateBinding(binding)) {
+    if (isBoxedStoreReceiverBinding(binding)) {
       const indexResult = context.lowerNumberExpression(context, target.argumentExpression, bindings);
       if (indexResult.kind === "unsupported") {
         return indexResult;
@@ -214,4 +318,17 @@ function lowerDeleteExpression(
   }
 
   return notApplicable;
+}
+
+/** Any other expression statement evaluates its expression for its effects, such as a throwing read. */
+function lowerDiscardedValue(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const value = context.lowerValueExpression(context, expression, bindings);
+  if (value.kind !== "lowered") {
+    return withRefusal(value, unsupportedIn("Only calls, assignments, update expressions, and `delete` expressions are supported as statements"));
+  }
+  return produced({ kind: "discardValue", value: value.operation });
 }

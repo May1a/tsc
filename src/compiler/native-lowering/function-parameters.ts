@@ -64,10 +64,10 @@ export function initializeParameters(plan: FunctionPlan, fn: NativeFunctionBuild
       context.values.forBlock(context.cursor.currentBlock()).isImmediate(input, "undefined"), llvm.i64,
       () => {
         if (parameter.defaultValue === undefined) { throw new Error("Default parameter lost its initializer"); }
-        const number = context.expressions.number(parameter.defaultValue);
-        return context.values.forBlock(context.cursor.currentBlock()).boxNumber(number);
+        return context.expressions.value(parameter.defaultValue);
       }, () => input, "parameter.default");
     initializeParameter(parameter, value, context);
+    context.operations.operations(parameter.bindingOperations ?? []);
   }
   if (plan.thisBinding !== undefined) { context.writes.storeValue(plan.thisBinding, fn.boxedParameter(thisParameterIndex)); }
 }

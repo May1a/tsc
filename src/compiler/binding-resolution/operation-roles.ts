@@ -74,6 +74,7 @@ export const operationRoles = {
   assignNumber: { name: reference },
   assignString: { name: reference },
   assignBoolean: { name: reference },
+  assignValue: { name: reference },
 
   // Aggregate mutation.
   arrayStore: { arrayName: reference },
@@ -115,6 +116,7 @@ export const operationRoles = {
   objectStore: { objectName: reference, path: preservedList("propertyKey") },
   runtimeObjectStore: { objectName: reference },
   valueObjectStore: { targetName: reference },
+  defineAccessor: { targetName: reference },
   privateFieldStore: { targetName: reference, key: preserved("privateKey"), message: preserved("message") },
   valueArrayStore: { targetName: reference },
   valueArraySetLength: { targetName: reference },
@@ -133,6 +135,7 @@ export const operationRoles = {
   // Control flow.
   print: {},
   throwValue: {},
+  discardValue: {},
   block: {},
   // `catchVariable` is empty when there is no catch clause, so it declares only when it has a name.
   tryCatch: { catchVariable: optionalDeclaration },

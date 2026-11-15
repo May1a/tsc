@@ -65,7 +65,8 @@ export function resolveFunctionParameters(
     ...parameter,
     name: resolver.state.declare(parameter.name, "parameter", parameter.isOptional === true && parameter.defaultValue === undefined
       ? { kind: "value" } : parameterRepresentation(parameter.valueKind)),
-    defaultValue: optional(parameter.defaultValue, resolver.number)
+    defaultValue: optional(parameter.defaultValue, resolver.value),
+    bindingOperations: optional(parameter.bindingOperations, resolver.operations)
   }));
 }
 
@@ -135,8 +136,10 @@ export function resolveCallArguments(
   return arguments_.map((argument) => resolveCallArgument(argument, resolver));
 }
 
+/** Declares the names one element binds, as `var` for a `var` pattern and as destinations otherwise. */
 export function resolveDestructureElement(
   element: JsIrArrayDestructureElement,
+  kind: Extract<BindingKind, "var" | "destination">,
   resolver: Resolver
 ): ResolvedDestructureElement {
   const { state } = resolver;
@@ -148,12 +151,12 @@ export function resolveDestructureElement(
       const { name } = element;
       return {
         kind: "binding",
-        name: state.declare(name, "destination", { kind: "value" }),
+        name: state.declare(name, kind, { kind: "value" }),
         defaultValue: optional(element.defaultValue, resolver.value)
       };
     }
     case "rest": {
-      return { kind: "rest", name: state.declare(element.name, "destination", { kind: "runtimeArray" }) };
+      return { kind: "rest", name: state.declare(element.name, kind, { kind: element.mutable === true ? "value" : "runtimeArray" }) };
     }
     default: {
       return {

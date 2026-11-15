@@ -5,6 +5,7 @@ import { type RuntimeCalleeTable, registerRuntimeContract } from "../register.js
 
 export function createValuesCallees(module: LlvmModuleBuilder): RuntimeCalleeTable<typeof valuesContracts> {
   return {
+    "valueTypeOf": registerRuntimeContract(module, valuesContracts.valueTypeOf),
     "valueStrictEquals": registerRuntimeContract(module, valuesContracts.valueStrictEquals),
     "valueIsNumberForSameValueZero": registerRuntimeContract(module, valuesContracts.valueIsNumberForSameValueZero),
     "valueSameValueZero": registerRuntimeContract(module, valuesContracts.valueSameValueZero),
@@ -27,6 +28,10 @@ export function createValuesCallees(module: LlvmModuleBuilder): RuntimeCalleeTab
     "valueTruthy": registerRuntimeContract(module, valuesContracts.valueTruthy),
     "valuePrint": registerRuntimeContract(module, valuesContracts.valuePrint),
     "valueToString": registerRuntimeContract(module, valuesContracts.valueToString),
+    "valueIsObjectLike": registerRuntimeContract(module, valuesContracts.valueIsObjectLike),
+    "valueOrdinaryToPrimitive": registerRuntimeContract(module, valuesContracts.valueOrdinaryToPrimitive),
+    "valueToPrimitive": registerRuntimeContract(module, valuesContracts.valueToPrimitive),
+    "valueToStringObservable": registerRuntimeContract(module, valuesContracts.valueToStringObservable),
     "indexToString": registerRuntimeContract(module, valuesContracts.indexToString),
     "jsInstanceOf": registerRuntimeContract(module, valuesContracts.jsInstanceOf),
     "boxedValueOf": registerRuntimeContract(module, valuesContracts.boxedValueOf),
@@ -34,5 +39,13 @@ export function createValuesCallees(module: LlvmModuleBuilder): RuntimeCalleeTab
     "requireObjectCoercible": registerRuntimeContract(module, valuesContracts.requireObjectCoercible),
     "checkedValuePropertyGet": registerRuntimeContract(module, valuesContracts.checkedValuePropertyGet),
     "propertyKeyIndex": registerRuntimeContract(module, valuesContracts.propertyKeyIndex),
+    "objectDefaultPrototype": registerRuntimeContract(module, valuesContracts.objectDefaultPrototype),
+    "objectDefaultToString": registerRuntimeContract(module, valuesContracts.objectDefaultToString),
+    "objectDefaultValueOf": registerRuntimeContract(module, valuesContracts.objectDefaultValueOf),
+    "valueConversionPropertyGet": registerRuntimeContract(module, valuesContracts.valueConversionPropertyGet),
+    "conversionNativeToString": registerRuntimeContract(module, valuesContracts.conversionNativeToString),
+    "boxedInstallConversionMethods": registerRuntimeContract(module, valuesContracts.boxedInstallConversionMethods),
+    "boxedValueOfMethod": registerRuntimeContract(module, valuesContracts.boxedValueOfMethod),
+    "boxedToStringMethod": registerRuntimeContract(module, valuesContracts.boxedToStringMethod),
   };
 }

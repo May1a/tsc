@@ -42,7 +42,7 @@ export function emitNativeModule(resolved: ResolvedModule, builder: LlvmModuleBu
     bindings.registerGlobalRoots(fn.capabilities);
     const writes = bindings.allocate(fn.capabilities, "module");
     const flow = new ControlFlow(fn.capabilities, (value, threw) => {
-      if (threw) { runtime.callVoid("valuePrint", [value]); }
+      if (threw) { runtime.callVoid("valuePrintUncaught", [value]); }
       roots.restore(frame);
       cursor.currentBlock().ret(cursor.currentBlock().int(llvm.i32, threw ? 1n : 0n));
     });

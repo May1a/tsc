@@ -13,7 +13,7 @@ entry:
 }
 define i64 @functionObjectNew(ptr %code, ptr %env, i64 %boundThis, i64 %name.value, i64 %length) {
 entry:
-  %cell = call ptr @gcAlloc(i64 5, i64 56)
+  %cell = call ptr @gcAlloc(i64 5, i64 64)
   %payload = getelementptr i8, ptr %cell, i64 8
   store ptr %code, ptr %payload
   %env.slot = getelementptr i8, ptr %payload, i64 8
@@ -28,6 +28,8 @@ entry:
   store i64 0, ptr %flags.slot
   %length.slot = getelementptr i8, ptr %payload, i64 48
   store i64 %length, ptr %length.slot
+  %properties.slot = getelementptr i8, ptr %payload, i64 56
+  store ptr null, ptr %properties.slot
   %value = call i64 @valueBoxFunction(ptr %payload)
   ret i64 %value
 }
@@ -115,6 +117,15 @@ length.zero:
   %zero.boxed = call i64 @valueBoxNumber(double 0.0)
   ret i64 %zero.boxed
 missing:
+  %missing.ptr = call ptr @valueFunctionPtr(i64 %value)
+  %missing.properties.slot = getelementptr i8, ptr %missing.ptr, i64 56
+  %missing.properties = load ptr, ptr %missing.properties.slot
+  %has.properties = icmp ne ptr %missing.properties, null
+  br i1 %has.properties, label %missing.named, label %missing.undefined
+missing.named:
+  %missing.value = call i64 @objectGet(ptr %missing.properties, i64 %key.len, ptr %key.ptr)
+  ret i64 %missing.value
+missing.undefined:
   ret i64 9222246136947933184
 }
 define i1 @functionObjectHasOwn(i64 %value, i64 %key.len, ptr %key.ptr) {
@@ -147,6 +158,15 @@ length.flags:
   %length.present = icmp eq i64 %length.deleted.bit, 0
   ret i1 %length.present
 missing:
+  %missing.ptr = call ptr @valueFunctionPtr(i64 %value)
+  %missing.properties.slot = getelementptr i8, ptr %missing.ptr, i64 56
+  %missing.properties = load ptr, ptr %missing.properties.slot
+  %has.properties = icmp ne ptr %missing.properties, null
+  br i1 %has.properties, label %missing.named, label %missing.absent
+missing.named:
+  %missing.own = call i1 @objectHasOwn(ptr %missing.properties, i64 %key.len, ptr %key.ptr)
+  ret i1 %missing.own
+missing.absent:
   ret i1 false
 }
 define void @functionObjectDelete(i64 %value, i64 %key.len, ptr %key.ptr) {
@@ -177,7 +197,64 @@ length.delete:
   store i64 %length.flags.next, ptr %flags.slot
   ret void
 done:
+  %done.properties.slot = getelementptr i8, ptr %function.ptr, i64 56
+  %done.properties = load ptr, ptr %done.properties.slot
+  %done.has.properties = icmp ne ptr %done.properties, null
+  br i1 %done.has.properties, label %done.named, label %done.exit
+done.named:
+  call void @objectDelete(ptr %done.properties, i64 %key.len, ptr %key.ptr)
   ret void
+done.exit:
+  ret void
+}
+@.function.set.readonly = private unnamed_addr constant [36 x i8] c"Cannot assign to read only property\00"
+define ptr @functionObjectProperties(i64 %value) {
+entry:
+  %function.ptr = call ptr @valueFunctionPtr(i64 %value)
+  %properties.slot = getelementptr i8, ptr %function.ptr, i64 56
+  %properties = load ptr, ptr %properties.slot
+  %missing = icmp eq ptr %properties, null
+  br i1 %missing, label %create, label %done
+create:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %value)
+  %created = call ptr @objectNew(i64 0)
+  call void @gcRootRestore(i64 %frame)
+  store ptr %created, ptr %properties.slot
+  br label %done
+done:
+  %result = phi ptr [ %properties, %entry ], [ %created, %create ]
+  ret ptr %result
+}
+define { i64, i1 } @functionObjectSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored) {
+entry:
+  %is.name.length = icmp eq i64 %key.len, 4
+  br i1 %is.name.length, label %name.compare, label %check.length
+name.compare:
+  %name.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.function.name.key, i64 4)
+  %is.name = icmp eq i32 %name.cmp, 0
+  br i1 %is.name, label %readonly, label %store
+check.length:
+  %is.length.length = icmp eq i64 %key.len, 6
+  br i1 %is.length.length, label %length.compare, label %store
+length.compare:
+  %length.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.function.length.key, i64 6)
+  %is.length = icmp eq i32 %length.cmp, 0
+  br i1 %is.length, label %readonly, label %store
+readonly:
+  %message = call i64 @valueBoxString(ptr @.function.set.readonly, i64 35)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+store:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %value)
+  call void @gcRootPush(i64 %stored)
+  %properties = call ptr @functionObjectProperties(i64 %value)
+  call void @objectSet(ptr %properties, i64 %key.len, ptr %key.ptr, i64 %stored)
+  call void @gcRootRestore(i64 %frame)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }
 define i64 @functionObjectOwnPropertyDescriptor(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
@@ -238,5 +315,14 @@ length.value:
   %length.desc.boxed = call i64 @valueBoxObject(ptr %length.desc)
   ret i64 %length.desc.boxed
 missing:
+  %missing.ptr = call ptr @valueFunctionPtr(i64 %value)
+  %missing.properties.slot = getelementptr i8, ptr %missing.ptr, i64 56
+  %missing.properties = load ptr, ptr %missing.properties.slot
+  %has.properties = icmp ne ptr %missing.properties, null
+  br i1 %has.properties, label %missing.named, label %missing.undefined
+missing.named:
+  %missing.desc = call i64 @objectOwnPropertyDescriptor(ptr %missing.properties, i64 %key.len, ptr %key.ptr)
+  ret i64 %missing.desc
+missing.undefined:
   ret i64 9222246136947933184
 }

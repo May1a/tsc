@@ -1,7 +1,7 @@
 import type { ResolvedNumberExpression } from "../binding-resolution/index.js";
 import { type VariantHandlers, type VariantOfKind, dispatchKind } from "../dispatch.js";
 import { type LlvmBlockBuilder, type LlvmValue, llvm } from "../llvm-ir/index.js";
-import type { ExpressionContext } from "./expression-context.js";
+import { type ExpressionContext, boxString } from "./expression-context.js";
 import { branchValue } from "./expression-branches.js";
 
 type NumberNode<K extends ResolvedNumberExpression["kind"]> = VariantOfKind<ResolvedNumberExpression, K>;
@@ -147,9 +147,7 @@ function objectLength(expression: NumberNode<"valueObjectLength">, context: Expr
 function regexSearch(expression: NumberNode<"regexSearch">, context: ExpressionContext): NumberValue {
   const regex = context.expressions.value(expression.regex);
   context.roots.push(regex);
-  const input = context.expressions.string(expression.input);
-  const boxed = context.runtime.callBoxed("valueBoxString", [input.bytes, input.length], context.cursor.uniqueName("search.input"));
-  context.roots.push(boxed);
+  const boxed = boxString(context.expressions.string(expression.input), context);
   const result = context.runtime.callWithCompletion("regexSearch", [regex, boxed], context.cursor.uniqueName("regex.search"), context.exceptionTarget());
   return context.runtime.call("valueToNumber", [result], context.cursor.uniqueName("number.search"));
 }

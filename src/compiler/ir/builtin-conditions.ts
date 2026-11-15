@@ -2,10 +2,10 @@ import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import type { JsIrCondition, JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
+import type { JsIrCondition, JsIrStringExpression } from "./expressions.js";
 import { lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
-import { lowerPropertyKeyExpression } from "./string-expressions.js";
-import { isBoxedAggregateCandidateBinding } from "./builtins/object-producers.js";
+import { lowerPropertyKeyExpression, lowerValuePropertyKeyExpression } from "./string-expressions.js";
+import { isBoxedAggregateCandidateBinding, isBoxedPrimitiveBinding } from "./builtins/object-producers.js";
 import { classifyObjectLiteral } from "./object-literals.js";
 import { classifyArrayLiteral } from "./array-literals.js";
 
@@ -199,6 +199,44 @@ export function lowerHasOwnConditionExpression(
   return notApplicable;
 }
 
+/**
+ * `Object.prototype.hasOwnProperty.call(value, key)` on any value. The arguments are evaluated in
+ * order, then the key is converted, and only then does a nullish value throw, as in JavaScript.
+ */
+export function lowerHasOwnPropertyCallCondition(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrCondition> {
+  if (!ts.isCallExpression(expression) || expression.arguments.length !== 2 || !isHasOwnPropertyCall(expression.expression, bindings)) {
+    return notApplicable;
+  }
+  const [target, keyExpression] = expression.arguments;
+  const value = context.lowerValueExpression(context, target, bindings);
+  if (value.kind !== "lowered") {
+    return value;
+  }
+  const key = lowerValuePropertyKeyExpression(context, keyExpression, bindings);
+  if (key.kind !== "lowered") {
+    return key;
+  }
+  return produced({ kind: "valueHasOwnProperty", value: value.operation, key: key.operation });
+}
+
+/** Whether `callee` is `Object.prototype.hasOwnProperty.call` with the global `Object`. */
+function isHasOwnPropertyCall(callee: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean {
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "call") {
+    return false;
+  }
+  const method = callee.expression;
+  if (!ts.isPropertyAccessExpression(method) || method.name.text !== "hasOwnProperty") {
+    return false;
+  }
+  const prototype = method.expression;
+  return ts.isPropertyAccessExpression(prototype) && prototype.name.text === "prototype" &&
+    ts.isIdentifier(prototype.expression) && prototype.expression.text === "Object" && !bindings.has("Object");
+}
+
 export function lowerObjectMethodSugarConditionExpression(
   context: LoweringContext,
   expression: ts.Expression,
@@ -227,26 +265,27 @@ export function lowerObjectMethodSugarConditionExpression(
   if (binding?.kind === "runtimeArray") {
     return lowerOwnArrayPropertyCondition(context, receiver, keyExpression, bindings);
   }
+  // A boxed receiver, such as a class instance, answers `hasOwnProperty` as `Object.hasOwn` does.
+  if (method === "hasOwnProperty" && isBoxedAggregateCandidateBinding(binding)) {
+    const key = lowerPropertyKeyExpression(context, keyExpression, bindings);
+    if (key.kind !== "lowered") {
+      return key;
+    }
+    return produced({ kind: "runtimeObjectHas", objectName: receiver, key: key.operation, ownOnly: true, receiverKind: "value" });
+  }
   return notApplicable;
 }
 
 /**
- * The receiver of a `valueOf`/`toString` call when it is a boxed primitive, or `undefined` when it
- * is not. The binding is read rather than the lowered value so the decision is made once, from the
- * shape the lowering already recorded.
+ * Whether the receiver of a `valueOf`/`toString` call names a boxed primitive. The binding is read
+ * rather than the lowered value so the decision is made once, from the shape the lowering already
+ * recorded.
  */
-export function lowerBoxedPrimitiveReceiver(
+export function isBoxedPrimitiveReceiver(
   receiver: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
-): JsIrValueExpression | undefined {
-  if (!ts.isIdentifier(receiver)) {
-    return undefined;
-  }
-  const binding = bindings.get(receiver.text);
-  if (binding?.kind !== "value" || binding.value.kind !== "boxedPrimitive") {
-    return undefined;
-  }
-  return binding.value;
+): boolean {
+  return ts.isIdentifier(receiver) && isBoxedPrimitiveBinding(bindings.get(receiver.text));
 }
 
 // eslint-disable-next-line complexity -- Array.isArray classification mirrors supported receiver shapes explicitly.

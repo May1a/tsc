@@ -1,4 +1,4 @@
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
@@ -6,6 +6,7 @@ import type { JsIrStringExpression, JsIrValueExpression } from "./expressions.js
 import { isRegexExpression } from "./regex-predicates.js";
 import { lowerRuntimeNumberFormatExpression, lowerRuntimeStringMethodExpression, lowerStringFromCharCodeExpression } from "./string-builtins.js";
 import { lowerTypeOfResult } from "./comparisons.js";
+import { expressionSnippet } from "./diagnostics.js";
 import { lowerSymbolIteratorKeyExpression } from "./class-info.js";
 import { sourceNumericLiteralValue } from "./enums.js";
 import { lowerCallArguments } from "./call-arguments.js";
@@ -123,8 +124,15 @@ export function lowerStringRuntimeExpression(
   if (ts.isTypeOfExpression(expression)) {
     const typeName = lowerTypeOfResult(expression.expression, bindings);
     if (typeName !== undefined) {
+      const binding = ts.isIdentifier(expression.expression) ? bindings.get(expression.expression.text) : undefined;
+      // Mutable storage may be uninitialized or hold a hoisted var's undefined value.
+      if (ts.isIdentifier(expression.expression) && (binding?.kind === "valueVariable" || binding?.kind === "stringVariable" ||
+        binding?.kind === "booleanVariable" || binding?.kind === "number" && binding.value.kind === "variable")) {
+        return produced({ kind: "valueTypeOf", value: { kind: "variable", name: expression.expression.text } });
+      }
       return produced({ kind: "typeof", value: typeName });
     }
+    return unsupportedIn(unsupportedTypeOfMessage(expression.expression, bindings));
   }
 
   if (!ts.isConditionalExpression(expression)) {
@@ -180,6 +188,26 @@ export function lowerPropertyKeyExpression(
   return context.lowerStringRuntimeExpression(context, expression, bindings);
 }
 
+/**
+ * The property key `expression` converts to, for any expression this build can evaluate: a key the
+ * string tiers lower directly, or any other value converted with `String`.
+ */
+export function lowerValuePropertyKeyExpression(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrStringExpression> {
+  const key = lowerPropertyKeyExpression(context, expression, bindings);
+  if (key.kind !== "notApplicable") {
+    return key;
+  }
+  const value = context.lowerValueExpression(context, expression, bindings);
+  if (value.kind !== "lowered") {
+    return value;
+  }
+  return produced({ kind: "stringConversion", value: value.operation });
+}
+
 function lowerStringConcatExpression(
   context: LoweringContext,
   expression: ts.BinaryExpression,
@@ -215,9 +243,8 @@ function lowerStringConcatExpression(
     return notApplicable;
   }
   return produced({
-    kind: "concat",
-    left: { kind: "stringConversion", value: leftValue },
-    right: { kind: "stringConversion", value: rightValue }
+    kind: "stringConversion",
+    value: { kind: "valuePlus", left: leftValue, right: rightValue }
   });
 }
 
@@ -323,4 +350,18 @@ function lowerDateIsoStringExpression(
     return notApplicable;
   }
   return produced({ kind: "literal", value: "1970-01-01T00:00:00.000Z" });
+}
+
+/**
+ * Why a `typeof` expression did not lower.
+ *
+ * Only the string tier answers `typeof`, from the binding and the syntax, so an unanswerable one
+ * names its operand rather than the condition or initializer around it.
+ */
+function unsupportedTypeOfMessage(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): string {
+  const operand = expressionSnippet(expression);
+  if (ts.isIdentifier(expression) && !bindings.has(expression.text)) {
+    return `\`typeof ${operand}\` cannot be answered statically: \`${expression.text}\` has no declared binding`;
+  }
+  return `\`typeof ${operand}\` cannot be answered statically yet`;
 }

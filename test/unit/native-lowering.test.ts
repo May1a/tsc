@@ -130,6 +130,20 @@ describe("native GC metadata", () => {
     });
     expect(module.functions[0]?.facts.heapReferences).toHaveLength(2);
   });
+
+  test("a borrowed property entry remains protected by its receiver across collection", () => {
+    const module = nativeModule();
+    module.defineFunction(borrowedSpec, (fn) => {
+      fn.openEntry();
+      const { cursor, runtime, values } = fn.capabilities;
+      const object = values.forBlock(cursor.currentBlock()).unboxReference(fn.boxedParameter(0));
+      const key = cursor.currentBlock().globalPointer(module.stringConstant("x"));
+      const entry = runtime.callPointer("objectFindProperty", [object, cursor.currentBlock().int(llvm.i64, 1n), key], "entry");
+      runtime.callVoid("gcSafepoint", []);
+      cursor.currentBlock().ret(cursor.currentBlock().load(llvm.i64, entry, "key.length"));
+    });
+    expect(module.functions.map((fn) => fn.function.spec.name)).toEqual(["borrowed"]);
+  });
 });
 
 describe("native CFG exits and provenance", () => {

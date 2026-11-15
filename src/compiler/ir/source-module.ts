@@ -6,9 +6,11 @@ import type { CompilerDiagnostic } from "../diagnostics.js";
 import type { LoweringContext } from "./context.js";
 import type ts from "typescript";
 import { createInlineCppCompilation, inlineCppDisabledDiagnostic } from "./inline-cpp.js";
-import type { JsIrBindingValue, JsIrFunctionObjectDefinition } from "./bindings.js";
+import type { JsIrBindingValue, JsIrFunctionObjectDefinition, JsIrFunctionParameter } from "./bindings.js";
 import { collectFunctionObjectDefinitions, collectPromotedAggregateNames } from "./captures.js";
 import { type ClassInfo, appendClassOperations } from "./class-info.js";
+import { collectClassHierarchy } from "./class-hierarchy.js";
+import { collectStoragePlan } from "./storage-plan.js";
 import { isNonExecutableDeclaration, unsupportedStatementDiagnostic } from "./comparisons.js";
 import { lowerClassStatement } from "./classes.js";
 import { markRuntimeObjectShadows, updateBindings } from "./binding-updates.js";
@@ -41,6 +43,13 @@ function createTraceIdSource(moduleIndex: number): () => string {
  */
 function finalizeOperationTraces(operations: readonly JsIrOperation[], nextTraceId: () => string): readonly JsIrOperation[] {
   return operations.map((operation) => tracedOperation(operation, undefined, nextTraceId));
+}
+
+function traceParameterBindings(
+  parameters: readonly JsIrFunctionParameter[],
+  rebuild: (operation: JsIrOperation) => JsIrOperation
+): readonly JsIrFunctionParameter[] {
+  return parameters.map((parameter) => ({ ...parameter, bindingOperations: parameter.bindingOperations?.map(rebuild) }));
 }
 
 /** One operation with its trace filled in, then the same for everything nested inside it. */
@@ -76,7 +85,9 @@ function withTracedChildren(operation: JsIrOperation, nextTraceId: () => string)
       };
     }
     case "runtimeArrayMapFunctionObject": {
-      return { ...operation, callbackBody: operation.callbackBody.map(tracedOperationChild(operation, nextTraceId)) };
+      const rebuild = tracedOperationChild(operation, nextTraceId);
+      return { ...operation, callbackParameters: traceParameterBindings(operation.callbackParameters, rebuild),
+        callbackBody: operation.callbackBody.map(rebuild) };
     }
     case "block":
     case "bindingGroup": {
@@ -105,6 +116,12 @@ function withTracedChildren(operation: JsIrOperation, nextTraceId: () => string)
       const rebuild = tracedOperationChild(operation, nextTraceId);
       return { ...operation, clauses: operation.clauses.map(tracedSwitchClause(rebuild)) };
     }
+    case "function": {
+      const rebuild = tracedOperationChild(operation, nextTraceId);
+      return { ...operation,
+        parameters: traceParameterBindings(operation.parameters, rebuild),
+        body: operation.body.map(rebuild) };
+    }
     case "while":
     case "doWhile":
     case "forOfArray":
@@ -114,17 +131,18 @@ function withTracedChildren(operation: JsIrOperation, nextTraceId: () => string)
     case "forOfProtocol":
     case "forInObject":
     case "forInArray":
-    case "function":
     case "returnClosure": {
       return { ...operation, body: operation.body.map(tracedOperationChild(operation, nextTraceId)) };
     }
     case "for": {
       const rebuild = tracedOperationChild(operation, nextTraceId);
+      const { increment } = operation;
       return {
         ...operation,
         initializer: operation.initializer.map(rebuild),
         body: operation.body.map(rebuild),
-        increment: rebuild(operation.increment)
+        // Absent stays absent: emission distinguishes "no update step" from an empty one.
+        ...(increment === undefined ? {} : { increment: rebuild(increment) })
       };
     }
     default: {
@@ -170,8 +188,11 @@ function lowerStatements(
 ): LoweredStatements {
   context.nextFunctionObjectId = 0;
   context.nextJsonStatementValueId = 0;
+  context.nextOptionalCallStatementValueId = 0;
   // Class inheritance resolves against declarations in the current source file.
   context.classes = new Map<string, ClassInfo>();
+  context.classHierarchy = collectClassHierarchy(sourceFile);
+  context.storagePlan = collectStoragePlan(sourceFile);
   const inlineCppDiagnostic = inlineCppDisabledDiagnostic(context.inlineCpp, sourceFile);
   if (inlineCppDiagnostic !== undefined) {
     return { operations: [], diagnostics: [inlineCppDiagnostic], loweringMode: "native" };
@@ -244,6 +265,7 @@ export function lowerToJsIr(
     const operations = finalizeOperationTraces(lowered.operations, nextTraceId);
     const finalizeDefinition = (definition: JsIrFunctionObjectDefinition) => ({
       ...definition,
+      parameters: traceParameterBindings(definition.parameters, (operation) => tracedOperation(operation, undefined, nextTraceId)),
       ...(definition.body === undefined ? {} : { body: finalizeOperationTraces(definition.body, nextTraceId) })
     });
     const functionObjects = collectFunctionObjectDefinitions(operations).map(finalizeDefinition);

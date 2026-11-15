@@ -15,6 +15,9 @@ import { type CapturedProcess, captureProcessWithTimeout } from "./process.js";
 import type { Classification, SelectedTest, TestCaseResult } from "./types.js";
 
 const unsupportedFeatureCode = "TSCN1002";
+// TypeScript's parser reports syntax errors as TS1xxx. Test262 marks a test that should not parse as
+// negative, so a syntax error on any other test is TypeScript failing to parse valid ECMAScript.
+const typescriptSyntaxErrorPattern = /error TS1\d{3}:/;
 const missingClangMarker = "clang was not found";
 
 export interface ExecuteTestOptions {
@@ -137,6 +140,9 @@ const classifyCompileFailure = (test: SelectedTest, diagnostics: string): TestCa
   }
   if (diagnostics.includes(unsupportedFeatureCode)) {
     return result(test, "coverage-gap", "compiler-unsupported", `Compiler rejected the test as unsupported:\n${diagnostics}`);
+  }
+  if (typescriptSyntaxErrorPattern.test(diagnostics)) {
+    return result(test, "coverage-gap", "frontend-unsupported", `TypeScript cannot parse this valid test:\n${diagnostics}`);
   }
   return result(test, "fail", "compile-failure", `Unexpected compile failure:\n${diagnostics}`);
 };

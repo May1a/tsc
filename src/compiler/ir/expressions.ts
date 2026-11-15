@@ -196,6 +196,19 @@ export type JsIrValueExpression =
       readonly kind: "optionalTarget";
     }
   | {
+      /**
+       * A read of a name nothing declares, which throws a ReferenceError carrying `message`. Only a
+       * name the checker resolves to no declaration at all lowers to this.
+       */
+      readonly kind: "unresolvableReference";
+      readonly message: string;
+    }
+  | {
+      /** A builtin error constructor read as a value, such as `TypeError` passed to a function. */
+      readonly kind: "errorConstructor";
+      readonly errorName: string;
+    }
+  | {
       readonly kind: "void";
       readonly expression: JsIrValueExpression;
     }
@@ -275,7 +288,7 @@ export type JsIrArrayDestructureElement =
   | { readonly kind: "elision" }
   | { readonly kind: "binding"; readonly name: string; readonly defaultValue?: JsIrValueExpression }
   | { readonly kind: "nested"; readonly temporaryName: string; readonly operations: readonly JsIrOperation[] }
-  | { readonly kind: "rest"; readonly name: string };
+  | { readonly kind: "rest"; readonly name: string; readonly mutable?: true };
 
 export type JsIrNumberExpression =
   | {
@@ -447,8 +460,18 @@ export type JsIrStringExpression =
       readonly value: string;
     }
   | {
+      /** A binding read must retain lexical initialization checks before determining its type. */
+      readonly kind: "valueTypeOf";
+      readonly value: JsIrValueExpression;
+    }
+  /**
+   * ToString. An object converts through its own `toString` and `valueOf`, which may throw;
+   * `preferValue` tries `valueOf` first, as the default hint of `+` does.
+   */
+  | {
       readonly kind: "stringConversion";
       readonly value: JsIrValueExpression;
+      readonly preferValue?: true;
     }
   | {
       readonly kind: "stringMethod";
@@ -554,6 +577,12 @@ export type JsIrCondition =
       readonly kind: "regexTest";
       readonly regex: JsIrValueExpression;
       readonly input: JsIrStringExpression;
+    }
+  /** `Object.prototype.hasOwnProperty.call(value, key)`: throws on a nullish value. */
+  | {
+      readonly kind: "valueHasOwnProperty";
+      readonly value: JsIrValueExpression;
+      readonly key: JsIrStringExpression;
     }
   | {
       readonly kind: "numberComparison";

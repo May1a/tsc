@@ -62,6 +62,7 @@ function compile(registry: BindingRegistry, operations: readonly ResolvedOperati
     const calls: OperationCalls = {
       direct: unsupportedCall, generated: unsupportedCall, functionObject: unsupportedCall,
       tagged: unsupportedCall, reference: unsupportedCall, closure: unsupportedCall, callback: unsupportedCall, returnedClosure: unsupportedCall,
+      functionDeclaration: unsupportedCall,
       inlineCpp: (symbol) => {
         const target = targets.get(symbol);
         if (target === undefined) throw new Error(`Fixture helper ${symbol} is undeclared`);

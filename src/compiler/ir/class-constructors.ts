@@ -1,14 +1,17 @@
 import type { LoweringContext } from "./context.js";
-import type { ClassFieldInfo, ClassInfo } from "./class-info.js";
+import { type ClassFieldInfo, type ClassInfo, classPrivateFunctions } from "./class-info.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionParameter } from "./bindings.js";
 import { type Lowered, type Produced, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
-import { CLASS_THIS_NAME, classAbortReason, classConstructorName, classMemberKeyStringExpression } from "./class-names.js";
+import { CLASS_THIS_NAME, classAbortReason, classConstructorName, classMemberKeyStringExpression, classPrivateFieldDefineMessage } from "./class-names.js";
 import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
+import { lowerFunctionParameters } from "./function-parameter-lowering.js";
 import { isNonExecutableDeclaration } from "./comparisons.js";
 import { updateBindings } from "./binding-updates.js";
+import { collectMethodEnclosingCaptureNames } from "./captures.js";
 import type { JsIrValueExpression } from "./expressions.js";
+import { expressionSnippet } from "./diagnostics.js";
 import { SYMBOL_ITERATOR_SENTINEL } from "../symbols.js";
 
 // eslint-disable-next-line complexity, max-statements -- Constructor lowering owns super ordering, instance initialization, and body scope restoration.
@@ -18,12 +21,13 @@ export function lowerClassConstructor(
   constructorDeclaration: ts.ConstructorDeclaration | undefined,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<JsIrOperation> {
-  const parameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...info.constructorParameters];
-  const fnBindings = functionFrameBindings(bindings);
-  fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-  for (const parameter of info.constructorParameters) {
-    bindFunctionParameter(parameter.name, parameter.valueKind, false, fnBindings);
+  const constructorBody = constructorDeclaration?.body;
+  const returnedValue = constructorBody === undefined ? undefined : valueReturnIn(constructorBody);
+  if (returnedValue !== undefined) {
+    return unsupportedIn(`A class constructor that returns a value (\`return ${expressionSnippet(returnedValue)}\`) is not supported yet`);
   }
+  const receiverBindings = functionFrameBindings(bindings);
+  receiverBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
 
   const previousThis = context.classThisInScope;
   const previousClass = context.activeEnclosingClass;
@@ -32,6 +36,12 @@ export function lowerClassConstructor(
   context.activeEnclosingClass = info;
   context.activeClassMethodStatic = false;
   try {
+    const lowered = lowerConstructorParameters(context, info, constructorDeclaration, receiverBindings);
+    if (lowered.kind !== "lowered") {
+      return lowered;
+    }
+    const { bindings: fnBindings } = lowered.operation;
+    const parameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...lowered.operation.parameters];
     const body: JsIrOperation[] = [];
     let remainingStatements: readonly ts.Statement[] = constructorDeclaration?.body?.statements ?? [];
     if (info.baseName !== undefined) {
@@ -82,11 +92,23 @@ export function lowerClassConstructor(
     if (iteratorStore.kind === "lowered") {
       body.push(iteratorStore.operation);
     }
+    // Private methods and accessors join the instance before any field initializer runs
+    // (InitializeInstanceElements).
+    for (const privateFunction of classPrivateFunctions(info)) {
+      body.push({
+        kind: "privateFieldStore",
+        targetName: CLASS_THIS_NAME,
+        key: privateFunction.storageKey,
+        value: { kind: "variable", name: privateFunction.slotName },
+        message: classPrivateFieldDefineMessage(privateFunction.functionName),
+        define: true
+      });
+    }
     // TypeScript assigns parameter properties after `super(...)` and before the field initializers, so
     // a field initializer may read one. The order here matches that emit exactly, which is what makes
     // `class C { x = this.p + 1; constructor(public p: number) {} }` read the argument.
     for (const name of info.parameterProperties) {
-      const parameter = info.constructorParameters.find((candidate) => candidate.name === name);
+      const parameter = lowered.operation.parameters.find((candidate) => candidate.name === name);
       if (parameter === undefined) {
         return unsupportedIn(`\`${name}\` is declared as a field by a parameter this build cannot read`);
       }
@@ -102,12 +124,7 @@ export function lowerClassConstructor(
       if (initializer.kind !== "lowered") {
         return initializer;
       }
-      body.push({
-        kind: "valueObjectStore",
-        targetName: CLASS_THIS_NAME,
-        key: classMemberKeyStringExpression(field.key),
-        value: initializer.operation
-      });
+      body.push(classFieldStore(field, initializer.operation));
     }
     if (constructorDeclaration?.body !== undefined) {
       for (const statement of remainingStatements) {
@@ -122,7 +139,13 @@ export function lowerClassConstructor(
         updateBindings(result.operation, fnBindings);
       }
     }
-    return produced({ kind: "function", name: classConstructorName(info.name), parameters, body });
+    const constructorCaptures = constructorDeclaration?.body === undefined ? [] :
+      collectMethodEnclosingCaptureNames(context.typeChecker, constructorDeclaration, constructorDeclaration.body,
+        [...constructorDeclaration.parameters], bindings);
+    const fieldCaptures = collectFieldInitializerCaptureNames(info, bindings);
+    const captureNames = [...constructorCaptures, ...fieldCaptures.filter((name) => !constructorCaptures.includes(name))];
+    return produced({ kind: "function", name: classConstructorName(info.name), parameters, body,
+      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }) });
   } finally {
     context.classThisInScope = previousThis;
     context.activeEnclosingClass = previousClass;
@@ -131,12 +154,60 @@ export function lowerClassConstructor(
 }
 
 /**
- * The value a constructor parameter property stores onto `this`.
+ * The first value a constructor body returns, outside its nested functions.
  *
- * The representation follows the parameter's own kind, the same way `forwardedClassArgument` chooses a
- * form to pass one along: a number is read as a number expression, and a string or boxed value as the
- * value it already is.
+ * `new` produces an object the constructor returns in place of the instance, and a derived
+ * constructor that returns another value throws. Lowering binds calls on `new C()` to C's methods
+ * statically, which would be wrong for a replacement object, so such a constructor is refused.
  */
+function valueReturnIn(body: ts.Block): ts.Expression | undefined {
+  let found: ts.Expression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (found !== undefined || ts.isFunctionLike(node) || ts.isClassLike(node)) {
+      return;
+    }
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      found = node.expression;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(body, visit);
+  return found;
+}
+
+/**
+ * A written constructor lowers its parameters like a function declaration's, defaults and patterns
+ * included. An implicit one takes the signature it forwards to the base constructor, which applies
+ * its own defaults.
+ */
+function lowerConstructorParameters(
+  context: LoweringContext,
+  info: ClassInfo,
+  constructorDeclaration: ts.ConstructorDeclaration | undefined,
+  receiverBindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<{
+  readonly parameters: readonly JsIrFunctionParameter[];
+  readonly bindings: Map<string, JsIrBindingValue>;
+}> {
+  if (constructorDeclaration !== undefined) {
+    return lowerFunctionParameters(context, constructorDeclaration.parameters, receiverBindings);
+  }
+  const fnBindings = new Map(receiverBindings);
+  for (const parameter of info.constructorParameters) {
+    bindFunctionParameter(parameter.name, parameter.isOptional === true ? "value" : parameter.valueKind, false, fnBindings);
+  }
+  return produced({ parameters: info.constructorParameters, bindings: fnBindings });
+}
+
+/** A public field is an own property of the instance; a private one is a private element. */
+function classFieldStore(field: ClassFieldInfo, value: JsIrValueExpression): JsIrOperation {
+  if (field.privateName !== undefined && field.key.kind === "literal") {
+    return { kind: "privateFieldStore", targetName: CLASS_THIS_NAME, key: field.key.name, value, message: classPrivateFieldDefineMessage(field.privateName), define: true };
+  }
+  return { kind: "valueObjectStore", targetName: CLASS_THIS_NAME, key: classMemberKeyStringExpression(field.key), value };
+}
+
 function parameterPropertyValue(parameter: JsIrFunctionParameter): JsIrValueExpression {
   if (parameter.valueKind === "number") {
     return { kind: "number", value: { kind: "parameter", name: parameter.name } };
@@ -147,7 +218,41 @@ function parameterPropertyValue(parameter: JsIrFunctionParameter): JsIrValueExpr
   return { kind: "variable", name: parameter.name };
 }
 
-function forwardedClassArgument(parameter: JsIrFunctionParameter): JsIrCallArgument {
+/**
+ * Outer names a field initializer reads, for the constructor's `enclosingCaptureNames`.
+ *
+ * Field initializers run inside the constructor, so a read of an outer mutable binding needs the
+ * same environment slot as a read in the constructor body. The walk is conservative without a
+ * checker: any outer name mentioned is captured, which costs a slot rather than a wrong answer.
+ */
+function collectFieldInitializerCaptureNames(
+  info: ClassInfo,
+  outerBindings: ReadonlyMap<string, JsIrBindingValue>
+): readonly string[] {
+  const captures: string[] = [];
+  const seen = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) {
+      return;
+    }
+    if (ts.isIdentifier(node) && outerBindings.has(node.text) && !seen.has(node.text)) {
+      const { parent } = node;
+      if (!(ts.isPropertyAccessExpression(parent) && parent.name === node)) {
+        seen.add(node.text);
+        captures.push(node.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const field of info.fields) {
+    if (field.initializer !== undefined) {
+      visit(field.initializer);
+    }
+  }
+  return captures;
+}
+
+export function forwardedClassArgument(parameter: JsIrFunctionParameter): JsIrCallArgument {
   if (parameter.valueKind === "number") {
     return { valueKind: "number", value: { kind: "parameter", name: parameter.name } };
   }
@@ -198,7 +303,7 @@ export function lowerClassFieldInitializer(
   }
   const value = context.lowerValueExpression(context, field.initializer, bindings);
   if (value.kind !== "lowered") {
-    return withRefusal(value, unsupportedIn("A class field initializer is not an expression this build can evaluate"));
+    return withRefusal(value, unsupportedIn(`A class field initializer is not an expression this build can evaluate: \`${expressionSnippet(field.initializer)}\``));
   }
   return produced(value.operation);
 }

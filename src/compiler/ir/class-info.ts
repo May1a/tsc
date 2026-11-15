@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { classAccessorFunctionName, classMethodFunctionName, classPrivateFunctionSlotName } from "./class-names.js";
 import type { LoweringContext } from "./context.js";
 import type { JsIrBindingValue, JsIrFunctionParameter, JsIrValueKind } from "./bindings.js";
 import type { JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
@@ -18,6 +19,8 @@ export type ClassMemberKey =
 export interface ClassFieldInfo {
   readonly key: ClassMemberKey;
   readonly initializer: ts.Expression | undefined;
+  /** The `#name` of a private field, which construction adds as a private element under `key`. */
+  readonly privateName?: string;
 }
 export interface ClassMethodInfo {
   readonly parameters: readonly JsIrFunctionParameter[];
@@ -41,9 +44,29 @@ export interface ClassInfo {
    * TypeScript assigns them before the field initializers, and a field initializer may read one.
    */
   readonly parameterProperties: readonly string[];
-  // Source-level private field name (`#x`) → class-mangled storage key on the
-  // instance object. Presence of the storage key doubles as the brand check.
+  // Source-level private field name (`#x`) → class-mangled key of the instance's private element.
+  // The runtime's private-element table holds it, and holding it is the brand check.
   readonly privateFields: ReadonlyMap<string, string>;
+  /** Source-level private method name (`#m`) → the function construction adds as an element. */
+  readonly privateMethods: ReadonlyMap<string, ClassPrivateFunctionInfo>;
+  /** Source-level private accessor name (`#x`) → its getter and setter elements. */
+  readonly privateAccessors: ReadonlyMap<string, ClassPrivateAccessorInfo>;
+}
+/**
+ * A private method, getter or setter. The class definition stores one function object for it in
+ * `slotName`, and construction adds that object to every instance as the private element
+ * `storageKey`, so all instances share it. The object forwards to the direct function
+ * `functionName`, which takes the receiver as its first argument.
+ */
+export interface ClassPrivateFunctionInfo extends ClassMethodInfo {
+  readonly storageKey: string;
+  readonly functionName: string;
+  readonly slotName: string;
+}
+/** A private accessor: reading calls the getter, writing calls the setter. */
+export interface ClassPrivateAccessorInfo {
+  readonly getter?: ClassPrivateFunctionInfo;
+  readonly setter?: ClassPrivateFunctionInfo;
 }
 export const sourceSpan = (
   sourceFile: ts.SourceFile,
@@ -223,6 +246,10 @@ export function buildClassInfo(
   if (staticMethods.kind !== "lowered") {
     return staticMethods;
   }
+  const privateMethods = classPrivateMethodInfoMap(names.infoName, members);
+  if (privateMethods.kind !== "lowered") {
+    return privateMethods;
+  }
   let constructorParameters = ownParameters.operation;
   if (names.baseName !== undefined && members.constructorDeclaration === undefined) {
     constructorParameters = classes.get(names.baseName)?.constructorParameters ?? [];
@@ -239,8 +266,59 @@ export function buildClassInfo(
     setters: new Set(members.setAccessors.map((entry) => entry.name)),
     iteratorMethod: members.iteratorMethod,
     parameterProperties: members.parameterProperties,
-    privateFields: members.privateFields
+    privateFields: members.privateFields,
+    privateMethods: privateMethods.operation,
+    privateAccessors: classPrivateAccessorInfoMap(names.infoName, members)
   });
+}
+
+function classPrivateMethodInfoMap(className: string, members: CollectedClassMembers): Produced<ReadonlyMap<string, ClassPrivateFunctionInfo>> {
+  const map = new Map<string, ClassPrivateFunctionInfo>();
+  for (const entry of members.privateMethodDeclarations) {
+    const parameters = classCallableParameters(entry.declaration);
+    if (parameters.kind !== "lowered") {
+      return parameters;
+    }
+    map.set(entry.name, {
+      parameters: parameters.operation,
+      storageKey: classPrivateFieldStorageKey(className, entry.name),
+      functionName: classMethodFunctionName(className, entry.name, false),
+      slotName: classPrivateFunctionSlotName(className, entry.name)
+    });
+  }
+  return produced(map);
+}
+
+/**
+ * A getter takes no argument and a setter takes the assigned value, so their parameters are fixed,
+ * and each half is its own element.
+ */
+function classPrivateAccessorInfoMap(className: string, members: CollectedClassMembers): ReadonlyMap<string, ClassPrivateAccessorInfo> {
+  const half = (name: string, isGetter: boolean): ClassPrivateFunctionInfo => {
+    const functionName = classAccessorFunctionName(className, name, isGetter);
+    return {
+      parameters: isGetter ? [] : [{ name: "value", valueKind: "value" }],
+      storageKey: classPrivateFieldStorageKey(className, functionName),
+      functionName,
+      slotName: classPrivateFunctionSlotName(className, functionName)
+    };
+  };
+  const map = new Map<string, ClassPrivateAccessorInfo>();
+  for (const entry of members.privateGetAccessors) {
+    map.set(entry.name, { ...map.get(entry.name), getter: half(entry.name, true) });
+  }
+  for (const entry of members.privateSetAccessors) {
+    map.set(entry.name, { ...map.get(entry.name), setter: half(entry.name, false) });
+  }
+  return map;
+}
+
+/** Every private function a class's instances hold as elements, methods before accessors. */
+export function classPrivateFunctions(info: ClassInfo): readonly ClassPrivateFunctionInfo[] {
+  const accessorHalves = [...info.privateAccessors.values()]
+    .flatMap((accessor) => [accessor.getter, accessor.setter])
+    .filter((half): half is ClassPrivateFunctionInfo => half !== undefined);
+  return [...info.privateMethods.values(), ...accessorHalves];
 }
 /** The two prototype-chain operations a derived class needs, or a refusal. */
 export function lowerClassInheritanceOperations(
@@ -269,6 +347,7 @@ export function classMethodEntries(
 ): readonly (readonly [readonly ClassMethodEntry[], boolean])[] {
   return [
     [members.methodDeclarations, false],
+    [members.privateMethodDeclarations, false],
     [members.staticMethodDeclarations, true]
   ];
 }
@@ -278,7 +357,9 @@ export function classAccessorEntries(
 ): readonly (readonly [readonly ClassAccessorEntry[], boolean])[] {
   return [
     [members.getAccessors, true],
-    [members.setAccessors, false]
+    [members.privateGetAccessors, true],
+    [members.setAccessors, false],
+    [members.privateSetAccessors, false]
   ];
 }
 export function literalStaticFieldNames(staticFields: readonly ClassFieldInfo[]): ReadonlySet<string> {
@@ -379,6 +460,9 @@ export interface CollectedClassMembers {
   readonly iteratorMethod: ts.MethodDeclaration | undefined;
   readonly parameterProperties: readonly string[];
   readonly privateFields: ReadonlyMap<string, string>;
+  readonly privateMethodDeclarations: readonly ClassMethodEntry[];
+  readonly privateGetAccessors: readonly ClassAccessorEntry[];
+  readonly privateSetAccessors: readonly ClassAccessorEntry[];
 }
 // eslint-disable-next-line complexity, max-statements -- Class member classification keeps mutually exclusive syntax forms in declaration order.
 export function collectClassMembers(
@@ -396,6 +480,9 @@ export function collectClassMembers(
   const getAccessors: ClassAccessorEntry[] = [];
   const setAccessors: ClassAccessorEntry[] = [];
   const privateFields = new Map<string, string>();
+  const privateMethodDeclarations: ClassMethodEntry[] = [];
+  const privateGetAccessors: ClassAccessorEntry[] = [];
+  const privateSetAccessors: ClassAccessorEntry[] = [];
   let constructorDeclaration: ts.ConstructorDeclaration | undefined;
   const parameterProperties: string[] = [];
   let iteratorMethod: ts.MethodDeclaration | undefined;
@@ -407,6 +494,10 @@ export function collectClassMembers(
     if (ts.isMethodDeclaration(member) && member.body === undefined) {
       continue;
     }
+    // A stray `;` and an index signature declare nothing that runs.
+    if (ts.isSemicolonClassElement(member) || ts.isIndexSignatureDeclaration(member)) {
+      continue;
+    }
     if (ts.isPropertyDeclaration(member) && ts.isPrivateIdentifier(member.name)) {
       // Instance private fields join the ordinary field list (under a
       // class-mangled key) so they initialize in declaration order. Static
@@ -416,7 +507,7 @@ export function collectClassMembers(
       }
       const storageKey = classPrivateFieldStorageKey(slotPrefix, member.name.text);
       privateFields.set(member.name.text, storageKey);
-      fields.push({ key: { kind: "literal", name: storageKey }, initializer: member.initializer });
+      fields.push({ key: { kind: "literal", name: storageKey }, initializer: member.initializer, privateName: member.name.text });
     } else if (ts.isPropertyDeclaration(member)) {
       const key = classMemberKeyOf(member.name, bindings, computedKeys, slotPrefix);
       if (key === undefined) {
@@ -433,6 +524,21 @@ export function collectClassMembers(
         if (ts.isIdentifier(parameter.name) && isParameterProperty(parameter)) {
           parameterProperties.push(parameter.name.text);
         }
+      }
+    } else if ((ts.isMethodDeclaration(member) || ts.isAccessor(member)) && ts.isPrivateIdentifier(member.name)) {
+      if (classMemberHasStaticModifier(member)) {
+        return unsupportedIn("Static private methods and accessors are not supported yet");
+      }
+      if (member.body === undefined) {
+        return unsupportedIn("A private accessor without a body is not supported");
+      }
+      const entry = { name: member.name.text, declaration: member };
+      if (ts.isGetAccessorDeclaration(member)) {
+        privateGetAccessors.push({ name: entry.name, declaration: member });
+      } else if (ts.isSetAccessorDeclaration(member)) {
+        privateSetAccessors.push({ name: entry.name, declaration: member });
+      } else {
+        privateMethodDeclarations.push({ name: entry.name, declaration: member });
       }
     } else if (ts.isMethodDeclaration(member) && member.body !== undefined && isSymbolIteratorPropertyName(member.name, bindings)) {
       if (classMemberHasStaticModifier(member)) {
@@ -487,7 +593,10 @@ export function collectClassMembers(
     setAccessors,
     iteratorMethod,
     parameterProperties,
-    privateFields
+    privateFields,
+    privateMethodDeclarations,
+    privateGetAccessors,
+    privateSetAccessors
   });
 }
 /**
@@ -501,11 +610,11 @@ export function classMemberRefusalReason(member: ts.ClassElement): string {
   if (ts.isConstructorDeclaration(member)) {
     return "An overloaded constructor is not supported yet; only the implementation is lowered";
   }
-  if (member.name === undefined) {
-    return "Index signatures and construct signatures are not supported in a class yet";
+  if (ts.isClassStaticBlockDeclaration(member)) {
+    return "Static initialization blocks are not supported yet";
   }
-  if (ts.isPrivateIdentifier(member.name)) {
-    return "Private class methods and accessors are not supported yet";
+  if (member.name === undefined) {
+    return "This class member form is not supported yet";
   }
   if ((ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) && classMemberHasStaticModifier(member)) {
     return "Static accessors are not supported yet";
@@ -550,24 +659,21 @@ export function hasUnconstrainedTypeParameter(parameter: ts.ParameterDeclaration
   return type !== undefined && ts.isTypeReferenceNode(type) && ts.isIdentifier(type.typeName);
 }
 /**
- * The runtime parameters of a class member, or the reason it has none this build can place.
+ * A class member's parameters as its call sites see them, or the reason it has none this build can
+ * place.
  *
- * A class member's parameter list becomes an LLVM function signature with one slot per parameter, so
- * a parameter with no fixed shape has no slot: a rest parameter is a different calling convention, an
- * optional or defaulted one needs a slot filled at the call site, and a destructuring or
- * parameter-property one has no name to give the slot. Those are five different omissions that all
- * used to be one string, and the reason is what a user needs in order to know which one they wrote.
+ * Collection runs before any member is lowered, so this is the signature without its defaults: a
+ * parameter that is optional or has a default may be omitted, and the call site passes `undefined`
+ * into its slot. The member's own function lowers its defaults and destructuring patterns with
+ * `lowerFunctionParameters`, which names every slot as `parameterSlotName` does here.
  */
 export function classCallableParameters(
   declaration: ts.ConstructorDeclaration | ts.MethodDeclaration | ts.AccessorDeclaration
 ): Produced<readonly JsIrFunctionParameter[]> {
   const parameters: JsIrFunctionParameter[] = [];
-  for (const param of runtimeParameters(declaration.parameters)) {
+  for (const [index, param] of runtimeParameters(declaration.parameters).entries()) {
     if (param.dotDotDotToken !== undefined) {
       return unsupportedIn("Rest parameters are not supported on class members yet");
-    }
-    if (param.initializer !== undefined) {
-      return unsupportedIn("Parameters with defaults are not supported on class members yet");
     }
     // An accessibility or `readonly` modifier declares a field, which the constructor stores onto
     // `this`; it is not an error and it is not a second argv slot. Any other modifier on a parameter
@@ -575,19 +681,19 @@ export function classCallableParameters(
     if ((ts.getModifiers(param)?.length ?? 0) > 0 && !isParameterProperty(param)) {
       return unsupportedIn("This modifier on a class member parameter is not supported yet");
     }
-    if (!ts.isIdentifier(param.name)) {
-      return unsupportedIn("Destructuring parameters are not supported on class members yet");
-    }
-    // `x?: T` reaches here only without an initializer — the check above refuses those — so it is
-    // omittable, and the call site passes `undefined` into the slot rather than shifting the rest.
-    const valueKind = parameterValueKind(param);
-    if (param.questionToken === undefined) {
-      parameters.push({ name: param.name.text, valueKind });
+    const name = parameterSlotName(param, index);
+    if (param.questionToken !== undefined || param.initializer !== undefined) {
+      parameters.push({ name, valueKind: "value", isOptional: true });
     } else {
-      parameters.push({ name: param.name.text, valueKind, isOptional: true });
+      parameters.push({ name, valueKind: ts.isIdentifier(param.name) ? parameterValueKind(param) : "value" });
     }
   }
   return produced(parameters);
+}
+
+/** The argv slot a parameter binds: its own name, or a private name for a destructuring pattern. */
+export function parameterSlotName(parameter: ts.ParameterDeclaration, index: number): string {
+  return ts.isIdentifier(parameter.name) ? parameter.name.text : `__param${index}`;
 }
 // Resolves a static field read `C.x` to a property access on the class's
 // module-level static storage slot. Returns undefined when the receiver is not a
@@ -632,13 +738,19 @@ export function findClassInChain(
   return undefined;
 }
 // Determines the class of a method-call receiver. Directly-known instances
-// (`new C()`) resolve via the registry; named-variable receivers resolve through
-// the TypeScript checker.
+// (`new C()`) resolve via the registry; `this` in a constructor or instance member resolves to the
+// enclosing class; named-variable receivers resolve through their binding or the TypeScript checker,
+// and element, property and call receivers resolve through the checker alone.
 export function resolveReceiverClass(
   context: LoweringContext,
   receiver: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): ClassInfo | undefined {
+  // `this` is an instance of the enclosing class or one of its subclasses. The static class is the
+  // enclosing one; a subclass instance is exactly what makes the call dispatch at runtime.
+  if (receiver.kind === ts.SyntaxKind.ThisKeyword) {
+    return context.classThisInScope ? context.activeEnclosingClass : undefined;
+  }
   if (ts.isNewExpression(receiver) && ts.isIdentifier(receiver.expression) && !bindings.has(receiver.expression.text)) {
     return context.classes.get(receiver.expression.text);
   }
@@ -654,14 +766,28 @@ export function resolveReceiverClass(
       return context.classes.get(binding.className);
     }
   }
+  return checkerReceiverClass(context, receiver);
+}
+/**
+ * The class a receiver's static type names, or `undefined` when the checker names none.
+ *
+ * Only expressions with a type of their own qualify: an identifier, an element or property read, or
+ * a call result. Anything else reaching here (`this` and `new` are claimed above) has no static
+ * class this tier can dispatch on.
+ */
+function checkerReceiverClass(context: LoweringContext, receiver: ts.Expression): ClassInfo | undefined {
   const { typeChecker } = context;
-  if (ts.isIdentifier(receiver) && typeChecker !== undefined) {
-    const symbol = typeChecker.getTypeAtLocation(receiver).getSymbol();
-    if (symbol !== undefined) {
-      return context.classes.get(symbol.getName());
-    }
+  if (typeChecker === undefined) {
+    return undefined;
   }
-  return undefined;
+  if (!ts.isIdentifier(receiver) && !ts.isElementAccessExpression(receiver) && !ts.isPropertyAccessExpression(receiver) && !ts.isCallExpression(receiver)) {
+    return undefined;
+  }
+  const symbol = typeChecker.getTypeAtLocation(receiver).getSymbol();
+  if (symbol === undefined) {
+    return undefined;
+  }
+  return context.classes.get(symbol.getName());
 }
 export function isPlainObjectReturningConstructor(declaration: ts.FunctionDeclaration): boolean {
   if (declaration.body === undefined || containsLexicalThis(declaration.body)) {

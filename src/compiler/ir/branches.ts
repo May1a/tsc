@@ -1,9 +1,9 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, loweredOperation, loweredPayload, produced, unsupported, withRefusal } from "./lowered.js";
+import { type Lowered, loweredOperation, loweredPayload, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerStatementBody, lowerStatementList } from "./statement-lists.js";
-import { unsupportedStatementMessage } from "./diagnostics.js";
+import { expressionSnippet, unsupportedStatementMessage } from "./diagnostics.js";
 import type { JsIrSwitchClause, JsIrValueExpression } from "./expressions.js";
 import { updateBindings } from "./binding-updates.js";
 
@@ -14,7 +14,7 @@ export function lowerIfStatement(
 ): Lowered {
   const condition = context.lowerConditionExpression(context, statement.expression, bindings);
   if (condition.kind !== "lowered") {
-    return condition;
+    return withRefusal(condition, unsupportedIn(`An \`if\` condition must be an expression this build can evaluate: \`${expressionSnippet(statement.expression)}\``));
   }
 
   const thenOperationsResult = lowerStatementBody(context, statement.thenStatement, bindings);

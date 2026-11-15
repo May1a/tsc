@@ -10,6 +10,7 @@ import { containsLexicalThis } from "./class-info.js";
 import { functionFrameBindings } from "./function-parameters.js";
 import { functionReturnKind } from "./binding-updates.js";
 import { lowerBlockStatements } from "./statement-lists.js";
+import { collectFunctionExpressionCaptureNames, lowerInlineFunctionCaptures } from "./captures.js";
 
 const arrayReduceMethodByDirection: Readonly<Record<"left" | "right", "reduce" | "reduceRight">> = {
   left: "reduce",
@@ -220,6 +221,18 @@ function lowerInlineArrayCallbackFunctionObject(
     }
     parameters.push({ name: parameter.name.text, valueKind: "value" });
     callbackBindings.set(parameter.name.text, { kind: "valueVariable", name: parameter.name.text });
+  }
+  const localNames = new Set<string>(parameters.map((parameter) => parameter.name));
+  if (callbackKind === "ordinary") {
+    localNames.add(CLASS_THIS_NAME);
+  }
+  const outerCaptureNames = collectFunctionExpressionCaptureNames(callback, localNames, bindings);
+  const outerCaptures = lowerInlineFunctionCaptures(outerCaptureNames, bindings);
+  if (outerCaptures === undefined) {
+    return notApplicable;
+  }
+  for (const capture of outerCaptures) {
+    captures.push(capture);
   }
   const body = lowerInlineFunctionBody(context, callback.body, callbackBindings);
   if (body.kind !== "lowered") {

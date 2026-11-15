@@ -1,4 +1,5 @@
-import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
+import { constWriteRefusal } from "./throwing-forms.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
@@ -49,6 +50,11 @@ export function lowerNumberExpression(
       return produced({ kind: "literal", value: Number.POSITIVE_INFINITY });
     }
     const binding = bindings.get(expression.text);
+    if (binding?.kind === "valueVariable" && isNumberTyped(context, expression)) {
+      // A boxed binding the checker proves holds a number here, such as a `let` that also holds
+      // `null` elsewhere, after narrowing. Unboxing it cannot coerce anything.
+      return produced({ kind: "valueToNumber", value: { kind: "variable", name: expression.text } });
+    }
     if (binding?.kind !== "number") {
       return notApplicable;
     }
@@ -116,6 +122,10 @@ export function lowerNumberExpression(
     return produced(collectionSize);
   }
 
+  if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.PlusToken) {
+    return unsupportedIn("Unary `+` expressions are not supported yet");
+  }
+
   if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.MinusToken) {
     const value = context.lowerNumberExpression(context, expression.operand, bindings);
     if (value.kind !== "lowered") {
@@ -137,6 +147,10 @@ export function lowerNumberExpression(
     return produced({ kind: "unary", operator: "bitNot", value: value.operation });
   }
 
+  const constWrite = constWriteRefusal(context.typeChecker, expression);
+  if (constWrite !== undefined) {
+    return unsupportedIn(constWrite);
+  }
   const update = lowerUpdateNumberExpression(expression, bindings);
   if (update !== undefined) {
     return produced(update);
@@ -281,6 +295,15 @@ function lowerNumberCallExpression(
   if (isPlannedBuiltinCall(expression.expression, bindings)) {
     return notApplicable;
   }
+  // A call through a boxed callee returns a number only when its static type says so. `any` and
+  // `unknown` say nothing, and claiming such a call here would coerce a string or object result to
+  // NaN in number-first contexts like `print`, so the value tier keeps it. A call to a declared
+  // function is still claimed under `any`: its return kind is known, and the checker reports a
+  // recursive call inside an unannotated function as `any`.
+  const boxedResultIsNumber = callType === undefined || (callType.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0;
+  if (!boxedResultIsNumber && isBoxedCallee(expression, bindings)) {
+    return notApplicable;
+  }
   const spreadCall = lowerSpreadCallValue(context, expression, bindings);
   if (spreadCall.kind === "unsupported") {
     return spreadCall;
@@ -294,12 +317,15 @@ function lowerNumberCallExpression(
       return calleeValueResult;
     }
     const calleeValue = loweredPayload(calleeValueResult);
-    const dynamicArgsResult = lowerValueCallArguments(context, expression.arguments, bindings);
+    const dynamicArgsResult = lowerValueCallArguments(context, expression.arguments, bindings, expression.expression.getText());
     if (dynamicArgsResult.kind === "unsupported") {
       return dynamicArgsResult;
     }
     const dynamicArgs = loweredPayload(dynamicArgsResult);
     if (calleeValue === undefined || dynamicArgs === undefined) {
+      if (calleeValue !== undefined && dynamicArgsResult.kind !== "lowered") {
+        return withRefusal(dynamicArgsResult, unsupportedIn(`Arguments to \`${expression.expression.getText()}\` must be expressions this build can evaluate`));
+      }
       return notApplicable;
     }
     const callThisValueResult = lowerCallThisValue(context, expression.expression, bindings);
@@ -320,12 +346,15 @@ function lowerNumberCallExpression(
       return calleeValueResult2;
     }
     const calleeValue = loweredPayload(calleeValueResult2);
-    const dynamicArgsResult2 = lowerValueCallArguments(context, expression.arguments, bindings);
+    const dynamicArgsResult2 = lowerValueCallArguments(context, expression.arguments, bindings, expression.expression.getText());
     if (dynamicArgsResult2.kind === "unsupported") {
       return dynamicArgsResult2;
     }
     const dynamicArgs = loweredPayload(dynamicArgsResult2);
     if (calleeValue === undefined || dynamicArgs === undefined) {
+      if (calleeValue !== undefined && dynamicArgsResult2.kind !== "lowered") {
+        return withRefusal(dynamicArgsResult2, unsupportedIn(`Arguments to \`${expression.expression.getText()}\` must be expressions this build can evaluate`));
+      }
       return notApplicable;
     }
     const callThisValueResult2 = lowerCallThisValue(context, expression.expression, bindings);
@@ -355,4 +384,22 @@ function lowerNumberCallExpression(
   }
 
   return produced({ kind: "call", name, arguments: args });
+}
+
+/**
+ * Whether a call's result comes back boxed from a callee the lowering cannot see into: any callee
+ * other than an identifier, a binding that holds a boxed value, or a call with spread arguments.
+ */
+function isBoxedCallee(expression: ts.CallExpression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean {
+  if (!ts.isIdentifier(expression.expression) || expression.arguments.some(ts.isSpreadElement)) {
+    return true;
+  }
+  const callee = bindings.get(expression.expression.text);
+  return callee?.kind === "value" || callee?.kind === "valueVariable";
+}
+
+/** Whether the checker gives an expression a number type at its location, after narrowing. */
+function isNumberTyped(context: LoweringContext, expression: ts.Expression): boolean {
+  const type = context.typeChecker?.getTypeAtLocation(expression);
+  return type !== undefined && (type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0;
 }

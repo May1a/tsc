@@ -114,7 +114,7 @@ export class Resolution {
 
   /** Declares `name` in the current scope and returns its identity. */
   public declare(name: string, kind: BindingKind, representation: BindingRepresentation): BindingRef {
-    const reference = this.#registry.mint(name, kind, representation, this.#owner());
+    const reference = this.#registry.mint(name, kind, representation, this.#owner(), this.#insideLoop());
     this.#requireInnermost().set(name, reference);
     return reference;
   }
@@ -203,6 +203,23 @@ export class Resolution {
   #owner(): LexicalOwner {
     const current = this.#function;
     return current === undefined ? { kind: "module" } : { kind: "function", function: current };
+  }
+
+  /**
+   * Whether the declaration site sits inside a loop body of the function that owns it.
+   *
+   * A loop scope between the declaration and its function means the declaration may execute once
+   * per iteration, which is what marks its binding per-iteration. The walk stops at the owning
+   * function: a loop around the function's definition does not repeat a declaration within one
+   * call, and every call already allocates its own frame.
+   */
+  #insideLoop(): boolean {
+    for (let scope = this.#scope; scope !== undefined && scope.kind !== "function"; scope = scope.parent) {
+      if (scope.kind === "loop") {
+        return true;
+      }
+    }
+    return false;
   }
 
   #markCapture(reference: BindingRef): void {

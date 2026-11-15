@@ -59,6 +59,13 @@ export const numbersContracts = {
     name: "numberToExponential", parameters: [llvm.double, llvm.double], returns: llvm.struct([llvm.ptr, llvm.i64]), variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "numberToShortestString": {
+    resultKind: "string",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "numberToShortestString", parameters: [llvm.double], returns: llvm.struct([llvm.ptr, llvm.i64]), variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
   "numberToStringRadix": {
     resultKind: "string",
     pointerResult: { kind: "none" },

@@ -6,8 +6,10 @@ import { arrayAccess, arrayAt, arrayIncludes, arrayRemove, boxedMethod, boxedPri
 import { coalesce, lazyDefault, logical, optionalChain, ternary } from "./value-branches.js";
 import { jsonParse, jsonStringify, regexCompile, regexMatch, stringCodeUnit, stringIndex, stringPredicate } from "./value-builtins.js";
 import { callValue, newInstance } from "./value-invocations.js";
-import { type ValueNode, arrayPointer, keep, numericValue, property, undefinedValue } from "./value-support.js";
+import { type ValueNode, arrayPointer, keep, numericValue, property, stringValue, undefinedValue } from "./value-support.js";
 import { numberIndex } from "./numbers.js";
+import { errorClassId } from "./error-classes.js";
+import { llvm } from "../llvm-ir/index.js";
 
 type ValueVariants = { readonly [K in ResolvedValueExpression["kind"]]: ValueNode<K> };
 
@@ -27,7 +29,8 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   valuePlus: (expression, context) => {
     const left = keep(context.expressions.value(expression.left), context);
     const right = keep(context.expressions.value(expression.right), context);
-    return context.runtime.callBoxed("valuePlus", [left, right], context.cursor.uniqueName("value.plus"));
+    return keep(context.runtime.callWithCompletion("valuePlus", [left, right], context.cursor.uniqueName("value.plus"),
+      context.exceptionTarget()), context);
   },
   boxedMethodCall: boxedMethod,
   boxedPrimitive,
@@ -68,6 +71,10 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   nullishCoalesce: coalesce,
   optionalChain,
   optionalTarget: (_expression, context) => context.optional.current(),
+  unresolvableReference: (expression, context) => context.runtime.callWithCompletion("errorThrowReference",
+    [stringValue(expression.message, context)], context.cursor.uniqueName("reference.error"), context.exceptionTarget()),
+  errorConstructor: (expression, context) => context.runtime.callBoxed("errorConstructorValue",
+    [context.cursor.currentBlock().int(llvm.i64, BigInt(errorClassId(expression.errorName)))], context.cursor.uniqueName("error.constructor")),
   void: (expression, context) => {
     context.expressions.value(expression.expression);
     return undefinedValue(context);

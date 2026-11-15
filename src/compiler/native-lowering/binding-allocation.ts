@@ -1,3 +1,4 @@
+import { createBindingCell } from "./binding-cell.js";
 import type { BindingDeclaration } from "../binding-resolution/index.js";
 import { type LlvmValue, llvm } from "../llvm-ir/index.js";
 import type { BindingStorage, FixedObjectStorage } from "./binding-storage.js";
@@ -5,15 +6,14 @@ import type { FunctionCapabilities } from "./function-owner.js";
 import type { GlobalBlueprint, ObjectLayout } from "./module-bindings.js";
 
 export function allocateBinding(declaration: BindingDeclaration, layout: ObjectLayout | undefined, capabilities: FunctionCapabilities): BindingStorage {
-  const { cursor, runtime, values, roots } = capabilities;
+  const { cursor, values } = capabilities;
   const block = cursor.currentBlock();
   const name = `binding.${declaration.id.ordinal}`;
   if (declaration.storage.location.kind === "environment") {
-    const cell = runtime.callPointer("environmentNew", [block.int(llvm.i64, 1n)], `${name}.cell`);
-    const owner = values.forBlock(block).boxReference("object", cell);
-    roots.push(owner);
-    runtime.callVoid("environmentSet", [cell, block.int(llvm.i64, 0n), values.forBlock(block).immediate("undefined")]);
-    return { kind: "environment", cell, owner };
+    if (declaration.perIteration) {
+      return allocateRenewableCell(name, capabilities);
+    }
+    return createBindingCell(capabilities, values.forBlock(block).immediate("undefined"), false, `${name}.cell`);
   }
   const {representation} = declaration.storage;
   switch (representation.kind) {
@@ -55,6 +55,27 @@ function allocateRootSlot(name: string, capabilities: FunctionCapabilities): Llv
   return slot;
 }
 
+/**
+ * The slots behind a per-iteration environment cell, with an initial cell already stored.
+ *
+ * Both slots live in the entry block so every later block can load the current cell. Rooting the
+ * owner slot (rather than the initial owner value) keeps whatever cell is current alive: renewal
+ * replaces the slot contents, and previously captured cells stay alive through the closures that
+ * captured them. Module scope materializes the same shape over globals instead (see
+ * `materializeGlobal`).
+ */
+function allocateRenewableCell(name: string, capabilities: FunctionCapabilities): BindingStorage {
+  const { cursor, values, roots } = capabilities;
+  const block = cursor.currentBlock();
+  const cellSlot = block.alloca(llvm.ptr, `${name}.cell.slot`);
+  const ownerSlot = block.alloca(llvm.i64, `${name}.owner.slot`);
+  const { cell, owner } = createBindingCell(capabilities, values.forBlock(block).immediate("undefined"), false, `${name}.cell`);
+  block.store(cell, cellSlot);
+  block.store(owner, ownerSlot);
+  roots.pushSlot(ownerSlot);
+  return { kind: "environmentSlot", cellSlot, ownerSlot };
+}
+
 export function materializeGlobal(global: GlobalBlueprint, capabilities: FunctionCapabilities): BindingStorage {
   const block = capabilities.cursor.currentBlock();
   switch (global.kind) {
@@ -68,6 +89,8 @@ export function materializeGlobal(global: GlobalBlueprint, capabilities: Functio
       lengthSlot: block.globalPointer(global.length), ownerSlot: block.globalPointer(global.owner) };
     }
     case "fixedArray": { return { kind: "fixedArray", slot: block.globalPointer(global.global), length: global.length };
+    }
+    case "environmentCell": { return { kind: "environmentSlot", cellSlot: block.globalPointer(global.cell), ownerSlot: block.globalPointer(global.owner) };
     }
     case "fixedObject": { return { kind: "fixedObject", shadowed: global.shadowed, shadowSlot: block.globalPointer(global.shadow),
       fields: global.fields.map((field) => {

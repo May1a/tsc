@@ -40,29 +40,124 @@ object:
   %result = call i64 @objectGet(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
   ret i64 %result
 }
-define void @valueObjectSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored) {
+@.object.set.nullish.msg = private unnamed_addr constant [43 x i8] c"Cannot set properties of undefined or null\00"
+@.object.set.primitive.msg = private unnamed_addr constant [44 x i8] c"Cannot create property on a primitive value\00"
+@.object.delete.nullish.msg = private unnamed_addr constant [43 x i8] c"Cannot convert undefined or null to object\00"
+define { i64, i1 } @valueObjectSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored) {
 entry:
-  %object = call ptr @valueObjectPtr(i64 %value)
-  call void @objectSet(ptr %object, i64 %key.len, ptr %key.ptr, i64 %stored)
-  ret void
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %value)
+  call void @gcRootPush(i64 %stored)
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  br i1 %is.undefined, label %nullish, label %check.null
+check.null:
+  %is.null = icmp eq i64 %value, 9222246136947933187
+  br i1 %is.null, label %nullish, label %check.object
+nullish:
+  %nullish.message = call i64 @valueBoxString(ptr @.object.set.nullish.msg, i64 42)
+  %nullish.error = call { i64, i1 } @iteratorTypeError(i64 %nullish.message)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %nullish.error
+check.object:
+  %tag = and i64 %value, -281474976710656
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  br i1 %is.object, label %object, label %check.function
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %object.result = call { i64, i1 } @objectPropertySet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %object.result
+check.function:
+  %is.function = icmp eq i64 %tag, 9221964661971222528
+  br i1 %is.function, label %function, label %check.array
+function:
+  %function.result = call { i64, i1 } @functionObjectSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored)
+  %function.failed = extractvalue { i64, i1 } %function.result, 1
+  br i1 %function.failed, label %propagate, label %success
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %primitive
+array:
+  %is.length.length = icmp eq i64 %key.len, 6
+  br i1 %is.length.length, label %array.length.compare, label %array.keyed
+array.length.compare:
+  %length.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.desc.length, i64 6)
+  %is.length = icmp eq i32 %length.cmp, 0
+  br i1 %is.length, label %array.length, label %array.keyed
+array.length:
+  %length.array = call ptr @valueArrayPtr(i64 %value)
+  %length.number = call double @valueToNumber(i64 %stored)
+  %length.i = call i64 @numberToIndex(double %length.number)
+  call void @arraySetLength(ptr %length.array, i64 %length.i)
+  br label %success
+array.keyed:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %array.index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %is.named = icmp slt i64 %array.index, 0
+  br i1 %is.named, label %array.named, label %array.element
+array.element:
+  call void @arraySet(ptr %array.ptr, i64 %array.index, i64 %stored)
+  br label %success
+array.named:
+  call void @arraySetNamed(ptr %array.ptr, i64 %key.len, ptr %key.ptr, i64 %stored)
+  br label %success
+primitive:
+  %primitive.message = call i64 @valueBoxString(ptr @.object.set.primitive.msg, i64 43)
+  %primitive.error = call { i64, i1 } @iteratorTypeError(i64 %primitive.message)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %primitive.error
+propagate:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %function.result
+success:
+  call void @gcRootRestore(i64 %frame)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }
-define void @valueObjectDelete(i64 %value, i64 %key.len, ptr %key.ptr) {
+define { i64, i1 } @valueObjectDelete(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  br i1 %is.undefined, label %nullish, label %check.null
+check.null:
+  %is.null = icmp eq i64 %value, 9222246136947933187
+  br i1 %is.null, label %nullish, label %check.object
+nullish:
+  %nullish.message = call i64 @valueBoxString(ptr @.object.delete.nullish.msg, i64 42)
+  %nullish.error = call { i64, i1 } @iteratorTypeError(i64 %nullish.message)
+  ret { i64, i1 } %nullish.error
+check.object:
   %tag = and i64 %value, -281474976710656
   %is.object = icmp eq i64 %tag, 9221120237041090560
   br i1 %is.object, label %object, label %check.function
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   call void @objectDelete(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
-  ret void
+  br label %success
 check.function:
   %is.function = icmp eq i64 %tag, 9221964661971222528
-  br i1 %is.function, label %function, label %done
+  br i1 %is.function, label %function, label %check.array
 function:
   call void @functionObjectDelete(i64 %value, i64 %key.len, ptr %key.ptr)
-  ret void
-done:
-  ret void
+  br label %success
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %success
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %array.index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %is.named = icmp slt i64 %array.index, 0
+  br i1 %is.named, label %array.named, label %array.element
+array.element:
+  call void @arrayDelete(ptr %array.ptr, i64 %array.index)
+  br label %success
+array.named:
+  call void @arrayDeleteNamed(ptr %array.ptr, i64 %key.len, ptr %key.ptr)
+  br label %success
+success:
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }
 define i1 @valueObjectHasOwn(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
@@ -118,6 +213,56 @@ array.has.index:
   ret i1 %array.has
 missing:
   ret i1 false
+}
+; `Object.prototype.hasOwnProperty.call(value, key)`, once the key is a string. ToObject throws on
+; undefined and null. A string owns its `length` and its indices, and an array owns its `length`,
+; its present indices and its named properties.
+define { i64, i1 } @valueHasOwnProperty(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %coercible = call { i64, i1 } @requireObjectCoercible(i64 %value)
+  %exception = extractvalue { i64, i1 } %coercible, 1
+  br i1 %exception, label %refused, label %check.string
+refused:
+  ret { i64, i1 } %coercible
+check.string:
+  %is.string = call i1 @valueIsString(i64 %value)
+  br i1 %is.string, label %string, label %check.array
+string:
+  %string.property = call i64 @stringPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  %string.has = icmp ne i64 %string.property, 9222246136947933184
+  br label %answer
+check.array:
+  %is.array = call i1 @valueIsArray(i64 %value)
+  br i1 %is.array, label %array, label %other
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %maybe.length = icmp eq i64 %key.len, 6
+  br i1 %maybe.length, label %array.length.compare, label %array.index
+array.length.compare:
+  %length.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.array.desc.length, i64 6)
+  %is.length = icmp eq i32 %length.cmp, 0
+  br i1 %is.length, label %answer, label %array.index
+array.index:
+  %index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %is.index = icmp sge i64 %index, 0
+  br i1 %is.index, label %array.element, label %array.named
+array.element:
+  %element.has = call i1 @arrayHasOwnIndex(ptr %array.ptr, i64 %index)
+  br label %answer
+array.named:
+  %properties.slot = getelementptr i8, ptr %array.ptr, i64 32
+  %properties = load ptr, ptr %properties.slot
+  %named.has = call i1 @objectHasOwn(ptr %properties, i64 %key.len, ptr %key.ptr)
+  br label %answer
+other:
+  %other.has = call i1 @valueObjectHasOwn(i64 %value, i64 %key.len, ptr %key.ptr)
+  br label %answer
+answer:
+  %has = phi i1 [ %string.has, %string ], [ true, %array.length.compare ], [ %element.has, %array.element ], [ %named.has, %array.named ], [ %other.has, %other ]
+  %boxed = select i1 %has, i64 9222246136947933186, i64 9222246136947933185
+  %result.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %result = insertvalue { i64, i1 } %result.0, i1 false, 1
+  ret { i64, i1 } %result
 }
 define ptr @valueObjectKeys(i64 %value) {
 entry:
@@ -253,6 +398,13 @@ empty:
 }
 define ptr @objectNew(i64 %capacity) {
 entry:
+  %prototype = call ptr @objectDefaultPrototype()
+  %object = call ptr @objectCreateWithCapacity(ptr %prototype, i64 %capacity)
+  ret ptr %object
+}
+
+define ptr @objectCreateWithCapacity(ptr %prototype, i64 %capacity) {
+entry:
   %entries.bytes = mul i64 %capacity, 32
   %cell = call ptr @gcAlloc(i64 2, i64 64)
   %object = getelementptr i8, ptr %cell, i64 8
@@ -265,12 +417,97 @@ entry:
   %shape.version.slot = getelementptr i8, ptr %object, i64 24
   store i64 0, ptr %shape.version.slot
   %prototype.slot = getelementptr i8, ptr %object, i64 32
-  store ptr null, ptr %prototype.slot
+  store ptr %prototype, ptr %prototype.slot
   %flags.slot = getelementptr i8, ptr %object, i64 40
   store i64 1, ptr %flags.slot
   %class.slot = getelementptr i8, ptr %object, i64 48
   store i64 0, ptr %class.slot
+  %private.slot = getelementptr i8, ptr %object, i64 56
+  store ptr null, ptr %private.slot
   ret ptr %object
+}
+
+; Private elements (`#x`) live in a table of their own at payload offset 56, created on the first
+; add, so no property enumeration, reflection or copy ever reaches them. Every read, write and add
+; first checks the receiver's brand: it must be an object that already holds the element, or for an
+; add one that does not yet. A failed check throws a TypeError with the compiler's message.
+define ptr @objectPrivateTable(i64 %value) {
+entry:
+  %is.object = call i1 @valueIsObject(i64 %value)
+  br i1 %is.object, label %object, label %none
+object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %table.slot = getelementptr i8, ptr %object.ptr, i64 56
+  %table = load ptr, ptr %table.slot
+  ret ptr %table
+none:
+  ret ptr null
+}
+define i1 @valuePrivateHas(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %table = call ptr @objectPrivateTable(i64 %value)
+  %has.table = icmp ne ptr %table, null
+  br i1 %has.table, label %lookup, label %absent
+lookup:
+  %has = call i1 @objectHasOwn(ptr %table, i64 %key.len, ptr %key.ptr)
+  ret i1 %has
+absent:
+  ret i1 false
+}
+define { i64, i1 } @valuePrivateGet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %message) {
+entry:
+  %branded = call i1 @valuePrivateHas(i64 %value, i64 %key.len, ptr %key.ptr)
+  br i1 %branded, label %read, label %unbranded
+read:
+  %table = call ptr @objectPrivateTable(i64 %value)
+  %element = call i64 @objectGet(ptr %table, i64 %key.len, ptr %key.ptr)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %element, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+unbranded:
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+}
+define { i64, i1 } @valuePrivateSet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored, i64 %message) {
+entry:
+  %branded = call i1 @valuePrivateHas(i64 %value, i64 %key.len, ptr %key.ptr)
+  br i1 %branded, label %write, label %unbranded
+write:
+  %table = call ptr @objectPrivateTable(i64 %value)
+  call void @objectSet(ptr %table, i64 %key.len, ptr %key.ptr, i64 %stored)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+unbranded:
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+}
+define { i64, i1 } @valuePrivateAdd(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored, i64 %message) {
+entry:
+  %is.object = call i1 @valueIsObject(i64 %value)
+  br i1 %is.object, label %check, label %refused
+check:
+  %present = call i1 @valuePrivateHas(i64 %value, i64 %key.len, ptr %key.ptr)
+  br i1 %present, label %refused, label %table
+table:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %table.slot = getelementptr i8, ptr %object.ptr, i64 56
+  %existing = load ptr, ptr %table.slot
+  %has.table = icmp ne ptr %existing, null
+  br i1 %has.table, label %add, label %create
+create:
+  %created = call ptr @objectNew(i64 1)
+  store ptr %created, ptr %table.slot
+  br label %add
+add:
+  %target = phi ptr [ %existing, %table ], [ %created, %create ]
+  call void @objectSet(ptr %target, i64 %key.len, ptr %key.ptr, i64 %stored)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+refused:
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
 }
 define ptr @objectCreate(ptr %prototype) {
 entry:
@@ -950,8 +1187,21 @@ found:
   %enumerable.value = select i1 %enumerable.ok, i64 9222246136947933186, i64 9222246136947933185
   %configurable.value = select i1 %configurable.ok, i64 9222246136947933186, i64 9222246136947933185
   %desc = call ptr @objectNew(i64 4)
+  %accessor.bit = and i64 %flags, 8
+  %accessor = icmp ne i64 %accessor.bit, 0
+  br i1 %accessor, label %accessor.descriptor, label %data.descriptor
+accessor.descriptor:
+  %accessor.pointer = call ptr @valueObjectPtr(i64 %value)
+  %getter = call i64 @objectGet(ptr %accessor.pointer, i64 3, ptr @.accessor.get)
+  %setter = call i64 @objectGet(ptr %accessor.pointer, i64 3, ptr @.accessor.set)
+  call void @objectSet(ptr %desc, i64 3, ptr @.accessor.get, i64 %getter)
+  call void @objectSet(ptr %desc, i64 3, ptr @.accessor.set, i64 %setter)
+  br label %descriptor.attributes
+data.descriptor:
   call void @objectSet(ptr %desc, i64 5, ptr @.desc.value, i64 %value)
   call void @objectSet(ptr %desc, i64 8, ptr @.desc.writable, i64 %writable.value)
+  br label %descriptor.attributes
+descriptor.attributes:
   call void @objectSet(ptr %desc, i64 10, ptr @.desc.enumerable, i64 %enumerable.value)
   call void @objectSet(ptr %desc, i64 12, ptr @.desc.configurable, i64 %configurable.value)
   %boxed = call i64 @valueBoxObject(ptr %desc)
@@ -1330,4 +1580,137 @@ fill.advance:
   br label %fill.scan
 exit:
   ret ptr %array
+}
+
+@.accessor.get = private unnamed_addr constant [4 x i8] c"get\00"
+@.accessor.set = private unnamed_addr constant [4 x i8] c"set\00"
+
+; Accessor entries retain their getter and setter in a traced descriptor object, with flag bit 8.
+define void @objectDefineAccessor(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %owner = call i64 @valueBoxObject(ptr %object)
+  call void @gcRootPush(i64 %owner)
+  call void @gcRootPush(i64 %getter)
+  call void @gcRootPush(i64 %setter)
+  %descriptor = call ptr @objectCreateWithCapacity(ptr null, i64 2)
+  call void @objectSet(ptr %descriptor, i64 3, ptr @.accessor.get, i64 %getter)
+  call void @objectSet(ptr %descriptor, i64 3, ptr @.accessor.set, i64 %setter)
+  %boxed = call i64 @valueBoxObject(ptr %descriptor)
+  call void @objectDefineDataProperty(ptr %object, i64 %key.len, ptr %key.ptr, i64 %boxed, i64 12)
+  call void @gcRootRestore(i64 %frame)
+  ret void
+}
+
+; A borrowed property entry, including its flags, found along the actual prototype chain.
+define ptr @objectFindProperty(ptr %object, i64 %key.len, ptr %key.ptr) {
+entry:
+  br label %lookup
+lookup:
+  %current = phi ptr [ %object, %entry ], [ %prototype, %next.prototype ]
+  %is.null = icmp eq ptr %current, null
+  br i1 %is.null, label %missing, label %start
+start:
+  %count = load i64, ptr %current
+  %entries.slot = getelementptr i8, ptr %current, i64 16
+  %entries = load ptr, ptr %entries.slot
+  br label %scan
+scan:
+  %index = phi i64 [ 0, %start ], [ %next, %advance ]
+  %done = icmp eq i64 %index, %count
+  br i1 %done, label %next.prototype, label %check
+check:
+  %offset = mul i64 %index, 32
+  %property = getelementptr i8, ptr %entries, i64 %offset
+  %length = load i64, ptr %property
+  %same.length = icmp eq i64 %length, %key.len
+  br i1 %same.length, label %compare, label %advance
+compare:
+  %key.slot = getelementptr i8, ptr %property, i64 8
+  %key = load ptr, ptr %key.slot
+  %comparison = call i32 @memcmp(ptr %key, ptr %key.ptr, i64 %key.len)
+  %same.key = icmp eq i32 %comparison, 0
+  br i1 %same.key, label %found, label %advance
+advance:
+  %next = add i64 %index, 1
+  br label %scan
+next.prototype:
+  %prototype.slot = getelementptr i8, ptr %current, i64 32
+  %prototype = load ptr, ptr %prototype.slot
+  br label %lookup
+found:
+  ret ptr %property
+missing:
+  ret ptr null
+}
+
+define { i64, i1 } @objectPropertyGet(i64 %receiver, i64 %key.len, ptr %key.ptr) {
+entry:
+  %object = call ptr @valueObjectPtr(i64 %receiver)
+  %property = call ptr @objectFindProperty(ptr %object, i64 %key.len, ptr %key.ptr)
+  %missing = icmp eq ptr %property, null
+  br i1 %missing, label %absent, label %found
+found:
+  %value.slot = getelementptr i8, ptr %property, i64 16
+  %value = load i64, ptr %value.slot
+  %flags.slot = getelementptr i8, ptr %property, i64 24
+  %flags = load i64, ptr %flags.slot
+  %accessor.bit = and i64 %flags, 8
+  %accessor = icmp ne i64 %accessor.bit, 0
+  br i1 %accessor, label %get, label %data
+get:
+  %descriptor = call ptr @valueObjectPtr(i64 %value)
+  %getter = call i64 @objectGet(ptr %descriptor, i64 3, ptr @.accessor.get)
+  %undefined = icmp eq i64 %getter, 9222246136947933184
+  br i1 %undefined, label %no.getter, label %invoke
+invoke:
+  %result = call { i64, i1 } @jsCall(i64 %getter, i64 0, ptr null, i64 %receiver)
+  ret { i64, i1 } %result
+no.getter:
+  ret { i64, i1 } { i64 9222246136947933184, i1 false }
+absent:
+  %inherited = call i64 @errorInheritedProperty(ptr %object, i64 %key.len, ptr %key.ptr)
+  br label %data
+data:
+  %answer = phi i64 [ %value, %found ], [ %inherited, %absent ]
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %answer, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+}
+
+@.accessor.no.setter = private unnamed_addr constant [32 x i8] c"Cannot set getter-only property\00"
+
+define { i64, i1 } @objectPropertySet(i64 %receiver, i64 %key.len, ptr %key.ptr, i64 %stored) {
+entry:
+  %object = call ptr @valueObjectPtr(i64 %receiver)
+  %property = call ptr @objectFindProperty(ptr %object, i64 %key.len, ptr %key.ptr)
+  %missing = icmp eq ptr %property, null
+  br i1 %missing, label %data, label %found
+found:
+  %flags.slot = getelementptr i8, ptr %property, i64 24
+  %flags = load i64, ptr %flags.slot
+  %accessor.bit = and i64 %flags, 8
+  %accessor = icmp ne i64 %accessor.bit, 0
+  br i1 %accessor, label %set, label %data
+set:
+  %value.slot = getelementptr i8, ptr %property, i64 16
+  %value = load i64, ptr %value.slot
+  %descriptor = call ptr @valueObjectPtr(i64 %value)
+  %setter = call i64 @objectGet(ptr %descriptor, i64 3, ptr @.accessor.set)
+  %undefined = icmp eq i64 %setter, 9222246136947933184
+  br i1 %undefined, label %refused, label %invoke
+invoke:
+  %argv = alloca i64
+  store i64 %stored, ptr %argv
+  %result = call { i64, i1 } @jsCall(i64 %setter, i64 1, ptr %argv, i64 %receiver)
+  ret { i64, i1 } %result
+refused:
+  %message = call i64 @valueBoxString(ptr @.accessor.no.setter, i64 31)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+data:
+  call void @objectSet(ptr %object, i64 %key.len, ptr %key.ptr, i64 %stored)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %stored, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }

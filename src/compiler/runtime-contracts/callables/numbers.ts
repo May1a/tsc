@@ -13,6 +13,7 @@ export function createNumbersCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "numberToFixed": registerRuntimeContract(module, numbersContracts.numberToFixed),
     "numberToPrecision": registerRuntimeContract(module, numbersContracts.numberToPrecision),
     "numberToExponential": registerRuntimeContract(module, numbersContracts.numberToExponential),
+    "numberToShortestString": registerRuntimeContract(module, numbersContracts.numberToShortestString),
     "numberToStringRadix": registerRuntimeContract(module, numbersContracts.numberToStringRadix),
     "parseInt": registerRuntimeContract(module, numbersContracts.parseInt),
     "parseFloat": registerRuntimeContract(module, numbersContracts.parseFloat),

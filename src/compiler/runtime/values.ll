@@ -1,6 +1,34 @@
-@.value.array.key.entries = private unnamed_addr constant [8 x i8] c"entries\00"
-@.value.array.key.keys = private unnamed_addr constant [5 x i8] c"keys\00"
-@.value.array.key.values = private unnamed_addr constant [7 x i8] c"values\00"
+@.typeof.undefined = private unnamed_addr constant [10 x i8] c"undefined\00"
+@.typeof.object = private unnamed_addr constant [7 x i8] c"object\00"
+@.typeof.boolean = private unnamed_addr constant [8 x i8] c"boolean\00"
+@.typeof.number = private unnamed_addr constant [7 x i8] c"number\00"
+@.typeof.string = private unnamed_addr constant [7 x i8] c"string\00"
+@.typeof.function = private unnamed_addr constant [9 x i8] c"function\00"
+
+; The type of a boxed value after its binding read has checked lexical initialization.
+define { ptr, i64 } @valueTypeOf(i64 %value) {
+entry:
+  %undefined = icmp eq i64 %value, 9222246136947933184
+  %true = icmp eq i64 %value, 9222246136947933186
+  %false = icmp eq i64 %value, 9222246136947933185
+  %boolean = or i1 %true, %false
+  %number = call i1 @valueIsNumberForSameValueZero(i64 %value)
+  %string = call i1 @valueIsString(i64 %value)
+  %function = call i1 @valueIsFunction(i64 %value)
+  %number.ptr = select i1 %number, ptr @.typeof.number, ptr @.typeof.object
+  %function.ptr = select i1 %function, ptr @.typeof.function, ptr %number.ptr
+  %function.len = select i1 %function, i64 8, i64 6
+  %string.ptr = select i1 %string, ptr @.typeof.string, ptr %function.ptr
+  %string.len = select i1 %string, i64 6, i64 %function.len
+  %boolean.ptr = select i1 %boolean, ptr @.typeof.boolean, ptr %string.ptr
+  %boolean.len = select i1 %boolean, i64 7, i64 %string.len
+  %pointer = select i1 %undefined, ptr @.typeof.undefined, ptr %boolean.ptr
+  %length = select i1 %undefined, i64 9, i64 %boolean.len
+  %result.0 = insertvalue { ptr, i64 } undef, ptr %pointer, 0
+  %result = insertvalue { ptr, i64 } %result.0, i64 %length, 1
+  ret { ptr, i64 } %result
+}
+
 define i1 @valueStrictEquals(i64 %left, i64 %right) {
 entry:
   %left.number = call i1 @valueIsNumberForSameValueZero(i64 %left)
@@ -233,41 +261,60 @@ select:
   %r3 = select i1 %op.ge, i1 %ge, i1 %r2
   ret i1 %r3
 }
-define i64 @valuePlus(i64 %left, i64 %right) {
+define { i64, i1 } @valuePlus(i64 %left, i64 %right) {
 entry:
-  %left.tag = and i64 %left, -281474976710656
-  %right.tag = and i64 %right, -281474976710656
-  %left.string = icmp eq i64 %left.tag, 9221683186994511872
-  %right.string = icmp eq i64 %right.tag, 9221683186994511872
-  %left.object = icmp eq i64 %left.tag, 9221120237041090560
-  %right.object = icmp eq i64 %right.tag, 9221120237041090560
-  %left.array = icmp eq i64 %left.tag, 9221401712017801216
-  %right.array = icmp eq i64 %right.tag, 9221401712017801216
-  %left.aggregate = or i1 %left.object, %left.array
-  %right.aggregate = or i1 %right.object, %right.array
-  %has.string.0 = or i1 %left.string, %right.string
-  %has.aggregate = or i1 %left.aggregate, %right.aggregate
-  %concat = or i1 %has.string.0, %has.aggregate
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %left)
+  call void @gcRootPush(i64 %right)
+  %left.result = call { i64, i1 } @valueToPrimitive(i64 %left, i1 true)
+  %left.threw = extractvalue { i64, i1 } %left.result, 1
+  br i1 %left.threw, label %left.error, label %convert.right
+left.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %left.result
+convert.right:
+  %left.primitive = extractvalue { i64, i1 } %left.result, 0
+  call void @gcRootPush(i64 %left.primitive)
+  %right.result = call { i64, i1 } @valueToPrimitive(i64 %right, i1 true)
+  %right.threw = extractvalue { i64, i1 } %right.result, 1
+  br i1 %right.threw, label %right.error, label %add
+right.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %right.result
+add:
+  %right.primitive = extractvalue { i64, i1 } %right.result, 0
+  call void @gcRootPush(i64 %right.primitive)
+  %left.primitive.tag = and i64 %left.primitive, -281474976710656
+  %right.primitive.tag = and i64 %right.primitive, -281474976710656
+  %left.primitive.string = icmp eq i64 %left.primitive.tag, 9221683186994511872
+  %right.primitive.string = icmp eq i64 %right.primitive.tag, 9221683186994511872
+  %concat = or i1 %left.primitive.string, %right.primitive.string
   br i1 %concat, label %strings, label %numbers
 strings:
-  %left.str = call { ptr, i64 } @valueToString(i64 %left)
-  %left.ptr = extractvalue { ptr, i64 } %left.str, 0
-  %left.len = extractvalue { ptr, i64 } %left.str, 1
-  %right.str = call { ptr, i64 } @valueToString(i64 %right)
-  %right.ptr = extractvalue { ptr, i64 } %right.str, 0
-  %right.len = extractvalue { ptr, i64 } %right.str, 1
-  %concat.ptr = call ptr @strConcat(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr)
-  %total = add i64 %left.len, %right.len
+  %left.primitive.str = call { ptr, i64 } @valueToString(i64 %left.primitive)
+  %left.primitive.ptr = extractvalue { ptr, i64 } %left.primitive.str, 0
+  %left.primitive.len = extractvalue { ptr, i64 } %left.primitive.str, 1
+  %right.primitive.str = call { ptr, i64 } @valueToString(i64 %right.primitive)
+  %right.primitive.ptr = extractvalue { ptr, i64 } %right.primitive.str, 0
+  %right.primitive.len = extractvalue { ptr, i64 } %right.primitive.str, 1
+  %concat.ptr = call ptr @strConcat(i64 %left.primitive.len, ptr %left.primitive.ptr, i64 %right.primitive.len, ptr %right.primitive.ptr)
+  %total = add i64 %left.primitive.len, %right.primitive.len
   %boxed = call i64 @valueBoxString(ptr %concat.ptr, i64 %total)
-  ret i64 %boxed
+  br label %done
 numbers:
-  %left.num = call double @valueToNumber(i64 %left)
-  %right.num = call double @valueToNumber(i64 %right)
-  %sum = fadd double %left.num, %right.num
+  %left.primitive.num = call double @valueToNumber(i64 %left.primitive)
+  %right.primitive.num = call double @valueToNumber(i64 %right.primitive)
+  %sum = fadd double %left.primitive.num, %right.primitive.num
   %sum.is.nan = fcmp uno double %sum, %sum
   %safe.sum = select i1 %sum.is.nan, double 0x7FF5000000000000, double %sum
   %boxed.num = call i64 @valueBoxNumber(double %safe.sum)
-  ret i64 %boxed.num
+  br label %done
+done:
+  %result = phi i64 [ %boxed, %strings ], [ %boxed.num, %numbers ]
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %result, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok
 }
 define i64 @valueBoxString(ptr %string.ptr, i64 %string.len) {
 entry:
@@ -368,7 +415,13 @@ check.object:
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.result = call i64 @objectGet(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
+  %object.missing = icmp eq i64 %object.result, 9222246136947933184
+  br i1 %object.missing, label %object.inherited, label %object.found
+object.found:
   ret i64 %object.result
+object.inherited:
+  %object.inherited.result = call i64 @errorInheritedProperty(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
+  ret i64 %object.inherited.result
 check.array:
   %is.array = call i1 @valueIsArray(i64 %value)
   br i1 %is.array, label %array, label %check.string
@@ -393,45 +446,8 @@ array.lookup:
 array.hit:
   ret i64 %array.result
 array.builtin:
-  %array.is.iter = icmp eq i64 %key.len, 18
-  br i1 %array.is.iter, label %array.iter.cmp, label %array.check.entries
-array.iter.cmp:
-  %array.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.symbol.iterator.key, i64 18)
-  %array.key.same = icmp eq i32 %array.key.cmp, 0
-  br i1 %array.key.same, label %array.iter, label %array.check.entries
-array.iter:
-  %array.method = call i64 @functionObjectNew(ptr @arrayIteratorMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  %array.method = call i64 @arrayPrototypeMethod(i64 %key.len, ptr %key.ptr)
   ret i64 %array.method
-array.check.entries:
-  %array.is.entries = icmp eq i64 %key.len, 7
-  br i1 %array.is.entries, label %array.entries.cmp, label %array.check.keys
-array.entries.cmp:
-  %array.entries.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.array.key.entries, i64 7)
-  %array.entries.same = icmp eq i32 %array.entries.key.cmp, 0
-  br i1 %array.entries.same, label %array.entries, label %array.check.keys
-array.entries:
-  %array.entries.method = call i64 @functionObjectNew(ptr @arrayEntriesMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
-  ret i64 %array.entries.method
-array.check.keys:
-  %array.is.keys = icmp eq i64 %key.len, 4
-  br i1 %array.is.keys, label %array.keys.cmp, label %array.check.values
-array.keys.cmp:
-  %array.keys.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.array.key.keys, i64 4)
-  %array.keys.same = icmp eq i32 %array.keys.key.cmp, 0
-  br i1 %array.keys.same, label %array.keys, label %array.check.values
-array.keys:
-  %array.keys.method = call i64 @functionObjectNew(ptr @arrayKeysMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
-  ret i64 %array.keys.method
-array.check.values:
-  %array.is.values = icmp eq i64 %key.len, 6
-  br i1 %array.is.values, label %array.values.cmp, label %missing
-array.values.cmp:
-  %array.values.key.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.value.array.key.values, i64 6)
-  %array.values.same = icmp eq i32 %array.values.key.cmp, 0
-  br i1 %array.values.same, label %array.values, label %missing
-array.values:
-  %array.values.method = call i64 @functionObjectNew(ptr @arrayValuesMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
-  ret i64 %array.values.method
 check.string:
   %is.string = call i1 @valueIsString(i64 %value)
   br i1 %is.string, label %string.builtin, label %missing
@@ -544,10 +560,6 @@ true:
 false:
   ret i1 false
 }
-@.value.fmt.number = private unnamed_addr constant [4 x i8] c"%g\0A\00"
-@.value.number.nan = private unnamed_addr constant [4 x i8] c"NaN\00"
-@.value.number.infinity = private unnamed_addr constant [9 x i8] c"Infinity\00"
-@.value.number.negative-infinity = private unnamed_addr constant [10 x i8] c"-Infinity\00"
 @.value.true = private unnamed_addr constant [5 x i8] c"true\00"
 @.value.false = private unnamed_addr constant [6 x i8] c"false\00"
 @.value.undefined = private unnamed_addr constant [10 x i8] c"undefined\00"
@@ -615,29 +627,11 @@ print.string:
   ret void
 print.number:
   %number = call double @valueNumber(i64 %value)
-  %number.is.nan = fcmp uno double %number, %number
-  br i1 %number.is.nan, label %print.number.nan, label %check.number.infinity
-check.number.infinity:
-  %number.absolute-bits = and i64 %value, 9223372036854775807
-  %number.is.infinity = icmp eq i64 %number.absolute-bits, 9218868437227405312
-  br i1 %number.is.infinity, label %print.number.infinity, label %print.number.finite
-print.number.nan:
-  call i32 @puts(ptr @.value.number.nan)
-  ret void
-print.number.infinity:
-  %number.is.negative = icmp slt i64 %value, 0
-  br i1 %number.is.negative, label %print.number.negative-infinity, label %print.number.positive-infinity
-print.number.negative-infinity:
-  call i32 @puts(ptr @.value.number.negative-infinity)
-  ret void
-print.number.positive-infinity:
-  call i32 @puts(ptr @.value.number.infinity)
-  ret void
-print.number.finite:
-  call i32 (ptr, ...) @printf(ptr @.value.fmt.number, double %number)
+  %number.string = call { ptr, i64 } @numberToShortestString(double %number)
+  %number.ptr = extractvalue { ptr, i64 } %number.string, 0
+  call i32 @puts(ptr %number.ptr)
   ret void
 }
-@.tostring.fmt.number = private unnamed_addr constant [3 x i8] c"%g\00"
 @.tostring.true = private unnamed_addr constant [5 x i8] c"true\00"
 @.tostring.false = private unnamed_addr constant [6 x i8] c"false\00"
 @.tostring.undefined = private unnamed_addr constant [10 x i8] c"undefined\00"
@@ -688,6 +682,15 @@ null:
   %null.1 = insertvalue { ptr, i64 } %null.0, i64 4, 1
   ret { ptr, i64 } %null.1
 object:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %object.class.slot = getelementptr i8, ptr %object.ptr, i64 48
+  %object.class = load i64, ptr %object.class.slot
+  %object.is.error = icmp ne i64 %object.class, 0
+  br i1 %object.is.error, label %object.error, label %object.plain
+object.error:
+  %object.error.string = call { ptr, i64 } @errorToString(ptr %object.ptr)
+  ret { ptr, i64 } %object.error.string
+object.plain:
   %object.0 = insertvalue { ptr, i64 } undef, ptr @.tostring.object, 0
   %object.1 = insertvalue { ptr, i64 } %object.0, i64 15, 1
   ret { ptr, i64 } %object.1
@@ -715,13 +718,126 @@ string:
   %string.1 = insertvalue { ptr, i64 } %string.0, i64 %string.len, 1
   ret { ptr, i64 } %string.1
 number:
-  %number.ptr = call ptr @malloc(i64 32)
   %number.value = call double @valueNumber(i64 %value)
-  %written = call i32 (ptr, ptr, ...) @sprintf(ptr %number.ptr, ptr @.tostring.fmt.number, double %number.value)
-  %number.len = sext i32 %written to i64
-  %number.0 = insertvalue { ptr, i64 } undef, ptr %number.ptr, 0
-  %number.1 = insertvalue { ptr, i64 } %number.0, i64 %number.len, 1
-  ret { ptr, i64 } %number.1
+  %number.text = call { ptr, i64 } @numberToShortestString(double %number.value)
+  ret { ptr, i64 } %number.text
+}
+@.toprimitive.tostring = private unnamed_addr constant [9 x i8] c"toString\00"
+@.toprimitive.valueof = private unnamed_addr constant [8 x i8] c"valueOf\00"
+@.toprimitive.refused = private unnamed_addr constant [41 x i8] c"Cannot convert object to primitive value\00"
+
+; Whether `value` is an object, array or function: a value ToPrimitive converts.
+define i1 @valueIsObjectLike(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %at.least.object = icmp uge i64 %tag, 9221120237041090560
+  %at.most.function = icmp ule i64 %tag, 9221964661971222528
+  %is.string = icmp eq i64 %tag, 9221683186994511872
+  %is.reference = and i1 %at.least.object, %at.most.function
+  %not.string = xor i1 %is.string, true
+  %is.object = and i1 %is.reference, %not.string
+  ret i1 %is.object
+}
+
+; OrdinaryToPrimitive looks up each method only when it is tried, preserving getters and throws.
+define { i64, i1 } @valueOrdinaryToPrimitive(i64 %value, i1 %prefer.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %value)
+  %argv = alloca i64, i64 0
+  %first.ptr = select i1 %prefer.value, ptr @.toprimitive.valueof, ptr @.toprimitive.tostring
+  %first.len = select i1 %prefer.value, i64 7, i64 8
+  %second.ptr = select i1 %prefer.value, ptr @.toprimitive.tostring, ptr @.toprimitive.valueof
+  %second.len = select i1 %prefer.value, i64 8, i64 7
+  %first.lookup = call { i64, i1 } @valueConversionPropertyGet(i64 %value, i64 %first.len, ptr %first.ptr)
+  %first.lookup.threw = extractvalue { i64, i1 } %first.lookup, 1
+  br i1 %first.lookup.threw, label %first.lookup.error, label %first.check
+first.lookup.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %first.lookup
+first.check:
+  %first.method = extractvalue { i64, i1 } %first.lookup, 0
+  %first.callable = call i1 @valueIsFunction(i64 %first.method)
+  br i1 %first.callable, label %first.call, label %second
+first.call:
+  %first.result = call { i64, i1 } @jsCall(i64 %first.method, i64 0, ptr %argv, i64 %value)
+  %first.threw = extractvalue { i64, i1 } %first.result, 1
+  %first.value = extractvalue { i64, i1 } %first.result, 0
+  %first.object = call i1 @valueIsObjectLike(i64 %first.value)
+  %first.final = xor i1 %first.object, true
+  %first.answers = or i1 %first.threw, %first.final
+  br i1 %first.answers, label %first.done, label %second
+first.done:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %first.result
+second:
+  %second.lookup = call { i64, i1 } @valueConversionPropertyGet(i64 %value, i64 %second.len, ptr %second.ptr)
+  %second.lookup.threw = extractvalue { i64, i1 } %second.lookup, 1
+  br i1 %second.lookup.threw, label %second.lookup.error, label %second.check
+second.lookup.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %second.lookup
+second.check:
+  %second.method = extractvalue { i64, i1 } %second.lookup, 0
+  %second.callable = call i1 @valueIsFunction(i64 %second.method)
+  br i1 %second.callable, label %second.call, label %no.second
+second.call:
+  %second.result = call { i64, i1 } @jsCall(i64 %second.method, i64 0, ptr %argv, i64 %value)
+  %second.threw = extractvalue { i64, i1 } %second.result, 1
+  %second.value = extractvalue { i64, i1 } %second.result, 0
+  %second.object = call i1 @valueIsObjectLike(i64 %second.value)
+  %second.final = xor i1 %second.object, true
+  %second.answers = or i1 %second.threw, %second.final
+  br i1 %second.answers, label %second.done, label %refused
+second.done:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %second.result
+no.second:
+  br label %refused
+refused:
+  call void @gcRootRestore(i64 %frame)
+  %message = call i64 @valueBoxString(ptr @.toprimitive.refused, i64 40)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+}
+
+; ToPrimitive(value): an object converts through `valueOrdinaryToPrimitive`, and any other value
+; is already primitive. %prefer.value selects the default hint `+` uses, which tries `valueOf` first.
+define { i64, i1 } @valueToPrimitive(i64 %value, i1 %prefer.value) {
+entry:
+  %is.object = call i1 @valueIsObjectLike(i64 %value)
+  br i1 %is.object, label %convert, label %primitive
+convert:
+  %converted = call { i64, i1 } @valueOrdinaryToPrimitive(i64 %value, i1 %prefer.value)
+  ret { i64, i1 } %converted
+primitive:
+  %primitive.0 = insertvalue { i64, i1 } undef, i64 %value, 0
+  %primitive.1 = insertvalue { i64, i1 } %primitive.0, i1 false, 1
+  ret { i64, i1 } %primitive.1
+}
+
+; ToString(value) returns a boxed string after observable conversion through inherited methods.
+define { i64, i1 } @valueToStringObservable(i64 %value, i1 %prefer.value) {
+entry:
+  %converted = call { i64, i1 } @valueToPrimitive(i64 %value, i1 %prefer.value)
+  %threw = extractvalue { i64, i1 } %converted, 1
+  %primitive = extractvalue { i64, i1 } %converted, 0
+  %is.string = call i1 @valueIsString(i64 %primitive)
+  %answers = or i1 %threw, %is.string
+  br i1 %answers, label %done, label %format
+done:
+  ret { i64, i1 } %converted
+format:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %primitive)
+  %text = call { ptr, i64 } @valueToString(i64 %primitive)
+  %text.ptr = extractvalue { ptr, i64 } %text, 0
+  %text.len = extractvalue { ptr, i64 } %text, 1
+  %boxed = call i64 @valueBoxString(ptr %text.ptr, i64 %text.len)
+  call void @gcRootRestore(i64 %frame)
+  %boxed.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %boxed.1 = insertvalue { i64, i1 } %boxed.0, i1 false, 1
+  ret { i64, i1 } %boxed.1
 }
 define ptr @indexToString(i64 %index) {
 entry:
@@ -841,6 +957,13 @@ error:
 read:
   %frame = call i64 @gcRootSave()
   call void @gcRootPush(i64 %value)
+  %object = call i1 @valueIsObject(i64 %value)
+  br i1 %object, label %object.read, label %other.read
+object.read:
+  %object.result = call { i64, i1 } @objectPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %object.result
+other.read:
   %property = call i64 @valuePropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
   %result.0 = insertvalue { i64, i1 } undef, i64 %property, 0
   %result.1 = insertvalue { i64, i1 } %result.0, i1 false, 1
@@ -885,4 +1008,151 @@ success:
   ret i64 %index
 invalid:
   ret i64 -1
+}
+
+; The ordinary object prototype is real shared storage. Explicit null prototypes bypass it.
+@objectDefaultPrototypeRoot = internal global i64 0
+
+define ptr @objectDefaultPrototype() {
+entry:
+  %cached = load i64, ptr @objectDefaultPrototypeRoot
+  %missing = icmp eq i64 %cached, 0
+  br i1 %missing, label %create, label %done
+create:
+  %object = call ptr @objectCreateWithCapacity(ptr null, i64 2)
+  %boxed = call i64 @valueBoxObject(ptr %object)
+  store i64 %boxed, ptr @objectDefaultPrototypeRoot
+  call void @gcRegisterGlobalRoot(ptr @objectDefaultPrototypeRoot)
+  %to.string = call i64 @functionObjectNew(ptr @objectDefaultToString, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  call void @objectDefineDataProperty(ptr %object, i64 8, ptr @.toprimitive.tostring, i64 %to.string, i64 5)
+  %value.of = call i64 @functionObjectNew(ptr @objectDefaultValueOf, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  call void @objectDefineDataProperty(ptr %object, i64 7, ptr @.toprimitive.valueof, i64 %value.of, i64 5)
+  ret ptr %object
+done:
+  %pointer = call ptr @valueObjectPtr(i64 %cached)
+  ret ptr %pointer
+}
+
+define { i64, i1 } @objectDefaultToString(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %boxed = call i64 @valueBoxString(ptr @.tostring.object, i64 15)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+}
+
+define { i64, i1 } @objectDefaultValueOf(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %this.value, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+}
+
+; Arrays and functions have intrinsic conversion methods even without object-layout prototypes.
+; An own property, including undefined, shadows the intrinsic method.
+define { i64, i1 } @valueConversionPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %lookup = call { i64, i1 } @checkedValuePropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  %threw = extractvalue { i64, i1 } %lookup, 1
+  %method = extractvalue { i64, i1 } %lookup, 0
+  %missing = icmp eq i64 %method, 9222246136947933184
+  %is.object = call i1 @valueIsObject(i64 %value)
+  %present = xor i1 %missing, true
+  %done.0 = or i1 %threw, %present
+  %done = or i1 %done.0, %is.object
+  br i1 %done, label %kept, label %check.own
+check.own:
+  %own.result = call { i64, i1 } @valueHasOwnProperty(i64 %value, i64 %key.len, ptr %key.ptr)
+  %own.value = extractvalue { i64, i1 } %own.result, 0
+  %own = icmp eq i64 %own.value, 9222246136947933186
+  br i1 %own, label %kept, label %intrinsic
+kept:
+  ret { i64, i1 } %lookup
+intrinsic:
+  %to.string = icmp eq i64 %key.len, 8
+  %code = select i1 %to.string, ptr @conversionNativeToString, ptr @objectDefaultValueOf
+  %function = call i64 @functionObjectNew(ptr %code, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %function, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+}
+
+define { i64, i1 } @conversionNativeToString(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %text = call { ptr, i64 } @valueToString(i64 %this.value)
+  %bytes = extractvalue { ptr, i64 } %text, 0
+  %length = extractvalue { ptr, i64 } %text, 1
+  %boxed = call i64 @valueBoxString(ptr %bytes, i64 %length)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+}
+
+@boxedPrototypeRoot = internal global i64 0
+
+define void @boxedInstallConversionMethods(ptr %object) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %owner = call i64 @valueBoxObject(ptr %object)
+  call void @gcRootPush(i64 %owner)
+  %cached = load i64, ptr @boxedPrototypeRoot
+  %missing = icmp eq i64 %cached, 0
+  br i1 %missing, label %create, label %cached.prototype
+create:
+  %prototype = call ptr @objectNew(i64 2)
+  %boxed.prototype = call i64 @valueBoxObject(ptr %prototype)
+  store i64 %boxed.prototype, ptr @boxedPrototypeRoot
+  call void @gcRegisterGlobalRoot(ptr @boxedPrototypeRoot)
+  %to.string = call i64 @functionObjectNew(ptr @boxedToStringMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  call void @objectDefineDataProperty(ptr %prototype, i64 8, ptr @.toprimitive.tostring, i64 %to.string, i64 5)
+  %value.of = call i64 @functionObjectNew(ptr @boxedValueOfMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  call void @objectDefineDataProperty(ptr %prototype, i64 7, ptr @.toprimitive.valueof, i64 %value.of, i64 5)
+  br label %install
+cached.prototype:
+  %cached.pointer = call ptr @valueObjectPtr(i64 %cached)
+  br label %install
+install:
+  %target = phi ptr [ %prototype, %create ], [ %cached.pointer, %cached.prototype ]
+  call void @objectSetPrototype(ptr %object, ptr %target)
+  %flags.slot = getelementptr i8, ptr %object, i64 40
+  %flags = load i64, ptr %flags.slot
+  %branded = or i64 %flags, 2
+  store i64 %branded, ptr %flags.slot
+  call void @gcRootRestore(i64 %frame)
+  ret void
+}
+
+define { i64, i1 } @boxedValueOfMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.object = call i1 @valueIsObject(i64 %this.value)
+  br i1 %is.object, label %check.brand, label %refused
+check.brand:
+  %object = call ptr @valueObjectPtr(i64 %this.value)
+  %flags.slot = getelementptr i8, ptr %object, i64 40
+  %flags = load i64, ptr %flags.slot
+  %brand.bit = and i64 %flags, 2
+  %branded = icmp ne i64 %brand.bit, 0
+  br i1 %branded, label %read, label %refused
+refused:
+  %message = call i64 @valueBoxString(ptr @.toprimitive.refused, i64 40)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+read:
+  %value = call i64 @boxedValueOf(ptr %object)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %value, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
+}
+
+define { i64, i1 } @boxedToStringMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %result = call { i64, i1 } @boxedValueOfMethod(i64 0, ptr null, ptr null, i64 %this.value)
+  %threw = extractvalue { i64, i1 } %result, 1
+  br i1 %threw, label %error, label %convert
+error:
+  ret { i64, i1 } %result
+convert:
+  %value = extractvalue { i64, i1 } %result, 0
+  %string = call { i64, i1 } @valueToStringObservable(i64 %value, i1 false)
+  ret { i64, i1 } %string
 }

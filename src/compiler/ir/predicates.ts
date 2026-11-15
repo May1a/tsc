@@ -10,7 +10,7 @@ export function isInlineCppTaggedTemplate(expression: ts.Expression): expression
   return ts.isTaggedTemplateExpression(expression) && ts.isIdentifier(expression.tag) && expression.tag.text === inlineCppTag;
 }
 
-export const errorConstructorNames: ReadonlySet<string> = new Set(["Error", "TypeError", "RangeError", "EvalError", "URIError", "SyntaxError"]);
+export const errorConstructorNames: ReadonlySet<string> = new Set(["Error", "TypeError", "RangeError", "EvalError", "URIError", "SyntaxError", "ReferenceError"]);
 
 /**
  * Erasing every wrapper whose only content is a type.
@@ -33,6 +33,14 @@ export function unwrapTypeOnlyExpression(expression: ts.Expression): ts.Expressi
     return unwrapTypeOnlyExpression(expression.expression);
   }
   return expression;
+}
+
+/**
+ * Whether an expression reads the value `undefined`: the keyword form, or the global identifier.
+ * The identifier test is by spelling, as every reader of `undefined` in Lowering already assumed.
+ */
+export function isUndefinedExpression(expression: ts.Expression): boolean {
+  return expression.kind === ts.SyntaxKind.UndefinedKeyword || (ts.isIdentifier(expression) && expression.text === "undefined");
 }
 
 export function isUnsupportedSymbolExpression(

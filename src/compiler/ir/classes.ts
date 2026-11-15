@@ -6,7 +6,7 @@ import { type ClassInfo, type CollectedClassMembers, buildClassInfo, classAccess
 import { type LoweredStatementList, type Produced, loweredOperationList, loweredUnsupportedStatementList, unsupportedIn } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
 import { unwrapTypeOnlyExpression } from "./predicates.js";
-import { lowerClassComputedKeySlot, lowerClassComputedMethodStore, lowerClassPrototypeStorage, lowerClassStaticStorage } from "./class-storage.js";
+import { lowerClassComputedKeySlot, lowerClassComputedMethodStore, lowerClassPrototypeStorage, lowerClassStaticStorage, lowerPrivateFunctionSlots, lowerPrototypeMethodStores } from "./class-storage.js";
 import { lowerClassConstructor } from "./class-constructors.js";
 import { lowerClassAccessor, lowerClassMethod } from "./class-methods.js";
 import { classAccessorFunctionName } from "./class-names.js";
@@ -186,6 +186,11 @@ function lowerClassMemberOperations(
       operations.push(accessor.operation);
     }
   }
+  // Prototype entries for dispatched calls come last, after the methods they wrap.
+  for (const store of lowerPrototypeMethodStores(context, info, members)) {
+    operations.push(store);
+  }
+  operations.push(...lowerPrivateFunctionSlots(context, info));
   return loweredOperationList(operations);
 }
 

@@ -44,7 +44,7 @@ describe("tscn operator expansion (package BZ)", () => {
     const result = await expectSuccessfulCompile("operator-exponentiation.ts", { link: true });
 
     try {
-      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1024\n0.5\n1.41421\n512\n0.01\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "1024\n0.5\n1.4142135623730951\n512\n0.01\n", stderr: "" });
     } finally {
       await result.cleanup();
     }

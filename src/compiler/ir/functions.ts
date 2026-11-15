@@ -3,13 +3,12 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import { type Lowered, loweredOperation, unsupported } from "./lowered.js";
-import { unsupportedStatementMessage } from "./diagnostics.js";
 import { declaredFunctionReturnKind } from "./function-parameters.js";
 import { lowerFunctionParameters } from "./function-parameter-lowering.js";
-import type { JsIrOperation } from "./types.js";
 import { isPlainObjectReturningConstructor } from "./class-info.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { collectFunctionDeclarationEnclosingCaptureNames } from "./captures.js";
+import { CLASS_THIS_NAME } from "./class-names.js";
 
 export function lowerFunctionDeclaration(
   context: LoweringContext,
@@ -22,17 +21,20 @@ export function lowerFunctionDeclaration(
   if (statement.asteriskToken !== undefined) {
     return unsupported(unsupportedFormMessage("generator-function"));
   }
-  const reason = unsupportedStatementMessage(statement, bindings);
   if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
-    return unsupported(reason);
+    return unsupported("A function declaration must have a name and a body");
   }
 
-  const loweredParameters = lowerFunctionParameters(context, statement.parameters, bindings, reason);
+  const loweredParameters = lowerFunctionParameters(context, statement.parameters, bindings);
   if (loweredParameters.kind === "unsupported") {
     return loweredParameters;
   }
-  const { parameters, bindings: fnBindings, prelude } = loweredParameters.operation;
+  const { parameters, bindings: fnBindings } = loweredParameters.operation;
 
+  // A nested `function` declaration has its own dynamic `this`: it must not read the enclosing
+  // frame's through the bindings, or uses of `this` inside it would capture an environment cell
+  // the callee never fills. Without a binding the uses are refused instead of miscompiled.
+  fnBindings.delete(CLASS_THIS_NAME);
   fnBindings.set(statement.name.text, {
     kind: "functionReference",
     parameters,
@@ -45,15 +47,11 @@ export function lowerFunctionDeclaration(
   }
   const bodyStatements = loweredBody.operation;
 
-  const body: readonly JsIrOperation[] = prelude.length === 0
-    ? bodyStatements
-    : [{ kind: "bindingGroup", operations: [...prelude, ...bodyStatements] }];
-
   return loweredOperation({
     kind: "function",
     name: statement.name.text,
     parameters,
-    body,
+    body: bodyStatements,
     enclosingCaptureNames: collectFunctionDeclarationEnclosingCaptureNames(context.typeChecker, statement, bindings),
     constructibleByObjectReturn: isPlainObjectReturningConstructor(statement)
   });

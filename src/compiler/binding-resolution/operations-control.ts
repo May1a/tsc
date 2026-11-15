@@ -4,6 +4,7 @@ import { declareFromOperation, optional, resolveCallArguments, resolveFunctionPa
 export const controlHandlers = {
   print: (node, resolver) => ({ ...node, expression: resolver.expression(node.expression) }),
   throwValue: (node, resolver) => ({ ...node, value: resolver.value(node.value) }),
+  discardValue: (node, resolver) => ({ ...node, value: resolver.value(node.value) }),
   block: (node, resolver) => ({
     ...node,
     operations: resolver.state.inScope("block", () => resolver.operations(node.operations))
@@ -61,13 +62,14 @@ export const controlHandlers = {
   }),
 
   // The initializer's declarations are visible to the condition, the increment and the body, so all
-  // four sit inside one scope.
+  // four sit inside one scope. An omitted condition or update resolves to nothing: the field stays
+  // absent rather than carrying a synthesized constant.
   for: (node, resolver) => ({
     ...node,
     ...resolver.state.inScope("loop", () => ({
       initializer: resolver.operations(node.initializer),
-      condition: resolver.condition(node.condition),
-      increment: resolver.operation(node.increment),
+      condition: optional(node.condition, resolver.condition),
+      increment: optional(node.increment, resolver.operation),
       body: resolver.operations(node.body)
     }))
   }),
@@ -75,7 +77,7 @@ export const controlHandlers = {
   forOfArray: (node, resolver) => ({
     ...node,
     ...resolver.state.inScope("loop", () => ({
-      itemName: declareFromOperation(node.itemName, "loopItem", node, resolver),
+      itemName: declareFromOperation(node.itemName, loopItemKind(node), node, resolver),
       arrayName: resolver.reference(node.arrayName),
       body: resolver.operations(node.body)
     }))
@@ -83,7 +85,7 @@ export const controlHandlers = {
   forOfString: (node, resolver) => ({
     ...node,
     ...resolver.state.inScope("loop", () => ({
-      itemName: declareFromOperation(node.itemName, "loopItem", node, resolver),
+      itemName: declareFromOperation(node.itemName, loopItemKind(node), node, resolver),
       source: resolver.string(node.source),
       body: resolver.operations(node.body)
     }))
@@ -91,7 +93,7 @@ export const controlHandlers = {
   forOfSet: (node, resolver) => ({
     ...node,
     ...resolver.state.inScope("loop", () => ({
-      itemName: declareFromOperation(node.itemName, "loopItem", node, resolver),
+      itemName: declareFromOperation(node.itemName, loopItemKind(node), node, resolver),
       setName: resolver.reference(node.setName),
       body: resolver.operations(node.body)
     }))
@@ -99,7 +101,7 @@ export const controlHandlers = {
   forOfMap: (node, resolver) => ({
     ...node,
     ...resolver.state.inScope("loop", () => ({
-      itemName: declareFromOperation(node.itemName, "loopItem", node, resolver),
+      itemName: declareFromOperation(node.itemName, loopItemKind(node), node, resolver),
       mapName: resolver.reference(node.mapName),
       body: resolver.operations(node.body)
     }))
@@ -107,7 +109,7 @@ export const controlHandlers = {
   forOfProtocol: (node, resolver) => ({
     ...node,
     ...resolver.state.inScope("loop", () => ({
-      itemName: declareFromOperation(node.itemName, "loopItem", node, resolver),
+      itemName: declareFromOperation(node.itemName, loopItemKind(node), node, resolver),
       iterable: resolver.value(node.iterable),
       body: resolver.operations(node.body)
     }))
@@ -115,7 +117,7 @@ export const controlHandlers = {
   forInObject: (node, resolver) => ({
     ...node,
     ...resolver.state.inScope("loop", () => ({
-      itemName: declareFromOperation(node.itemName, "loopItem", node, resolver),
+      itemName: declareFromOperation(node.itemName, loopItemKind(node), node, resolver),
       objectName: resolver.reference(node.objectName),
       body: resolver.operations(node.body)
     }))
@@ -123,7 +125,7 @@ export const controlHandlers = {
   forInArray: (node, resolver) => ({
     ...node,
     ...resolver.state.inScope("loop", () => ({
-      itemName: declareFromOperation(node.itemName, "loopItem", node, resolver),
+      itemName: declareFromOperation(node.itemName, loopItemKind(node), node, resolver),
       arrayName: resolver.reference(node.arrayName),
       body: resolver.operations(node.body)
     }))
@@ -186,3 +188,8 @@ export const controlHandlers = {
     return { ...node, captures, functionId: frame.functionId, parameters: frame.parameters, body: frame.body };
   }
 } satisfies Partial<OperationHandlers>;
+
+/** A `var` item is one binding per function frame; any other item is fresh for each iteration. */
+function loopItemKind(node: { readonly functionScoped?: true }): "var" | "loopItem" {
+  return node.functionScoped === true ? "var" : "loopItem";
+}

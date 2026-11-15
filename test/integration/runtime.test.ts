@@ -189,7 +189,7 @@ describe("tscn expanded runtime roadmap", () => {
 
     const refs = await expectSuccessfulCompile("value-runtime-aggregate-references.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(refs, { status: 0, stdout: "true\ntrue\ntrue\n[object Object]\n[object Array]\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(refs, { status: 0, stdout: "true\ntrue\ntrue\n[object Object]\n[object Object]\n", stderr: "" });
     } finally {
       await refs.cleanup();
     }
@@ -623,7 +623,7 @@ describe("tscn expanded runtime roadmap", () => {
   test("supports runtime array flat with default and zero depth", async () => {
     const flat = await expectSuccessfulCompile("array-runtime-flat.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(flat, { status: 0, stdout: "5\n1\n2\n3\n[object Array]\n[object Array]\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(flat, { status: 0, stdout: "5\n1\n2\n3\n4\n5\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(flat);
     } finally {
       await flat.cleanup();
@@ -734,9 +734,9 @@ describe("tscn expanded runtime roadmap", () => {
   test("supports package BO callback-driven runtime array methods", async () => {
     const cases = [
       ["array-runtime-map-callback.ts", "3\n2\n4\n6\n"],
-      ["array-runtime-map-unsupported-callback.ts", "2\n1\n2\n"],
+      ["array-runtime-map-inline-callback.ts", "2\n1\n2\n"],
       ["array-runtime-filter-callback.ts", "2\n2\n4\n"],
-      ["array-runtime-filter-unsupported-callback.ts", "2\n1\n2\n"],
+      ["array-runtime-filter-inline-callback.ts", "2\n1\n2\n"],
       ["array-runtime-for-each-callback.ts", "2\n5\n8\ndone\n"],
       ["array-runtime-for-each-arrow-callback.ts", "1\n2\ndone\n"],
       ["array-runtime-find-callback.ts", "2\nundefined\n"],
@@ -744,7 +744,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["array-runtime-find-index-callback.ts", "1\n-1\n"],
       ["array-runtime-find-index-arrow-callback.ts", "1\n-1\n"],
       ["array-runtime-reduce-callback.ts", "16\n"],
-      ["array-runtime-reduce-unsupported-callback.ts", "1\n"],
+      ["array-runtime-reduce-inline-callback.ts", "1\n"],
       ["array-runtime-flat-map-arrow-callback.ts", "4\n1\n11\n2\n12\n"],
       ["array-runtime-reduce-no-initial.ts", "6\n"],
       ["array-runtime-map-thisarg.ts", "2\n3\n6\n"],
@@ -915,7 +915,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["number-coercion-infinity-nan-string.ts", "Infinity\n-Infinity\nNaN\nNaN\n"],
       ["number-coercion-primitives.ts", "0\nNaN\n1\n0\n0\nNaN\nInfinity\n"],
       ["number-coercion-aggregates.ts", "NaN\n0\n1\nNaN\n"],
-      ["number-coercion-signed-zero.ts", "-0\n"]
+      ["number-coercion-signed-zero.ts", "0\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
@@ -949,7 +949,7 @@ describe("tscn expanded runtime roadmap", () => {
 
     const numbers = await expectSuccessfulCompile("value-string-conversion-number-edge.ts", { link: true });
     try {
-      await expectNativeBehaviorIfAvailable(numbers, { status: 0, stdout: "-0\ninf\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(numbers, { status: 0, stdout: "0\nInfinity\n", stderr: "" });
     } finally {
       await numbers.cleanup();
     }
@@ -1103,8 +1103,7 @@ describe("tscn expanded runtime roadmap", () => {
       "number-to-fixed-range-error-unsupported.ts",
       "number-to-locale-string-unsupported.ts",
       "parse-int-radix-unsupported.ts",
-      "array-runtime-map-noarg-unsupported.ts",
-      "error-constructor-unsupported.ts"
+      "array-runtime-map-noarg-unsupported.ts"
     ].map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 
@@ -1135,7 +1134,7 @@ describe("tscn expanded runtime roadmap", () => {
   });
 
   test("supports throw across function boundaries via aggregate ABI", async () => {
-    const result = await expectSuccessfulCompile("throw-across-function-unsupported.ts", { link: true });
+    const result = await expectSuccessfulCompile("throw-across-function.ts", { link: true });
     try {
       await expectNativeBehaviorIfAvailable(result, { status: 1, stdout: "message\n", stderr: "" });
       await expectLlvmAsVerificationIfAvailable(result);
@@ -1165,7 +1164,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["bitwise-and-or-xor.ts", "2\n5\n4\n"],
       ["bitwise-not.ts", "-1\n-6\n"],
       ["bitwise-shift-left-right.ts", "12\n-4\n"],
-      ["bitwise-unsigned-right-shift.ts", "4.29497e+09\n2.14748e+09\n"],
+      ["bitwise-unsigned-right-shift.ts", "4294967295\n2147483644\n"],
       ["increment-prefix-postfix.ts", "1\n2\n3\n3\n"],
       ["decrement-prefix-postfix.ts", "3\n2\n1\n1\n"],
       ["compound-assign-bitwise.ts", "2\n6\n7\n28\n14\n7\n"],
@@ -1362,7 +1361,7 @@ describe("tscn expanded runtime roadmap", () => {
       await malformed.cleanup();
     }
 
-    const dynamic = await expectSuccessfulCompile("json-parse-dynamic-unsupported.ts", { link: true });
+    const dynamic = await expectSuccessfulCompile("json-parse-dynamic-string.ts", { link: true });
     try {
       await expectNativeBehaviorIfAvailable(dynamic, { status: 0, stdout: "[object Object]\n", stderr: "" });
     } finally {
@@ -1383,9 +1382,9 @@ describe("tscn expanded runtime roadmap", () => {
     await expectNativeFixtures(cases, { verifyLlvm: true });
 
     await expectNativeFixtures([
-      ["regex-constructor-dynamic-unsupported.ts", "true\n"],
-      ["regex-nonascii-unsupported.ts", "true\n"],
-      ["string-replace-regex-unsupported.ts", "xbc\n"]
+      ["regex-constructor-dynamic.ts", "true\n"],
+      ["regex-nonascii.ts", "true\n"],
+      ["string-replace-regex.ts", "xbc\n"]
     ], { verifyLlvm: true });
   }, roadmapIntegrationTimeoutMs);
 
@@ -1405,16 +1404,17 @@ describe("tscn expanded runtime roadmap", () => {
       ["class-static-field.ts", "4\n"],
       ["class-getter-setter.ts", "3\n8\n"],
       ["class-accessor-prototype-lookup.ts", "6\n"],
-      ["class-expression-unsupported.ts", "1\n"],
+      ["class-expression-bound-const.ts", "1\n"],
       ["class-expression-instance.ts", "1\ntrue\n"],
       ["class-expression-named.ts", "inner\ntrue\ninner\n"],
-      ["class-computed-field-unsupported.ts", "1\n"],
-      ["class-computed-members.ts", "first\nthird\ndefined\n2\nconstructed\n"]
+      ["class-computed-field.ts", "1\n"],
+      ["class-computed-members.ts", "first\nthird\ndefined\n2\nconstructed\n"],
+      ["class-prototype-method-lookup.ts", "5\nfalse\n"]
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
 
-    const privateField = await expectSuccessfulCompile("class-private-field-unsupported.ts", { link: true });
+    const privateField = await expectSuccessfulCompile("class-private-field.ts", { link: true });
     try {
       await expectNativeBehaviorIfAvailable(privateField, {
         status: 1,
@@ -1429,10 +1429,6 @@ describe("tscn expanded runtime roadmap", () => {
       await privateField.cleanup();
     }
 
-    // With the compile-time interpreter deleted, class files that native
-    // lowering cannot handle are hard compile errors instead of being
-    // evaluated at compile time.
-    await expectUnsupportedDiagnostic("class-prototype-method-lookup.ts");
     await expectUnsupportedMessage(
       "class-instanceof-non-constructor-unsupported.ts",
       "instanceof right-hand sides are only supported for built-in error constructors"
@@ -1445,7 +1441,7 @@ describe("tscn expanded runtime roadmap", () => {
       ["json-parse-runtime-object.ts", "1\ntrue\n"],
       ["json-parse-runtime-array.ts", "1\ntwo\nnull\n"],
       ["json-parse-runtime-malformed-catch.ts", "SyntaxError\ntrue\n"],
-      ["json-parse-reviver-unsupported.ts", "1\n"],
+      ["json-parse-reviver.ts", "1\n"],
       ["json-stringify-cycle-catch.ts", "TypeError\ntrue\n"],
       ["json-stringify-to-json.ts", '{"x":2}\n']
     ] as const;

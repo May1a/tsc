@@ -52,6 +52,20 @@ export const functionsContracts = {
     name: "functionObjectDelete", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.void, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "functionObjectProperties": {
+    resultKind: "pointer",
+    pointerResult: { kind: "heap" },
+    origin: "staticRuntime",
+    name: "functionObjectProperties", parameters: [llvm.i64], returns: llvm.ptr, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "functionObjectSet": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "functionObjectSet", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
   "functionObjectOwnPropertyDescriptor": {
     resultKind: "boxed",
     pointerResult: { kind: "none" },

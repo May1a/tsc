@@ -14,7 +14,13 @@ export type JsIrValueKind = "number" | "string" | "value";
 export interface JsIrFunctionParameter {
   readonly name: string;
   readonly valueKind: JsIrValueKind;
-  readonly defaultValue?: JsIrNumberExpression;
+  /**
+   * Evaluated by the callee when the argument is missing or `undefined`, after every earlier parameter
+   * is bound, so it may read them.
+   */
+  readonly defaultValue?: JsIrValueExpression;
+  /** Runs after this parameter is bound, before the next parameter starts. */
+  readonly bindingOperations?: readonly JsIrOperation[];
   readonly isRest?: boolean;
   /** An omitted optional parameter receives undefined in boxed storage. */
   readonly isOptional?: boolean;
@@ -89,6 +95,10 @@ export type JsIrBindingValue =
       // receivers resolve their class even when the checker cannot name the
       // class type (anonymous class expressions).
       readonly className?: string;
+      // Set on a `const` initialized by `new Number`/`Boolean`/`String`: the slot holds the
+      // wrapper object, whose `valueOf`, `toString` and `length` the wrapper recognizers lower.
+      // A `let` never carries it, because a later write can replace the wrapper.
+      readonly boxedPrimitive?: true;
     }
   | {
       readonly kind: "number";

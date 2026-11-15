@@ -1,24 +1,27 @@
-import { type Lowered, type Produced, loweredOptional, loweredPayload, notApplicable, produced, withRefusal } from "./lowered.js";
+import { type Lowered, type Produced, loweredOptional, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrOperation } from "./types.js";
 import { unwrapTypeOnlyExpression } from "./predicates.js";
+import { expressionSnippet } from "./diagnostics.js";
 import { iteratorErrorSubject } from "./iterator-subject.js";
 import type { JsIrArrayDestructureElement, JsIrValueExpression } from "./expressions.js";
 import { lowerFunctionObjectValue } from "./closures.js";
 import { updateBindings } from "./binding-updates.js";
+import { type DeclarationKind, declarationScope } from "./declaration-kind.js";
 
 export function lowerDestructuringBinding(
   context: LoweringContext,
   pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern,
   initializer: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  kind: DeclarationKind
 ): Lowered {
   const operations: JsIrOperation[] = [];
   const working = new Map(bindings);
   if (ts.isArrayBindingPattern(pattern)) {
-    const protocolResult = lowerArrayProtocolDestructuring(context, pattern, initializer, working, operations);
+    const protocolResult = lowerArrayProtocolDestructuring(context, pattern, initializer, working, operations, kind);
     if (protocolResult.kind === "unsupported") {
       return protocolResult;
     }
@@ -26,6 +29,9 @@ export function lowerDestructuringBinding(
     if (protocol) {
       return produced({ kind: "bindingGroup", operations });
     }
+  }
+  if (kind !== "const") {
+    return lowerMutableDestructuring(context, pattern, initializer, working, operations, kind);
   }
   const source = resolveDestructuringSource(context, initializer, working, operations, pattern.pos);
   if (source.kind !== "lowered") {
@@ -51,12 +57,50 @@ export function lowerDestructuringBinding(
   return produced({ kind: "bindingGroup", operations });
 }
 
+/**
+ * A `let` or `var` binds every name in a boxed slot, because a later write may store any value. The
+ * pattern reads its source as one value: an array pattern iterates it (`lowerArrayProtocolDestructuring`)
+ * and an object pattern reads its properties from a temporary. A fixed-layout aggregate has no
+ * value to read yet, so it is refused by name.
+ */
+function lowerMutableDestructuring(
+  context: LoweringContext,
+  pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern,
+  initializer: ts.Expression,
+  working: Map<string, JsIrBindingValue>,
+  operations: JsIrOperation[],
+  kind: Exclude<DeclarationKind, "const">
+): Lowered {
+  const unreadable: Lowered = unsupportedIn(`A \`${kind}\` destructuring cannot read \`${expressionSnippet(initializer)}\` yet`);
+  if (ts.isArrayBindingPattern(pattern)) {
+    return unreadable;
+  }
+  const source = context.lowerValueExpression(context, unwrapTypeOnlyExpression(initializer), working);
+  if (source.kind !== "lowered") {
+    return withRefusal(source, unreadable);
+  }
+  const temporaryName = `destructure.source.${pattern.pos}`;
+  const temporary: JsIrOperation = { kind: "constValue", name: temporaryName, value: source.operation };
+  operations.push(temporary);
+  updateBindings(temporary, working);
+  const elements = context.lowerObjectDestructuringElements(
+    context, pattern, { name: temporaryName, binding: { kind: "valueVariable", name: temporaryName } }, working, operations, false, kind
+  );
+  if (elements.kind === "unsupported") {
+    return elements;
+  }
+  return elements.operation
+    ? produced({ kind: "bindingGroup", operations })
+    : unsupportedIn(`A \`${kind}\` object pattern with a rest element or a computed key is not supported yet`);
+}
+
 function lowerArrayProtocolDestructuring(
   context: LoweringContext,
   pattern: ts.ArrayBindingPattern,
   initializer: ts.Expression,
   working: Map<string, JsIrBindingValue>,
-  operations: JsIrOperation[]
+  operations: JsIrOperation[],
+  kind: DeclarationKind
 ): Produced<boolean> {
   const unwrapped = unwrapTypeOnlyExpression(initializer);
   if (ts.isIdentifier(unwrapped) && working.get(unwrapped.text)?.kind === "array") {
@@ -87,7 +131,8 @@ function lowerArrayProtocolDestructuring(
     source,
     `${iteratorErrorSubject(initializer)} is not iterable`,
     working,
-    operations
+    operations,
+    kind
   );
 }
 
@@ -98,7 +143,8 @@ export function lowerArrayProtocolDestructuringFromSource(
   source: Extract<JsIrOperation, { readonly kind: "arrayDestructureProtocol" }>["source"],
   notIterableMessage: string,
   working: Map<string, JsIrBindingValue>,
-  operations: JsIrOperation[]
+  operations: JsIrOperation[],
+  kind: DeclarationKind = "const"
 ): Produced<boolean> {
   const elements: JsIrArrayDestructureElement[] = [];
   for (let index = 0; index < pattern.elements.length; index += 1) {
@@ -111,8 +157,8 @@ export function lowerArrayProtocolDestructuringFromSource(
       if (index !== pattern.elements.length - 1 || element.initializer !== undefined || !ts.isIdentifier(element.name)) {
         return produced(false);
       }
-      elements.push({ kind: "rest", name: element.name.text });
-      working.set(element.name.text, { kind: "runtimeArray", name: element.name.text });
+      elements.push({ kind: "rest", name: element.name.text, ...(kind === "const" ? {} : { mutable: true as const }) });
+      working.set(element.name.text, { kind: kind === "const" ? "runtimeArray" : "valueVariable", name: element.name.text });
       continue;
     }
     if (ts.isIdentifier(element.name)) {
@@ -141,7 +187,7 @@ export function lowerArrayProtocolDestructuringFromSource(
       working.set(element.name.text, { kind: "valueVariable", name: element.name.text });
       continue;
     }
-    const nestedElement = lowerNestedProtocolDestructuring(context, element, working);
+    const nestedElement = lowerNestedProtocolDestructuring(context, element, working, kind);
     if (nestedElement.kind === "unsupported") {
       return nestedElement;
     }
@@ -151,7 +197,7 @@ export function lowerArrayProtocolDestructuringFromSource(
     elements.push(nestedElement.operation);
   }
 
-  const operation: JsIrOperation = { kind: "arrayDestructureProtocol", source, elements, notIterableMessage };
+  const operation: JsIrOperation = { kind: "arrayDestructureProtocol", source, elements, notIterableMessage, ...declarationScope(kind) };
   operations.push(operation);
   updateBindings(operation, working);
   return produced(true);
@@ -200,11 +246,10 @@ export function lowerArrayDestructuringElements(
   pattern: ts.ArrayBindingPattern,
   source: DestructuringSource,
   working: Map<string, JsIrBindingValue>,
-  operations: JsIrOperation[],
-  lazyDefaults = false
+  operations: JsIrOperation[]
 ): Produced<boolean> {
   const sourceBinding = source.binding;
-  if (sourceBinding.kind !== "runtimeArray" && sourceBinding.kind !== "array" && sourceBinding.kind !== "valueVariable") {
+  if (sourceBinding.kind !== "runtimeArray" && sourceBinding.kind !== "array") {
     return produced(false);
   }
   for (let index = 0; index < pattern.elements.length; index += 1) {
@@ -236,28 +281,13 @@ export function lowerArrayDestructuringElements(
       }
       continue;
     }
-    if (sourceBinding.kind === "valueVariable") {
-      const access: JsIrValueExpression = {
-        kind: "valueArrayAccess",
-        value: { kind: "variable", name: source.name },
-        index: { kind: "literal", value: index },
-        key: { kind: "literal", value: String(index) }
-      };
-      const operation = lowerDestructuredValueBinding(context, name, access, element.initializer, working, lazyDefaults);
-      if (operation.kind !== "lowered") {
-        return withRefusal(operation, produced(false));
-      }
-      operations.push(operation.operation);
-      updateBindings(operation.operation, working);
-      continue;
-    }
     const access: JsIrValueExpression = {
       kind: "arrayAccess",
       arrayName: source.name,
       index: { kind: "literal", value: index },
       key: { kind: "literal", value: String(index) }
     };
-    const operation = lowerDestructuredValueBinding(context, name, access, element.initializer, working, lazyDefaults);
+    const operation = lowerDestructuredValueBinding(context, name, access, element.initializer, working);
     if (operation.kind !== "lowered") {
       return withRefusal(operation, produced(false));
     }
@@ -297,7 +327,8 @@ export function lowerDestructuredValueBinding(
   access: JsIrValueExpression,
   defaultInitializer: ts.Expression | undefined,
   working: ReadonlyMap<string, JsIrBindingValue>,
-  lazyDefault = false
+  lazyDefault = false,
+  kind: DeclarationKind = "const"
 ): Lowered {
   let value: JsIrValueExpression = access;
   let defaultIsFunction = false;
@@ -315,7 +346,7 @@ export function lowerDestructuredValueBinding(
       defaultValue = loweredPayload(valueExpressionResult2);
     }
     if (defaultValue === undefined) {
-      return notApplicable;
+      return unsupportedIn(`The default value \`${expressionSnippet(defaultInitializer)}\` of \`${name}\` is not an expression this build can evaluate`);
     }
     defaultIsFunction = defaultValue.kind === "functionObject";
     const defaultIsCall = ts.isCallExpression(unwrapTypeOnlyExpression(defaultInitializer));
@@ -329,6 +360,9 @@ export function lowerDestructuredValueBinding(
         alternate: access
       };
     }
+  }
+  if (kind !== "const") {
+    return produced({ kind: "letValue", name, value, ...declarationScope(kind) });
   }
   if (
     (lazyDefault && defaultInitializer !== undefined) ||
@@ -368,7 +402,8 @@ export function lowerDestructuredFallbackOperation(
 function lowerNestedProtocolDestructuring(
   context: LoweringContext,
   element: ts.BindingElement,
-  working: Map<string, JsIrBindingValue>
+  working: Map<string, JsIrBindingValue>,
+  kind: DeclarationKind
 ): Lowered<JsIrArrayDestructureElement> {
   const temporaryName = `destructure.nested.${element.pos}`;
   const nestedWorking = new Map(working);
@@ -376,7 +411,7 @@ function lowerNestedProtocolDestructuring(
   const nestedOperations: JsIrOperation[] = [];
   const bindingName = element.initializer === undefined ? temporaryName : `${temporaryName}.default`;
   const nestedResult = lowerNestedBindingFromValue(
-    context, element, bindingName, { kind: "variable", name: temporaryName }, nestedWorking, nestedOperations
+    context, element, bindingName, { kind: "variable", name: temporaryName }, nestedWorking, nestedOperations, kind
   );
   if (nestedResult.kind === "unsupported") {
     return nestedResult;
@@ -399,13 +434,14 @@ export function lowerNestedBindingFromValue(
   temporaryName: string,
   value: JsIrValueExpression,
   working: Map<string, JsIrBindingValue>,
-  operations: JsIrOperation[]
+  operations: JsIrOperation[],
+  kind: DeclarationKind = "const"
 ): Produced<boolean> {
   // Protocol elements already have a stable incoming slot. Only property extraction or a default
   // needs another binding operation before recursion.
   if (value.kind !== "variable" || value.name !== temporaryName || element.initializer !== undefined) {
     const binding = lowerDestructuredValueBinding(
-      context, temporaryName, value, element.initializer, working, element.initializer !== undefined
+      context, temporaryName, value, element.initializer, working, element.initializer !== undefined, kind
     );
     if (binding.kind !== "lowered") {
       return withRefusal(binding, produced(false));
@@ -416,13 +452,13 @@ export function lowerNestedBindingFromValue(
   if (ts.isArrayBindingPattern(element.name)) {
     return lowerArrayProtocolDestructuringFromSource(
       context, element.name, { kind: "value", value: { kind: "variable", name: temporaryName } },
-      "Nested destructuring value is not iterable", working, operations
+      "Nested destructuring value is not iterable", working, operations, kind
     );
   }
   if (ts.isObjectBindingPattern(element.name)) {
     return context.lowerObjectDestructuringElements(
       context, element.name, { name: temporaryName, binding: { kind: "valueVariable", name: temporaryName } },
-      working, operations, true
+      working, operations, true, kind
     );
   }
   return produced(false);

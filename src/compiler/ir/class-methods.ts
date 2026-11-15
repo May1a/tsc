@@ -5,10 +5,12 @@ import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
 import { type Produced, loweredPayload, produced, unsupportedIn } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
 import { CLASS_THIS_NAME, classAbortReason, classMethodFunctionName } from "./class-names.js";
-import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
+import { functionFrameBindings } from "./function-parameters.js";
+import { lowerFunctionParameters } from "./function-parameter-lowering.js";
 import { isNonExecutableDeclaration } from "./comparisons.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { updateBindings } from "./binding-updates.js";
+import { collectMethodEnclosingCaptureNames } from "./captures.js";
 
 export function lowerClassAccessor(
   context: LoweringContext,
@@ -20,19 +22,12 @@ export function lowerClassAccessor(
   if (accessor.body === undefined) {
     return unsupportedIn("An accessor overload signature is not supported yet; only the implementation is lowered");
   }
-  const parameters = classCallableParameters(accessor);
-  if (parameters.kind !== "lowered") {
-    return parameters;
+  const signature = classCallableParameters(accessor);
+  if (signature.kind !== "lowered") {
+    return signature;
   }
-  const fnParameters: JsIrFunctionParameter[] = [
-    { name: CLASS_THIS_NAME, valueKind: "value" },
-    ...parameters.operation
-  ];
-  const fnBindings = functionFrameBindings(bindings);
-  fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-  for (const parameter of parameters.operation) {
-    bindFunctionParameter(parameter.name, parameter.valueKind, false, fnBindings);
-  }
+  const receiverBindings = functionFrameBindings(bindings);
+  receiverBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
 
   const previousThis = context.classThisInScope;
   const previousClass = context.activeEnclosingClass;
@@ -41,11 +36,18 @@ export function lowerClassAccessor(
   context.activeEnclosingClass = info;
   context.activeClassMethodStatic = false;
   try {
-    const body = lowerClassMethodBody(context, accessor.body, fnBindings);
+    const parameters = lowerFunctionParameters(context, accessor.parameters, receiverBindings);
+    if (parameters.kind !== "lowered") {
+      return parameters;
+    }
+    const body = lowerClassMethodBody(context, accessor.body, parameters.operation.bindings);
     if (body.kind !== "lowered") {
       return body;
     }
-    return produced({ kind: "function", name: functionName, parameters: fnParameters, body: body.operation });
+    const fnParameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...parameters.operation.parameters];
+    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, accessor, accessor.body, [...accessor.parameters], bindings);
+    return produced({ kind: "function", name: functionName, parameters: fnParameters, body: body.operation,
+      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }) });
   } finally {
     context.classThisInScope = previousThis;
     context.activeEnclosingClass = previousClass;
@@ -68,20 +70,13 @@ export function lowerClassMethod(
     return unsupportedIn("A method with no body reached emission; the class tier should have dropped it as an overload signature");
   }
   const methodName = entry.name;
-  const parameters = classCallableParameters(declaration);
-  if (parameters.kind !== "lowered") {
-    return parameters;
+  const signature = classCallableParameters(declaration);
+  if (signature.kind !== "lowered") {
+    return signature;
   }
-  const fnBindings = functionFrameBindings(bindings);
+  const receiverBindings = functionFrameBindings(bindings);
   const fnParameters: JsIrFunctionParameter[] = [];
-  if (!isStatic) {
-    fnParameters.push({ name: CLASS_THIS_NAME, valueKind: "value" });
-    fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-  }
-  for (const parameter of parameters.operation) {
-    fnParameters.push(parameter);
-    bindFunctionParameter(parameter.name, parameter.valueKind, false, fnBindings);
-  }
+  bindClassMethodReceiver(receiverBindings, fnParameters, isStatic);
 
   const previousThis = context.classThisInScope;
   const previousClass = context.activeEnclosingClass;
@@ -90,15 +85,22 @@ export function lowerClassMethod(
   context.activeEnclosingClass = info;
   context.activeClassMethodStatic = isStatic;
   try {
-    const body = lowerClassMethodBody(context, declaration.body, fnBindings);
+    const parameters = lowerFunctionParameters(context, declaration.parameters, receiverBindings);
+    if (parameters.kind !== "lowered") {
+      return parameters;
+    }
+    fnParameters.push(...parameters.operation.parameters);
+    const body = lowerClassMethodBody(context, declaration.body, parameters.operation.bindings);
     if (body.kind !== "lowered") {
       return body;
     }
+    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, declaration, declaration.body, [...declaration.parameters], bindings);
     return produced({
       kind: "function",
       name: classMethodFunctionName(info.name, methodName, isStatic),
       parameters: fnParameters,
-      body: body.operation
+      body: body.operation,
+      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] })
     });
   } finally {
     context.classThisInScope = previousThis;
@@ -109,6 +111,17 @@ export function lowerClassMethod(
 
 // Lowers a constructor-or-method body, normalizing every `return` to a JSValue
 // result so method calls are uniformly value-typed at their call sites.
+function bindClassMethodReceiver(
+  fnBindings: Map<string, JsIrBindingValue>,
+  fnParameters: JsIrFunctionParameter[],
+  isStatic: boolean
+): void {
+  if (!isStatic) {
+    fnParameters.push({ name: CLASS_THIS_NAME, valueKind: "value" });
+    fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
+  }
+}
+
 function lowerClassMethodBody(
   context: LoweringContext,
   block: ts.Block,

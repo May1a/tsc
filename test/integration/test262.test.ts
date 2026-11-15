@@ -83,7 +83,7 @@ describe("filtered Test262 harness", () => {
   }, roadmapIntegrationTimeoutMs);
 
   test("reports a behavioral mismatch with native and Node behavior shown", async () => {
-    const results = completedResults(await runSuite({ only: ["language/statements/expression/mismatch-number-format.js"] }));
+    const results = completedResults(await runSuite({ only: ["language/statements/expression/mismatch-property-order.js"] }));
     expect(results).toHaveLength(1);
     const [result] = results;
     expectClassification(result, "fail", "behavior-mismatch");

@@ -115,6 +115,8 @@ function regexReplace(expression: StringNode<"regexReplace">, context: Expressio
 const handlers: VariantHandlers<StringVariants, ExpressionContext, NativeString> = {
   literal: (expression, context) => literal(expression.value, context),
   typeof: (expression, context) => literal(expression.value, context),
+  valueTypeOf: (expression, context) => context.runtime.callString("valueTypeOf",
+    [context.expressions.value(expression.value)], context.cursor.uniqueName("value.typeof")),
   variable: (expression, context) => context.bindings.string(expression.name),
   call: (expression, context) => stringFromValue(context.calls.direct(expression), context),
   taggedTemplate: (expression, context) => stringFromValue(context.calls.tagged(expression), context),
@@ -128,9 +130,12 @@ const handlers: VariantHandlers<StringVariants, ExpressionContext, NativeString>
   },
   concat: (expression, context) => {
     const left = context.expressions.string(expression.left);
-    boxString(left, context);
+    // The right operand may run user code that collects, such as an object's `toString`, so the
+    // left bytes are read back from their rooted copy once it has run.
+    const leftOwner = boxString(left, context);
     const right = context.expressions.string(expression.right);
-    const bytes = context.runtime.callPointer("strConcat", [left.length, left.bytes, right.length, right.bytes], context.cursor.uniqueName("string.concat"));
+    const leftBytes = context.runtime.callPointer("valueStringPtr", [leftOwner], context.cursor.uniqueName("string.concat.left"));
+    const bytes = context.runtime.callPointer("strConcat", [left.length, leftBytes, right.length, right.bytes], context.cursor.uniqueName("string.concat"));
     const length = context.cursor.currentBlock().add(left.length, right.length, context.cursor.uniqueName("string.length"));
     return { bytes, length };
   },
@@ -141,16 +146,30 @@ const handlers: VariantHandlers<StringVariants, ExpressionContext, NativeString>
     const length = context.runtime.call("strlen", [bytes], context.cursor.uniqueName("string.length"));
     return { bytes, length };
   },
-  stringConversion: (expression, context) => context.runtime.callString("valueToString",
-    [context.expressions.value(expression.value)], context.cursor.uniqueName("string.coerce")),
+  stringConversion: (expression, context) => {
+    const value = context.expressions.value(expression.value);
+    const preferValue = context.cursor.currentBlock().int(llvm.i1, expression.preferValue === true ? 1n : 0n);
+    const converted = context.runtime.callWithCompletion("valueToStringObservable", [value, preferValue],
+      context.cursor.uniqueName("string.coerce"), context.exceptionTarget());
+    context.roots.push(converted);
+    return {
+      bytes: context.runtime.callPointer("valueStringPtr", [converted], context.cursor.uniqueName("string.coerce.bytes")),
+      length: context.runtime.call("valueStringLength", [converted], context.cursor.uniqueName("string.coerce.length"))
+    };
+  },
   stringMethod, stringFromCharCode: fromCharCode, regexReplace,
   numberFormat: (expression, context) => {
     const receiver = context.expressions.number(expression.receiver);
     const argument = context.expressions.number(expression.argument ?? { kind: "literal", value: formatDefaults[expression.method] });
     return context.runtime.callString(formatHelpers[expression.method], [receiver, argument], context.cursor.uniqueName("number.format"));
   },
-  errorToString: (expression, context) => context.runtime.callString("errorToString", [context.bindings.pointer(expression.objectName)],
-    context.cursor.uniqueName("error.string"))
+  errorToString: (expression, context) => {
+    const receiver = context.values.forBlock(context.cursor.currentBlock()).boxReference("object", context.bindings.pointer(expression.objectName));
+    context.roots.push(receiver);
+    const result = context.runtime.callWithCompletion("errorToStringObservable", [receiver],
+      context.cursor.uniqueName("error.string"), context.exceptionTarget());
+    return stringFromValue(result, context);
+  }
 };
 
 export function lowerString(expression: ResolvedStringExpression, context: ExpressionContext): NativeString {

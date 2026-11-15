@@ -50,17 +50,17 @@ export const jsIrLeafOperationKinds: Readonly<Record<Exclude<JsIrOperation["kind
   "runtimeArraySplice": true, "runtimeArraySpliceStatement": true, "runtimeArrayFlat": true, "runtimeStringSplit": true, "runtimeRegexSplit": true,
   "runtimeArrayMapCallback": true, "runtimeArrayFlatMapCallback": true, "runtimeArraySort": true, "runtimeArrayFrom": true, "runtimeArrayFromValue": true,
   "runtimeArrayFromCollection": true, "runtimeArrayFilterCallback": true, "runtimeArrayConcat": true, "runtimeArrayMutatorResult": true, "runtimeObjectGetPrototype": true,
-  "assignNumber": true, "assignString": true, "assignBoolean": true, "arrayStore": true, "runtimeArrayStore": true,
+  "assignNumber": true, "assignString": true, "assignBoolean": true, "assignValue": true, "arrayStore": true, "runtimeArrayStore": true,
   "runtimeArrayNamedStore": true, "runtimeArrayDelete": true, "runtimeArrayNamedDelete": true, "runtimeArraySetLength": true, "runtimeArrayPush": true,
   "runtimeArrayUnshift": true, "runtimeArrayFill": true, "runtimeArrayReverse": true, "runtimeArrayForEachCallback": true, "runtimeArrayFindCallback": true,
   "runtimeArrayFindIndexCallback": true, "runtimeArrayReduceCallback": true, "runtimeMapNew": true, "runtimeSetNew": true, "runtimeMapFromArray": true,
   "runtimeSetFromArray": true, "runtimeMapFromIterable": true, "runtimeSetFromIterable": true, "runtimeMapFromCollection": true, "runtimeSetFromCollection": true,
   "runtimeMapSet": true, "runtimeCollectionSetIterator": true, "runtimeSetAdd": true, "runtimeMapSetResult": true, "runtimeSetAddResult": true,
   "runtimeIteratorNew": true, "runtimeArrayCopyWithin": true, "runtimeArrayPop": true, "runtimeArrayShift": true, "objectStore": true,
-  "runtimeObjectStore": true, "valueObjectStore": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
+  "runtimeObjectStore": true, "valueObjectStore": true, "defineAccessor": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
   "runtimeObjectDelete": true, "valueObjectDelete": true, "valueArrayDelete": true, "runtimeObjectSetPrototype": true, "valueObjectSetPrototype": true,
   "runtimeObjectPreventExtensions": true, "runtimeObjectSeal": true, "runtimeObjectFreeze": true, "runtimeObjectAssign": true, "runtimeObjectDefineDataProperty": true,
-  "runtimeObjectDefineDataProperties": true, "print": true, "throwValue": true, "break": true, "continue": true,
+  "runtimeObjectDefineDataProperties": true, "print": true, "throwValue": true, "discardValue": true, "break": true, "continue": true,
   "call": true, "callValue": true, "inlineCpp": true, "returnNumber": true, "returnString": true,
   "returnValue": true
 };
@@ -83,7 +83,7 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
       });
     }
     case "runtimeArrayMapFunctionObject": {
-      return operation.callbackBody;
+      return [...operation.callbackParameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...operation.callbackBody];
     }
     case "block":
     case "bindingGroup": {
@@ -105,6 +105,9 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
     case "switch": {
       return operation.clauses.flatMap((clause) => clause.operations);
     }
+    case "function": {
+      return [...operation.parameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...operation.body];
+    }
     case "while":
     case "doWhile":
     case "forOfArray":
@@ -114,12 +117,12 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
     case "forOfProtocol":
     case "forInObject":
     case "forInArray":
-    case "function":
     case "returnClosure": {
       return operation.body;
     }
     case "for": {
-      return [...operation.initializer, ...operation.body, operation.increment];
+      const step = operation.increment === undefined ? [] : [operation.increment];
+      return [...operation.initializer, ...operation.body, ...step];
     }
     default: {
       // The residual is exactly the leaf set. Indexing jsIrLeafOperationKinds is total by
