@@ -156,7 +156,7 @@ export function resolveDestructureElement(
       };
     }
     case "rest": {
-      return { kind: "rest", name: state.declare(element.name, kind, { kind: "runtimeArray" }) };
+      return { kind: "rest", name: state.declare(element.name, kind, { kind: element.mutable === true ? "value" : "runtimeArray" }) };
     }
     default: {
       return {

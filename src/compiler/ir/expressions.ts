@@ -288,7 +288,7 @@ export type JsIrArrayDestructureElement =
   | { readonly kind: "elision" }
   | { readonly kind: "binding"; readonly name: string; readonly defaultValue?: JsIrValueExpression }
   | { readonly kind: "nested"; readonly temporaryName: string; readonly operations: readonly JsIrOperation[] }
-  | { readonly kind: "rest"; readonly name: string };
+  | { readonly kind: "rest"; readonly name: string; readonly mutable?: true };
 
 export type JsIrNumberExpression =
   | {

@@ -157,8 +157,8 @@ export function lowerArrayProtocolDestructuringFromSource(
       if (index !== pattern.elements.length - 1 || element.initializer !== undefined || !ts.isIdentifier(element.name)) {
         return produced(false);
       }
-      elements.push({ kind: "rest", name: element.name.text });
-      working.set(element.name.text, { kind: "runtimeArray", name: element.name.text });
+      elements.push({ kind: "rest", name: element.name.text, ...(kind === "const" ? {} : { mutable: true as const }) });
+      working.set(element.name.text, { kind: kind === "const" ? "runtimeArray" : "valueVariable", name: element.name.text });
       continue;
     }
     if (ts.isIdentifier(element.name)) {

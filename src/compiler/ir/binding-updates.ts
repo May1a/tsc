@@ -82,7 +82,7 @@ export function updateBindings(
       if (element.kind === "binding") {
         bindings.set(element.name, { kind: "valueVariable", name: element.name });
       } else if (element.kind === "rest") {
-        bindings.set(element.name, { kind: "runtimeArray", name: element.name });
+        bindings.set(element.name, { kind: element.mutable === true ? "valueVariable" : "runtimeArray", name: element.name });
       } else if (element.kind === "nested") {
         for (const nested of element.operations) {
           updateBindings(nested, bindings);
