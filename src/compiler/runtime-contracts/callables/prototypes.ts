@@ -5,6 +5,7 @@ import { type RuntimeCalleeTable, registerRuntimeContract } from "../register.js
 
 export function createPrototypesCallees(module: LlvmModuleBuilder): RuntimeCalleeTable<typeof prototypesContracts> {
   return {
+    "arrayPrototypeInit": registerRuntimeContract(module, prototypesContracts.arrayPrototypeInit),
     "arrayPrototypeMethod": registerRuntimeContract(module, prototypesContracts.arrayPrototypeMethod),
     "arrayMethodReceiverError": registerRuntimeContract(module, prototypesContracts.arrayMethodReceiverError),
     "arrayMethodResult": registerRuntimeContract(module, prototypesContracts.arrayMethodResult),
