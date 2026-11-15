@@ -12,6 +12,7 @@ import { type FunctionCapabilities, NativeModule, type NativeParameter } from ".
 import { createOperationContext } from "../../src/compiler/native-lowering/operation-owner.js";
 import { captureCommand, commandExecutorLayer, toolExecutable } from "./helpers.js";
 import { runtimeIrText } from "../../src/compiler/runtime-files.js";
+import { errorClassId } from "../../src/compiler/native-lowering/error-classes.js";
 
 interface Names {
   readonly source: BindingRef; readonly item: BindingRef; readonly rest: BindingRef; readonly counter: BindingRef;
@@ -154,6 +155,10 @@ function protocolModule(): NativeModule {
     fn.openEntry();
     const { cursor, runtime, roots, values, completion } = fn.capabilities;
     runtime.callVoid("gcInit", []);
+    // Warm the permanent prototypes before measuring roots retained by the scenarios.
+    runtime.callPointer("errorPrototype", [cursor.currentBlock().int(llvm.i64, BigInt(errorClassId("TypeError")))], "error.prototype");
+    runtime.callVoid("gcCollect", []);
+    const baseline = runtime.call("gcStatsLiveBytes", [], "baseline.bytes");
     const frame = roots.save();
     for (const spec of specs) {
       const failed = { block: cursor.reserveBlock("failed"), payloadSlot: cursor.currentBlock().alloca(llvm.i64, cursor.uniqueName("exception")) };
@@ -171,8 +176,9 @@ function protocolModule(): NativeModule {
     }
     runtime.callVoid("gcCollect", []);
     const liveBytes = runtime.call("gcStatsLiveBytes", [], "remaining.bytes");
+    const retained = cursor.currentBlock().subtract(liveBytes, baseline, "retained.bytes");
     runtime.callVoid("valuePrint", [values.forBlock(cursor.currentBlock()).boxNumber(
-      cursor.currentBlock().cast("uitofp", liveBytes, llvm.double, "remaining.number"))]);
+      cursor.currentBlock().cast("sitofp", retained, llvm.double, "remaining.number"))]);
     roots.restore(frame);
     cursor.currentBlock().ret(cursor.currentBlock().int(llvm.i32, 0n));
   });
