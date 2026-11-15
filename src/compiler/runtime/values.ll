@@ -1,3 +1,34 @@
+@.typeof.undefined = private unnamed_addr constant [10 x i8] c"undefined\00"
+@.typeof.object = private unnamed_addr constant [7 x i8] c"object\00"
+@.typeof.boolean = private unnamed_addr constant [8 x i8] c"boolean\00"
+@.typeof.number = private unnamed_addr constant [7 x i8] c"number\00"
+@.typeof.string = private unnamed_addr constant [7 x i8] c"string\00"
+@.typeof.function = private unnamed_addr constant [9 x i8] c"function\00"
+
+; The type of a boxed value after its binding read has checked lexical initialization.
+define { ptr, i64 } @valueTypeOf(i64 %value) {
+entry:
+  %undefined = icmp eq i64 %value, 9222246136947933184
+  %true = icmp eq i64 %value, 9222246136947933186
+  %false = icmp eq i64 %value, 9222246136947933185
+  %boolean = or i1 %true, %false
+  %number = call i1 @valueIsNumberForSameValueZero(i64 %value)
+  %string = call i1 @valueIsString(i64 %value)
+  %function = call i1 @valueIsFunction(i64 %value)
+  %number.ptr = select i1 %number, ptr @.typeof.number, ptr @.typeof.object
+  %function.ptr = select i1 %function, ptr @.typeof.function, ptr %number.ptr
+  %function.len = select i1 %function, i64 8, i64 6
+  %string.ptr = select i1 %string, ptr @.typeof.string, ptr %function.ptr
+  %string.len = select i1 %string, i64 6, i64 %function.len
+  %boolean.ptr = select i1 %boolean, ptr @.typeof.boolean, ptr %string.ptr
+  %boolean.len = select i1 %boolean, i64 7, i64 %string.len
+  %pointer = select i1 %undefined, ptr @.typeof.undefined, ptr %boolean.ptr
+  %length = select i1 %undefined, i64 9, i64 %boolean.len
+  %result.0 = insertvalue { ptr, i64 } undef, ptr %pointer, 0
+  %result = insertvalue { ptr, i64 } %result.0, i64 %length, 1
+  ret { ptr, i64 } %result
+}
+
 define i1 @valueStrictEquals(i64 %left, i64 %right) {
 entry:
   %left.number = call i1 @valueIsNumberForSameValueZero(i64 %left)

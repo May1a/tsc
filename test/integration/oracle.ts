@@ -447,6 +447,7 @@ export const oracleFixtures: readonly string[] = [
   "error-observable-message.ts",
   "error-tostring-observable.ts",
   "forward-capture-storage.ts",
+  "forward-capture-typeof.ts",
   "mutable-pattern-rest-storage.ts",
   "number-shortest-decimal-backedge.ts",
   "parameter-sequencing-array.ts",

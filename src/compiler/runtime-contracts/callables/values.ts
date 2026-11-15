@@ -5,6 +5,7 @@ import { type RuntimeCalleeTable, registerRuntimeContract } from "../register.js
 
 export function createValuesCallees(module: LlvmModuleBuilder): RuntimeCalleeTable<typeof valuesContracts> {
   return {
+    "valueTypeOf": registerRuntimeContract(module, valuesContracts.valueTypeOf),
     "valueStrictEquals": registerRuntimeContract(module, valuesContracts.valueStrictEquals),
     "valueIsNumberForSameValueZero": registerRuntimeContract(module, valuesContracts.valueIsNumberForSameValueZero),
     "valueSameValueZero": registerRuntimeContract(module, valuesContracts.valueSameValueZero),

@@ -88,6 +88,8 @@ global roots, so a value survives after its writer returns.
 Captured lexical bindings owned by functions carry an initialization flag in their
 environment cell. Reads and assignments check that flag and throw `ReferenceError`
 before initialization. An assignment evaluates its right operand before this check.
+`valueTypeOf` retains a binding read, so `typeof` also checks lexical initialization
+and observes the value of a hoisted `var` before its initializer runs.
 
 Generated functions use one thunk ABI:
 

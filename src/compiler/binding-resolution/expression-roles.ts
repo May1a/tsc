@@ -100,6 +100,7 @@ export const stringExpressionRoles = {
   arrayJoin: { arrayName: reference },
   // `typeof.value` is the name of a type the source asked about, not a binding.
   typeof: { value: preserved("typeofOperand") },
+  valueTypeOf: {},
   stringConversion: {},
   stringMethod: {},
   stringFromCharCode: {},

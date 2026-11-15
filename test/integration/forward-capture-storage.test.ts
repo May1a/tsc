@@ -5,6 +5,11 @@ test("nested declarations capture later mutable bindings by identity", async () 
   await expectNativeFixtures([["forward-capture-storage.ts", "null\ntrue\n2\nnull\ntrue\n3\nnull\n4\ntrue\n1\n2\nnull\nundefined\nnull\ntrue\n9\n10\n"]]);
 }, roadmapIntegrationTimeoutMs);
 
+test("typeof preserves lexical TDZ checks and reads hoisted values", async () => {
+  await expectNativeFixtures([["forward-capture-typeof.ts",
+    "true\nnumber\nundefined\nnumber\nstring\nboolean\nobject\nundefined\nobject\nnumber\nfunction\n"]]);
+}, roadmapIntegrationTimeoutMs);
+
 test("refuses forward loop captures until cells can be allocated at scope entry", async () => {
   await expectUnsupportedMessage("forward-capture-loop-unsupported.ts",
     "Forward lexical capture inside a loop requires scope-entry cell allocation");

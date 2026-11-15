@@ -124,6 +124,12 @@ export function lowerStringRuntimeExpression(
   if (ts.isTypeOfExpression(expression)) {
     const typeName = lowerTypeOfResult(expression.expression, bindings);
     if (typeName !== undefined) {
+      const binding = ts.isIdentifier(expression.expression) ? bindings.get(expression.expression.text) : undefined;
+      // Mutable storage may be uninitialized or hold a hoisted var's undefined value.
+      if (ts.isIdentifier(expression.expression) && (binding?.kind === "valueVariable" || binding?.kind === "stringVariable" ||
+        binding?.kind === "booleanVariable" || binding?.kind === "number" && binding.value.kind === "variable")) {
+        return produced({ kind: "valueTypeOf", value: { kind: "variable", name: expression.expression.text } });
+      }
       return produced({ kind: "typeof", value: typeName });
     }
     return unsupportedIn(unsupportedTypeOfMessage(expression.expression, bindings));

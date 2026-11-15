@@ -459,6 +459,11 @@ export type JsIrStringExpression =
       readonly kind: "typeof";
       readonly value: string;
     }
+  | {
+      /** A binding read must retain lexical initialization checks before determining its type. */
+      readonly kind: "valueTypeOf";
+      readonly value: JsIrValueExpression;
+    }
   /**
    * ToString. An object converts through its own `toString` and `valueOf`, which may throw;
    * `preferValue` tries `valueOf` first, as the default hint of `+` does.

@@ -115,6 +115,8 @@ function regexReplace(expression: StringNode<"regexReplace">, context: Expressio
 const handlers: VariantHandlers<StringVariants, ExpressionContext, NativeString> = {
   literal: (expression, context) => literal(expression.value, context),
   typeof: (expression, context) => literal(expression.value, context),
+  valueTypeOf: (expression, context) => context.runtime.callString("valueTypeOf",
+    [context.expressions.value(expression.value)], context.cursor.uniqueName("value.typeof")),
   variable: (expression, context) => context.bindings.string(expression.name),
   call: (expression, context) => stringFromValue(context.calls.direct(expression), context),
   taggedTemplate: (expression, context) => stringFromValue(context.calls.tagged(expression), context),

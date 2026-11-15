@@ -3,6 +3,13 @@ import { llvm } from "../llvm-ir/index.js";
 import type { RuntimeCallContract } from "./types.js";
 
 export const valuesContracts = {
+  "valueTypeOf": {
+    resultKind: "string",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueTypeOf", parameters: [llvm.i64], returns: llvm.struct([llvm.ptr, llvm.i64]), variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
   "valueStrictEquals": {
     resultKind: "scalar",
     pointerResult: { kind: "none" },

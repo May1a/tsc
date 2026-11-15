@@ -29,6 +29,7 @@ export const stringHandlers = tierHandlers<JsIrStringExpression, ResolvedStringE
   }),
   // The name of a type the source asked about, not a binding.
   typeof: (node) => ({ kind: "typeof", value: node.value }),
+  valueTypeOf: (node, resolver) => ({ kind: "valueTypeOf", value: resolver.value(node.value) }),
   stringConversion: (node, resolver) => ({ ...node, value: resolver.value(node.value) }),
   stringMethod: (node, resolver) => ({
     kind: "stringMethod",
