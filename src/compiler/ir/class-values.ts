@@ -246,18 +246,29 @@ function lowerPrivateSetterCall(
   if (accessor.setter === undefined) {
     return unsupportedIn(`\`${fieldName}\` has no setter, so writing it always throws a TypeError, which is not supported yet`);
   }
-  const receiver = lowerPrivateAccessorReceiver(context, left.expression, bindings);
+  const receiver = context.lowerValueExpression(context, left.expression, bindings);
   if (receiver.kind !== "lowered") {
-    return receiver;
+    return withRefusal(receiver, unsupportedIn("The receiver of a private setter is not an expression this build can evaluate"));
   }
   const value = context.lowerValueExpression(context, right, bindings);
   if (value.kind !== "lowered") {
     return withRefusal(value, unsupportedIn("The value written to a private accessor is not an expression this build can evaluate"));
   }
+  const receiverName = `private.setter.receiver.${left.pos}`;
+  const valueName = `private.setter.value.${left.pos}`;
+  const capturedReceiver: JsIrValueExpression = { kind: "variable", name: receiverName };
+  // Assignment captures its reference before the RHS, but checks the brand only when writing.
   return produced({
-    kind: "callValue",
-    callee: { kind: "privateFieldAccess", receiver: receiver.operation, key: accessor.setter.storageKey, message: classPrivateFieldWriteMessage(fieldName) },
-    arguments: [{ valueKind: "value", value: value.operation }],
-    thisValue: receiver.operation
+    kind: "block",
+    operations: [
+      { kind: "constValue", name: receiverName, value: receiver.operation },
+      { kind: "constValue", name: valueName, value: value.operation },
+      {
+        kind: "callValue",
+        callee: { kind: "privateFieldAccess", receiver: capturedReceiver, key: accessor.setter.storageKey, message: classPrivateFieldWriteMessage(fieldName) },
+        arguments: [{ valueKind: "value", value: { kind: "variable", name: valueName } }],
+        thisValue: capturedReceiver
+      }
+    ]
   });
 }
