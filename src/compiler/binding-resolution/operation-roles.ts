@@ -140,6 +140,7 @@ export const operationRoles = {
   // `catchVariable` is empty when there is no catch clause, so it declares only when it has a name.
   tryCatch: { catchVariable: optionalDeclaration },
   bindingGroup: {},
+  labeledBlock: {},
   if: {},
   switch: {},
   while: {},

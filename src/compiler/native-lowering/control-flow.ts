@@ -26,6 +26,7 @@ export interface FlowCapability {
   switch(operation: Node<"switch">, context: OperationContext): void;
   loop(operation: Node<"while" | "doWhile" | "for">, context: OperationContext): void;
   jump(operation: Node<"break" | "continue">): void;
+  labeledBlock(operation: Node<"labeledBlock">, context: OperationContext): void;
   withCleanup<A>(cleanup: Cleanup, build: () => A): A;
   withLoop<A>(loop: Loop, build: () => A): A;
   readonly cleanupDepth: number;
@@ -82,6 +83,21 @@ export class ControlFlow implements FlowCapability {
     const target = operation.kind === "continue" ? loop?.continueTarget : loop?.breakTarget;
     if (target === undefined) { throw new Error(`${operation.kind} has no resolved loop target`); }
     this.#abrupt({ kind: "jump", block: target.block }, target.depth);
+  }
+
+  /**
+   * Emit a labeled non-loop statement as a break-only target, as `switch` is.
+   *
+   * The target lives on the loop stack, so the routes `#state` captures for later emission keep it, and a
+   * `break` that leaves it runs the cleanups between the jump and the block like any other jump.
+   */
+  public labeledBlock(operation: Node<"labeledBlock">, context: OperationContext): void {
+    const { cursor } = this.#capabilities;
+    const done = cursor.reserveBlock("labeled.end");
+    this.withLoop({ breakTarget: { block: done, depth: this.cleanupDepth } },
+      () => context.operations.operations(operation.operations));
+    this.#join(done);
+    cursor.openBlock(done);
   }
 
   public branch(operation: Node<"if">, context: OperationContext): void {

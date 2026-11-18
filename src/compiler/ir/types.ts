@@ -620,6 +620,15 @@ export type JsIrOperationNode =
       readonly operations: readonly JsIrOperation[];
     }
   | {
+      /**
+       * A labeled non-loop statement: `label: statement`. It is a break target whose exit is the end of
+       * its operations; `continue` cannot name it. The source label is resolved while lowering into the
+       * `targetDepth` of each `break` that leaves it, so the label itself is not recorded.
+       */
+      readonly kind: "labeledBlock";
+      readonly operations: readonly JsIrOperation[];
+    }
+  | {
       readonly kind: "tryCatch";
       readonly tryOperations: readonly JsIrOperation[];
       readonly catchVariable: string;
@@ -742,9 +751,10 @@ export type JsIrOperationNode =
   | {
       readonly kind: "break";
       /**
-       * How many enclosing loops to leave, counted from the innermost; absent or zero is an ordinary
-       * `break`. A source label names a loop rather than a place in the emitted code, so it is resolved
-       * while lowering into this count of the loops between the jump and the one it named.
+       * How many enclosing break targets (loops, switches, and labeled blocks) to leave, counted from the
+       * innermost; absent is zero. A source label names a statement rather than a place in the emitted
+       * code, so it is resolved while lowering into this count of the targets between the jump and the
+       * one it named. An unlabelled `break` skips labeled blocks to reach the innermost loop or switch.
        */
       readonly targetDepth?: number;
     }

@@ -2,7 +2,7 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrOperation } from "./types.js";
-import { type Lowered, type LoweredStatementList, type Produced, loweredOperation, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
+import { type Lowered, type LoweredStatementList, type Produced, loweredOperation, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { type DestructuringSource, lowerArrayProtocolDestructuringFromSource } from "./destructuring.js";
 import { unwrapTypeOnlyExpression } from "./predicates.js";
@@ -13,9 +13,6 @@ export function lowerThrowStatement(
   statement: ts.ThrowStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  if (context.finallyBlockDepth > 0 && context.tryRegionOfCatchFinallyDepth > 0) {
-    return unsupported("Throwing from a `finally` block inside a `try...catch...finally` is not supported yet");
-  }
   const value = context.lowerValueExpression(context, statement.expression, bindings);
   if (value.kind !== "lowered") {
     return withRefusal(value, unsupportedIn("The thrown expression is not a value this build can evaluate"));
@@ -28,17 +25,7 @@ function lowerTryRegionOperations(
   statement: ts.TryStatement,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): LoweredStatementList {
-  const tracksTryRegion = statement.catchClause !== undefined && statement.finallyBlock !== undefined;
-  if (tracksTryRegion) {
-    context.tryRegionOfCatchFinallyDepth += 1;
-  }
-  try {
-    return lowerBlockStatements(context, statement.tryBlock, bindings);
-  } finally {
-    if (tracksTryRegion) {
-      context.tryRegionOfCatchFinallyDepth -= 1;
-    }
-  }
+  return lowerBlockStatements(context, statement.tryBlock, bindings);
 }
 
 function lowerFinallyBlockOperations(
@@ -46,12 +33,7 @@ function lowerFinallyBlockOperations(
   block: ts.Block,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): LoweredStatementList {
-  context.finallyBlockDepth += 1;
-  try {
-    return lowerBlockStatements(context, block, bindings);
-  } finally {
-    context.finallyBlockDepth -= 1;
-  }
+  return lowerBlockStatements(context, block, bindings);
 }
 
 export function lowerTryCatchStatement(

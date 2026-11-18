@@ -90,6 +90,7 @@ function withTracedChildren(operation: JsIrOperation, nextTraceId: () => string)
         callbackBody: operation.callbackBody.map(rebuild) };
     }
     case "block":
+    case "labeledBlock":
     case "bindingGroup": {
       return { ...operation, operations: operation.operations.map(tracedOperationChild(operation, nextTraceId)) };
     }

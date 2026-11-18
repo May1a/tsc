@@ -81,4 +81,14 @@ describe("lowering results", () => {
       ["__tscn_fnobj_f_0", "__tscn_fnobj_g_1"]
     ]);
   });
+
+  // Each logical assignment lowers its target twice, once to read and once to store, so a target whose
+  // object or key has effects would run them twice. The refusal names the operator and the target.
+  test.each(["&&=", "||=", "??="])("refuses a %s target whose key would be evaluated twice", (operator) => {
+    const result = lower(`const values = [1]; let calls = 0; function key() { calls++; return 0; }\nvalues[key()] ${operator} 2;`);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      `\`${operator}\` is supported on a binding, or on a property of a binding or \`this\` with a literal or binding key; ` +
+        "`values[key()]` would evaluate its object or key twice",
+    ]);
+  });
 });

@@ -23,6 +23,7 @@ type JsIrContainerOperationKind =
   | "arrayDestructureProtocol"
   | "runtimeArrayMapFunctionObject"
   | "block"
+  | "labeledBlock"
   | "bindingGroup"
   | "tryCatch"
   | "if"
@@ -86,6 +87,7 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
       return [...operation.callbackParameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...operation.callbackBody];
     }
     case "block":
+    case "labeledBlock":
     case "bindingGroup": {
       return operation.operations;
     }

@@ -50,7 +50,7 @@ const fixturesDirectory = path.resolve(import.meta.dirname, "../fixtures");
 const containerKindsLowerableFromSource = [
   "arrayDestructureProtocol", "bindingGroup", "block", "doWhile", "for", "forInArray", "forInObject",
   "forOfArray", "forOfMap", "forOfProtocol", "forOfSet", "forOfString", "function", "if",
-  "runtimeArrayMapFunctionObject", "switch", "tryCatch", "while"
+  "labeledBlock", "runtimeArrayMapFunctionObject", "switch", "tryCatch", "while"
 ] as const;
 
 describe("class state belongs to one compilation", () => {

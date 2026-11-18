@@ -3,9 +3,10 @@ import type { jsIrLeafOperationKinds } from "../ir/visit.js";
 
 type ResolvedLeafOperationKind = keyof typeof jsIrLeafOperationKinds;
 
+// eslint-disable-next-line complexity -- One case per container operation kind; the residual is the leaf set.
 export function resolvedOperationChildren(operation: ResolvedOperation): readonly ResolvedOperation[] {
   switch (operation.kind) {
-    case "block": case "bindingGroup": { return operation.operations;}
+    case "block": case "labeledBlock": case "bindingGroup": { return operation.operations;}
     case "function": {
       return [...operation.parameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...operation.body];
     }
