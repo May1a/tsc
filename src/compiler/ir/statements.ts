@@ -8,7 +8,7 @@ import { lowerBlockStatements } from "./statement-lists.js";
 import { lowerVariableBinding } from "./variable-bindings.js";
 import { lowerIfStatement, lowerSwitchStatement } from "./branches.js";
 import { lowerDoWhileStatement, lowerForInStatement, lowerForOfStatement, lowerForStatement, lowerWhileStatement } from "./loops.js";
-import { lowerLabelledJump, lowerLabelledStatement } from "./loop-labels.js";
+import { lowerLabelledJump, lowerLabelledStatement } from "./jump-targets.js";
 import { lowerFunctionDeclaration } from "./functions.js";
 import { lowerNamespaceDeclarationStatement } from "./namespaces.js";
 import { lowerEnumDeclarationStatement } from "./enums.js";

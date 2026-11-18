@@ -140,7 +140,7 @@ export const operationRoles = {
   // `catchVariable` is empty when there is no catch clause, so it declares only when it has a name.
   tryCatch: { catchVariable: optionalDeclaration },
   bindingGroup: {},
-  labeledBlock: { label: preserved("blockLabel") },
+  labeledBlock: {},
   if: {},
   switch: {},
   while: {},
@@ -157,7 +157,6 @@ export const operationRoles = {
   forInObject: { itemName: declaration, objectName: reference },
   forInArray: { itemName: declaration, arrayName: reference },
   break: {},
-  breakBlock: { label: preserved("blockLabel") },
   continue: {},
 
   // A function declaration is visible before its own statement, so the operations pre-pass declares

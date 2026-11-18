@@ -6,7 +6,7 @@ import { lowerAssignmentStatement } from "./assignments.js";
 import type { JsIrCondition, JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 import { lowerUpdateExpressionStatement } from "./expression-statements.js";
-import { withinLoopLabel } from "./loop-labels.js";
+import { withinLoopLabel } from "./jump-targets.js";
 import { lowerStatementBody } from "./statement-lists.js";
 import { iteratorErrorSubject } from "./iterator-subject.js";
 import { expressionSnippet } from "./diagnostics.js";

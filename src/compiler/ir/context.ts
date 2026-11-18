@@ -19,10 +19,20 @@ export interface LoweringContextOptions {
   readonly inlineCpp: InlineCppCompilation;
 }
 
+/**
+ * A statement a `break` can leave: a loop, a `switch`, or a labeled non-loop statement.
+ *
+ * Native lowering pushes one break target for each of these in the same order, so a depth counted over
+ * these frames names the same target there. Only a loop also accepts `continue`.
+ */
+export interface JumpTargetFrame {
+  readonly kind: "loop" | "switch" | "labeledBlock";
+  readonly label: string | undefined;
+}
+
 /** Recursive lowering entries and the state of the current compilation. */
 export interface LoweringContext {
-  enclosingLoopLabels: (string | undefined)[];
-  enclosingBlockLabels: string[];
+  enclosingJumpTargets: JumpTargetFrame[];
   pendingLoopLabel: string | undefined;
   classThisInScope: boolean;
   activeEnclosingClass: ClassInfo | undefined;

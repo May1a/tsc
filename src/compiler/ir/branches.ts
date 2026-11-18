@@ -1,8 +1,9 @@
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, loweredOperation, loweredPayload, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
+import { type Lowered, type Produced, loweredOperation, loweredPayload, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerStatementBody, lowerStatementList } from "./statement-lists.js";
+import { withinSwitch } from "./jump-targets.js";
 import { expressionSnippet, unsupportedStatementMessage } from "./diagnostics.js";
 import type { JsIrSwitchClause, JsIrValueExpression } from "./expressions.js";
 import { updateBindings } from "./binding-updates.js";
@@ -51,9 +52,22 @@ export function lowerSwitchStatement(
   if (expression.kind !== "lowered") {
     return withRefusal(expression, unsupported(reason));
   }
+  const clauses = withinSwitch(context, () => lowerSwitchClauses(context, statement.caseBlock, bindings, reason));
+  if (clauses.kind !== "lowered") {
+    return clauses;
+  }
+  return loweredOperation({ kind: "switch", expression: expression.operation, clauses: clauses.operation });
+}
+
+function lowerSwitchClauses(
+  context: LoweringContext,
+  caseBlock: ts.CaseBlock,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  reason: string
+): Produced<readonly JsIrSwitchClause[]> {
   const clauses: JsIrSwitchClause[] = [];
   const switchBindings = new Map(bindings);
-  for (const clause of statement.caseBlock.clauses) {
+  for (const clause of caseBlock.clauses) {
     let test: JsIrValueExpression | undefined;
     if (ts.isCaseClause(clause)) {
       const valueExpressionResult = context.lowerValueExpression(context, clause.expression, switchBindings);
@@ -62,7 +76,7 @@ export function lowerSwitchStatement(
       }
       test = loweredPayload(valueExpressionResult);
       if (test === undefined) {
-        return unsupported(reason);
+        return unsupportedIn(reason);
       }
     }
     const clauseOperations = lowerStatementList(context, clause.statements, switchBindings);
@@ -74,5 +88,5 @@ export function lowerSwitchStatement(
     }
     clauses.push({ test, operations: clauseOperations.operation });
   }
-  return loweredOperation({ kind: "switch", expression: expression.operation, clauses });
+  return produced(clauses);
 }

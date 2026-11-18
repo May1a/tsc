@@ -72,10 +72,8 @@ export function updateBindings(
   bindings: Map<string, JsIrBindingValue>
 ): void {
   updateConstBindings(operation, bindings);
-  if (operation.kind === "bindingGroup") {
-    for (const nested of operation.operations) {
-      updateBindings(nested, bindings);
-    }
+  for (const nested of unscopedOperations(operation)) {
+    updateBindings(nested, bindings);
   }
   if (operation.kind === "arrayDestructureProtocol") {
     for (const element of operation.elements) {
@@ -129,6 +127,10 @@ export function updateBindings(
     bindings.set(operation.name, { kind: "number", value: { kind: "variable", name: operation.name } });
   }
 }
+/** The operations of a container that is not a scope, whose bindings stay visible after it. */
+function unscopedOperations(operation: JsIrOperation): readonly JsIrOperation[] {
+  return operation.kind === "bindingGroup" || operation.kind === "labeledBlock" ? operation.operations : [];
+}
 export function updateAggregateBindings(
   operation: JsIrOperation,
   bindings: Map<string, JsIrBindingValue>
@@ -175,7 +177,7 @@ export function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObject
   if (operation.kind === "while" || operation.kind === "doWhile") {
     return { ...operation, body: markRuntimeObjectShadows(operation.body) };
   }
-  if (operation.kind === "bindingGroup") {
+  if (operation.kind === "bindingGroup" || operation.kind === "labeledBlock") {
     return { ...operation, operations: operation.operations.map((nested) => markRuntimeObjectShadow(nested, shadowedObjects)) };
   }
   if (operation.kind === "tryCatch") {
@@ -252,7 +254,7 @@ export function collectOperationValueExpressions(operation: JsIrOperation, names
   if (operation.kind === "runtimeErrorLiteral") {
     collectValueExpressionObjectNames(operation.message, names);
   }
-  if (operation.kind === "block" || operation.kind === "bindingGroup") {
+  if (operation.kind === "block" || operation.kind === "labeledBlock" || operation.kind === "bindingGroup") {
     for (const nested of operation.operations) {
       collectRuntimeShadowObjectNames(nested, names);
     }

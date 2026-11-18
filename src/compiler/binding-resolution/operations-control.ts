@@ -10,11 +10,8 @@ export const controlHandlers = {
     operations: resolver.state.inScope("block", () => resolver.operations(node.operations))
   }),
 
-  labeledBlock: (node, resolver) => ({
-    ...node,
-    operations: resolver.state.inScope("block", () => resolver.operations(node.operations))
-  }),
-
+  // A labeled block is a break target, not a scope: a block it labels resolves as its own `block`.
+  labeledBlock: (node, resolver) => ({ ...node, operations: resolver.operations(node.operations) }),
   bindingGroup: (node, resolver) => ({ ...node, operations: resolver.operations(node.operations) }),
 
   tryCatch: (node, resolver) => {
@@ -137,7 +134,6 @@ export const controlHandlers = {
   }),
 
   break: (node) => ({ ...node }),
-  breakBlock: (node) => ({ ...node }),
   continue: (node) => ({ ...node }),
 
   function: (node, resolver) => {

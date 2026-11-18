@@ -465,4 +465,7 @@ export const oracleFixtures: readonly string[] = [
   "labeled-block-break.ts",
   "labeled-block-break-if.ts",
   "labeled-block-break-nested.ts",
+  "labeled-block-break-finally.ts",
+  "labeled-break-frames.ts",
+  "logical-assign-member.ts",
 ] as const;

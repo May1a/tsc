@@ -14,8 +14,7 @@ import { emptyStoragePlan } from "./storage-plan.js";
 /** The state of one `lowerToJsIr` invocation: nothing here survives the call that created it. */
 export function createLoweringContext(options: LoweringContextOptions): LoweringContext {
   return {
-    enclosingLoopLabels: [],
-    enclosingBlockLabels: [],
+    enclosingJumpTargets: [],
     pendingLoopLabel: undefined,
     classThisInScope: false,
     activeEnclosingClass: undefined,
