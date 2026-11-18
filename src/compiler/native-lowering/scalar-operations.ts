@@ -12,7 +12,7 @@ type ScalarKind =
   | "constNumber" | "letNumber" | "assignNumber" | "constString" | "constStringExpression" | "letString" | "assignString"
   | "constBoolean" | "constBooleanExpression" | "letBoolean" | "assignBoolean" | "constValue" | "letValue" | "assignValue"
   | "print" | "throwValue" | "discardValue" | "returnNumber" | "returnString" | "returnValue" | "call" | "callValue" | "inlineCpp"
-  | "requireObjectCoercible" | "block" | "bindingGroup" | "if" | "tryCatch" | "switch" | "while" | "doWhile" | "for" | "break" | "continue";
+  | "requireObjectCoercible" | "block" | "labeledBlock" | "bindingGroup" | "if" | "tryCatch" | "switch" | "while" | "doWhile" | "for" | "break" | "breakBlock" | "continue";
 
 type ScalarVariants = { readonly [K in ScalarKind]: VariantOfKind<ResolvedOperation, K> };
 
@@ -76,6 +76,7 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
     context.runtime.callWithCompletion("requireObjectCoercible", [value], context.cursor.uniqueName("coercible"), context.exceptionTarget());
   },
   block: (operation, context) => context.operations.operations(operation.operations),
+  labeledBlock: (operation, context) => context.flow.labeledBlock(operation, context),
   bindingGroup: (operation, context) => context.operations.operations(operation.operations),
   if: (operation, context) => context.flow.branch(operation, context),
   tryCatch: (operation, context) => context.flow.tryCatch(operation, context),
@@ -84,5 +85,6 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
   doWhile: (operation, context) => context.flow.loop(operation, context),
   for: (operation, context) => context.flow.loop(operation, context),
   break: (operation, context) => context.flow.jump(operation),
+  breakBlock: (operation, context) => context.flow.jumpBlock(operation),
   continue: (operation, context) => context.flow.jump(operation)
 };

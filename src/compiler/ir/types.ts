@@ -620,6 +620,17 @@ export type JsIrOperationNode =
       readonly operations: readonly JsIrOperation[];
     }
   | {
+      /**
+       * A labeled block: `label: { ... }`. Only `break label` can exit it; `continue` is never
+       * valid here. The label is consumed during lowering and does not appear in the IR as a
+       * string — the IR records only the nesting structure, and the native lowering resolves
+       * break targets by block depth exactly as it does for loops.
+       */
+      readonly kind: "labeledBlock";
+      readonly label: string;
+      readonly operations: readonly JsIrOperation[];
+    }
+  | {
       readonly kind: "tryCatch";
       readonly tryOperations: readonly JsIrOperation[];
       readonly catchVariable: string;
@@ -747,6 +758,15 @@ export type JsIrOperationNode =
        * while lowering into this count of the loops between the jump and the one it named.
        */
       readonly targetDepth?: number;
+    }
+  | {
+      /**
+       * `break label` targeting a labeled non-loop block. The label is resolved at the IR level
+       * during lowering; native lowering installs a matching break target around the `labeledBlock`
+       * that owns this label.
+       */
+      readonly kind: "breakBlock";
+      readonly label: string;
     }
   | {
       readonly kind: "continue";

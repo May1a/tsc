@@ -458,4 +458,11 @@ export const oracleFixtures: readonly string[] = [
   "parameter-sequencing-reference.ts",
   "private-setter-assignment-effects.ts",
   "private-setter-assignment-order.ts",
+  "nullish-assign-plain-binding.ts",
+  "logical-and-assign.ts",
+  "logical-or-assign.ts",
+  "try-finally-throw-in-catch-finally.ts",
+  "labeled-block-break.ts",
+  "labeled-block-break-if.ts",
+  "labeled-block-break-nested.ts",
 ] as const;

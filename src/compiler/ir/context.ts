@@ -22,6 +22,7 @@ export interface LoweringContextOptions {
 /** Recursive lowering entries and the state of the current compilation. */
 export interface LoweringContext {
   enclosingLoopLabels: (string | undefined)[];
+  enclosingBlockLabels: string[];
   pendingLoopLabel: string | undefined;
   classThisInScope: boolean;
   activeEnclosingClass: ClassInfo | undefined;
@@ -55,8 +56,6 @@ export interface LoweringContext {
   readonly typeChecker: ts.TypeChecker | undefined;
   /** The inline C++ escape hatch's flag and the blocks this compilation has collected. */
   readonly inlineCpp: InlineCppCompilation;
-  tryRegionOfCatchFinallyDepth: number;
-  finallyBlockDepth: number;
   readonly lowerStatement: typeof lowerStatement;
   readonly lowerObjectMethodFunctionValue: typeof lowerObjectMethodFunctionValue;
   readonly lowerTypedCallArguments: typeof lowerTypedCallArguments;

@@ -17,7 +17,9 @@ export type PreservedKind =
   /** A diagnostic or TypeError message. */
   | "message"
   /** A `typeof` operand name, as the string tier records it. */
-  | "typeofOperand";
+  | "typeofOperand"
+  /** A labeled-block exit name, matched between `labeledBlock` and `breakBlock` operations. */
+  | "blockLabel";
 
 export type FieldRole =
   | { readonly role: "declaration" }

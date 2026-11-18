@@ -10,6 +10,11 @@ export const controlHandlers = {
     operations: resolver.state.inScope("block", () => resolver.operations(node.operations))
   }),
 
+  labeledBlock: (node, resolver) => ({
+    ...node,
+    operations: resolver.state.inScope("block", () => resolver.operations(node.operations))
+  }),
+
   bindingGroup: (node, resolver) => ({ ...node, operations: resolver.operations(node.operations) }),
 
   tryCatch: (node, resolver) => {
@@ -132,6 +137,7 @@ export const controlHandlers = {
   }),
 
   break: (node) => ({ ...node }),
+  breakBlock: (node) => ({ ...node }),
   continue: (node) => ({ ...node }),
 
   function: (node, resolver) => {

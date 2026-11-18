@@ -26,6 +26,8 @@ export interface FlowCapability {
   switch(operation: Node<"switch">, context: OperationContext): void;
   loop(operation: Node<"while" | "doWhile" | "for">, context: OperationContext): void;
   jump(operation: Node<"break" | "continue">): void;
+  jumpBlock(operation: Node<"breakBlock">): void;
+  labeledBlock(operation: Node<"labeledBlock">, context: OperationContext): void;
   withCleanup<A>(cleanup: Cleanup, build: () => A): A;
   withLoop<A>(loop: Loop, build: () => A): A;
   readonly cleanupDepth: number;
@@ -40,6 +42,7 @@ export class ControlFlow implements FlowCapability {
   #cleanups: Cleanup[] = [];
   #handlers: Handler[] = [];
   #loops: Loop[] = [];
+  readonly #namedBlocks = new Map<string, { readonly block: LlvmBlockLabel; readonly depth: number }>();
 
   public constructor(capabilities: FunctionCapabilities, finish: (value: BoxedValue, threw: boolean) => void) {
     this.#capabilities = capabilities;
@@ -82,6 +85,34 @@ export class ControlFlow implements FlowCapability {
     const target = operation.kind === "continue" ? loop?.continueTarget : loop?.breakTarget;
     if (target === undefined) { throw new Error(`${operation.kind} has no resolved loop target`); }
     this.#abrupt({ kind: "jump", block: target.block }, target.depth);
+  }
+
+  public jumpBlock(operation: Node<"breakBlock">): void {
+    const entry = this.#namedBlocks.get(operation.label);
+    if (entry === undefined) { throw new Error(`breakBlock \`${operation.label}\` has no registered exit block`); }
+    this.#abrupt({ kind: "jump", block: entry.block }, entry.depth);
+  }
+
+  /**
+   * Emit a labeled non-loop block: execute its operations, then continue at the join block.
+   *
+   * `break label` targeting this block uses `jumpBlock`, which looks up the join block by label
+   * name and jumps directly to it, bypassing any intervening cleanup frames within the block.
+   */
+  public labeledBlock(operation: Node<"labeledBlock">, context: OperationContext): void {
+    const { cursor } = this.#capabilities;
+    const join = cursor.reserveBlock("labeled.end");
+    if (this.#namedBlocks.has(operation.label)) {
+      throw new Error(`Duplicate labeledBlock label \`${operation.label}\` in the same function`);
+    }
+    this.#namedBlocks.set(operation.label, { block: join, depth: this.cleanupDepth });
+    try {
+      context.operations.operations(operation.operations);
+      this.#join(join);
+    } finally {
+      this.#namedBlocks.delete(operation.label);
+    }
+    cursor.openBlock(join);
   }
 
   public branch(operation: Node<"if">, context: OperationContext): void {

@@ -15,6 +15,7 @@ import { emptyStoragePlan } from "./storage-plan.js";
 export function createLoweringContext(options: LoweringContextOptions): LoweringContext {
   return {
     enclosingLoopLabels: [],
+    enclosingBlockLabels: [],
     pendingLoopLabel: undefined,
     classThisInScope: false,
     activeEnclosingClass: undefined,
@@ -27,8 +28,6 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     storagePlan: emptyStoragePlan,
     typeChecker: options.typeChecker,
     inlineCpp: options.inlineCpp,
-    tryRegionOfCatchFinallyDepth: 0,
-    finallyBlockDepth: 0,
     lowerStatement,
     lowerObjectMethodFunctionValue,
     lowerTypedCallArguments,

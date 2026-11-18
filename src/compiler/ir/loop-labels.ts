@@ -46,11 +46,18 @@ function loopDepthForLabel(context: LoweringContext,
  * silently retargets the jump at the innermost loop, which compiles and computes the wrong answer; the only
  * way to reach it is a label stack that is out of step with the loops actually being lowered, so the honest
  * answer is to say the label named no enclosing loop rather than to compile a jump to the wrong target.
+ *
+ * A label that names an enclosing non-loop labeled block resolves to a `breakBlock` jump: the target is
+ * identified by label name rather than by depth because labeled blocks do not occupy positions in the loop
+ * depth count.
  */
 export function lowerLabelledJump(context: LoweringContext,
   kind: "break" | "continue", label: ts.Identifier | undefined): Lowered {
   if (label === undefined) {
     return loweredOperation({ kind });
+  }
+  if (kind === "break" && context.enclosingBlockLabels.includes(label.text)) {
+    return loweredOperation({ kind: "breakBlock", label: label.text });
   }
   const targetDepth = loopDepthForLabel(context, label.text);
   if (targetDepth === undefined) {
@@ -63,10 +70,11 @@ export function lowerLabelledJump(context: LoweringContext,
  * `label: statement`.
  *
  * A label on a loop names the loop, and `break label` / `continue label` then resolve to a depth — which is
- * what makes the two indistinguishable from an unlabelled jump once the depth is known. A label on
- * anything else names a statement that is not a jump target this lowering can reach: a `break` out of a
- * labelled block has to leave a construct the IR has no frame for, so it is declined by name rather than
- * compiled as a jump to the wrong loop.
+ * what makes the two indistinguishable from an unlabelled jump once the depth is known.
+ *
+ * A label on a non-loop statement names a block exit: `break label` jumps to after the labeled statement.
+ * `continue` on a labeled block is never valid TypeScript. The body is lowered into a `labeledBlock`
+ * operation, and `break label` lowers to a `breakBlock` jump resolved by name.
  */
 export function lowerLabelledStatement(
   context: LoweringContext,
@@ -83,15 +91,31 @@ export function lowerLabelledStatement(
     ts.isForInStatement(body) ||
     ts.isWhileStatement(body) ||
     ts.isDoStatement(body);
-  if (!isLoop) {
-    return unsupportedIn(
-      `\`${statement.label.text}:\` must label a loop; a label on a block or conditional is not supported yet`
-    );
+  if (isLoop) {
+    context.pendingLoopLabel = statement.label.text;
+    try {
+      return context.lowerStatement(context, body, bindings);
+    } finally {
+      context.pendingLoopLabel = undefined;
+    }
   }
-  context.pendingLoopLabel = statement.label.text;
+  // Non-loop: lower the body as a labeled block scope. The label is pushed so that
+  // `break label` inside the body resolves to a `breakBlock` exit, not a loop depth.
+  const labelName = statement.label.text;
+  context.enclosingBlockLabels.push(labelName);
   try {
-    return context.lowerStatement(context, body, bindings);
+    const loweredBody = context.lowerStatement(context, body, bindings);
+    if (loweredBody.kind !== "lowered") {
+      return loweredBody;
+    }
+    // Wrap in a labeledBlock so the native lowering can install a break target around it.
+    // A body that is already a block or bindingGroup is kept as-is inside the wrapper to
+    // avoid a redundant nesting level.
+    const operations = loweredBody.operation.kind === "block" || loweredBody.operation.kind === "bindingGroup"
+      ? loweredBody.operation.operations
+      : [loweredBody.operation];
+    return loweredOperation({ kind: "labeledBlock", label: labelName, operations: [...operations] });
   } finally {
-    context.pendingLoopLabel = undefined;
+    context.enclosingBlockLabels.pop();
   }
 }

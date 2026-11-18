@@ -23,6 +23,7 @@ type JsIrContainerOperationKind =
   | "arrayDestructureProtocol"
   | "runtimeArrayMapFunctionObject"
   | "block"
+  | "labeledBlock"
   | "bindingGroup"
   | "tryCatch"
   | "if"
@@ -60,7 +61,7 @@ export const jsIrLeafOperationKinds: Readonly<Record<Exclude<JsIrOperation["kind
   "runtimeObjectStore": true, "valueObjectStore": true, "defineAccessor": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
   "runtimeObjectDelete": true, "valueObjectDelete": true, "valueArrayDelete": true, "runtimeObjectSetPrototype": true, "valueObjectSetPrototype": true,
   "runtimeObjectPreventExtensions": true, "runtimeObjectSeal": true, "runtimeObjectFreeze": true, "runtimeObjectAssign": true, "runtimeObjectDefineDataProperty": true,
-  "runtimeObjectDefineDataProperties": true, "print": true, "throwValue": true, "discardValue": true, "break": true, "continue": true,
+  "runtimeObjectDefineDataProperties": true, "print": true, "throwValue": true, "discardValue": true, "break": true, "breakBlock": true, "continue": true,
   "call": true, "callValue": true, "inlineCpp": true, "returnNumber": true, "returnString": true,
   "returnValue": true
 };
@@ -86,6 +87,7 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
       return [...operation.callbackParameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...operation.callbackBody];
     }
     case "block":
+    case "labeledBlock":
     case "bindingGroup": {
       return operation.operations;
     }

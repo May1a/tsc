@@ -28,6 +28,14 @@ export function lowerAssignmentStatement(
     return lowerNullishAssignmentStatement(context, expression, bindings);
   }
 
+  if (expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken) {
+    return lowerLogicalAndAssignmentStatement(context, expression, bindings);
+  }
+
+  if (expression.operatorToken.kind === ts.SyntaxKind.BarBarEqualsToken) {
+    return lowerLogicalOrAssignmentStatement(context, expression, bindings);
+  }
+
   const compound = lowerCompoundAssignmentStatement(context, expression, bindings);
   if (compound.kind !== "notApplicable") {
     return compound;
@@ -232,12 +240,14 @@ function lowerNullishAssignmentStatement(
     return currentValue;
   }
   let store: Lowered;
-  if (ts.isElementAccessExpression(expression.left)) {
+  if (ts.isIdentifier(expression.left)) {
+    store = lowerIdentifierAssignment(context, expression.left, expression.right, bindings);
+  } else if (ts.isElementAccessExpression(expression.left)) {
     store = lowerElementAssignment(context, expression.left, expression.right, bindings);
   } else if (ts.isPropertyAccessExpression(expression.left)) {
     store = lowerObjectPropertyAssignment(context, expression.left, expression.right, bindings);
   } else {
-    return unsupported("Nullish assignment to a plain binding is not supported yet");
+    return notApplicable;
   }
   if (store.kind === "unsupported") {
     return store;
@@ -250,6 +260,76 @@ function lowerNullishAssignmentStatement(
     left: { kind: "valueComparison", operator: "===", left: currentValue.operation, right: { kind: "null" } },
     right: { kind: "valueComparison", operator: "===", left: currentValue.operation, right: { kind: "undefined" } }
   };
+  return produced({ kind: "if", condition, thenOperations: [store.operation], elseOperations: [] });
+}
+
+/**
+ * `x &&= rhs` — assign only when `x` is truthy.
+ *
+ * The current value is read once, tested for truthiness, and stored only on the truthy branch.
+ * The left-hand side must be a binding that the standard assignment path already supports.
+ */
+function lowerLogicalAndAssignmentStatement(
+  context: LoweringContext,
+  expression: ts.BinaryExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const currentValue = context.lowerValueExpression(context, expression.left, bindings);
+  if (currentValue.kind !== "lowered") {
+    return currentValue;
+  }
+  let store: Lowered;
+  if (ts.isIdentifier(expression.left)) {
+    store = lowerIdentifierAssignment(context, expression.left, expression.right, bindings);
+  } else if (ts.isElementAccessExpression(expression.left)) {
+    store = lowerElementAssignment(context, expression.left, expression.right, bindings);
+  } else if (ts.isPropertyAccessExpression(expression.left)) {
+    store = lowerObjectPropertyAssignment(context, expression.left, expression.right, bindings);
+  } else {
+    return notApplicable;
+  }
+  if (store.kind === "unsupported") {
+    return store;
+  }
+  if (store.kind !== "lowered") {
+    return notApplicable;
+  }
+  const condition: JsIrCondition = { kind: "valueTruthy", value: currentValue.operation };
+  return produced({ kind: "if", condition, thenOperations: [store.operation], elseOperations: [] });
+}
+
+/**
+ * `x ||= rhs` — assign only when `x` is falsy.
+ *
+ * The current value is read once, tested for falsiness, and stored only on the falsy branch.
+ * The left-hand side must be a binding that the standard assignment path already supports.
+ */
+function lowerLogicalOrAssignmentStatement(
+  context: LoweringContext,
+  expression: ts.BinaryExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const currentValue = context.lowerValueExpression(context, expression.left, bindings);
+  if (currentValue.kind !== "lowered") {
+    return currentValue;
+  }
+  let store: Lowered;
+  if (ts.isIdentifier(expression.left)) {
+    store = lowerIdentifierAssignment(context, expression.left, expression.right, bindings);
+  } else if (ts.isElementAccessExpression(expression.left)) {
+    store = lowerElementAssignment(context, expression.left, expression.right, bindings);
+  } else if (ts.isPropertyAccessExpression(expression.left)) {
+    store = lowerObjectPropertyAssignment(context, expression.left, expression.right, bindings);
+  } else {
+    return notApplicable;
+  }
+  if (store.kind === "unsupported") {
+    return store;
+  }
+  if (store.kind !== "lowered") {
+    return notApplicable;
+  }
+  const condition: JsIrCondition = { kind: "negate", condition: { kind: "valueTruthy", value: currentValue.operation } };
   return produced({ kind: "if", condition, thenOperations: [store.operation], elseOperations: [] });
 }
 
