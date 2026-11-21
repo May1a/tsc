@@ -17,6 +17,7 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     enclosingJumpTargets: [],
     pendingLoopLabel: undefined,
     classThisInScope: false,
+    inClassConstructor: false,
     activeEnclosingClass: undefined,
     activeClassMethodStatic: false,
     nextFunctionObjectId: 0,

@@ -1,11 +1,11 @@
 import type { LoweringContext } from "./context.js";
-import { type ClassComputedKeyInfo, type ClassComputedMethodEntry, type ClassFieldInfo, type ClassInfo, type ClassMethodInfo, type CollectedClassMembers, classPrivateFunctions, classPrototypeName, classStaticStorageName } from "./class-info.js";
+import { type ClassComputedKeyInfo, type ClassComputedMethodEntry, type ClassInfo, type ClassMethodInfo, type ClassStaticInitializer, type CollectedClassMembers, classPrivateFunctions, classPrototypeName, classStaticPrivateFunctions, classStaticStorageName } from "./class-info.js";
 import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
 import { type Produced, loweredPayload, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
-import type { JsIrRuntimeObjectField, JsIrValueExpression } from "./expressions.js";
+import type { JsIrRuntimeArrayElement, JsIrValueExpression } from "./expressions.js";
 import { forwardedClassArgument, lowerClassFieldInitializer } from "./class-constructors.js";
-import { CLASS_THIS_NAME, classAccessorFunctionName, classMemberKeyStringExpression, classMethodFunctionName } from "./class-names.js";
+import { CLASS_THIS_NAME, classAccessorFunctionName, classComputedAccessorFunctionName, classConstructorName, classConstructorValueName, classMemberKeyStringExpression, classMethodFunctionName, classPrivateFieldDefineMessage, classStaticAccessorFunctionName, classStaticBlockFunctionName } from "./class-names.js";
 
 // Emits the module-init slot holding a runtime-computed member name: the name
 // expression is evaluated and converted to a property key exactly once, at
@@ -86,47 +86,163 @@ export function lowerClassPrototypeStorage(info: ClassInfo): JsIrOperation {
   };
 }
 
-// Emits the module-init slot that backs a class's static fields: a single object
-// whose properties are the static fields, initialized in declaration order. Each
-// `C.x` read/write resolves to a property access on this slot. Returns undefined
-// for classes without static fields.
-export function lowerClassStaticStorage(
-  context: LoweringContext,
-  info: ClassInfo,
-  staticFields: readonly ClassFieldInfo[],
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): Produced<JsIrOperation> {
-  const fields: JsIrRuntimeObjectField[] = [];
-  for (const field of staticFields) {
-    const initializer = lowerClassFieldInitializer(context, field, bindings);
-    if (initializer.kind !== "lowered") {
-      return initializer;
-    }
-    fields.push({ kind: "field", key: classMemberKeyStringExpression(field.key), value: initializer.operation });
-  }
-  return produced({
+// Emits the module-init slot that backs a class's static properties and prototype link.
+// Initialized as an empty object first so static methods, accessors, private elements, and
+// static initializers attach to it in definition order.
+export function lowerClassStaticStorage(info: ClassInfo): JsIrOperation {
+  return {
     kind: "letValue",
     name: classStaticStorageName(info.name),
     moduleGlobal: true,
-    value: { kind: "objectLiteralValue", value: { fields } }
-  });
+    value: {
+      kind: "objectLiteralValue",
+      value: {
+        fields: [{
+          kind: "field",
+          key: { kind: "literal", value: "prototype" },
+          value: { kind: "variable", name: classPrototypeName(info.name) }
+        }]
+      }
+    }
+  };
 }
 
 /**
- * The prototype entries a class declaration installs: one per instance method it declares.
- *
- * A call that cannot be bound statically reads its method off the receiver: a dispatched call to an
- * overridden method, a call through a computed key such as `obj["m"]()`, or any call on a boxed
- * value. Each class installs its own implementations, on its own prototype, when its declaration
- * runs, so a base's entries exist before any subclass instance can be constructed. A call the
- * lowering binds statically still calls the method function directly.
+ * Emits the boxed constructor function value `C$ctor` and attaches `C$statics` as its backing
+ * properties object so `C` works as a first-class value (`const K = C; new K(); K.prop; typeof C`).
+ */
+export function lowerClassConstructorValue(context: LoweringContext, info: ClassInfo): readonly JsIrOperation[] {
+  const ctorName = classConstructorValueName(info.name);
+  const codeName = `__tscn_class_ctor_${info.name}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
+  context.nextFunctionObjectId += 1;
+  const parameters = info.constructorParameters;
+  const hasRest = parameters.some((parameter) => parameter.isRest === true);
+  const body: JsIrOperation[] = hasRest
+    ? [{
+        kind: "letValue",
+        name: "__tscn_inst",
+        value: {
+          kind: "newInstance",
+          className: info.name,
+          fieldCount: info.fields.length,
+          prototypeName: classPrototypeName(info.name),
+          constructorName: classConstructorName(info.name),
+          newTargetName: ctorName,
+          arguments: []
+        }
+      }, { kind: "returnValue", expression: { kind: "variable", name: "__tscn_inst" } }]
+    : [{
+        kind: "returnValue",
+        expression: {
+          kind: "newInstance",
+          className: info.name,
+          fieldCount: info.fields.length,
+          prototypeName: classPrototypeName(info.name),
+          constructorName: classConstructorName(info.name),
+          newTargetName: ctorName,
+          arguments: parameters.map((parameter) => forwardedClassArgument(parameter))
+        }
+      }];
+  return [
+    {
+      kind: "letValue",
+      name: ctorName,
+      moduleGlobal: true,
+      value: {
+        kind: "functionObject",
+        definition: {
+          codeName,
+          parameters,
+          functionKind: "ordinary",
+          returnKind: "value",
+          inferredName: info.name,
+          body
+        }
+      }
+    },
+    {
+      kind: "attachFunctionProperties",
+      functionName: ctorName,
+      propertiesName: classStaticStorageName(info.name)
+    }
+  ];
+}
+
+/**
+ * Lowers static field initializers, static private field initializers, and static initialization
+ * blocks in exact source declaration order, with `this` bound to the class constructor value.
+ */
+export function lowerClassStaticInitializers(
+  context: LoweringContext,
+  info: ClassInfo,
+  initializers: readonly ClassStaticInitializer[],
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<readonly JsIrOperation[]> {
+  if (initializers.length === 0) {
+    return produced([]);
+  }
+  const initBindings = new Map(bindings);
+  initBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: classConstructorValueName(info.name) });
+  const previousThis = context.classThisInScope;
+  const previousCtor = context.inClassConstructor;
+  const previousClass = context.activeEnclosingClass;
+  const previousStatic = context.activeClassMethodStatic;
+  context.classThisInScope = true;
+  context.inClassConstructor = false;
+  context.activeEnclosingClass = info;
+  context.activeClassMethodStatic = true;
+  try {
+    const operations: JsIrOperation[] = [];
+    for (const item of initializers) {
+      if (item.kind === "block") {
+        operations.push({
+          kind: "call",
+          name: classStaticBlockFunctionName(info.name, item.index),
+          arguments: [{ valueKind: "value", value: { kind: "variable", name: classConstructorValueName(info.name) } }]
+        });
+        continue;
+      }
+      const value = lowerClassFieldInitializer(context, item.field, initBindings);
+      if (value.kind !== "lowered") {
+        return value;
+      }
+      if (item.field.privateName !== undefined && item.field.key.kind === "literal") {
+        operations.push({
+          kind: "privateFieldStore",
+          targetName: classStaticStorageName(info.name),
+          key: item.field.key.name,
+          value: value.operation,
+          message: classPrivateFieldDefineMessage(item.field.privateName),
+          define: true
+        });
+      } else {
+        operations.push({
+          kind: "valueObjectStore",
+          targetName: classStaticStorageName(info.name),
+          key: classMemberKeyStringExpression(item.field.key),
+          value: value.operation
+        });
+      }
+    }
+    return produced(operations);
+  } finally {
+    context.classThisInScope = previousThis;
+    context.inClassConstructor = previousCtor;
+    context.activeEnclosingClass = previousClass;
+    context.activeClassMethodStatic = previousStatic;
+  }
+}
+
+/**
+ * The prototype and static entries a class declaration installs: accessors and methods on both
+ * `C.prototype` and `C` (statics), including computed accessors.
  */
 export function lowerPrototypeMethodStores(
   context: LoweringContext,
   info: ClassInfo,
   members: CollectedClassMembers
 ): readonly JsIrOperation[] {
-  const accessors: readonly JsIrOperation[] = [...new Set([...info.getters, ...info.setters])].map((name) => ({
+  const instanceAccessors: readonly JsIrOperation[] = [...new Set([...info.getters, ...info.setters])].map((name) => ({
     kind: "defineAccessor",
     targetName: classPrototypeName(info.name),
     key: { kind: "literal", value: name },
@@ -134,56 +250,79 @@ export function lowerPrototypeMethodStores(
     setter: info.setters.has(name) ? dispatchWrapper(context, info, classAccessorFunctionName(info.name, name, false),
       [{ name: "value", valueKind: "value" }]) : { kind: "undefined" }
   }));
-  return [...accessors, ...members.methodDeclarations.flatMap((entry) => {
+  const staticAccessors: readonly JsIrOperation[] = [...new Set([...info.staticGetters, ...info.staticSetters])].map((name) => ({
+    kind: "defineAccessor",
+    targetName: classStaticStorageName(info.name),
+    key: { kind: "literal", value: name },
+    getter: info.staticGetters.has(name) ? dispatchWrapper(context, info, classStaticAccessorFunctionName(info.name, name, true), []) : { kind: "undefined" },
+    setter: info.staticSetters.has(name) ? dispatchWrapper(context, info, classStaticAccessorFunctionName(info.name, name, false),
+      [{ name: "value", valueKind: "value" }]) : { kind: "undefined" }
+  }));
+  const computedAccessors: readonly JsIrOperation[] = members.computedAccessors.map((entry) => {
+    const fnName = classComputedAccessorFunctionName(info.name, entry.isStatic, entry.isGetter, entry.index);
+    const wrapper = dispatchWrapper(context, info, fnName, entry.isGetter ? [] : [{ name: "value", valueKind: "value" }]);
+    return {
+      kind: "defineAccessor",
+      targetName: entry.isStatic ? classStaticStorageName(info.name) : classPrototypeName(info.name),
+      key: { kind: "stringConversion", value: { kind: "variable", name: entry.slotName } },
+      getter: entry.isGetter ? wrapper : { kind: "undefined" },
+      setter: entry.isGetter ? { kind: "undefined" } : wrapper
+    };
+  });
+  const instanceMethods = members.methodDeclarations.flatMap((entry) => {
     const method = info.methods.get(entry.name);
-    return method === undefined ? [] : [lowerPrototypeMethodStore(context, info, entry.name, method)];
-  })];
+    return method === undefined ? [] : [lowerPrototypeMethodStore(context, info, entry.name, method, false)];
+  });
+  const staticMethods = members.staticMethodDeclarations.flatMap((entry) => {
+    const method = info.staticMethods.get(entry.name);
+    return method === undefined ? [] : [lowerPrototypeMethodStore(context, info, entry.name, method, true)];
+  });
+  return [...instanceAccessors, ...staticAccessors, ...computedAccessors, ...instanceMethods, ...staticMethods];
 }
 
 /**
- * One slot per private method, getter and setter, holding the function object every instance's
- * private element shares, so `a.#m === b.#m` as in JavaScript. The constructor adds it to each
- * instance it initializes.
+ * One slot per private method, getter and setter (instance and static), plus defining static
+ * private elements on `C$statics`.
  */
 export function lowerPrivateFunctionSlots(context: LoweringContext, info: ClassInfo): readonly JsIrOperation[] {
-  return classPrivateFunctions(info).map((privateFunction): JsIrOperation => ({
+  const instanceSlots = classPrivateFunctions(info).map((privateFunction): JsIrOperation => ({
     kind: "letValue",
     name: privateFunction.slotName,
     moduleGlobal: true,
     value: dispatchWrapper(context, info, privateFunction.functionName, privateFunction.parameters)
   }));
+  const staticFunctions = classStaticPrivateFunctions(info);
+  const staticSlots = staticFunctions.map((privateFunction): JsIrOperation => ({
+    kind: "letValue",
+    name: privateFunction.slotName,
+    moduleGlobal: true,
+    value: dispatchWrapper(context, info, privateFunction.functionName, privateFunction.parameters)
+  }));
+  const staticDefines = staticFunctions.map((privateFunction): JsIrOperation => ({
+    kind: "privateFieldStore",
+    targetName: classStaticStorageName(info.name),
+    key: privateFunction.storageKey,
+    value: { kind: "variable", name: privateFunction.slotName },
+    message: classPrivateFieldDefineMessage(privateFunction.functionName),
+    define: true
+  }));
+  return [...instanceSlots, ...staticSlots, ...staticDefines];
 }
 
-/** One store installing `methodName`'s dispatch wrapper on `target`'s prototype object. */
+/** One store installing `methodName`'s dispatch wrapper on `target`'s prototype or statics object. */
 function lowerPrototypeMethodStore(
   context: LoweringContext,
   target: ClassInfo,
   methodName: string,
-  method: ClassMethodInfo
+  method: ClassMethodInfo,
+  isStatic: boolean
 ): JsIrOperation {
   return {
     kind: "valueObjectStore",
-    targetName: classPrototypeName(target.name),
+    targetName: isStatic ? classStaticStorageName(target.name) : classPrototypeName(target.name),
     key: { kind: "literal", value: methodName },
-    value: classMethodDispatchWrapper(context, target, methodName, method)
+    value: dispatchWrapper(context, target, classMethodFunctionName(target.name, methodName, isStatic), method.parameters, methodName)
   };
-}
-
-/**
- * The function value a prototype entry holds for `methodName`.
- *
- * A dispatched call delivers the instance as the JavaScript receiver, while the direct method
- * function reads `this` from its first argv slot. The wrapper bridges the two conventions: it takes
- * the method's own parameters, so a dispatched call passes exactly the arguments a direct call
- * would, and forwards them with the receiver to the direct function.
- */
-function classMethodDispatchWrapper(
-  context: LoweringContext,
-  target: ClassInfo,
-  methodName: string,
-  method: ClassMethodInfo
-): JsIrValueExpression {
-  return dispatchWrapper(context, target, classMethodFunctionName(target.name, methodName, false), method.parameters, methodName);
 }
 
 /** A function object taking `parameters` that calls the direct function `functionName` with its receiver. */
@@ -196,6 +335,45 @@ function dispatchWrapper(
 ): JsIrValueExpression {
   const codeName = `__tscn_protomethod_${target.name}_${functionName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   context.nextFunctionObjectId += 1;
+  const hasRest = parameters.some((parameter) => parameter.isRest === true);
+  if (hasRest) {
+    const spreadElements: JsIrRuntimeArrayElement[] = [
+      { kind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } },
+      ...parameters.map((parameter): JsIrRuntimeArrayElement =>
+        parameter.isRest === true
+          ? { kind: "spread", arrayName: parameter.name, sourceKind: "runtime" }
+          : { kind: "value", value: forwardedParameterValue(parameter) }
+      )
+    ];
+    return {
+      kind: "functionObject",
+      definition: {
+        codeName,
+        parameters,
+        functionKind: "ordinary",
+        returnKind: "value",
+        ...(inferredName === undefined ? {} : { inferredName }),
+        body: [{
+          kind: "returnValue",
+          expression: {
+            kind: "callValue",
+            callee: {
+              kind: "functionObject",
+              definition: {
+                codeName: `${codeName}_target`,
+                parameters: [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...parameters],
+                functionKind: "ordinary",
+                returnKind: "value",
+                directTarget: functionName
+              }
+            },
+            arguments: [],
+            spreadArguments: spreadElements
+          }
+        }]
+      }
+    };
+  }
   const forwarded = parameters.map((parameter) => forwardedClassArgument(parameter));
   return {
     kind: "functionObject",
@@ -215,4 +393,14 @@ function dispatchWrapper(
       }]
     }
   };
+}
+
+function forwardedParameterValue(parameter: JsIrFunctionParameter): JsIrValueExpression {
+  if (parameter.valueKind === "number") {
+    return { kind: "number", value: { kind: "parameter", name: parameter.name } };
+  }
+  if (parameter.valueKind === "string") {
+    return { kind: "string", value: { kind: "variable", name: parameter.name } };
+  }
+  return { kind: "variable", name: parameter.name };
 }

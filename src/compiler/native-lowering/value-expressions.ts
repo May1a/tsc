@@ -23,6 +23,7 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   callValue,
   functionObject: (expression, context) => context.calls.functionObject(expression),
   inlineCppValue: (expression, context) => context.calls.inlineCpp(expression.symbol),
+  newTarget: (_expression, context) => context.runtime.callBoxed("newTargetGet", [], context.cursor.uniqueName("new.target")),
   newInstance,
   taggedTemplateValue: (expression, context) => context.calls.tagged(expression),
   valuePlus: (expression, context) => {

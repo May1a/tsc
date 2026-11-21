@@ -110,6 +110,15 @@ const handlers: VariantHandlers<ConditionVariants, ExpressionContext, BooleanVal
     const prototype = context.bindings.pointer(condition.prototypeName);
     return context.runtime.call("jsInstanceOf", [value, prototype], context.cursor.uniqueName("condition.instanceof"));
   },
+  valueInstanceOf: (condition, context) => {
+    const left = context.expressions.value(condition.left);
+    context.roots.push(left);
+    const right = context.expressions.value(condition.right);
+    context.roots.push(right);
+    const result = context.runtime.callWithCompletion("valueInstanceOf", [left, right],
+      context.cursor.uniqueName("condition.value.instanceof"), context.exceptionTarget());
+    return context.runtime.call("valueTruthy", [result], context.cursor.uniqueName("condition.instanceof.bool"));
+  },
   errorInstanceOf: errorInstance,
   regexTest: (condition, context) => {
     const regex = context.expressions.value(condition.regex);

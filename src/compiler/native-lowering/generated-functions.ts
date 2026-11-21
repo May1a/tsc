@@ -98,7 +98,7 @@ export class GeneratedFunctions {
         const callee = keep(this.#reference(expression.name, context, writes), context);
         return invokeFunction(callee, this.#directArguments(expression, context), context);
       },
-      generated: (target, args) => invokeFunction(this.#reference(target, context, writes), args, context),
+      generated: (target, args, newTarget) => invokeFunction(this.#reference(target, context, writes), args, context, newTarget),
       inlineCpp: (symbol) => {
         const spec = this.#cpp.get(symbol);
         if (spec === undefined) { throw new Error(`Inline C++ symbol ${symbol} was not declared`); }

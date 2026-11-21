@@ -57,7 +57,9 @@ export function createObjectsCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "objectKeys": registerRuntimeContract(module, objectsContracts.objectKeys),
     "objectDefineAccessor": registerRuntimeContract(module, objectsContracts.objectDefineAccessor),
     "objectFindProperty": registerRuntimeContract(module, objectsContracts.objectFindProperty),
+    "objectPropertyGetWithThis": registerRuntimeContract(module, objectsContracts.objectPropertyGetWithThis),
     "objectPropertyGet": registerRuntimeContract(module, objectsContracts.objectPropertyGet),
+    "objectPropertySetWithThis": registerRuntimeContract(module, objectsContracts.objectPropertySetWithThis),
     "objectPropertySet": registerRuntimeContract(module, objectsContracts.objectPropertySet),
   };
 }

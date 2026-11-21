@@ -35,6 +35,7 @@ export interface LoweringContext {
   enclosingJumpTargets: JumpTargetFrame[];
   pendingLoopLabel: string | undefined;
   classThisInScope: boolean;
+  inClassConstructor: boolean;
   activeEnclosingClass: ClassInfo | undefined;
   activeClassMethodStatic: boolean;
   nextFunctionObjectId: number;

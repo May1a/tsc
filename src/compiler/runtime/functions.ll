@@ -250,11 +250,51 @@ store:
   call void @gcRootPush(i64 %value)
   call void @gcRootPush(i64 %stored)
   %properties = call ptr @functionObjectProperties(i64 %value)
-  call void @objectSet(ptr %properties, i64 %key.len, ptr %key.ptr, i64 %stored)
+  %set.result = call { i64, i1 } @objectPropertySetWithThis(ptr %properties, i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored)
   call void @gcRootRestore(i64 %frame)
-  %ok.0 = insertvalue { i64, i1 } undef, i64 9222246136947933184, 0
-  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
-  ret { i64, i1 } %ok
+  ret { i64, i1 } %set.result
+}
+
+define void @functionObjectAttachProperties(i64 %fn.value, i64 %properties.value) {
+entry:
+  %fn.ptr = call ptr @valueFunctionPtr(i64 %fn.value)
+  %props.ptr = call ptr @valueObjectPtr(i64 %properties.value)
+  %props.slot = getelementptr i8, ptr %fn.ptr, i64 56
+  store ptr %props.ptr, ptr %props.slot
+  ret void
+}
+
+define { i64, i1 } @functionObjectPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %is.name.length = icmp eq i64 %key.len, 4
+  br i1 %is.name.length, label %check.name, label %check.length
+check.name:
+  %name.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.function.name.key, i64 4)
+  %is.name = icmp eq i32 %name.cmp, 0
+  br i1 %is.name, label %builtin.read, label %check.props
+check.length:
+  %is.length.length = icmp eq i64 %key.len, 6
+  br i1 %is.length.length, label %check.length.cmp, label %check.props
+check.length.cmp:
+  %length.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.function.length.key, i64 6)
+  %is.length = icmp eq i32 %length.cmp, 0
+  br i1 %is.length, label %builtin.read, label %check.props
+builtin.read:
+  %builtin.val = call i64 @functionObjectGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  %b.0 = insertvalue { i64, i1 } undef, i64 %builtin.val, 0
+  %b.1 = insertvalue { i64, i1 } %b.0, i1 false, 1
+  ret { i64, i1 } %b.1
+check.props:
+  %fn.ptr = call ptr @valueFunctionPtr(i64 %value)
+  %props.slot = getelementptr i8, ptr %fn.ptr, i64 56
+  %props = load ptr, ptr %props.slot
+  %has.props = icmp ne ptr %props, null
+  br i1 %has.props, label %read.props, label %missing
+read.props:
+  %prop.res = call { i64, i1 } @objectPropertyGetWithThis(ptr %props, i64 %value, i64 %key.len, ptr %key.ptr)
+  ret { i64, i1 } %prop.res
+missing:
+  ret { i64, i1 } { i64 9222246136947933184, i1 false }
 }
 define i64 @functionObjectOwnPropertyDescriptor(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:

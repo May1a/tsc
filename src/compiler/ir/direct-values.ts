@@ -23,7 +23,7 @@ export function lowerDirectValueExpression(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
   if (ts.isMetaProperty(expression) && expression.keywordToken === ts.SyntaxKind.NewKeyword) {
-    return unsupportedIn(unsupportedFormMessage("new-target"));
+    return produced(context.inClassConstructor ? { kind: "newTarget" } : { kind: "undefined" });
   }
 
   const regex = lowerRegexValueExpression(context, expression, bindings);

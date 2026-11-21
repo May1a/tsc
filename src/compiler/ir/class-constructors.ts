@@ -22,18 +22,15 @@ export function lowerClassConstructor(
   constructorDeclaration: ts.ConstructorDeclaration | undefined,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<JsIrOperation> {
-  const constructorBody = constructorDeclaration?.body;
-  const returnedValue = constructorBody === undefined ? undefined : valueReturnIn(constructorBody);
-  if (returnedValue !== undefined) {
-    return unsupportedIn(`A class constructor that returns a value (\`return ${expressionSnippet(returnedValue)}\`) is not supported yet`);
-  }
   const receiverBindings = functionFrameBindings(bindings);
   receiverBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
 
   const previousThis = context.classThisInScope;
+  const previousCtor = context.inClassConstructor;
   const previousClass = context.activeEnclosingClass;
   const previousStatic = context.activeClassMethodStatic;
   context.classThisInScope = true;
+  context.inClassConstructor = true;
   context.activeEnclosingClass = info;
   context.activeClassMethodStatic = false;
   try {
@@ -45,46 +42,13 @@ export function lowerClassConstructor(
     const parameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...lowered.operation.parameters];
     const body: JsIrOperation[] = [];
     let remainingStatements: readonly ts.Statement[] = constructorDeclaration?.body?.statements ?? [];
-    if (info.baseName !== undefined) {
-      const base = context.classes.get(info.baseName);
-      if (base === undefined) {
-        return unsupportedIn(`\`extends ${info.baseName ?? "that class"}\` names a class this module did not lower`);
+    if (info.baseName !== undefined || info.baseErrorName !== undefined) {
+      const superResult = lowerDerivedSuperCall(context, info, constructorDeclaration, fnBindings);
+      if (superResult.kind !== "lowered") {
+        return superResult;
       }
-      let superArguments: readonly JsIrCallArgument[] | undefined;
-      if (constructorDeclaration === undefined) {
-        superArguments = info.constructorParameters.map(forwardedClassArgument);
-      } else {
-        const statements = constructorDeclaration.body?.statements ?? ts.factory.createNodeArray<ts.Statement>();
-        // Destructuring an empty array yields `undefined` for `first`, which is not the `ts.Statement` the
-        // type claims — hence the widening. `ts.isExpressionStatement` reads `node.kind`, so without the
-        // guard below this threw on the undefined instead of refusing the shape, and a defect is a crash
-        // with no diagnostic. TypeScript already rejects an empty derived constructor (TS2377) before
-        // lowering runs, so this is only ever the defensive branch.
-        const [first, ...rest] = statements as readonly (ts.Statement | undefined)[];
-        if (
-          first === undefined ||
-          !ts.isExpressionStatement(first) ||
-          !ts.isCallExpression(first.expression) ||
-          first.expression.expression.kind !== ts.SyntaxKind.SuperKeyword
-        ) {
-          return unsupportedIn("A derived constructor must call `super(...)` as its first statement");
-        }
-        const typedCallArgumentsResult = context.lowerTypedCallArguments(context, base.constructorParameters, first.expression.arguments, fnBindings);
-        if (typedCallArgumentsResult.kind === "unsupported") {
-          return typedCallArgumentsResult;
-        }
-        superArguments = loweredPayload(typedCallArgumentsResult);
-        // `rest` holds only what follows `first`, which the guard above established is a statement.
-        remainingStatements = rest.filter((statement): statement is ts.Statement => statement !== undefined);
-      }
-      if (superArguments === undefined) {
-        return unsupportedIn("`super(...)` arguments must be expressions this build can evaluate");
-      }
-      body.push({
-        kind: "call",
-        name: classConstructorName(base.name),
-        arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...superArguments]
-      });
+      body.push(...superResult.operation.operations);
+      ({ remainingStatements } = superResult.operation);
     }
     const iteratorStore = lowerClassIteratorStore(context, info, fnBindings);
     if (iteratorStore.kind === "unsupported") {
@@ -145,9 +109,161 @@ export function lowerClassConstructor(
       ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }) });
   } finally {
     context.classThisInScope = previousThis;
+    context.inClassConstructor = previousCtor;
     context.activeEnclosingClass = previousClass;
     context.activeClassMethodStatic = previousStatic;
   }
+}
+
+function lowerDerivedSuperCall(
+  context: LoweringContext,
+  info: ClassInfo,
+  constructorDeclaration: ts.ConstructorDeclaration | undefined,
+  fnBindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<{ readonly operations: readonly JsIrOperation[]; readonly remainingStatements: readonly ts.Statement[] }> {
+  if (info.baseErrorName !== undefined) {
+    return lowerErrorSuperCall(context, info, constructorDeclaration, fnBindings);
+  }
+  const base = info.baseName === undefined ? undefined : context.classes.get(info.baseName);
+  if (base === undefined) {
+    return unsupportedIn(`\`extends ${info.baseName ?? "that class"}\` names a class this module did not lower`);
+  }
+  if (constructorDeclaration === undefined) {
+    if (info.constructorParameters.some((parameter) => parameter.isRest === true)) {
+      const spreadElements = [
+        { kind: "value" as const, value: { kind: "variable" as const, name: CLASS_THIS_NAME } },
+        ...info.constructorParameters.map((parameter) =>
+          parameter.isRest === true
+            ? { kind: "spread" as const, arrayName: parameter.name, sourceKind: "runtime" as const }
+            : { kind: "value" as const, value: forwardedClassValue(parameter) }
+        )
+      ];
+      return produced({
+        operations: [{
+          kind: "callValue",
+          callee: {
+            kind: "functionObject",
+            definition: {
+              codeName: `__tscn_super_fwd_${info.name}_${context.nextFunctionObjectId++}`.replace(/[^A-Za-z0-9_]/g, "_"),
+              parameters: [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...base.constructorParameters],
+              functionKind: "ordinary",
+              returnKind: "value",
+              directTarget: classConstructorName(base.name)
+            }
+          },
+          arguments: [],
+          spreadArguments: spreadElements
+        }],
+        remainingStatements: []
+      });
+    }
+    return produced({
+      operations: [{
+        kind: "call",
+        name: classConstructorName(base.name),
+        arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...info.constructorParameters.map(forwardedClassArgument)]
+      }],
+      remainingStatements: []
+    });
+  }
+  const statements = constructorDeclaration.body?.statements ?? ts.factory.createNodeArray<ts.Statement>();
+  const [first, ...rest] = statements as readonly (ts.Statement | undefined)[];
+  if (
+    first === undefined ||
+    !ts.isExpressionStatement(first) ||
+    !ts.isCallExpression(first.expression) ||
+    first.expression.expression.kind !== ts.SyntaxKind.SuperKeyword
+  ) {
+    return unsupportedIn("A derived constructor must call `super(...)` as its first statement");
+  }
+  const typedCallArgumentsResult = context.lowerTypedCallArguments(context, base.constructorParameters, first.expression.arguments, fnBindings);
+  if (typedCallArgumentsResult.kind === "unsupported") {
+    return typedCallArgumentsResult;
+  }
+  const superArguments = loweredPayload(typedCallArgumentsResult);
+  if (superArguments === undefined) {
+    return unsupportedIn("`super(...)` arguments must be expressions this build can evaluate");
+  }
+  return produced({
+    operations: [{
+      kind: "call",
+      name: classConstructorName(base.name),
+      arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...superArguments]
+    }],
+    remainingStatements: rest.filter((statement): statement is ts.Statement => statement !== undefined)
+  });
+}
+
+function lowerErrorSuperCall(
+  context: LoweringContext,
+  info: ClassInfo,
+  constructorDeclaration: ts.ConstructorDeclaration | undefined,
+  fnBindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<{ readonly operations: readonly JsIrOperation[]; readonly remainingStatements: readonly ts.Statement[] }> {
+  const operations: JsIrOperation[] = [
+    {
+      kind: "valueObjectStore",
+      targetName: CLASS_THIS_NAME,
+      key: { kind: "literal", value: "name" },
+      value: { kind: "string", value: { kind: "literal", value: info.baseErrorName ?? "Error" } }
+    }
+  ];
+  if (constructorDeclaration === undefined) {
+    operations.push({
+      kind: "valueObjectStore",
+      targetName: CLASS_THIS_NAME,
+      key: { kind: "literal", value: "message" },
+      value: {
+        kind: "ternary",
+        condition: { kind: "valueComparison", operator: "===", left: { kind: "variable", name: "message" }, right: { kind: "undefined" } },
+        consequent: { kind: "string", value: { kind: "literal", value: "" } },
+        alternate: { kind: "string", value: { kind: "stringConversion", value: { kind: "variable", name: "message" } } }
+      }
+    });
+    return produced({ operations, remainingStatements: [] });
+  }
+  const statements = constructorDeclaration.body?.statements ?? ts.factory.createNodeArray<ts.Statement>();
+  const [first, ...rest] = statements as readonly (ts.Statement | undefined)[];
+  if (
+    first === undefined ||
+    !ts.isExpressionStatement(first) ||
+    !ts.isCallExpression(first.expression) ||
+    first.expression.expression.kind !== ts.SyntaxKind.SuperKeyword
+  ) {
+    return unsupportedIn("A derived constructor must call `super(...)` as its first statement");
+  }
+  const messageArg: ts.Expression | undefined = first.expression.arguments.at(0);
+  const remainingStatements = rest.filter((statement): statement is ts.Statement => statement !== undefined);
+  if (messageArg === undefined) {
+    operations.push({
+      kind: "valueObjectStore",
+      targetName: CLASS_THIS_NAME,
+      key: { kind: "literal", value: "message" },
+      value: { kind: "string", value: { kind: "literal", value: "" } }
+    });
+  } else {
+    const loweredMsg = context.lowerValueExpression(context, messageArg, fnBindings);
+    if (loweredMsg.kind !== "lowered") {
+      return withRefusal(loweredMsg, unsupportedIn("`super(...)` arguments must be expressions this build can evaluate"));
+    }
+    operations.push({
+      kind: "valueObjectStore",
+      targetName: CLASS_THIS_NAME,
+      key: { kind: "literal", value: "message" },
+      value: { kind: "string", value: { kind: "stringConversion", value: loweredMsg.operation } }
+    });
+  }
+  return produced({ operations, remainingStatements });
+}
+
+function forwardedClassValue(parameter: JsIrFunctionParameter): JsIrValueExpression {
+  if (parameter.valueKind === "number") {
+    return { kind: "number", value: { kind: "parameter", name: parameter.name } };
+  }
+  if (parameter.valueKind === "string") {
+    return { kind: "string", value: { kind: "variable", name: parameter.name } };
+  }
+  return { kind: "variable", name: parameter.name };
 }
 
 function lowerConstructorBodyStatements(
@@ -163,6 +279,21 @@ function lowerConstructorBodyStatements(
       if (isNonExecutableDeclaration(statement)) {
         continue;
       }
+      if (ts.isReturnStatement(statement)) {
+        let value: JsIrValueExpression | undefined = { kind: "undefined" };
+        if (statement.expression !== undefined) {
+          const lowered = context.lowerValueExpression(context, statement.expression, bindings);
+          if (lowered.kind === "unsupported") {
+            return lowered;
+          }
+          value = loweredPayload(lowered);
+        }
+        if (value === undefined) {
+          return unsupportedIn("The return value in a class constructor is not an expression this build can evaluate");
+        }
+        operations.push({ kind: "returnValue", expression: value });
+        continue;
+      }
       const result = context.lowerStatement(context, statement, bindings);
       if (result.kind !== "lowered") {
         return unsupportedIn(classAbortReason(result));
@@ -172,29 +303,6 @@ function lowerConstructorBodyStatements(
     }
     return produced(operations);
   });
-}
-
-/**
- * The first value a constructor body returns, outside its nested functions.
- *
- * `new` produces an object the constructor returns in place of the instance, and a derived
- * constructor that returns another value throws. Lowering binds calls on `new C()` to C's methods
- * statically, which would be wrong for a replacement object, so such a constructor is refused.
- */
-function valueReturnIn(body: ts.Block): ts.Expression | undefined {
-  let found: ts.Expression | undefined;
-  const visit = (node: ts.Node): void => {
-    if (found !== undefined || ts.isFunctionLike(node) || ts.isClassLike(node)) {
-      return;
-    }
-    if (ts.isReturnStatement(node) && node.expression !== undefined) {
-      found = node.expression;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(body, visit);
-  return found;
 }
 
 /**

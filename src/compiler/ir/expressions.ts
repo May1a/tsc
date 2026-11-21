@@ -257,11 +257,15 @@ export type JsIrValueExpression =
       readonly method: "valueOf" | "toString";
     }
   | {
+      readonly kind: "newTarget";
+    }
+  | {
       readonly kind: "newInstance";
       readonly className: string;
       readonly fieldCount: number;
       readonly prototypeName: string;
       readonly constructorName: string;
+      readonly newTargetName?: string;
       readonly arguments: readonly JsIrCallArgument[];
     };
 
@@ -567,6 +571,11 @@ export type JsIrCondition =
       readonly kind: "classInstanceOf";
       readonly value: JsIrValueExpression;
       readonly prototypeName: string;
+    }
+  | {
+      readonly kind: "valueInstanceOf";
+      readonly left: JsIrValueExpression;
+      readonly right: JsIrValueExpression;
     }
   | {
       readonly kind: "errorInstanceOf";

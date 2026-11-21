@@ -117,6 +117,7 @@ export const operationRoles = {
   runtimeObjectStore: { objectName: reference },
   valueObjectStore: { targetName: reference },
   defineAccessor: { targetName: reference },
+  attachFunctionProperties: { functionName: reference, propertiesName: reference },
   privateFieldStore: { targetName: reference, key: preserved("privateKey"), message: preserved("message") },
   valueArrayStore: { targetName: reference },
   valueArraySetLength: { targetName: reference },

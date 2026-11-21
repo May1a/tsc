@@ -114,14 +114,29 @@ function lowerBuiltinErrorConstruction(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
   const refusal: Lowered<JsIrValueExpression> = unsupportedIn(newExpressionRefusal(expression));
-  if (!isErrorConstructorReference(expression.expression, bindings)) {
-    return refusal;
+  if (isErrorConstructorReference(expression.expression, bindings)) {
+    const args = lowerValueCallArguments(context, expression.arguments ?? ts.factory.createNodeArray(), bindings, expression.expression.text);
+    if (args.kind !== "lowered") {
+      return withRefusal(args, refusal);
+    }
+    return produced({ kind: "callValue", callee: { kind: "errorConstructor", errorName: expression.expression.text }, arguments: args.operation });
   }
-  const args = lowerValueCallArguments(context, expression.arguments ?? ts.factory.createNodeArray(), bindings, expression.expression.text);
+  const target = unwrapTypeOnlyExpression(expression.expression);
+  if (ts.isIdentifier(target)) {
+    const binding = bindings.get(target.text);
+    if (binding?.kind !== "valueVariable" && binding?.kind !== "value") {
+      return refusal;
+    }
+  }
+  const callee = context.lowerValueExpression(context, target, bindings);
+  if (callee.kind !== "lowered") {
+    return withRefusal(callee, refusal);
+  }
+  const args = lowerValueCallArguments(context, expression.arguments ?? ts.factory.createNodeArray(), bindings, expression.expression.getText());
   if (args.kind !== "lowered") {
     return withRefusal(args, refusal);
   }
-  return produced({ kind: "callValue", callee: { kind: "errorConstructor", errorName: expression.expression.text }, arguments: args.operation });
+  return produced({ kind: "callValue", callee: callee.operation, arguments: args.operation });
 }
 
 /** A builtin error constructor named as a value, which no binding of the same name shadows. */
@@ -327,7 +342,7 @@ function lowerAggregatePropertyValueAccess(
       key: { kind: "literal", value: expression.name.text }
     });
   }
-  if (isBoxedAggregateCandidateBinding(binding)) {
+  if (isBoxedAggregateCandidateBinding(binding) || (!bindings.has(receiver.text) && context.classes.has(receiver.text))) {
     const value = context.lowerValueExpression(context, receiver, bindings);
     if (value.kind === "unsupported") {
       return value;
@@ -421,7 +436,8 @@ function lowerValueElementReceiver(
   const unwrapped = unwrapTypeOnlyExpression(expression);
   if (ts.isIdentifier(unwrapped)) {
     const binding = bindings.get(unwrapped.text);
-    if (!isBoxedAggregateCandidateBinding(binding) && binding?.kind !== "runtimeObject" && binding?.kind !== "runtimeArray") {
+    const isClass = !bindings.has(unwrapped.text) && context.classes.has(unwrapped.text);
+    if (!isBoxedAggregateCandidateBinding(binding) && binding?.kind !== "runtimeObject" && binding?.kind !== "runtimeArray" && !isClass) {
       return notApplicable;
     }
     return context.lowerValueExpression(context, unwrapped, bindings);

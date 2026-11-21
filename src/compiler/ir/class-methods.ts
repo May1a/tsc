@@ -13,16 +13,42 @@ import { updateBindings } from "./binding-updates.js";
 import { collectMethodEnclosingCaptureNames } from "./captures.js";
 import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
 
+function withClassMemberScope<T>(
+  context: LoweringContext,
+  info: ClassInfo,
+  isStatic: boolean,
+  run: () => T
+): T {
+  const previousThis = context.classThisInScope;
+  const previousCtor = context.inClassConstructor;
+  const previousClass = context.activeEnclosingClass;
+  const previousStatic = context.activeClassMethodStatic;
+  context.classThisInScope = true;
+  context.inClassConstructor = false;
+  context.activeEnclosingClass = info;
+  context.activeClassMethodStatic = isStatic;
+  try {
+    return run();
+  } finally {
+    context.classThisInScope = previousThis;
+    context.inClassConstructor = previousCtor;
+    context.activeEnclosingClass = previousClass;
+    context.activeClassMethodStatic = previousStatic;
+  }
+}
+
 export function lowerClassAccessor(
   context: LoweringContext,
   info: ClassInfo,
   accessor: ts.AccessorDeclaration,
   functionName: string,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  isStatic = false
 ): Produced<JsIrOperation> {
   if (accessor.body === undefined) {
     return unsupportedIn("An accessor overload signature is not supported yet; only the implementation is lowered");
   }
+  const { body: accessorBody } = accessor;
   const signature = classCallableParameters(accessor);
   if (signature.kind !== "lowered") {
     return signature;
@@ -30,30 +56,47 @@ export function lowerClassAccessor(
   const receiverBindings = functionFrameBindings(bindings);
   receiverBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
 
-  const previousThis = context.classThisInScope;
-  const previousClass = context.activeEnclosingClass;
-  const previousStatic = context.activeClassMethodStatic;
-  context.classThisInScope = true;
-  context.activeEnclosingClass = info;
-  context.activeClassMethodStatic = false;
-  try {
+  return withClassMemberScope(context, info, isStatic, () => {
     const parameters = lowerFunctionParameters(context, accessor.parameters, receiverBindings);
     if (parameters.kind !== "lowered") {
       return parameters;
     }
-    const body = lowerClassMethodBody(context, accessor.body, parameters.operation.bindings);
+    const body = lowerClassMethodBody(context, accessorBody, parameters.operation.bindings);
     if (body.kind !== "lowered") {
       return body;
     }
     const fnParameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...parameters.operation.parameters];
-    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, accessor, accessor.body, [...accessor.parameters], bindings);
+    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, accessor, accessorBody, [...accessor.parameters], bindings);
     return produced({ kind: "function", name: functionName, parameters: fnParameters, body: body.operation,
       ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }) });
-  } finally {
-    context.classThisInScope = previousThis;
-    context.activeEnclosingClass = previousClass;
-    context.activeClassMethodStatic = previousStatic;
-  }
+  });
+}
+
+export function lowerClassStaticBlock(
+  context: LoweringContext,
+  info: ClassInfo,
+  block: ts.ClassStaticBlockDeclaration,
+  functionName: string,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Produced<JsIrOperation> {
+  const receiverBindings = functionFrameBindings(bindings);
+  receiverBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
+
+  return withClassMemberScope(context, info, true, () => {
+    const body = lowerClassMethodBody(context, block.body, receiverBindings);
+    if (body.kind !== "lowered") {
+      return body;
+    }
+    const fnParameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }];
+    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, block, block.body, [], bindings);
+    return produced({
+      kind: "function",
+      name: functionName,
+      parameters: fnParameters,
+      body: body.operation,
+      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] })
+    });
+  });
 }
 
 export function lowerClassMethod(
@@ -70,32 +113,27 @@ export function lowerClassMethod(
   if (declaration.body === undefined) {
     return unsupportedIn("A method with no body reached emission; the class tier should have dropped it as an overload signature");
   }
+  const { body: declarationBody } = declaration;
   const methodName = entry.name;
   const signature = classCallableParameters(declaration);
   if (signature.kind !== "lowered") {
     return signature;
   }
   const receiverBindings = functionFrameBindings(bindings);
-  const fnParameters: JsIrFunctionParameter[] = [];
-  bindClassMethodReceiver(receiverBindings, fnParameters, isStatic);
+  const fnParameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }];
+  receiverBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
 
-  const previousThis = context.classThisInScope;
-  const previousClass = context.activeEnclosingClass;
-  const previousStatic = context.activeClassMethodStatic;
-  context.classThisInScope = !isStatic;
-  context.activeEnclosingClass = info;
-  context.activeClassMethodStatic = isStatic;
-  try {
+  return withClassMemberScope(context, info, isStatic, () => {
     const parameters = lowerFunctionParameters(context, declaration.parameters, receiverBindings);
     if (parameters.kind !== "lowered") {
       return parameters;
     }
     fnParameters.push(...parameters.operation.parameters);
-    const body = lowerClassMethodBody(context, declaration.body, parameters.operation.bindings);
+    const body = lowerClassMethodBody(context, declarationBody, parameters.operation.bindings);
     if (body.kind !== "lowered") {
       return body;
     }
-    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, declaration, declaration.body, [...declaration.parameters], bindings);
+    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, declaration, declarationBody, [...declaration.parameters], bindings);
     return produced({
       kind: "function",
       name: classMethodFunctionName(info.name, methodName, isStatic),
@@ -103,24 +141,7 @@ export function lowerClassMethod(
       body: body.operation,
       ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] })
     });
-  } finally {
-    context.classThisInScope = previousThis;
-    context.activeEnclosingClass = previousClass;
-    context.activeClassMethodStatic = previousStatic;
-  }
-}
-
-// Lowers a constructor-or-method body, normalizing every `return` to a JSValue
-// result so method calls are uniformly value-typed at their call sites.
-function bindClassMethodReceiver(
-  fnBindings: Map<string, JsIrBindingValue>,
-  fnParameters: JsIrFunctionParameter[],
-  isStatic: boolean
-): void {
-  if (!isStatic) {
-    fnParameters.push({ name: CLASS_THIS_NAME, valueKind: "value" });
-    fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-  }
+  });
 }
 
 function lowerClassMethodBody(

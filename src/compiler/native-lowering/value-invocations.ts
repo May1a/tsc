@@ -123,6 +123,7 @@ export function newInstance(expression: ValueNode<"newInstance">, context: Expre
   const prototype = keep(context.bindings.value(expression.prototypeName), context);
   const pointer = context.runtime.callPointer("valueObjectPtr", [prototype], context.cursor.uniqueName("instance.prototype"));
   context.runtime.callVoid("objectSetPrototype", [object, pointer]);
-  context.calls.generated(expression.constructorName, [instance, ...args]);
-  return instance;
+  const newTarget = expression.newTargetName === undefined ? undefined : keep(context.bindings.value(expression.newTargetName), context);
+  const returned = keep(context.calls.generated(expression.constructorName, [instance, ...args], newTarget), context);
+  return keep(context.runtime.callBoxed("newInstanceResult", [instance, returned], context.cursor.uniqueName("instance.result")), context);
 }

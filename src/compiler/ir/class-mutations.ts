@@ -30,7 +30,11 @@ export function lowerClassPropertyAssignment(
     ts.isIdentifier(left.expression) &&
     !bindings.has(left.expression.text) &&
     context.classes.get(left.expression.text) !== undefined;
-  if (isClassReceiver && findClassInChain(context, receiverClass, (candidate) => candidate.staticFields.has(propertyName)) !== undefined) {
+  if (isClassReceiver && findClassInChain(context, receiverClass, (candidate) =>
+    candidate.staticFields.has(propertyName) ||
+    candidate.staticSetters.has(propertyName) ||
+    candidate.staticGetters.has(propertyName)
+  ) !== undefined) {
     const value = context.lowerValueExpression(context, right, bindings);
     if (value.kind !== "lowered") {
       return withRefusal(value, unsupportedIn(`The value written to the static field \`${propertyName}\` is not an expression this build can evaluate`));

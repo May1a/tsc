@@ -6,7 +6,7 @@ import type { JsIrValueExpression } from "./expressions.js";
 import { type ClassInfo, type ClassMethodInfo, classPrototypeName, findClassInChain, resolveReceiverClass } from "./class-info.js";
 import { isOverriddenBelow } from "./class-hierarchy.js";
 import { lowerValueCallArguments } from "./call-arguments.js";
-import { CLASS_THIS_NAME, classConstructorName, classMethodFunctionName } from "./class-names.js";
+import { CLASS_THIS_NAME, classConstructorName, classConstructorValueName, classMethodFunctionName } from "./class-names.js";
 
 // A class method call lowers to a direct call, to a call dispatched through the receiver's prototype
 // chain when a subclass overrides the method, or — when the receiver itself is optional
@@ -38,7 +38,7 @@ export function lowerClassMethodCall(
       definingClass = findClassInChain(context, staticClass, (candidate) => candidate.staticMethods.has(methodName));
     }
     const staticMethod = definingClass?.staticMethods.get(methodName);
-    if (definingClass !== undefined && staticMethod !== undefined) {
+    if (staticClass !== undefined && definingClass !== undefined && staticMethod !== undefined) {
       const args = context.lowerTypedCallArguments(context, staticMethod.parameters, call.arguments, bindings);
       if (args.kind !== "lowered") {
         return withRefusal(args, unsupportedIn(`Arguments to the static method \`${methodName}\` must be expressions this build can evaluate`));
@@ -46,7 +46,7 @@ export function lowerClassMethodCall(
       return produced({
         kind: "call",
         name: classMethodFunctionName(definingClass.name, methodName, true),
-        arguments: args.operation
+        arguments: [{ valueKind: "value", value: { kind: "variable", name: classConstructorValueName(staticClass.name) } }, ...args.operation]
       });
     }
   }
@@ -144,11 +144,16 @@ function isExactInstanceReceiver(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): boolean {
   if (ts.isNewExpression(receiver) && ts.isIdentifier(receiver.expression) && !bindings.has(receiver.expression.text)) {
-    return context.classes.has(receiver.expression.text);
+    const info = context.classes.get(receiver.expression.text);
+    return info !== undefined && !info.hasValueReturn;
   }
   if (ts.isIdentifier(receiver)) {
     const binding = bindings.get(receiver.text);
-    return binding?.kind === "valueVariable" && binding.className !== undefined;
+    if (binding?.kind !== "valueVariable" || binding.className === undefined) {
+      return false;
+    }
+    const info = context.classes.get(binding.className);
+    return info !== undefined && !info.hasValueReturn;
   }
   return false;
 }
@@ -269,7 +274,7 @@ function lowerSuperMethodCall(
     return produced({
       kind: "call",
       name: classMethodFunctionName(definingClass.name, methodName, true),
-      arguments: args.operation
+      arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...args.operation]
     });
   }
   return produced({
@@ -349,6 +354,7 @@ export function lowerClassInstanceExpression(
         fieldCount: info.fields.length,
         prototypeName: classPrototypeName(info.name),
         constructorName: classConstructorName(info.name),
+        newTargetName: classConstructorValueName(info.name),
         arguments: args.operation
       } as JsIrValueExpression);
     }

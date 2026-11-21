@@ -1104,11 +1104,18 @@ read:
   %frame = call i64 @gcRootSave()
   call void @gcRootPush(i64 %value)
   %object = call i1 @valueIsObject(i64 %value)
-  br i1 %object, label %object.read, label %other.read
+  br i1 %object, label %object.read, label %check.function
 object.read:
   %object.result = call { i64, i1 } @objectPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
   call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %object.result
+check.function:
+  %is.fn = call i1 @valueIsFunction(i64 %value)
+  br i1 %is.fn, label %function.read, label %other.read
+function.read:
+  %fn.result = call { i64, i1 } @functionObjectPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %fn.result
 other.read:
   %property = call i64 @valuePropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
   %result.0 = insertvalue { i64, i1 } undef, i64 %property, 0
@@ -2002,4 +2009,96 @@ convert:
   %value = extractvalue { i64, i1 } %result, 0
   %string = call { i64, i1 } @valueToStringObservable(i64 %value, i1 false)
   ret { i64, i1 } %string
+}
+
+define i64 @newInstanceResult(i64 %instance, i64 %returned) {
+entry:
+  %is.obj = call i1 @valueIsObject(i64 %returned)
+  br i1 %is.obj, label %use.returned, label %check.arr
+check.arr:
+  %is.arr = call i1 @valueIsArray(i64 %returned)
+  br i1 %is.arr, label %use.returned, label %check.fn
+check.fn:
+  %is.fn = call i1 @valueIsFunction(i64 %returned)
+  br i1 %is.fn, label %use.returned, label %use.instance
+use.returned:
+  ret i64 %returned
+use.instance:
+  ret i64 %instance
+}
+
+@currentNewTargetRoot = internal global i64 9222246136947933184
+@currentNewTargetRegistered = internal global i1 false
+
+define i64 @newTargetGet() {
+entry:
+  %val = load i64, ptr @currentNewTargetRoot
+  ret i64 %val
+}
+
+define i64 @newTargetSwap(i64 %next) {
+entry:
+  %registered = load i1, ptr @currentNewTargetRegistered
+  br i1 %registered, label %swap, label %register
+register:
+  store i1 true, ptr @currentNewTargetRegistered
+  call void @gcRegisterGlobalRoot(ptr @currentNewTargetRoot)
+  br label %swap
+swap:
+  %prev = load i64, ptr @currentNewTargetRoot
+  store i64 %next, ptr @currentNewTargetRoot
+  ret i64 %prev
+}
+
+define { i64, i1 } @jsCallWithNewTarget(i64 %fn.value, i64 %argc, ptr %argv, i64 %callThis, i64 %newTarget) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %prev = call i64 @newTargetSwap(i64 %newTarget)
+  call void @gcRootPush(i64 %prev)
+  %result = call { i64, i1 } @jsCall(i64 %fn.value, i64 %argc, ptr %argv, i64 %callThis)
+  %discard = call i64 @newTargetSwap(i64 %prev)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %result
+}
+
+@.instanceof.key.prototype = private unnamed_addr constant [10 x i8] c"prototype\00"
+@.instanceof.not.callable = private unnamed_addr constant [46 x i8] c"Right-hand side of instanceof is not callable\00"
+@.instanceof.bad.proto = private unnamed_addr constant [38 x i8] c"instanceof prototype is not an object\00"
+
+define { i64, i1 } @valueInstanceOf(i64 %left, i64 %right) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %left)
+  call void @gcRootPush(i64 %right)
+  %is.fn = call i1 @valueIsFunction(i64 %right)
+  br i1 %is.fn, label %read.proto, label %not.callable
+not.callable:
+  %nc.msg = call i64 @valueBoxString(ptr @.instanceof.not.callable, i64 45)
+  %nc.err = call { i64, i1 } @iteratorTypeError(i64 %nc.msg)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %nc.err
+read.proto:
+  %proto.res = call { i64, i1 } @checkedValuePropertyGet(i64 %right, i64 9, ptr @.instanceof.key.prototype)
+  %proto.threw = extractvalue { i64, i1 } %proto.res, 1
+  br i1 %proto.threw, label %propagate, label %check.proto
+propagate:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %proto.res
+check.proto:
+  %proto.val = extractvalue { i64, i1 } %proto.res, 0
+  %proto.is.obj = call i1 @valueIsObject(i64 %proto.val)
+  br i1 %proto.is.obj, label %match.chain, label %bad.proto
+bad.proto:
+  %bp.msg = call i64 @valueBoxString(ptr @.instanceof.bad.proto, i64 37)
+  %bp.err = call { i64, i1 } @iteratorTypeError(i64 %bp.msg)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %bp.err
+match.chain:
+  %proto.ptr = call ptr @valueObjectPtr(i64 %proto.val)
+  %matched = call i1 @jsInstanceOf(i64 %left, ptr %proto.ptr)
+  %boxed = select i1 %matched, i64 9222246136947933186, i64 9222246136947933185
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok
 }

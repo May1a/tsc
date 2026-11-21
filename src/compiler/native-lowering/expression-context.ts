@@ -38,7 +38,7 @@ export type DirectCall = Extract<ResolvedNumberExpression | ResolvedStringExpres
 
 export interface ExpressionCalls {
   direct(expression: DirectCall): BoxedValue;
-  generated(target: BindingRef, args: readonly BoxedValue[]): BoxedValue;
+  generated(target: BindingRef, args: readonly BoxedValue[], newTarget?: BoxedValue): BoxedValue;
   inlineCpp(symbol: string): BoxedValue;
   functionObject(expression: Extract<ResolvedValueExpression, { readonly kind: "functionObject" }>): BoxedValue;
   tagged(expression: Extract<ResolvedStringExpression | ResolvedValueExpression, { readonly kind: "taggedTemplate" | "taggedTemplateValue" }>): BoxedValue;

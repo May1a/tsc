@@ -477,5 +477,7 @@ export const oracleFixtures: readonly string[] = [
   "var-hoisting-blocks-and-loops.ts",
   "typeof-runtime-values.ts",
   "observable-to-number-arithmetic.ts",
-  "pr77-review-fixes.ts"
+  "pr77-review-fixes.ts",
+  "form-admitted-new-target.ts",
+  "class-parity-and-values.ts"
 ] as const;

@@ -57,5 +57,10 @@ export function createValuesCallees(module: LlvmModuleBuilder): RuntimeCalleeTab
     "boxedInstallConversionMethods": registerRuntimeContract(module, valuesContracts.boxedInstallConversionMethods),
     "boxedValueOfMethod": registerRuntimeContract(module, valuesContracts.boxedValueOfMethod),
     "boxedToStringMethod": registerRuntimeContract(module, valuesContracts.boxedToStringMethod),
+    "newInstanceResult": registerRuntimeContract(module, valuesContracts.newInstanceResult),
+    "newTargetGet": registerRuntimeContract(module, valuesContracts.newTargetGet),
+    "newTargetSwap": registerRuntimeContract(module, valuesContracts.newTargetSwap),
+    "jsCallWithNewTarget": registerRuntimeContract(module, valuesContracts.jsCallWithNewTarget),
+    "valueInstanceOf": registerRuntimeContract(module, valuesContracts.valueInstanceOf),
   };
 }

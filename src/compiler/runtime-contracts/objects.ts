@@ -367,11 +367,25 @@ export const objectsContracts = {
     name: "objectFindProperty", parameters: [llvm.ptr, llvm.i64, llvm.ptr], returns: llvm.ptr, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "objectPropertyGetWithThis": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectPropertyGetWithThis", parameters: [llvm.ptr, llvm.i64, llvm.i64, llvm.ptr], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
   "objectPropertyGet": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "objectPropertyGet", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "objectPropertySetWithThis": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectPropertySetWithThis", parameters: [llvm.ptr, llvm.i64, llvm.i64, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
     effects: { allocates: true, collects: true, completion: "explicit" }
   },
   "objectPropertySet": {

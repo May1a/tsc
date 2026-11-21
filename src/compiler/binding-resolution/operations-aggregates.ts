@@ -168,6 +168,11 @@ export const aggregateHandlers = {
     getter: resolver.value(node.getter),
     setter: resolver.value(node.setter)
   }),
+  attachFunctionProperties: (node, resolver) => ({
+    ...node,
+    functionName: resolver.reference(node.functionName),
+    propertiesName: resolver.reference(node.propertiesName)
+  }),
   valueObjectStore: (node, resolver) => ({
     ...node,
     targetName: resolver.reference(node.targetName),

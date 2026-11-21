@@ -230,6 +230,7 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     method: node.method,
     receiver: resolver.value(node.receiver)
   }),
+  newTarget: () => ({ kind: "newTarget" }),
   // `className` and `constructorName` are generated code names. `prototypeName` is a binding: the class
   // declared its prototype object, and construction and `instanceof` have to read it.
   newInstance: (node, resolver) => ({
@@ -238,6 +239,7 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     constructorName: resolver.reference(node.constructorName),
     fieldCount: node.fieldCount,
     prototypeName: resolver.reference(node.prototypeName),
+    newTargetName: optional(node.newTargetName, (name) => resolver.reference(name)),
     arguments: resolveCallArguments(node.arguments, resolver)
   })
 });

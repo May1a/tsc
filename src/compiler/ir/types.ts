@@ -534,6 +534,11 @@ export type JsIrOperationNode =
       readonly setter: JsIrValueExpression;
     }
   | {
+      readonly kind: "attachFunctionProperties";
+      readonly functionName: string;
+      readonly propertiesName: string;
+    }
+  | {
       readonly kind: "valueObjectStore";
       readonly targetName: string;
       readonly key: JsIrStringExpression;
