@@ -121,8 +121,11 @@ true:
 false:
   ret i1 false
 }
+@.value.infinity = private unnamed_addr constant [9 x i8] c"Infinity\00"
+
 define double @valueToNumber(i64 %value) {
 entry:
+  %end.slot = alloca ptr
   %is.undefined = icmp eq i64 %value, 9222246136947933184
   br i1 %is.undefined, label %nan, label %check.null
 check.null:
@@ -151,43 +154,152 @@ string.skip.ws:
   %scan.ptr = getelementptr i8, ptr %ptr, i64 %scan.i
   %scan.byte = load i8, ptr %scan.ptr
   %scan.is.space = icmp eq i8 %scan.byte, 32
-  %scan.is.tab = icmp eq i8 %scan.byte, 9
-  %scan.is.lf = icmp eq i8 %scan.byte, 10
-  %scan.is.ws.0 = or i1 %scan.is.space, %scan.is.tab
-  %scan.is.ws = or i1 %scan.is.ws.0, %scan.is.lf
+  %scan.ctl.off = sub i8 %scan.byte, 9
+  %scan.is.ctl = icmp ule i8 %scan.ctl.off, 4
+  %scan.is.ws = or i1 %scan.is.space, %scan.is.ctl
   br i1 %scan.is.ws, label %scan_ws, label %string.validate
 scan_ws:
   %scan.next = add i64 %scan.i, 1
   br label %string.skip.ws
 string.validate:
   %is.empty = icmp eq i8 %scan.byte, 0
-  br i1 %is.empty, label %zero, label %string.parse
-string.parse:
-  %end.slot = alloca ptr
+  br i1 %is.empty, label %zero, label %string.check.radix
+string.check.radix:
   %start.ptr = getelementptr i8, ptr %ptr, i64 %scan.i
+  %starts.zero = icmp eq i8 %scan.byte, 48
+  br i1 %starts.zero, label %radix.prefix, label %string.check.sign
+radix.prefix:
+  %radix.ch.ptr = getelementptr i8, ptr %start.ptr, i64 1
+  %radix.ch = load i8, ptr %radix.ch.ptr
+  %is.hex.lo = icmp eq i8 %radix.ch, 120
+  %is.hex.hi = icmp eq i8 %radix.ch, 88
+  %is.hex = or i1 %is.hex.lo, %is.hex.hi
+  br i1 %is.hex, label %radix.hex, label %radix.check.bin
+radix.check.bin:
+  %is.bin.lo = icmp eq i8 %radix.ch, 98
+  %is.bin.hi = icmp eq i8 %radix.ch, 66
+  %is.bin = or i1 %is.bin.lo, %is.bin.hi
+  br i1 %is.bin, label %radix.bin, label %radix.check.oct
+radix.check.oct:
+  %is.oct.lo = icmp eq i8 %radix.ch, 111
+  %is.oct.hi = icmp eq i8 %radix.ch, 79
+  %is.oct = or i1 %is.oct.lo, %is.oct.hi
+  br i1 %is.oct, label %radix.oct, label %string.check.sign
+radix.hex:
+  br label %radix.start
+radix.bin:
+  br label %radix.start
+radix.oct:
+  br label %radix.start
+radix.start:
+  %radix.base = phi i8 [ 16, %radix.hex ], [ 2, %radix.bin ], [ 8, %radix.oct ]
+  %radix.base.f = phi double [ 16.0, %radix.hex ], [ 2.0, %radix.bin ], [ 8.0, %radix.oct ]
+  %radix.digits = getelementptr i8, ptr %start.ptr, i64 2
+  br label %radix.loop
+radix.loop:
+  %radix.ptr = phi ptr [ %radix.digits, %radix.start ], [ %radix.next.ptr, %radix.step ]
+  %radix.acc = phi double [ 0.0, %radix.start ], [ %radix.next.acc, %radix.step ]
+  %radix.count = phi i64 [ 0, %radix.start ], [ %radix.next.count, %radix.step ]
+  %radix.byte = load i8, ptr %radix.ptr
+  %r.dec = sub i8 %radix.byte, 48
+  %r.is.dec = icmp ule i8 %r.dec, 9
+  br i1 %r.is.dec, label %radix.check.bound, label %radix.check.lower
+radix.check.lower:
+  %r.lo = sub i8 %radix.byte, 97
+  %r.is.lo = icmp ule i8 %r.lo, 5
+  %r.lo.val = add i8 %r.lo, 10
+  br i1 %r.is.lo, label %radix.check.bound, label %radix.check.upper
+radix.check.upper:
+  %r.hi = sub i8 %radix.byte, 65
+  %r.is.hi = icmp ule i8 %r.hi, 5
+  %r.hi.val = add i8 %r.hi, 10
+  br i1 %r.is.hi, label %radix.check.bound, label %radix.done
+radix.check.bound:
+  %radix.digit = phi i8 [ %r.dec, %radix.loop ], [ %r.lo.val, %radix.check.lower ], [ %r.hi.val, %radix.check.upper ]
+  %radix.in.range = icmp ult i8 %radix.digit, %radix.base
+  br i1 %radix.in.range, label %radix.step, label %radix.done
+radix.step:
+  %radix.digit.f = uitofp i8 %radix.digit to double
+  %radix.scaled = fmul double %radix.acc, %radix.base.f
+  %radix.next.acc = fadd double %radix.scaled, %radix.digit.f
+  %radix.next.count = add i64 %radix.count, 1
+  %radix.next.ptr = getelementptr i8, ptr %radix.ptr, i64 1
+  br label %radix.loop
+radix.done:
+  %radix.empty = icmp eq i64 %radix.count, 0
+  br i1 %radix.empty, label %nan, label %string.tail
+string.check.sign:
+  %is.plus = icmp eq i8 %scan.byte, 43
+  %is.minus = icmp eq i8 %scan.byte, 45
+  %has.sign = or i1 %is.plus, %is.minus
+  %sign.off = zext i1 %has.sign to i64
+  %num.ptr = getelementptr i8, ptr %start.ptr, i64 %sign.off
+  %first.byte = load i8, ptr %num.ptr
+  %starts.I = icmp eq i8 %first.byte, 73
+  br i1 %starts.I, label %inf.loop, label %decimal.check.dot
+inf.loop:
+  %inf.i = phi i64 [ 0, %string.check.sign ], [ %inf.next, %inf.match ]
+  %inf.done = icmp eq i64 %inf.i, 8
+  br i1 %inf.done, label %inf.matched, label %inf.cmp
+inf.cmp:
+  %inf.src.ptr = getelementptr i8, ptr %num.ptr, i64 %inf.i
+  %inf.src.byte = load i8, ptr %inf.src.ptr
+  %inf.exp.ptr = getelementptr i8, ptr @.value.infinity, i64 %inf.i
+  %inf.exp.byte = load i8, ptr %inf.exp.ptr
+  %inf.eq = icmp eq i8 %inf.src.byte, %inf.exp.byte
+  br i1 %inf.eq, label %inf.match, label %nan
+inf.match:
+  %inf.next = add i64 %inf.i, 1
+  br label %inf.loop
+inf.matched:
+  %inf.end = getelementptr i8, ptr %num.ptr, i64 8
+  %inf.val = select i1 %is.minus, double 0xFFF0000000000000, double 0x7FF0000000000000
+  br label %string.tail
+decimal.check.dot:
+  %is.dot = icmp eq i8 %first.byte, 46
+  br i1 %is.dot, label %decimal.after.dot, label %decimal.check.digit
+decimal.after.dot:
+  %after.dot.ptr = getelementptr i8, ptr %num.ptr, i64 1
+  %after.dot = load i8, ptr %after.dot.ptr
+  %after.dot.off = sub i8 %after.dot, 48
+  %after.dot.digit = icmp ule i8 %after.dot.off, 9
+  br i1 %after.dot.digit, label %string.parse, label %nan
+decimal.check.digit:
+  %first.off = sub i8 %first.byte, 48
+  %first.is.digit = icmp ule i8 %first.off, 9
+  br i1 %first.is.digit, label %decimal.check.signed.hex, label %nan
+decimal.check.signed.hex:
+  %first.is.zero = icmp eq i8 %first.byte, 48
+  br i1 %first.is.zero, label %decimal.check.hex.prefix, label %string.parse
+decimal.check.hex.prefix:
+  %second.ptr = getelementptr i8, ptr %num.ptr, i64 1
+  %second.byte = load i8, ptr %second.ptr
+  %signed.hex.lo = icmp eq i8 %second.byte, 120
+  %signed.hex.hi = icmp eq i8 %second.byte, 88
+  %signed.hex = or i1 %signed.hex.lo, %signed.hex.hi
+  br i1 %signed.hex, label %nan, label %string.parse
+string.parse:
   %parsed = call double @strtod(ptr %start.ptr, ptr %end.slot)
   %end.ptr = load ptr, ptr %end.slot
   %no.digits = icmp eq ptr %end.ptr, %start.ptr
   br i1 %no.digits, label %nan, label %string.tail
 string.tail:
-  %tail.ptr = phi ptr [ %end.ptr, %string.parse ], [ %tail.next, %string.tail.ws ]
+  %tail.val = phi double [ %radix.acc, %radix.done ], [ %inf.val, %inf.matched ], [ %parsed, %string.parse ], [ %tail.val, %string.tail.ws ]
+  %tail.ptr = phi ptr [ %radix.ptr, %radix.done ], [ %inf.end, %inf.matched ], [ %end.ptr, %string.parse ], [ %tail.next, %string.tail.ws ]
   %tail.byte = load i8, ptr %tail.ptr
   %tail.end = icmp eq i8 %tail.byte, 0
   br i1 %tail.end, label %string.ok, label %string.tail.check
 string.tail.check:
   %tail.sp = icmp eq i8 %tail.byte, 32
-  %tail.tab = icmp eq i8 %tail.byte, 9
-  %tail.lf = icmp eq i8 %tail.byte, 10
-  %tail.cr = icmp eq i8 %tail.byte, 13
-  %tail.ws.0 = or i1 %tail.sp, %tail.tab
-  %tail.ws.1 = or i1 %tail.lf, %tail.cr
-  %tail.ws = or i1 %tail.ws.0, %tail.ws.1
+  %tail.ctl.off = sub i8 %tail.byte, 9
+  %tail.ctl = icmp ule i8 %tail.ctl.off, 4
+  %tail.ws = or i1 %tail.sp, %tail.ctl
   br i1 %tail.ws, label %string.tail.ws, label %nan
 string.tail.ws:
   %tail.next = getelementptr i8, ptr %tail.ptr, i64 1
   br label %string.tail
 string.ok:
-  ret double %parsed
+  ret double %tail.val
 as.number:
   %number = call double @valueNumber(i64 %value)
   ret double %number
@@ -1271,7 +1383,9 @@ load.arg:
   %candidate = load i64, ptr %argv
   %cand.is.obj = call i1 @valueIsObject(i64 %candidate)
   %cand.is.arr = call i1 @valueIsArray(i64 %candidate)
-  %cand.obj.like = or i1 %cand.is.obj, %cand.is.arr
+  %cand.is.fn = call i1 @valueIsFunction(i64 %candidate)
+  %cand.obj.0 = or i1 %cand.is.obj, %cand.is.arr
+  %cand.obj.like = or i1 %cand.obj.0, %cand.is.fn
   br i1 %cand.obj.like, label %check.this, label %return.false
 check.this:
   %checked = call { i64, i1 } @requireObjectCoercible(i64 %this.value)
@@ -1284,7 +1398,8 @@ check.this.obj:
   br i1 %this.is.obj, label %target.ready, label %return.false
 target.ready:
   %target.ptr = call ptr @valueObjectPtr(i64 %this.value)
-  br i1 %cand.is.arr, label %array.proto, label %object.start
+  %cand.non.obj = or i1 %cand.is.arr, %cand.is.fn
+  br i1 %cand.non.obj, label %array.proto, label %object.start
 array.proto:
   %default.proto = call ptr @objectDefaultPrototype()
   %is.default = icmp eq ptr %target.ptr, %default.proto
@@ -1622,12 +1737,146 @@ print.normal.num:
   ret void
 }
 
+@.console.fmt.circular = private unnamed_addr constant [11 x i8] c"[Circular]\00"
+
+define void @consolePrintDouble(double %number) {
+entry:
+  %bits = bitcast double %number to i64
+  %is.negzero = icmp eq i64 %bits, -9223372036854775808
+  br i1 %is.negzero, label %print.negzero, label %print.normal
+print.negzero:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.negzero)
+  ret void
+print.normal:
+  %number.str = call { ptr, i64 } @numberToShortestString(double %number)
+  %number.ptr = extractvalue { ptr, i64 } %number.str, 0
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %number.ptr)
+  ret void
+}
+
 define void @valueConsoleLog(i64 %argc, ptr %argv) {
 entry:
+  %multi = icmp ugt i64 %argc, 1
+  br i1 %multi, label %check.format, label %plain.start
+check.format:
+  %first = load i64, ptr %argv
+  %first.is.str = call i1 @valueIsString(i64 %first)
+  br i1 %first.is.str, label %format.init, label %plain.start
+format.init:
+  %fmt.frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %first)
+  %fmt.len = call i64 @valueStringLength(i64 %first)
+  br label %format.loop
+format.loop:
+  %pos = phi i64 [ 0, %format.init ], [ %pos.next, %format.advance ]
+  %arg.idx = phi i64 [ 1, %format.init ], [ %arg.idx.next, %format.advance ]
+  %fmt.done = icmp uge i64 %pos, %fmt.len
+  br i1 %fmt.done, label %format.rest, label %format.char
+format.char:
+  %fmt.ptr = call ptr @valueStringPtr(i64 %first)
+  %ch.ptr = getelementptr i8, ptr %fmt.ptr, i64 %pos
+  %ch = load i8, ptr %ch.ptr
+  %is.pct = icmp eq i8 %ch, 37
+  %next.pos.1 = add i64 %pos, 1
+  %has.spec = icmp ult i64 %next.pos.1, %fmt.len
+  %try.spec = and i1 %is.pct, %has.spec
+  br i1 %try.spec, label %format.spec, label %format.literal
+format.spec:
+  %spec.ptr = getelementptr i8, ptr %fmt.ptr, i64 %next.pos.1
+  %spec = load i8, ptr %spec.ptr
+  %is.pct.pct = icmp eq i8 %spec, 37
+  br i1 %is.pct.pct, label %format.emit.pct, label %format.check.arg
+format.emit.pct:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.char, i32 37)
+  %pos.pct = add i64 %pos, 2
+  br label %format.advance
+format.check.arg:
+  %has.arg = icmp ult i64 %arg.idx, %argc
+  br i1 %has.arg, label %format.dispatch, label %format.literal
+format.dispatch:
+  %arg.slot = getelementptr i64, ptr %argv, i64 %arg.idx
+  %arg.val = load i64, ptr %arg.slot
+  %is.s = icmp eq i8 %spec, 115
+  br i1 %is.s, label %format.s, label %format.check.d
+format.s:
+  call void @consolePrintValue(i64 %arg.val, i1 false, i64 0)
+  br label %format.consumed
+format.check.d:
+  %is.d = icmp eq i8 %spec, 100
+  br i1 %is.d, label %format.d, label %format.check.i
+format.d:
+  %d.num = call double @valueToNumber(i64 %arg.val)
+  call void @consolePrintDouble(double %d.num)
+  br label %format.consumed
+format.check.i:
+  %is.i = icmp eq i8 %spec, 105
+  br i1 %is.i, label %format.i, label %format.check.f
+format.i:
+  %i.str = call { ptr, i64 } @valueToString(i64 %arg.val)
+  %i.bytes = extractvalue { ptr, i64 } %i.str, 0
+  %i.len = extractvalue { ptr, i64 } %i.str, 1
+  %i.num = call double @parseInt(i64 %i.len, ptr %i.bytes)
+  call void @consolePrintDouble(double %i.num)
+  br label %format.consumed
+format.check.f:
+  %is.f = icmp eq i8 %spec, 102
+  br i1 %is.f, label %format.f, label %format.check.j
+format.f:
+  %f.is.num = call i1 @valueIsNumberForSameValueZero(i64 %arg.val)
+  br i1 %f.is.num, label %format.f.num, label %format.f.parse
+format.f.num:
+  %f.direct = call double @valueNumber(i64 %arg.val)
+  call void @consolePrintDouble(double %f.direct)
+  br label %format.consumed
+format.f.parse:
+  %f.str = call { ptr, i64 } @valueToString(i64 %arg.val)
+  %f.bytes = extractvalue { ptr, i64 } %f.str, 0
+  %f.len = extractvalue { ptr, i64 } %f.str, 1
+  %f.parsed = call double @parseFloat(i64 %f.len, ptr %f.bytes)
+  call void @consolePrintDouble(double %f.parsed)
+  br label %format.consumed
+format.check.j:
+  %is.j = icmp eq i8 %spec, 106
+  br i1 %is.j, label %format.j, label %format.check.o
+format.j:
+  %j.res = call { i64, i1 } @jsonStringify(i64 %arg.val, ptr null, i64 0)
+  %j.threw = extractvalue { i64, i1 } %j.res, 1
+  br i1 %j.threw, label %format.j.err, label %format.j.ok
+format.j.err:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.circular)
+  br label %format.consumed
+format.j.ok:
+  %j.val = extractvalue { i64, i1 } %j.res, 0
+  call void @consolePrintValue(i64 %j.val, i1 false, i64 0)
+  br label %format.consumed
+format.check.o:
+  %is.o.lo = icmp eq i8 %spec, 111
+  %is.o.hi = icmp eq i8 %spec, 79
+  %is.o = or i1 %is.o.lo, %is.o.hi
+  br i1 %is.o, label %format.o, label %format.literal
+format.o:
+  call void @consolePrintValue(i64 %arg.val, i1 true, i64 0)
+  br label %format.consumed
+format.consumed:
+  %pos.spec = add i64 %pos, 2
+  %arg.next = add i64 %arg.idx, 1
+  br label %format.advance
+format.literal:
+  %ch.i32 = zext i8 %ch to i32
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.char, i32 %ch.i32)
+  br label %format.advance
+format.advance:
+  %pos.next = phi i64 [ %pos.pct, %format.emit.pct ], [ %pos.spec, %format.consumed ], [ %next.pos.1, %format.literal ]
+  %arg.idx.next = phi i64 [ %arg.idx, %format.emit.pct ], [ %arg.next, %format.consumed ], [ %arg.idx, %format.literal ]
+  br label %format.loop
+format.rest:
+  call void @gcRootRestore(i64 %fmt.frame)
+  br label %loop
+plain.start:
   br label %loop
 loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %step ]
-  %done = icmp eq i64 %i, %argc
+  %i = phi i64 [ 0, %plain.start ], [ %arg.idx, %format.rest ], [ %next, %step ]
+  %done = icmp uge i64 %i, %argc
   br i1 %done, label %finish, label %body
 body:
   %need.space = icmp ne i64 %i, 0

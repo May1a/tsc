@@ -318,12 +318,19 @@ export const valuesContracts = {
     name: "consolePrintValue", parameters: [llvm.i64, llvm.i1, llvm.i64], returns: llvm.void, variadic: false,
     effects: { allocates: true, collects: false, completion: "none" }
   },
+  "consolePrintDouble": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "consolePrintDouble", parameters: [llvm.double], returns: llvm.void, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
   "valueConsoleLog": {
     resultKind: "void",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "valueConsoleLog", parameters: [llvm.i64, llvm.ptr], returns: llvm.void, variadic: false,
-    effects: { allocates: true, collects: false, completion: "none" }
+    effects: { allocates: true, collects: true, completion: "none" }
   },
   "valueConversionPropertyGet": {
     resultKind: "completion",

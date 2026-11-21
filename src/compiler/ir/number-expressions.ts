@@ -11,7 +11,7 @@ import { numberConstantValue, numberExpressionFromNumber } from "./number-consta
 import { lowerClassNumberAccess, lowerNumberAccessExpression } from "./number-access.js";
 import { lowerNumberOperator } from "./number-operators.js";
 import { isPlannedBuiltinCall } from "./builtins/index.js";
-import { lowerCallReceiverTarget, lowerCallThisValue, lowerSpreadCallValue } from "./value-calls.js";
+import { lowerCallThisValue, lowerSpreadCallValue, resolveCallValueTarget } from "./value-calls.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
 
 // eslint-disable-next-line complexity, max-statements -- Numeric literal/identifier/NaN/prefix-unary recognition centralizes the canonical JSValue conversion paths.
@@ -344,13 +344,13 @@ function lowerNumberCallExpression(
       }
       return notApplicable;
     }
-    const target = lowerCallReceiverTarget(context, expression.expression, calleeValue, bindings);
+    const target = resolveCallValueTarget(context, expression.expression, calleeValue, bindings);
     if (target.kind !== "lowered") {
       return target;
     }
     return produced({
       kind: "valueToNumber",
-      value: { kind: "callValue", callee: calleeValue, arguments: dynamicArgs, ...target.operation }
+      value: { kind: "callValue", arguments: dynamicArgs, ...target.operation }
     });
   }
 

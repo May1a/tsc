@@ -4,8 +4,8 @@ import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrNumberExpression } from "./expressions.js";
 import { lowerClassValueExpression } from "./class-values.js";
-import { isBoxedAggregateCandidateBinding, isBoxedPrimitiveBinding, lowerObjectAccessPath } from "./builtins/object-producers.js";
-import { lowerCanonicalArrayIndexString } from "./predicates.js";
+import { isBoxedAggregateCandidateBinding, lowerObjectAccessPath } from "./builtins/object-producers.js";
+import { lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
 
 // Reads a class instance member (field or getter) as a number by unboxing the
 // JSValue it lowers to, so numeric instance members participate in arithmetic.
@@ -87,34 +87,28 @@ function lowerLengthPropertyAccessExpression(
   if (expression.name.text !== "length") {
     return notApplicable;
   }
-  if (!ts.isIdentifier(expression.expression)) {
-    // Chained receiver (for example `error.message.length`): the runtime
-    // dispatches on the boxed value's tag to read string/array/object lengths.
-    const value = context.lowerValueExpression(context, expression.expression, bindings);
+  const receiver = unwrapTypeOnlyExpression(expression.expression);
+  if (!ts.isIdentifier(receiver)) {
+    // Chained receiver (for example `error.message.length`): check object-coercibility and read
+    // `.length` through the value-kind-aware property getter so nullish receivers throw TypeError.
+    const value = context.lowerValueExpression(context, receiver, bindings);
     if (value.kind !== "lowered") {
       return value;
     }
-    return produced({ kind: "valueLength", value: value.operation });
+    return produced({ kind: "valueObjectLength", value: value.operation });
   }
-  const binding = bindings.get(expression.expression.text);
+  const binding = bindings.get(receiver.text);
   if (binding?.kind === "array" || binding?.kind === "runtimeArray") {
-    return produced({ kind: "arrayLength", arrayName: expression.expression.text });
+    return produced({ kind: "arrayLength", arrayName: receiver.text });
   }
   if (!isBoxedAggregateCandidateBinding(binding)) {
     return notApplicable;
   }
-  const value = context.lowerValueExpression(context, expression.expression, bindings);
+  const value = context.lowerValueExpression(context, receiver, bindings);
   if (value.kind !== "lowered") {
     return value;
   }
-  if (isBoxedPrimitiveBinding(binding)) {
-    return produced({ kind: "valueObjectLength", value: value.operation });
-  }
-  if (context.typeChecker?.getTypeAtLocation(expression.expression).getCallSignatures().length
-      || (binding?.kind === "valueVariable" && binding.valueType === "function")) {
-    return produced({ kind: "valueLength", value: value.operation });
-  }
-  return produced({ kind: "valueArrayLength", value: value.operation });
+  return produced({ kind: "valueObjectLength", value: value.operation });
 }
 
 /**

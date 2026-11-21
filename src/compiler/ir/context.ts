@@ -40,6 +40,7 @@ export interface LoweringContext {
   nextFunctionObjectId: number;
   nextJsonStatementValueId: number;
   nextOptionalCallStatementValueId: number;
+  nextSyntheticTempId: number;
   /**
    * The classes the source file being lowered has declared, under every name each answers to.
    *

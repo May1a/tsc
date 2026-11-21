@@ -117,6 +117,60 @@ function isHoistedOrRedeclaredVar(
     (bindings.has(identifier.text) && isSameScopeVarRedeclaration(context.typeChecker, identifier));
 }
 
+function lowerBoxedArrayLiteralInitializer(
+  context: LoweringContext,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<{ readonly preface: JsIrOperation; readonly value: JsIrValueExpression }> {
+  const arrayLiteralResult = classifyArrayLiteral(context, initializer, bindings);
+  if (arrayLiteralResult.kind === "unsupported") {
+    return arrayLiteralResult;
+  }
+  const arrayLiteral = loweredPayload(arrayLiteralResult);
+  if (arrayLiteral === undefined) {
+    return notApplicable;
+  }
+  const elements = arrayLiteral.kind === "runtime"
+    ? arrayLiteral.elements
+    : arrayLiteral.elements.map((value) => ({ kind: "value" as const, value: { kind: "number" as const, value } }));
+  const tempName = `__tscn_array_init_${context.nextSyntheticTempId}`;
+  context.nextSyntheticTempId += 1;
+  return produced({
+    preface: { kind: "runtimeArrayLiteral", name: tempName, elements },
+    value: { kind: "arrayRef", name: tempName }
+  });
+}
+
+function lowerBoxedValueInitializer(
+  context: LoweringContext,
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  build: (value: JsIrValueExpression) => JsIrOperation,
+  refusalMessage: string
+): Lowered {
+  const unwrapped = unwrapTypeOnlyExpression(initializer);
+  const functionValue = lowerFunctionObjectValue(context, unwrapped, bindings, name);
+  if (functionValue.kind !== "notApplicable") {
+    return functionValue.kind === "lowered" ? produced(build(functionValue.operation)) : functionValue;
+  }
+  const arrayInit = lowerBoxedArrayLiteralInitializer(context, initializer, bindings);
+  if (arrayInit.kind === "unsupported") {
+    return arrayInit;
+  }
+  if (arrayInit.kind === "lowered") {
+    return produced({
+      kind: "bindingGroup",
+      operations: [arrayInit.operation.preface, build(arrayInit.operation.value)]
+    });
+  }
+  const value = context.lowerValueExpression(context, unwrapped, bindings);
+  if (value.kind !== "lowered") {
+    return withRefusal(value, unsupportedIn(refusalMessage));
+  }
+  return produced(build(value.operation));
+}
+
 /**
  * A `let` or `var` the storage plan boxed: its writes do not all fit the representation its
  * initializer would choose, so it holds whatever value it is given in a boxed slot.
@@ -131,16 +185,14 @@ function lowerBoxedLetBinding(
   if (initializer === undefined) {
     return produced({ kind: "letValue", name, value: { kind: "undefined" }, ...scope });
   }
-  const unwrapped = unwrapTypeOnlyExpression(initializer);
-  const functionValue = lowerFunctionObjectValue(context, unwrapped, bindings, name);
-  if (functionValue.kind !== "notApplicable") {
-    return functionValue.kind === "lowered" ? produced({ kind: "letValue", name, value: functionValue.operation, ...scope }) : functionValue;
-  }
-  const value = context.lowerValueExpression(context, unwrapped, bindings);
-  if (value.kind !== "lowered") {
-    return withRefusal(value, unsupportedIn(unsupportedLetInitializerMessage(initializer)));
-  }
-  return produced({ kind: "letValue", name, value: value.operation, ...scope });
+  return lowerBoxedValueInitializer(
+    context,
+    name,
+    initializer,
+    bindings,
+    (value) => ({ kind: "letValue", name, value, ...scope }),
+    unsupportedLetInitializerMessage(initializer)
+  );
 }
 
 /**
@@ -218,11 +270,14 @@ function lowerVarRedeclaration(
     return produced({ kind: "assignBoolean", name, value: booleanValue.operation });
   }
   if (binding?.kind === "valueVariable") {
-    const value = context.lowerValueExpression(context, initializer, bindings);
-    if (value.kind !== "lowered") {
-      return withRefusal(value, unsupportedIn(`The value redeclaring \`${name}\` is not an expression this build can evaluate`));
-    }
-    return produced({ kind: "assignValue", name, value: value.operation });
+    return lowerBoxedValueInitializer(
+      context,
+      name,
+      initializer,
+      bindings,
+      (value) => ({ kind: "assignValue", name, value }),
+      `The value redeclaring \`${name}\` is not an expression this build can evaluate`
+    );
   }
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
     return unsupported("`var` redeclaration is only supported for number, string, boolean, and boxed bindings");

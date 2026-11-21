@@ -5,7 +5,7 @@ import type { JsIrValueExpression } from "./expressions.js";
 import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import { lowerClassMethodCall } from "./class-calls.js";
 import { lowerJsonStatementCall } from "./json-values.js";
-import { lowerCallReceiverTarget, lowerSpreadCallValue } from "./value-calls.js";
+import { lowerSpreadCallValue, resolveCallValueTarget } from "./value-calls.js";
 import { unlowerableCallee } from "./builtins/index.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
 import { discardOptionalCall, optionalReceiverGuard, optionalStatementCallee } from "./optional-call.js";
@@ -126,13 +126,12 @@ function lowerDynamicCallStatement(
     }
     return notApplicable;
   }
-  const target = lowerCallReceiverTarget(context, expression.expression, callee, bindings);
+  const target = resolveCallValueTarget(context, expression.expression, callee, bindings);
   if (target.kind !== "lowered") {
     return target;
   }
   const built: Extract<JsIrValueExpression, { readonly kind: "callValue" }> = {
     kind: "callValue",
-    callee,
     arguments: args,
     ...target.operation,
     optionalCallee: optionalStatementCallee(expression)

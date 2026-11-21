@@ -24,6 +24,21 @@ export function collectHoistedNestedVarNames(
 }
 
 /**
+ * Collects every identifier bound by `parameters`, including bindings nested inside array or object
+ * destructuring patterns, plus any caller-provided extra names (such as `this`).
+ */
+export function collectParameterBindingNames(
+  parameters: readonly ts.ParameterDeclaration[],
+  extra: readonly string[] = []
+): Set<string> {
+  const names = new Set<string>(extra);
+  for (const parameter of parameters) {
+    collectBindingIdentifiers(parameter.name, names);
+  }
+  return names;
+}
+
+/**
  * Runs `lower` with any nested `var` declarations in `statements` pre-hoisted into `bindings` and
  * `context.hoistedVars`, passing the synthesized `letValue` preface operations to `lower`.
  */

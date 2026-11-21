@@ -8,7 +8,7 @@ import { CLASS_THIS_NAME } from "./class-names.js";
 import { parameterValueKind, runtimeParameters } from "./class-info.js";
 import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
 import { lowerBlockStatements } from "./statement-lists.js";
-import { withHoistedVars } from "./var-hoisting.js";
+import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
 import { functionReturnKind } from "./binding-updates.js";
 import { collectMethodEnclosingCaptureNames, lowerInlineFunctionCaptures } from "./captures.js";
 
@@ -47,7 +47,7 @@ export function lowerObjectMethodFunctionValue(
     return notApplicable;
   }
   const { body: methodBody } = method;
-  const bodyResult = lowerObjectMethodBody(context, methodBody, parameters, methodBindings);
+  const bodyResult = lowerObjectMethodBody(context, methodBody, method.parameters, methodBindings);
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
@@ -66,10 +66,10 @@ export function lowerObjectMethodFunctionValue(
 function lowerObjectMethodBody(
   context: LoweringContext,
   methodBody: ts.Block,
-  parameters: readonly JsIrFunctionParameter[],
+  parameters: readonly ts.ParameterDeclaration[],
   methodBindings: Map<string, JsIrBindingValue>
 ) {
-  const parameterNames = new Set(parameters.map((parameter) => parameter.name));
+  const parameterNames = collectParameterBindingNames(parameters, [CLASS_THIS_NAME]);
   return withHoistedVars(context, methodBody.statements, methodBindings, parameterNames, (preface) => {
     const body = lowerBlockStatements(context, methodBody, methodBindings);
     return body.kind === "unsupported" ? body : { kind: "lowered" as const, operation: [...preface, ...body.operation] };

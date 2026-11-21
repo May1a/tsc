@@ -50,6 +50,7 @@ export function createValuesCallees(module: LlvmModuleBuilder): RuntimeCalleeTab
     "consolePrintArray": registerRuntimeContract(module, valuesContracts.consolePrintArray),
     "consolePrintObject": registerRuntimeContract(module, valuesContracts.consolePrintObject),
     "consolePrintValue": registerRuntimeContract(module, valuesContracts.consolePrintValue),
+    "consolePrintDouble": registerRuntimeContract(module, valuesContracts.consolePrintDouble),
     "valueConsoleLog": registerRuntimeContract(module, valuesContracts.valueConsoleLog),
     "valueConversionPropertyGet": registerRuntimeContract(module, valuesContracts.valueConversionPropertyGet),
     "conversionNativeToString": registerRuntimeContract(module, valuesContracts.conversionNativeToString),

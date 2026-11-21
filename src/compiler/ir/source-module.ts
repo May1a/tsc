@@ -191,6 +191,7 @@ function lowerStatements(
   context.nextFunctionObjectId = 0;
   context.nextJsonStatementValueId = 0;
   context.nextOptionalCallStatementValueId = 0;
+  context.nextSyntheticTempId = 0;
   // Class inheritance resolves against declarations in the current source file.
   context.classes = new Map<string, ClassInfo>();
   context.classHierarchy = collectClassHierarchy(sourceFile);

@@ -68,7 +68,7 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
       context.runtime.callVoid("valueConsoleLog", [count, block.nullPtr()]);
       return;
     }
-    const pointer = block.allocaArray(llvm.i64, count, context.cursor.uniqueName("console.arguments"));
+    const pointer = context.cursor.entryAllocaArray(llvm.i64, BigInt(values.length), context.cursor.uniqueName("console.arguments"));
     for (const [index, value] of values.entries()) {
       const slot = block.getElementPtr(llvm.i64, pointer, [{ type: llvm.i64, value: BigInt(index) }], context.cursor.uniqueName("console.argument"));
       block.store(value, slot);

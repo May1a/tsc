@@ -22,6 +22,7 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     nextFunctionObjectId: 0,
     nextJsonStatementValueId: 0,
     nextOptionalCallStatementValueId: 0,
+    nextSyntheticTempId: 0,
     classes: new Map(),
     classHierarchy: emptyClassHierarchy,
     storagePlan: emptyStoragePlan,

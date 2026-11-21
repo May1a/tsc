@@ -11,7 +11,7 @@ import { isNonExecutableDeclaration } from "./comparisons.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { updateBindings } from "./binding-updates.js";
 import { collectMethodEnclosingCaptureNames } from "./captures.js";
-import { withHoistedVars } from "./var-hoisting.js";
+import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
 
 export function lowerClassAccessor(
   context: LoweringContext,
@@ -129,14 +129,9 @@ function lowerClassMethodBody(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<readonly JsIrOperation[]> {
   const bodyBindings = new Map(bindings);
-  const parameterNames = new Set<string>([CLASS_THIS_NAME]);
-  if (ts.isFunctionLike(block.parent)) {
-    for (const parameter of block.parent.parameters) {
-      if (ts.isIdentifier(parameter.name)) {
-        parameterNames.add(parameter.name.text);
-      }
-    }
-  }
+  const parameterNames = ts.isFunctionLike(block.parent)
+    ? collectParameterBindingNames(block.parent.parameters, [CLASS_THIS_NAME])
+    : new Set<string>([CLASS_THIS_NAME]);
   return withHoistedVars(context, block.statements, bodyBindings, parameterNames, (preface) => {
     const operations: JsIrOperation[] = [...preface];
     for (const statement of block.statements) {
