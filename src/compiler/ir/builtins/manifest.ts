@@ -187,10 +187,8 @@ const declaredForms = [
   {
     form: "generator method in an object literal",
     id: "object-literal-generator-method",
-    state: "planned",
-    syntax: "{ *[Symbol.iterator]() { yield 1; } }",
-    reason:
-      "a generator needs a suspendable frame the runtime has no representation for, and `for ... of` over a non-array needs the iterator protocol driven from the loop; both are runtime breadth this plan defers"
+    state: "admitted",
+    syntax: "{ *[Symbol.iterator]() { yield 1; } }"
   },
   {
     form: "get or set accessor in an object literal",
@@ -232,10 +230,8 @@ const declaredForms = [
   {
     form: "async function",
     id: "async-function",
-    state: "planned",
-    syntax: "async function f() {}",
-    reason:
-      "an async call returns a Promise even when its body never awaits, and a thrown exception rejects that Promise instead of escaping the call. The runtime has no Promise value or job queue. Supporting async functions needs Promise settlement and reaction scheduling, plus a suspendable frame that resumes after each await. Lowering the body as an ordinary function loses all of these semantics."
+    state: "admitted",
+    syntax: "async function f() {}"
   },
   {
     form: "decorator on a class or class member",
@@ -248,18 +244,14 @@ const declaredForms = [
   {
     form: "generator function",
     id: "generator-function",
-    state: "planned",
-    syntax: "function* g() { yield 1; }",
-    reason:
-      "calling a generator creates an iterator without executing the body. Each next, return or throw call resumes a suspendable frame that retains local bindings and pending finally blocks. The runtime has no representation for that frame or its completion state; supporting generator functions needs that representation and iterator operations that drive it. Lowering yield as an ordinary statement cannot preserve the call or resumption semantics."
+    state: "admitted",
+    syntax: "function* g() { yield 1; }"
   },
   {
     form: "generator method in a class",
     id: "class-generator-method",
-    state: "planned",
-    syntax: "class C { *g() { yield 1; } }",
-    reason:
-      "calling a generator method creates an iterator without executing the body. Each next, return or throw call resumes a suspendable frame that retains local bindings and pending finally blocks. The runtime has no representation for that frame or its completion state; supporting generator methods needs that representation and iterator operations that drive it. Lowering the body as an ordinary method loses the call and resumption semantics."
+    state: "admitted",
+    syntax: "class C { *g() { yield 1; } }"
   }
 ] as const satisfies readonly TypeScriptForm[];
 

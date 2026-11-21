@@ -262,5 +262,32 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     prototypeName: resolver.reference(node.prototypeName),
     newTargetName: optional(node.newTargetName, (name) => resolver.reference(name)),
     arguments: resolveCallArguments(node.arguments, resolver)
+  }),
+  generatorCreate: (node, resolver) => ({
+    kind: "generatorCreate",
+    step: resolver.value(node.step)
+  }),
+  asyncStart: (node, resolver) => ({
+    kind: "asyncStart",
+    step: resolver.value(node.step)
+  }),
+  iteratorResult: (node, resolver) => ({
+    kind: "iteratorResult",
+    value: resolver.value(node.value),
+    done: node.done
+  }),
+  iteratorOpen: (node, resolver) => ({
+    kind: "iteratorOpen",
+    iterable: resolver.value(node.iterable),
+    notIterableMessage: node.notIterableMessage
+  }),
+  promiseNew: (node, resolver) => ({
+    kind: "promiseNew",
+    executor: resolver.value(node.executor)
+  }),
+  promiseStatic: (node, resolver) => ({
+    kind: "promiseStatic",
+    method: node.method,
+    argument: optional(node.argument, resolver.value)
   })
 });

@@ -513,5 +513,10 @@ export const oracleFixtures: readonly string[] = [
   "date-runtime-value-of.ts",
   "date-runtime-to-iso-string.ts",
   "date-runtime-to-string.ts",
-  "form-admitted-date-constructor.ts"
+  "form-admitted-date-constructor.ts",
+  "form-admitted-generator-function.ts",
+  "form-admitted-class-generator-method.ts",
+  "form-admitted-object-literal-generator-method.ts",
+  "form-admitted-async-function.ts",
+  "promise-runtime.ts"
 ] as const;

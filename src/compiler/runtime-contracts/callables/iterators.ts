@@ -28,5 +28,10 @@ export function createIteratorsCallees(module: LlvmModuleBuilder): RuntimeCallee
     "iteratorAppend": registerRuntimeContract(module, iteratorsContracts.iteratorAppend),
     "iteratorCloseForThrow": registerRuntimeContract(module, iteratorsContracts.iteratorCloseForThrow),
     "iteratorClose": registerRuntimeContract(module, iteratorsContracts.iteratorClose),
+    "generatorStepDispatch": registerRuntimeContract(module, iteratorsContracts.generatorStepDispatch),
+    "generatorNextMethod": registerRuntimeContract(module, iteratorsContracts.generatorNextMethod),
+    "generatorReturnMethod": registerRuntimeContract(module, iteratorsContracts.generatorReturnMethod),
+    "generatorThrowMethod": registerRuntimeContract(module, iteratorsContracts.generatorThrowMethod),
+    "generatorCreate": registerRuntimeContract(module, iteratorsContracts.generatorCreate),
   };
 }

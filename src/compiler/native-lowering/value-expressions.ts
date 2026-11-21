@@ -100,6 +100,41 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
       : context.expressions.number(expression.milliseconds);
     return context.runtime.callBoxed("dateNew", [milliseconds], context.cursor.uniqueName("date.new"));
   },
+  generatorCreate: (expression, context) => {
+    const step = keep(context.expressions.value(expression.step), context);
+    return context.runtime.callBoxed("generatorCreate", [step], context.cursor.uniqueName("generator.create"));
+  },
+  asyncStart: (expression, context) => {
+    const step = keep(context.expressions.value(expression.step), context);
+    return context.runtime.callBoxed("asyncStart", [step], context.cursor.uniqueName("async.start"));
+  },
+  iteratorResult: (expression, context) => {
+    const value = keep(context.expressions.value(expression.value), context);
+    const done = context.cursor.currentBlock().int(llvm.i1, expression.done ? 1n : 0n);
+    return context.runtime.callBoxed("iteratorResultObject", [value, done], context.cursor.uniqueName("iterator.result"));
+  },
+  iteratorOpen: (expression, context) => {
+    const iterable = keep(context.expressions.value(expression.iterable), context);
+    return context.runtime.callWithCompletion("getIteratorValue",
+      [iterable, stringValue(expression.notIterableMessage, context)],
+      context.cursor.uniqueName("iterator.open"), context.exceptionTarget());
+  },
+  promiseNew: (expression, context) => {
+    const executor = keep(context.expressions.value(expression.executor), context);
+    return context.runtime.callWithCompletion("promiseNew", [executor], context.cursor.uniqueName("promise.new"), context.exceptionTarget());
+  },
+  promiseStatic: (expression, context) => {
+    const runtimeByMethod = {
+      resolve: "promiseResolveStatic",
+      reject: "promiseRejectStatic",
+      all: "promiseAll",
+      race: "promiseRace",
+      allSettled: "promiseAllSettled",
+      any: "promiseAny"
+    } as const;
+    const argument = expression.argument === undefined ? undefinedValue(context) : keep(context.expressions.value(expression.argument), context);
+    return context.runtime.callBoxed(runtimeByMethod[expression.method], [argument], context.cursor.uniqueName("promise.static"));
+  },
   ternary,
   lazyDefault,
   logicalValue: logical,

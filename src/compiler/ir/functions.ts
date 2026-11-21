@@ -1,4 +1,3 @@
-import { unsupportedFormMessage } from "./builtins/manifest.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
@@ -10,22 +9,18 @@ import { lowerBlockStatements } from "./statement-lists.js";
 import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
 import { collectFunctionDeclarationEnclosingCaptureNames } from "./captures.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
+import { lowerSuspendableBody, suspendableKindFor } from "./state-machine.js";
 
 export function lowerFunctionDeclaration(
   context: LoweringContext,
   statement: ts.FunctionDeclaration,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  if (statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
-    return unsupported(unsupportedFormMessage("async-function"));
-  }
-  if (statement.asteriskToken !== undefined) {
-    return unsupported(unsupportedFormMessage("generator-function"));
-  }
   if (!statement.name || !statement.body || !ts.isBlock(statement.body)) {
     return unsupported("A function declaration must have a name and a body");
   }
 
+  const suspendKind = suspendableKindFor(statement);
   const loweredParameters = lowerFunctionParameters(context, statement.parameters, bindings);
   if (loweredParameters.kind === "unsupported") {
     return loweredParameters;
@@ -37,15 +32,25 @@ export function lowerFunctionDeclaration(
   fnBindings.set(statement.name.text, {
     kind: "functionReference",
     parameters,
-    returnKind: declaredFunctionReturnKind(statement.type)
+    returnKind: suspendKind === undefined ? declaredFunctionReturnKind(statement.type) : "value"
   });
 
   const { body: statementBody } = statement;
   const parameterNames = collectParameterBindingNames(statement.parameters, [CLASS_THIS_NAME]);
-  const loweredBody = withHoistedVars(context, statementBody.statements, fnBindings, parameterNames, (preface) => {
-    const body = lowerBlockStatements(context, statementBody, fnBindings);
-    return body.kind === "unsupported" ? body : { kind: "lowered" as const, operation: [...preface, ...body.operation] };
-  });
+  const enclosingCaptureNames = collectFunctionDeclarationEnclosingCaptureNames(context.typeChecker, statement, bindings);
+  const loweredBody = suspendKind === undefined
+    ? withHoistedVars(context, statementBody.statements, fnBindings, parameterNames, (preface) => {
+        const body = lowerBlockStatements(context, statementBody, fnBindings);
+        return body.kind === "unsupported" ? body : { kind: "lowered" as const, operation: [...preface, ...body.operation] };
+      })
+    : lowerSuspendableBody(context, {
+        kind: suspendKind,
+        body: statementBody,
+        bindings: fnBindings,
+        outerParameterNames: parameterNames,
+        outerCaptureNames: enclosingCaptureNames,
+        nameHint: statement.name.text
+      });
   if (loweredBody.kind === "unsupported") {
     return loweredBody;
   }
@@ -56,7 +61,7 @@ export function lowerFunctionDeclaration(
     name: statement.name.text,
     parameters,
     body: bodyStatements,
-    enclosingCaptureNames: collectFunctionDeclarationEnclosingCaptureNames(context.typeChecker, statement, bindings),
-    constructibleByObjectReturn: isPlainObjectReturningConstructor(statement)
+    enclosingCaptureNames,
+    constructibleByObjectReturn: suspendKind === undefined && isPlainObjectReturningConstructor(statement)
   });
 }

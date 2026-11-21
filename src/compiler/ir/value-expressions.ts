@@ -367,6 +367,7 @@ const staticBuiltinRootNames: ReadonlySet<string> = new Set([
   "Math",
   "Number",
   "Object",
+  "Promise",
   "RegExp",
   "Set",
   "String",

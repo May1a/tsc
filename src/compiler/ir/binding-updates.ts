@@ -384,6 +384,21 @@ export function collectValueExpressionObjectNames(expression: JsIrValueExpressio
       collectValueExpressionObjectNames(expression.reviver, names);
     }
   }
+  collectSuspendableExpressionObjectNames(expression, names);
+}
+
+function collectSuspendableExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {
+  if (expression.kind === "generatorCreate" || expression.kind === "asyncStart") {
+    collectValueExpressionObjectNames(expression.step, names);
+  } else if (expression.kind === "iteratorResult") {
+    collectValueExpressionObjectNames(expression.value, names);
+  } else if (expression.kind === "iteratorOpen") {
+    collectValueExpressionObjectNames(expression.iterable, names);
+  } else if (expression.kind === "promiseNew") {
+    collectValueExpressionObjectNames(expression.executor, names);
+  } else if (expression.kind === "promiseStatic" && expression.argument !== undefined) {
+    collectValueExpressionObjectNames(expression.argument, names);
+  }
 }
 export function collectCallValueExpressionObjectNames(
   expression: Extract<JsIrValueExpression, { readonly kind: "callValue" }>,

@@ -18,7 +18,8 @@ const runtimeIrFiles = [
   "prototypes.ll",
   "json.ll",
   "errors.ll",
-  "iterators.ll"
+  "iterators.ll",
+  "promises.ll"
 ] as const;
 
 let cachedRuntimeIr: string | undefined;

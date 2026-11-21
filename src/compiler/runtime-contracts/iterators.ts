@@ -164,4 +164,39 @@ export const iteratorsContracts = {
     name: "iteratorClose", parameters: [llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
     effects: { allocates: true, collects: true, completion: "explicit" }
   },
+  "generatorStepDispatch": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "generatorStepDispatch", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.double], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "generatorNextMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "generatorNextMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "generatorReturnMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "generatorReturnMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "generatorThrowMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "generatorThrowMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "generatorCreate": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "generatorCreate", parameters: [llvm.i64], returns: llvm.i64, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

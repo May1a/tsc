@@ -1,8 +1,7 @@
-import { unsupportedFormMessage } from "./builtins/manifest.js";
-import { type Lowered, notApplicable, produced, unsupportedIn } from "./lowered.js";
+import { type Lowered, notApplicable, produced } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
-import type { JsIrBindingValue, JsIrFunctionObjectCapture, JsIrFunctionParameter } from "./bindings.js";
+import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
 import { parameterValueKind, runtimeParameters } from "./class-info.js";
@@ -11,6 +10,7 @@ import { lowerBlockStatements } from "./statement-lists.js";
 import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
 import { functionReturnKind } from "./binding-updates.js";
 import { collectMethodEnclosingCaptureNames, lowerInlineFunctionCaptures } from "./captures.js";
+import { lowerSuspendableBody, suspendableKindFor } from "./state-machine.js";
 
 /**
  * The function value an object-literal member contributes.
@@ -30,22 +30,10 @@ export function lowerObjectMethodFunctionValue(
   method: ObjectMethodLike,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  if ((ts.isMethodDeclaration(method) || ts.isFunctionDeclaration(method)) && method.asteriskToken !== undefined) {
-    if (ts.isMethodDeclaration(method) && ts.isObjectLiteralExpression(method.parent)) {
-      return unsupportedIn(unsupportedFormMessage("object-literal-generator-method"));
-    }
-    if (ts.isFunctionDeclaration(method)) {
-      return unsupportedIn(unsupportedFormMessage("generator-function"));
-    }
-    return unsupportedIn(unsupportedFormMessage("class-generator-method"));
-  }
-
-  if (method.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
-    return unsupportedIn(unsupportedFormMessage("async-function"));
-  }
   if (method.body === undefined) {
     return notApplicable;
   }
+  const suspendKind = suspendableKindFor(method);
   const parameters: JsIrFunctionParameter[] = [];
   const methodBindings = functionFrameBindings(bindings);
   methodBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
@@ -53,15 +41,25 @@ export function lowerObjectMethodFunctionValue(
     return notApplicable;
   }
   const { body: methodBody } = method;
-  const bodyResult = lowerObjectMethodBody(context, methodBody, method.parameters, methodBindings);
+  const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, method, methodBody, [...method.parameters], bindings);
+  const displayName = method.name !== undefined && ts.isIdentifier(method.name) ? method.name.text : "method";
+  const bodyResult = suspendKind === undefined
+    ? lowerObjectMethodBody(context, methodBody, method.parameters, methodBindings)
+    : lowerSuspendableBody(context, {
+        kind: suspendKind,
+        body: methodBody,
+        bindings: methodBindings,
+        outerParameterNames: collectParameterBindingNames(method.parameters, [CLASS_THIS_NAME]),
+        outerCaptureNames: captureNames,
+        nameHint: displayName
+      });
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
-  const captures = lowerObjectMethodCaptures(context, method, bindings);
+  const captures = lowerInlineFunctionCaptures(captureNames, bindings);
   if (captures === undefined) {
     return notApplicable;
   }
-  const displayName = method.name !== undefined && ts.isIdentifier(method.name) ? method.name.text : "method";
   const codeName = `__tscn_fnobj_${displayName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   context.nextFunctionObjectId += 1;
   const body = bodyResult.operation;
@@ -96,20 +94,4 @@ function bindObjectMethodParameters(
     bindFunctionParameter(parameter.name.text, valueKind, false, methodBindings);
   }
   return true;
-}
-
-/**
- * The environment reads an object-literal method carries, or `undefined` when one of its captures has
- * no cell representation and the method form must be declined.
- */
-function lowerObjectMethodCaptures(
-  context: LoweringContext,
-  method: ObjectMethodLike,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): readonly JsIrFunctionObjectCapture[] | undefined {
-  if (method.body === undefined) {
-    return [];
-  }
-  const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, method, method.body, [...method.parameters], bindings);
-  return lowerInlineFunctionCaptures(captureNames, bindings);
 }

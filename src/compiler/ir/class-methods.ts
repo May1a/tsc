@@ -12,6 +12,7 @@ import type { JsIrValueExpression } from "./expressions.js";
 import { updateBindings } from "./binding-updates.js";
 import { collectMethodEnclosingCaptureNames } from "./captures.js";
 import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
+import { lowerSuspendableBody, suspendableKindFor } from "./state-machine.js";
 
 function withClassMemberScope<T>(
   context: LoweringContext,
@@ -129,11 +130,21 @@ export function lowerClassMethod(
       return parameters;
     }
     fnParameters.push(...parameters.operation.parameters);
-    const body = lowerClassMethodBody(context, declarationBody, parameters.operation.bindings);
+    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, declaration, declarationBody, [...declaration.parameters], bindings);
+    const suspendKind = suspendableKindFor(declaration);
+    const body = suspendKind === undefined
+      ? lowerClassMethodBody(context, declarationBody, parameters.operation.bindings)
+      : lowerSuspendableBody(context, {
+          kind: suspendKind,
+          body: declarationBody,
+          bindings: parameters.operation.bindings,
+          outerParameterNames: new Set(fnParameters.map((parameter) => parameter.name)),
+          outerCaptureNames: captureNames,
+          nameHint: `${info.name}_${methodName}`
+        });
     if (body.kind !== "lowered") {
       return body;
     }
-    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, declaration, declarationBody, [...declaration.parameters], bindings);
     return produced({
       kind: "function",
       name: classMethodFunctionName(info.name, methodName, isStatic),

@@ -4,6 +4,7 @@ import type { StoragePlan } from "./storage-plan.js";
 import type { ClassInfo } from "./class-info.js";
 import type { InlineCppCompilation } from "./inline-cpp.js";
 import type { lowerStatement } from "./statements.js";
+import type { lowerExpressionStatement } from "./expression-statements.js";
 import type { lowerObjectMethodFunctionValue } from "./object-methods.js";
 import type { lowerTypedCallArguments } from "./call-arguments.js";
 import type { lowerValueExpression } from "./value-expressions.js";
@@ -71,6 +72,7 @@ export interface LoweringContext {
   /** The inline C++ escape hatch's flag and the blocks this compilation has collected. */
   readonly inlineCpp: InlineCppCompilation;
   readonly lowerStatement: typeof lowerStatement;
+  readonly lowerExpressionStatement: typeof lowerExpressionStatement;
   readonly lowerObjectMethodFunctionValue: typeof lowerObjectMethodFunctionValue;
   readonly lowerTypedCallArguments: typeof lowerTypedCallArguments;
   readonly lowerValueExpression: typeof lowerValueExpression;

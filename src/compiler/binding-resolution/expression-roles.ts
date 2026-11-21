@@ -63,7 +63,13 @@ export const valueExpressionRoles = {
   boxedMethodCall: {},
   newTarget: {},
   // The constructor and prototype are declarations created by class lowering.
-  newInstance: { className: preserved("generatedSymbol"), prototypeName: reference, constructorName: reference, newTargetName: reference }
+  newInstance: { className: preserved("generatedSymbol"), prototypeName: reference, constructorName: reference, newTargetName: reference },
+  generatorCreate: {},
+  asyncStart: {},
+  iteratorResult: {},
+  iteratorOpen: { notIterableMessage: preserved("message") },
+  promiseNew: {},
+  promiseStatic: {}
 } satisfies RoleTable<JsIrValueExpression>;
 
 export const numberExpressionRoles = {

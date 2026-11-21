@@ -288,6 +288,33 @@ export type JsIrValueExpression =
       readonly constructorName: string;
       readonly newTargetName?: string;
       readonly arguments: readonly JsIrCallArgument[];
+    }
+  | {
+      readonly kind: "generatorCreate";
+      readonly step: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "asyncStart";
+      readonly step: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "iteratorResult";
+      readonly value: JsIrValueExpression;
+      readonly done: boolean;
+    }
+  | {
+      readonly kind: "iteratorOpen";
+      readonly iterable: JsIrValueExpression;
+      readonly notIterableMessage: string;
+    }
+  | {
+      readonly kind: "promiseNew";
+      readonly executor: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "promiseStatic";
+      readonly method: "resolve" | "reject" | "all" | "race" | "allSettled" | "any";
+      readonly argument?: JsIrValueExpression;
     };
 
 export type JsIrRuntimeArrayElement =

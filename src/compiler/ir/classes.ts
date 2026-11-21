@@ -81,14 +81,6 @@ function lowerClassDeclaration(
   if (hasDecorators(statement) || statement.members.some(hasMemberDecorators)) {
     return unsupportedIn(unsupportedFormMessage("decorator"));
   }
-  if (statement.members.some((member) => ts.isMethodDeclaration(member) && member.body !== undefined
-    && ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true)) {
-    return unsupportedIn(unsupportedFormMessage("async-function"));
-  }
-  if (statement.members.some((member) => ts.isMethodDeclaration(member) && member.body !== undefined
-    && member.asteriskToken !== undefined)) {
-    return unsupportedIn(unsupportedFormMessage("class-generator-method"));
-  }
   const before = new Map(classes);
   const result = lowerRegisteredClassDeclaration(context, statement, bindings, classes, expressionBindingName);
   if (result.kind === "unsupported") {
