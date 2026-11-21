@@ -4,7 +4,7 @@ import { Context, Effect, Layer, Option } from "effect";
 import { devNull } from "node:os";
 import process from "node:process";
 
-export type ToolName = "clang" | "clang++" | "llvm-as" | "lli";
+type ToolName = "clang" | "clang++" | "llvm-as" | "lli";
 
 export interface Toolchain {
   readonly clang: Option.Option<string>;
@@ -74,7 +74,7 @@ const discoverToolchainUncached: Effect.Effect<Toolchain, never, CommandExecutor
   }
 );
 
-export const discoverToolchain: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
+const discoverToolchain: Effect.Effect<Toolchain, never, CommandExecutor.CommandExecutor> = Effect.gen(
   function* discoverCachedTools() {
     if (cachedToolchain !== undefined) {
       return cachedToolchain;

@@ -1,4 +1,4 @@
-export type DiagnosticCategory = "error" | "warning" | "info";
+type DiagnosticCategory = "error" | "warning" | "info";
 
 export interface SourceSpan {
   readonly fileName: string;

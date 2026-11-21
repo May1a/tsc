@@ -10,7 +10,7 @@ interface Arguments {
   readonly pointer: LlvmValue<typeof llvm.ptr>;
 }
 
-export function evaluateArguments(args: readonly ResolvedCallArgument[], context: ExpressionContext): readonly BoxedValue[] {
+function evaluateArguments(args: readonly ResolvedCallArgument[], context: ExpressionContext): readonly BoxedValue[] {
   return args.map((argument) => keep(context.expressions.argument(argument), context));
 }
 

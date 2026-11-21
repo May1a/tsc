@@ -20,7 +20,6 @@ import {
 
 export {
   type ClassAccessorEntry,
-  type ClassComputedAccessorEntry,
   type ClassComputedKeyInfo,
   type ClassComputedMethodEntry,
   type ClassFieldInfo,
@@ -28,16 +27,10 @@ export {
   type ClassMethodEntry,
   type ClassStaticInitializer,
   type CollectedClassMembers,
-  classMemberHasStaticModifier,
-  classMemberKeyOf,
-  classMemberRefusalReason,
   classPrivateFieldStorageKey,
   collectClassMembers,
   isParameterProperty,
-  isSymbolIteratorPropertyName,
-  isTypeOnlyThisParameter,
   lowerSymbolIteratorKeyExpression,
-  resolveConstantComputedMemberName,
   runtimeParameters
 } from "./class-members.js";
 export interface ClassMethodInfo {
@@ -86,7 +79,7 @@ export interface ClassInfo {
  * `storageKey`, so all instances share it. The object forwards to the direct function
  * `functionName`, which takes the receiver as its first argument.
  */
-export interface ClassPrivateFunctionInfo extends ClassMethodInfo {
+interface ClassPrivateFunctionInfo extends ClassMethodInfo {
   readonly storageKey: string;
   readonly functionName: string;
   readonly slotName: string;
@@ -126,7 +119,7 @@ export function traceOperationFromNode(
     }
   };
 }
-export function classOperationTraceOrigin(index: number): JsIrTraceOrigin {
+function classOperationTraceOrigin(index: number): JsIrTraceOrigin {
   if (index === 0) {
     return "source";
   }
@@ -162,7 +155,7 @@ export function classPrototypeName(className: string): string {
  * Class expressions take their codegen name from the bound variable; a named class expression
  * additionally binds its inner name inside the class body.
  */
-export interface ClassNames {
+interface ClassNames {
   readonly infoName: string;
   readonly innerName: string | undefined;
   readonly baseName: string | undefined;
@@ -231,7 +224,7 @@ function isExtendsClause(heritage: ts.HeritageClause): boolean {
   return heritage.token === ts.SyntaxKind.ExtendsKeyword;
 }
 /** Why an `extends` clause produced no usable base class. */
-export function classHeritageRefusal(heritageClauses: readonly ts.HeritageClause[]): string {
+function classHeritageRefusal(heritageClauses: readonly ts.HeritageClause[]): string {
   if (heritageClauses.length !== 1) {
     return "A class may extend at most one class";
   }
@@ -242,7 +235,7 @@ export function classHeritageRefusal(heritageClauses: readonly ts.HeritageClause
   return "`extends` must name a single class declared in this module";
 }
 /** The base class a heritage clause names, or `undefined` when it names something unusable. */
-export function resolveExtendedClassName(
+function resolveExtendedClassName(
   heritageClauses: ts.NodeArray<ts.HeritageClause> | undefined,
   classes: ReadonlyMap<string, ClassInfo>
 ): string | undefined {
@@ -462,7 +455,7 @@ export function classAccessorEntries(
     [members.staticPrivateSetAccessors, false, true]
   ];
 }
-export function literalStaticFieldNames(staticFields: readonly ClassFieldInfo[]): ReadonlySet<string> {
+function literalStaticFieldNames(staticFields: readonly ClassFieldInfo[]): ReadonlySet<string> {
   const names = new Set<string>();
   for (const field of staticFields) {
     if (field.key.kind === "literal") {
@@ -471,7 +464,7 @@ export function literalStaticFieldNames(staticFields: readonly ClassFieldInfo[])
   }
   return names;
 }
-export function constructorParametersOf(
+function constructorParametersOf(
   declaration: ts.ConstructorDeclaration | undefined
 ): Produced<readonly JsIrFunctionParameter[]> {
   if (declaration === undefined) {
@@ -479,7 +472,7 @@ export function constructorParametersOf(
   }
   return classCallableParameters(declaration);
 }
-export function classMethodInfoMap(
+function classMethodInfoMap(
   entries: readonly ClassMethodEntry[]
 ): Produced<ReadonlyMap<string, ClassMethodInfo>> {
   const map = new Map<string, ClassMethodInfo>();
@@ -504,7 +497,7 @@ export function classMethodInfoMap(
  * A generic such as `Array<T>` or `Box<T>` is not this: its name still says what it is, and the
  * existing rules for that name apply.
  */
-export function hasUnconstrainedTypeParameter(parameter: ts.ParameterDeclaration): boolean {
+function hasUnconstrainedTypeParameter(parameter: ts.ParameterDeclaration): boolean {
   const { type } = parameter;
   return type !== undefined && ts.isTypeReferenceNode(type) && ts.isIdentifier(type.typeName);
 }
@@ -685,7 +678,7 @@ export function isPlainObjectReturningConstructor(declaration: ts.FunctionDeclar
   }
   return false;
 }
-export function containsReturnStatement(node: ts.Node): boolean {
+function containsReturnStatement(node: ts.Node): boolean {
   if (ts.isFunctionLike(node)) {
     return false;
   }

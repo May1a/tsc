@@ -13,7 +13,7 @@ import { CLASS_THIS_NAME, classConstructorName, classConstructorValueName, class
 // (`s?.area()`) — to a direct call guarded by the receiver's nullish check. The guard reuses the
 // optional-chain short-circuit, so a nullish receiver yields `undefined` without evaluating the
 // arguments instead of entering the method with no instance.
-export type ClassMethodCallValue =
+type ClassMethodCallValue =
   | Extract<JsIrValueExpression, { readonly kind: "call" }>
   | Extract<JsIrValueExpression, { readonly kind: "callValue" }>
   | Extract<JsIrValueExpression, { readonly kind: "optionalChain" }>;

@@ -111,7 +111,7 @@ export function resolveFunctionObject(definition: JsIrFunctionObjectDefinition, 
 }
 
 /** A call argument carries one typed expression, or nothing at all for an omitted optional parameter. */
-export function resolveCallArgument(argument: JsIrCallArgument, resolver: Resolver): ResolvedCallArgument {
+function resolveCallArgument(argument: JsIrCallArgument, resolver: Resolver): ResolvedCallArgument {
   switch (argument.valueKind) {
     case "number": {
       return { valueKind: "number", value: resolver.number(argument.value) };
@@ -239,7 +239,7 @@ export function resolveObjectAssignSource(
   }
 }
 
-export function resolveObjectField(field: JsIrObjectField, resolver: Resolver): ResolvedObjectField {
+function resolveObjectField(field: JsIrObjectField, resolver: Resolver): ResolvedObjectField {
   const { value } = field;
   return value.kind === "number"
     ? { name: field.name, value: { kind: "number", value: resolver.number(value.value) } }

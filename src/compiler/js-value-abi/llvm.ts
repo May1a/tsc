@@ -2,7 +2,7 @@ import { type LlvmBlockBuilder, type LlvmDoubleType, type LlvmPointerType, type 
 import { type JsValueImmediateKind, type JsValueReferenceKind, jsValueLayout } from "./layout.js";
 
 declare const jsValueBrand: unique symbol;
-export type LlvmJsValue = LlvmValue<typeof llvm.i64> & { readonly [jsValueBrand]: true };
+type LlvmJsValue = LlvmValue<typeof llvm.i64> & { readonly [jsValueBrand]: true };
 
 function asJsValue(value: LlvmValue<typeof llvm.i64>): LlvmJsValue {
   // eslint-disable-next-line typescript/no-unsafe-type-assertion -- Only this ABI-owned adapter may brand boundary i64 values as JSValue.
@@ -34,11 +34,8 @@ export function llvmJsValues(block: LlvmBlockBuilder): LlvmJsValues {
     },
     boxNumber(value) {
       const bits = block.bitcast(value, llvm.i64, "number.bits");
-      // FIXME(arm64-darwin): This exact comparison intentionally avoids
-      // rewriting tagged objects that other compiler paths pass through a
-      // double. Redesign those paths and then canonicalize every NaN here.
-      const isArm64NaN = block.icmp("eq", bits, block.int(llvm.i64, jsValueLayout.arm64CanonicalNaN), "number.is.arm64.nan");
-      return asJsValue(block.select(isArm64NaN, block.int(llvm.i64, jsValueLayout.canonicalNaN), bits, "number.value"));
+      const isNaN = block.fcmp("uno", value, value, "number.is.nan");
+      return asJsValue(block.select(isNaN, block.int(llvm.i64, jsValueLayout.canonicalNaN), bits, "number.value"));
     },
     unboxNumber(value) {
       return block.bitcast(value, llvm.double, "number");

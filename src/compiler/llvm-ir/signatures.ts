@@ -94,7 +94,7 @@ export type LlvmCallCallee =
   | { readonly kind: "pointer"; readonly pointer: LlvmValue<LlvmPointerType>; readonly signature: LlvmCallSignature };
 
 /** One `LlvmValue` per declared parameter type, in order. */
-export type LlvmArgumentTuple<Types extends readonly LlvmValueType[]> = {
+type LlvmArgumentTuple<Types extends readonly LlvmValueType[]> = {
   readonly [Index in keyof Types]: LlvmValue<Types[Index]>;
 };
 

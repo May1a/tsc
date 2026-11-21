@@ -191,13 +191,15 @@ function operandsIn(fn: BuiltLlvmFunction, block: string | undefined): readonly 
   return block === undefined ? fn.blocks : [requireBlock(fn, block)];
 }
 
-/** Comparison predicate and operand origins, optionally restricted to one block. */
+/** Comparison predicate and operand origins, optionally restricted to one block (excluding ABI NaN canonicalization checks). */
 export function floatingPointComparisons(fn: BuiltLlvmFunction, block?: string): readonly Operation[] {
   return operandsIn(fn, block).flatMap((source) =>
-    ofKind(source, "floatingPointComparison").map(
-      (comparison) =>
-        [comparison.predicate, operandOrigin(fn, comparison.left), operandOrigin(fn, comparison.right)] as const
-    ));
+    ofKind(source, "floatingPointComparison")
+      .filter((comparison) => !(comparison.predicate === "uno" && comparison.left === comparison.right))
+      .map(
+        (comparison) =>
+          [comparison.predicate, operandOrigin(fn, comparison.left), operandOrigin(fn, comparison.right)] as const
+      ));
 }
 
 /** Comparisons with no computed operand, which is what a folded condition looks like. */

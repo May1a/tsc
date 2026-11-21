@@ -1,8 +1,6 @@
 import {
-  type BuiltinEntry,
   type BuiltinSupport,
   builtinEntryFor,
-  builtinFor,
   knownBuiltinMessage
 } from "./support.js";
 
@@ -19,7 +17,7 @@ the same thing on both. Each entry's `ownerLabel` says which object a diagnostic
  */
 
 /** The Map members this build knows about, keyed by the name they have in source. */
-export type CollectionBuiltin =
+type CollectionBuiltin =
   | "add"
   | "clear"
   | "delete"
@@ -47,10 +45,6 @@ export const collectionBuiltinSupport: BuiltinSupport<"collection", CollectionBu
   "values": { arity: 0, state: "supported", id: "collection.values", ownerLabel: "Map / Set" },
 };
 
-/** The `Map` member with this name, or `undefined` if the name is not one of them. */
-export function collectionBuiltinFor(name: string): BuiltinEntry<"collection"> | undefined {
-  return builtinFor(collectionBuiltinSupport, "collection", name);
-}
 
 /**
  * The diagnostic for a `Map` member this build has not written, or `undefined` if the name

@@ -21,7 +21,7 @@ import { isStableExpression } from "./stable-expressions.js";
  *
  */
 
-export function updateConstBindings(
+function updateConstBindings(
   operation: JsIrOperation,
   bindings: Map<string, JsIrBindingValue>
 ): void {
@@ -131,7 +131,7 @@ export function updateBindings(
 function unscopedOperations(operation: JsIrOperation): readonly JsIrOperation[] {
   return operation.kind === "bindingGroup" || operation.kind === "labeledBlock" ? operation.operations : [];
 }
-export function updateAggregateBindings(
+function updateAggregateBindings(
   operation: JsIrOperation,
   bindings: Map<string, JsIrBindingValue>
 ): void {
@@ -152,7 +152,7 @@ export function markRuntimeObjectShadows(operations: readonly JsIrOperation[]): 
 
   return operations.map((operation) => markRuntimeObjectShadow(operation, shadowedObjects));
 }
-export function markFinallyOperations(
+function markFinallyOperations(
   finallyOperations: readonly JsIrOperation[] | undefined
 ): readonly JsIrOperation[] | undefined {
   if (finallyOperations === undefined) {
@@ -160,7 +160,7 @@ export function markFinallyOperations(
   }
   return markRuntimeObjectShadows(finallyOperations);
 }
-export function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObjects: ReadonlySet<string>): JsIrOperation {
+function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObjects: ReadonlySet<string>): JsIrOperation {
   if (operation.kind === "objectLiteral") {
     return { ...operation, needsRuntimeShadow: shadowedObjects.has(operation.name) };
   }
@@ -202,7 +202,7 @@ export function markRuntimeObjectShadow(operation: JsIrOperation, shadowedObject
   }
   return operation;
 }
-export function collectRuntimeShadowObjectNames(operation: JsIrOperation, names: Set<string>): void {
+function collectRuntimeShadowObjectNames(operation: JsIrOperation, names: Set<string>): void {
   collectOperationValueExpressions(operation, names);
   if (operation.kind === "runtimeObjectStore") {
     names.add(operation.objectName);
@@ -228,7 +228,7 @@ export function collectRuntimeShadowObjectNames(operation: JsIrOperation, names:
   }
 }
 // eslint-disable-next-line complexity, max-statements -- Transitional aggregate JSValue tracking centralizes all operation variants.
-export function collectOperationValueExpressions(operation: JsIrOperation, names: Set<string>): void {
+function collectOperationValueExpressions(operation: JsIrOperation, names: Set<string>): void {
   if (operation.kind === "constValue" || operation.kind === "letValue" || operation.kind === "assignValue" || operation.kind === "requireObjectCoercible" || operation.kind === "throwValue" || operation.kind === "discardValue" || operation.kind === "runtimeArrayStore" || operation.kind === "runtimeArrayNamedStore" || operation.kind === "runtimeObjectStore" || operation.kind === "valueArrayStore" || operation.kind === "valueObjectStore" || operation.kind === "privateFieldStore") {
     collectValueExpressionObjectNames(operation.value, names);
   }
@@ -349,7 +349,7 @@ export function collectOperationValueExpressions(operation: JsIrOperation, names
     }
   }
 }
-export function collectValueExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {
+function collectValueExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {
   if (expression.kind === "objectDynamicAccess") {
     names.add(expression.objectName);
   }
@@ -400,7 +400,7 @@ function collectSuspendableExpressionObjectNames(expression: JsIrValueExpression
     collectValueExpressionObjectNames(expression.argument, names);
   }
 }
-export function collectCallValueExpressionObjectNames(
+function collectCallValueExpressionObjectNames(
   expression: Extract<JsIrValueExpression, { readonly kind: "callValue" }>,
   names: Set<string>
 ): void {
@@ -437,7 +437,7 @@ export function functionReturnKind(operations: readonly JsIrOperation[]): JsIrVa
   }
   return "void";
 }
-export function functionControlFlowOperations(operations: readonly JsIrOperation[]): readonly JsIrOperation[] {
+function functionControlFlowOperations(operations: readonly JsIrOperation[]): readonly JsIrOperation[] {
   const flattened: JsIrOperation[] = [];
   const visit = (operation: JsIrOperation): void => {
     flattened.push(operation);

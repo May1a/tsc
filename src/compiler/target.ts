@@ -3,7 +3,7 @@ const sixtyFourBitWord = 64;
 const jsValuePointerAddressBits = 48;
 const darwinArm64PointerAddressBits = 47;
 
-export type TargetArchitecture = "x86_64" | "aarch64" | "x86" | "arm" | "unknown";
+type TargetArchitecture = "x86_64" | "aarch64" | "x86" | "arm" | "unknown";
 
 export interface TargetFacts {
   readonly triple: string;

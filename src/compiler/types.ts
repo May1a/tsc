@@ -8,7 +8,7 @@ export interface CompileOptions {
   readonly suppressSemanticDiagnostics?: boolean;
 }
 
-export interface BuildArtifacts {
+interface BuildArtifacts {
   readonly llvmIr: string;
   readonly traceMap: string;
   readonly inlineCpp?: string;

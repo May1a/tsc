@@ -1,5 +1,5 @@
 /** Why a `string` field in the IR is not a lexical binding. */
-export type PreservedKind =
+type PreservedKind =
   /** A property key or a field path. Observable as a JavaScript property name. */
   | "propertyKey"
   /** A string literal's contents. Pure data. */

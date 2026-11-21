@@ -1,8 +1,6 @@
 import {
-  type BuiltinEntry,
   type BuiltinSupport,
   builtinEntryFor,
-  builtinFor,
   knownBuiltinMessage
 } from "./support.js";
 
@@ -15,7 +13,7 @@ the receiver and a `TypeError` at run time.
  */
 
 /** The Function members this build knows about, keyed by the name they have in source. */
-export type FunctionBuiltin =
+type FunctionBuiltin =
   | "apply"
   | "bind"
   | "call"
@@ -33,10 +31,6 @@ export const functionBuiltinSupport: BuiltinSupport<"function", FunctionBuiltin>
   "toString": { arity: 0, state: "supported", id: "function.toString" },
 };
 
-/** The `Function` member with this name, or `undefined` if the name is not one of them. */
-export function functionBuiltinFor(name: string): BuiltinEntry<"function"> | undefined {
-  return builtinFor(functionBuiltinSupport, "function", name);
-}
 
 /**
  * The diagnostic for a `Function` member this build has not written, or `undefined` if the name

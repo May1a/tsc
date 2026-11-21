@@ -19,9 +19,9 @@ import { hoistVarDeclarations } from "./state-machine-bindings.js";
 import { lowerStatementList } from "./state-machine-statements.js";
 import type { JsIrOperation } from "./types.js";
 
-export type SuspendableKind = "generator" | "async";
+type SuspendableKind = "generator" | "async";
 
-export interface SuspendableBodyOptions {
+interface SuspendableBodyOptions {
   readonly kind: SuspendableKind;
   readonly body: ts.ConciseBody;
   readonly bindings: ReadonlyMap<string, JsIrBindingValue>;
@@ -30,7 +30,7 @@ export interface SuspendableBodyOptions {
   readonly nameHint: string;
 }
 
-export interface ExceptionHandlerRegion {
+interface ExceptionHandlerRegion {
   readonly startState: number;
   readonly endState: number;
   readonly kind: "catch" | "finally";
@@ -46,7 +46,7 @@ export interface FinallyFrame {
   readonly finValSlot: string;
 }
 
-export interface LoopTargetFrame {
+interface LoopTargetFrame {
   readonly label: string | undefined;
   readonly breakState: number;
   readonly continueState: number | undefined;

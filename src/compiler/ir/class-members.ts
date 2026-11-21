@@ -38,7 +38,7 @@ export interface ClassAccessorEntry {
   readonly declaration: ts.AccessorDeclaration;
 }
 
-export interface ClassComputedAccessorEntry {
+interface ClassComputedAccessorEntry {
   readonly slotName: string;
   readonly declaration: ts.AccessorDeclaration;
   readonly isGetter: boolean;
@@ -84,7 +84,7 @@ export function classPrivateFieldStorageKey(className: string, fieldName: string
   return `\0private\0${className}\0${fieldName}`;
 }
 
-export function classMemberHasStaticModifier(member: ts.ClassElement): boolean {
+function classMemberHasStaticModifier(member: ts.ClassElement): boolean {
   if (!ts.canHaveModifiers(member)) {
     return false;
   }
@@ -94,7 +94,7 @@ export function classMemberHasStaticModifier(member: ts.ClassElement): boolean {
 // Resolves a computed member name that is constant at compile time (a string,
 // numeric, or template literal, or a const-bound string), so such members keep
 // using the ordinary static machinery.
-export function resolveConstantComputedMemberName(
+function resolveConstantComputedMemberName(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): string | undefined {
@@ -114,7 +114,7 @@ export function resolveConstantComputedMemberName(
 // `computedKeys` (in definition order) so their evaluation can be emitted once
 // at class-definition time. Returns undefined for names this lowering cannot
 // handle (private identifiers, symbol keys other than Symbol.iterator).
-export function classMemberKeyOf(
+function classMemberKeyOf(
   name: ts.PropertyName,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   computedKeys: ClassComputedKeyInfo[],
@@ -156,7 +156,7 @@ export function isParameterProperty(parameter: ts.ParameterDeclaration): boolean
 }
 
 /** True for TypeScript's type-only `this: T` parameter (not a runtime argv slot). */
-export function isTypeOnlyThisParameter(parameter: ts.ParameterDeclaration): boolean {
+function isTypeOnlyThisParameter(parameter: ts.ParameterDeclaration): boolean {
   return ts.isIdentifier(parameter.name) && parameter.name.text === "this";
 }
 
@@ -184,7 +184,7 @@ export function lowerSymbolIteratorKeyExpression(
   return { kind: "literal", value: SYMBOL_ITERATOR_SENTINEL };
 }
 
-export function isSymbolIteratorPropertyName(
+function isSymbolIteratorPropertyName(
   name: ts.PropertyName,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): boolean {
@@ -349,7 +349,7 @@ export function collectClassMembers(
  * Every branch above claims the members it can place, so whatever is left is one of the forms the
  * class tier does not lower.
  */
-export function classMemberRefusalReason(member: ts.ClassElement): string {
+function classMemberRefusalReason(member: ts.ClassElement): string {
   if (ts.isConstructorDeclaration(member)) {
     return "An overloaded constructor is not supported yet; only the implementation is lowered";
   }

@@ -5,11 +5,11 @@ import type { BindingRef } from "./binding-id.js";
 import type { ResolveNested } from "./resolved-types.js";
 
 /** How a text field of `F` is classified. A list field takes list roles; a single one takes not. */
-export type RoleFor<F> = NonNullable<F> extends readonly string[] ? ListFieldRole : FieldRole;
+type RoleFor<F> = NonNullable<F> extends readonly string[] ? ListFieldRole : FieldRole;
 
-export type ListFieldRole = Extract<FieldRole, { readonly role: `${string}List` }>;
+type ListFieldRole = Extract<FieldRole, { readonly role: `${string}List` }>;
 
-export type TextFieldsOf<V> = {
+type TextFieldsOf<V> = {
   [F in keyof V]-?: F extends "kind"
     ? never
     : string extends NonNullable<V[F]>
@@ -19,7 +19,7 @@ export type TextFieldsOf<V> = {
         : never;
 }[keyof V];
 
-export type VariantRoles<V> = { readonly [F in TextFieldsOf<V>]: RoleFor<V[F]> } &
+type VariantRoles<V> = { readonly [F in TextFieldsOf<V>]: RoleFor<V[F]> } &
   Partial<Record<Exclude<keyof V, TextFieldsOf<V> | "kind">, { readonly role: "described" }>>;
 
 /** A role table keyed by a tier's kinds, checked for totality over that tier. */

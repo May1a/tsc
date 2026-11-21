@@ -1,8 +1,6 @@
 import {
-  type BuiltinEntry,
   type BuiltinSupport,
   builtinEntryFor,
-  builtinFor,
   knownBuiltinMessage
 } from "./support.js";
 
@@ -18,7 +16,7 @@ cannot set one. `stack` is not supported at all.
  */
 
 /** The Error members this build knows about, keyed by the name they have in source. */
-export type ErrorBuiltin =
+type ErrorBuiltin =
   | "cause"
   | "message"
   | "name"
@@ -40,10 +38,6 @@ export const errorBuiltinSupport: BuiltinSupport<"error", ErrorBuiltin> = {
   "toString": { arity: 0, state: "supported", id: "error.toString" },
 };
 
-/** The `Error` member with this name, or `undefined` if the name is not one of them. */
-export function errorBuiltinFor(name: string): BuiltinEntry<"error"> | undefined {
-  return builtinFor(errorBuiltinSupport, "error", name);
-}
 
 /**
  * The diagnostic for a `Error` member this build has not written, or `undefined` if the name

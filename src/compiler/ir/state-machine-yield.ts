@@ -6,7 +6,7 @@ import { type Produced, produced, unsupportedIn } from "./lowered.js";
 import { SM_ARG_PARAM, SM_MODE_PARAM, SM_STATE_SLOT, type StateMachineExpressionHost } from "./state-machine-core.js";
 import type { JsIrOperation } from "./types.js";
 
-export type LowerExprFn = (
+type LowerExprFn = (
   host: StateMachineExpressionHost,
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>

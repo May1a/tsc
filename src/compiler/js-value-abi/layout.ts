@@ -6,11 +6,8 @@ export const jsValueLayout = Object.freeze({
   tagMask: 0xFFFF_0000_0000_0000n,
   exponentMask: 0x7FF0_0000_0000_0000n,
   fractionMask: 0x000F_FFFF_FFFF_FFFFn,
-  // FIXME(arm64-darwin): This recognizes only the exact NaN emitted by current
-  // Apple ARM floating-point operations. It is not general NaN canonicalization.
-  arm64CanonicalNaN: 0x7FF8_0000_0000_0000n,
-  // FIXME(arm64-darwin): A future value representation should make every
-  // hardware NaN safe without rewriting it to a chosen negative quiet NaN.
+  // Every IEEE-754 NaN is canonicalized to this negative quiet NaN so no hardware
+  // NaN bit pattern can overlap the reserved positive NaN tag space [0x7FF8..0x7FFF].
   canonicalNaN: 0xFFF8_0000_0000_0000n,
   reservedTagMaximum: 0x7FFF_0000_0000_0000n,
   references: Object.freeze({

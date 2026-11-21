@@ -1,4 +1,4 @@
-import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, knownBuiltinMessage } from "./support.js";
+import { type BuiltinSupport, builtinEntryFor, knownBuiltinMessage } from "./support.js";
 
 /**
  * What this build does with `Array.prototype` and `Array`.
@@ -19,7 +19,7 @@ import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, kn
  */
 
 /** The `Array.prototype` and `Array` members this build knows about. */
-export type ArrayBuiltin =
+type ArrayBuiltin =
   | "at"
   | "concat"
   | "copyWithin"
@@ -117,10 +117,6 @@ export const arrayBuiltinSupport: BuiltinSupport<"array", ArrayBuiltin> = {
   group: { arity: 1, state: "planned", id: "array.group" }
 };
 
-/** The `Array` member with this name, or `undefined` if the name is not one of them. */
-export function arrayBuiltinFor(name: string): BuiltinEntry<"array"> | undefined {
-  return builtinFor(arrayBuiltinSupport, "array", name);
-}
 
 /**
  * The diagnostic for an `Array` member this build has not written, or `undefined` if the name is

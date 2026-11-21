@@ -1,4 +1,4 @@
-import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, knownBuiltinMessage } from "./support.js";
+import { type BuiltinSupport, builtinEntryFor, knownBuiltinMessage } from "./support.js";
 
 /**
  * What this build does with `String` and `String.prototype`.
@@ -10,7 +10,7 @@ import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, kn
  */
 
 /** The `String` and `String.prototype` members this build knows about. */
-export type StringBuiltin =
+type StringBuiltin =
   | "at"
   | "charAt"
   | "charCodeAt"
@@ -113,10 +113,6 @@ export const stringBuiltinSupport: BuiltinSupport<"string", StringBuiltin> = {
   raw: { arity: { from: 1, to: 8 }, state: "planned", id: "string.raw", placement: "static" }
 };
 
-/** The `String` member with this name, or `undefined` if the name is not one of them. */
-export function stringBuiltinFor(name: string): BuiltinEntry<"string"> | undefined {
-  return builtinFor(stringBuiltinSupport, "string", name);
-}
 
 /**
  * The diagnostic for a `String` member this build has not written, or `undefined` if the name is

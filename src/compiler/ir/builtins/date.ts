@@ -1,8 +1,6 @@
 import {
-  type BuiltinEntry,
   type BuiltinSupport,
   builtinEntryFor,
-  builtinFor,
   knownBuiltinMessage
 } from "./support.js";
 
@@ -20,7 +18,7 @@ the manifest's `forms` half, not as eleven prototype members that cannot be reac
  */
 
 /** The Date members this build knows about, keyed by the name they have in source. */
-export type DateBuiltin =
+type DateBuiltin =
   | "now"
   | "getTime"
   | "valueOf"
@@ -38,10 +36,6 @@ export const dateBuiltinSupport: BuiltinSupport<"date", DateBuiltin> = {
   "getFullYear": { arity: 0, state: "planned", id: "date.getFullYear" },
 };
 
-/** The `Date` member with this name, or `undefined` if the name is not one of them. */
-export function dateBuiltinFor(name: string): BuiltinEntry<"date"> | undefined {
-  return builtinFor(dateBuiltinSupport, "date", name);
-}
 
 /**
  * The diagnostic for a `Date` member this build has not written, or `undefined` if the name

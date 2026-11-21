@@ -14,13 +14,13 @@ export interface LinkResult {
  * not one: it is converted to the TSCN2001 warning at the call site, so modelling it as a failure
  * variant gave `linkerErrorToLinkResult` an unreachable branch.
  */
-export class LinkerExitFailed extends Data.TaggedError("LinkerExitFailed")<{
+class LinkerExitFailed extends Data.TaggedError("LinkerExitFailed")<{
   readonly toolName: string;
   readonly exitCode: number;
   readonly stderr: string;
 }> {}
 
-export type LinkerError = LinkerExitFailed;
+type LinkerError = LinkerExitFailed;
 
 const missingClangDiagnostic: CompilerDiagnostic = {
   code: "TSCN2001",

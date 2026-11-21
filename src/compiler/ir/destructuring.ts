@@ -241,7 +241,7 @@ function resolveDestructuringSource(
 }
 
 // eslint-disable-next-line complexity, max-statements -- Array destructuring routes fixed and runtime sources plus rest and default shapes.
-export function lowerArrayDestructuringElements(
+function lowerArrayDestructuringElements(
   context: LoweringContext,
   pattern: ts.ArrayBindingPattern,
   source: DestructuringSource,

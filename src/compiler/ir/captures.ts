@@ -86,7 +86,7 @@ export function collectFunctionDeclarationEnclosingCaptureNames(
  * The checker answers this; without one the walk can only guess, and a name it wrongly captures costs
  * an environment slot rather than a wrong answer, so the guess is the safe direction.
  */
-export function identifierResolvesInEnclosingFunction(
+function identifierResolvesInEnclosingFunction(
   typeChecker: ts.TypeChecker | undefined,
   identifier: ts.Identifier,
   declaration: ts.FunctionDeclaration
@@ -258,7 +258,7 @@ export function collectFunctionObjectDefinitions(operations: readonly JsIrOperat
   visit(operations);
   return [...definitions.values()];
 }
-export function isFunctionObjectContainer(value: object): value is { readonly kind: "functionObject"; readonly definition: JsIrFunctionObjectDefinition } {
+function isFunctionObjectContainer(value: object): value is { readonly kind: "functionObject"; readonly definition: JsIrFunctionObjectDefinition } {
   if (!("kind" in value) || value.kind !== "functionObject" || !("definition" in value) || value.definition === null || typeof value.definition !== "object") {
     return false;
   }
@@ -271,7 +271,7 @@ export function isFunctionObjectContainer(value: object): value is { readonly ki
  * Only `let`/`var` number, string, and boolean slots qualify: every other binding either
  * inlines (const scalars) or already travels by reference (boxed values, aggregates).
  */
-export function isMutableScalarBinding(binding: JsIrBindingValue | undefined): boolean {
+function isMutableScalarBinding(binding: JsIrBindingValue | undefined): boolean {
   return binding?.kind === "stringVariable" || binding?.kind === "booleanVariable" ||
     (binding?.kind === "number" && binding.value.kind === "variable");
 }

@@ -5,7 +5,7 @@ import ts from "typescript";
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { inlineCppTag, rewriteInlineCppSyntax } from "./inline-cpp-rewriter.js";
 
-export interface FrontendResult {
+interface FrontendResult {
   readonly program: ts.Program;
   readonly sourceFiles: readonly ts.SourceFile[];
   /**

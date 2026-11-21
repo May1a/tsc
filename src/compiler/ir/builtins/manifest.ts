@@ -262,26 +262,6 @@ export function supportManifest(): SupportManifest {
   };
 }
 
-/** The manifest ids of every TypeScript form this build does not admit. */
-export function plannedFormIds(): readonly string[] {
-  return supportManifest().forms.filter((form) => form.state === "planned").map((form) => form.id);
-}
-
-/** The manifest ids of every builtin this build has not written, for the tests to cross-check. */
-export function plannedBuiltinIds(): readonly string[] {
-  return supportManifest().builtins.filter((entry) => entry.state === "planned").map((entry) => entry.id);
-}
-
-/** The manifest ids of every builtin this build lowers to something JavaScript does not compute. */
-export function stubbedBuiltinIds(): readonly string[] {
-  return supportManifest().builtins.filter((entry) => entry.state === "stubbed").map((entry) => entry.id);
-}
-
-/** The manifest entry with this id, or `undefined` if no table declares one. */
-export function builtinById(id: string): BuiltinEntry | undefined {
-  return supportManifest().builtins.find((entry) => entry.id === id);
-}
-
 /**
  * Every owner's entries, keyed by owner then by name.
  *

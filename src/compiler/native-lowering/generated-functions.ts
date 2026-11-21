@@ -20,7 +20,7 @@ interface DeclaredPlan {
   readonly singleton?: LlvmGlobalReference;
 }
 
-export type GeneratedBodyRunner = (fn: NativeFunctionBuilder, plan: FunctionPlan, initialize: (context: OperationContext) => void) => void;
+type GeneratedBodyRunner = (fn: NativeFunctionBuilder, plan: FunctionPlan, initialize: (context: OperationContext) => void) => void;
 
 export class GeneratedFunctions {
   readonly #module: NativeModule;

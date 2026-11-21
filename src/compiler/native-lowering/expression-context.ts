@@ -25,7 +25,7 @@ export interface BindingReads {
   storeNumber(reference: BindingRef, value: LlvmValue<typeof llvm.double>): void;
 }
 
-export interface ExpressionEntries {
+interface ExpressionEntries {
   number(expression: ResolvedNumberExpression): LlvmValue<typeof llvm.double>;
   string(expression: ResolvedStringExpression): NativeString;
   condition(expression: ResolvedCondition): LlvmValue<typeof llvm.i1>;
@@ -44,7 +44,7 @@ export interface ExpressionCalls {
   tagged(expression: Extract<ResolvedStringExpression | ResolvedValueExpression, { readonly kind: "taggedTemplate" | "taggedTemplateValue" }>): BoxedValue;
 }
 
-export interface OptionalTarget {
+interface OptionalTarget {
   current(): BoxedValue;
   withTarget<A>(target: BoxedValue, build: () => A): A;
 }
@@ -77,14 +77,14 @@ export interface ExpressionContext {
   exceptionTarget(): ExceptionTarget;
 }
 
-export interface ExpressionHandlers {
+interface ExpressionHandlers {
   number(expression: ResolvedNumberExpression, context: ExpressionContext): LlvmValue<typeof llvm.double>;
   string(expression: ResolvedStringExpression, context: ExpressionContext): NativeString;
   condition(expression: ResolvedCondition, context: ExpressionContext): LlvmValue<typeof llvm.i1>;
   value(expression: ResolvedValueExpression, context: ExpressionContext): BoxedValue;
 }
 
-export interface ExpressionContextOptions<Calls extends ExpressionCalls = ExpressionCalls> {
+interface ExpressionContextOptions<Calls extends ExpressionCalls = ExpressionCalls> {
   readonly capabilities: FunctionCapabilities;
   readonly bindings: BindingReads;
   readonly calls: Calls | ((context: ExpressionContext) => Calls);

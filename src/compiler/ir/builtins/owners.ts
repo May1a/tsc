@@ -102,7 +102,7 @@ export function unlowerableCallee(
 }
 
 /** The refusal for a bare global this build has not written, or `undefined` when it is not one. */
-export function plannedGlobalMessage(name: string): string | undefined {
+function plannedGlobalMessage(name: string): string | undefined {
   return plannedNumberGlobalMessage(name);
 }
 
@@ -236,7 +236,7 @@ const staticBuiltinOwners: Readonly<Record<string, BuiltinOwner | undefined>> = 
 };
 
 /** The support-table owner a call target belongs to, from the receiver rather than its spelling. */
-export function builtinOwnerOfReceiver(
+function builtinOwnerOfReceiver(
   receiver: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): BuiltinOwner | undefined {

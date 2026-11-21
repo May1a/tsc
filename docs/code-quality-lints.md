@@ -166,6 +166,14 @@ frame, nested frames, and loop phis. A phi's previous iteration cannot protect i
 incoming value. An unused phi does not extend the incoming value's lifetime. These are
 control-flow checks; a syntax lint cannot establish the same property.
 
+## Reject dead exports
+
+`no-dead-export`, in `scripts/check-dead-exports.mjs`, scans `src/` and rejects any exported
+declaration with no importer across `src/`, `test/`, or `scripts/` (following barrel re-exports
+through `index.ts`). Internal helpers stay unexported so `tsc` and Oxlint immediately catch unused
+declarations and dead error classes. `test/unit/check-dead-exports.test.ts` covers rejection and
+barrel-import acceptance.
+
 ## Rule implementation
 
 The custom rules use the repository's existing Oxlint JavaScript plugin support. They

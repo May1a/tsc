@@ -42,10 +42,10 @@ const abiConformanceVectors: readonly AbiConformanceVector[] = [
   { name: "is-array-hole", symbol: "abi_is_array_hole", arguments: [{ kind: "word", value: 9_222_246_136_947_933_191n }], cppExpression: "tscn::is_array_hole(tscn::array_hole())", expected: "1" },
   { name: "number", symbol: "abi_number", arguments: [{ kind: "double", value: 1.5 }], cppExpression: "tscn::number(1.5)", expected: "4609434218613702656" },
   { name: "is-number", symbol: "abi_is_number", arguments: [{ kind: "word", value: 4_609_434_218_613_702_656n }], cppExpression: "tscn::is_number(tscn::number(1.5))", expected: "1" },
-  // FIXME(arm64-darwin): These vectors document canonicalization as a stopgap.
-  // Remove the exact-bit assertion when NaNs cannot overlap tags by design.
-  { name: "signaling-nan", symbol: "abi_number", arguments: [{ kind: "doubleBits", value: 0x7F_F5_00_00_00_00_00_00n }], cppExpression: "tscn::number(std::bit_cast<double>(0x7ff5000000000000ULL))", expected: "9220275812110958592" },
-  { name: "reserved-quiet-nan", symbol: "abi_number", arguments: [{ kind: "doubleBits", value: 0x7F_F8_00_00_00_00_00_00n }], cppExpression: "tscn::number(std::numeric_limits<double>::quiet_NaN())", expected: "18444492273895866368" }
+  // Every IEEE-754 NaN (signaling, quiet, or payload-bearing) canonicalizes to canonicalNaN so it cannot overlap reserved tags.
+  { name: "signaling-nan", symbol: "abi_number", arguments: [{ kind: "doubleBits", value: 0x7F_F5_00_00_00_00_00_00n }], cppExpression: "tscn::number(std::bit_cast<double>(0x7ff5000000000000ULL))", expected: "18444492273895866368" },
+  { name: "reserved-quiet-nan", symbol: "abi_number", arguments: [{ kind: "doubleBits", value: 0x7F_F8_00_00_00_00_00_00n }], cppExpression: "tscn::number(std::numeric_limits<double>::quiet_NaN())", expected: "18444492273895866368" },
+  { name: "payload-nan", symbol: "abi_number", arguments: [{ kind: "doubleBits", value: 0x7F_FF_00_00_00_00_12_34n }], cppExpression: "tscn::number(std::bit_cast<double>(0x7fff000000001234ULL))", expected: "18444492273895866368" }
 ];
 
 function defineAbiConformanceFunctions(module: LlvmModuleBuilder): ReadonlyMap<string, AbiFunction> {
@@ -178,7 +178,7 @@ describe("JSValue ABI", () => {
 
     const cpp = jsValueAbi.emitInlineCppSupport();
     expect(cpp).toContain("const auto bits = std::bit_cast<std::uint64_t>(value);");
-    expect(cpp).toContain("return is_arm64_nan ? 18444492273895866368ULL : bits;");
+    expect(cpp).toContain("return is_nan ? 18444492273895866368ULL : bits;");
     expect(cpp).toContain("return 9222246136947933184ULL;");
     expect(cpp).toContain("return 9222246136947933185ULL;");
     expect(cpp).toContain("return 9222246136947933186ULL;");

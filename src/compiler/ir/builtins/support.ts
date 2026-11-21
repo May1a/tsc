@@ -34,7 +34,7 @@ export type BuiltinOwner =
  * user's point of view — a builtin this build knows the name of — and the diagnostic reads the same
  * either way.
  */
-export type BuiltinPlacement = "prototype" | "static" | "global";
+type BuiltinPlacement = "prototype" | "static" | "global";
 
 /**
  * Whether this build has a lowering for the entry, and whether that lowering agrees with JavaScript.
@@ -48,10 +48,10 @@ export type BuiltinPlacement = "prototype" | "static" | "global";
  *   produces a diagnostic naming the builtin, which is a far more useful answer than the enclosing
  *   statement's syntax kind.
  */
-export type BuiltinState = "supported" | "stubbed" | "planned";
+type BuiltinState = "supported" | "stubbed" | "planned";
 
 /** The argument count an entry accepts, as a single count or an inclusive range. */
-export type BuiltinArity = number | { readonly from: number; readonly to: number };
+type BuiltinArity = number | { readonly from: number; readonly to: number };
 
 /** The manifest: every builtin the compiler knows about, with the state it is in. */
 export interface SupportManifest {
@@ -148,15 +148,6 @@ export function builtinEntryFor<Owner extends BuiltinOwner, Name extends string>
   }
   const declaration: BuiltinDeclaration<Owner> = table[name];
   return { ...declaration, owner, name, placement: declaration.placement ?? "prototype" };
-}
-
-/** The one member of a table with this name, or `undefined` if the name is not one of them. */
-export function builtinFor<Owner extends BuiltinOwner, Name extends string>(
-  support: BuiltinSupport<Owner, Name>,
-  owner: Owner,
-  name: string
-): BuiltinEntry<Owner> | undefined {
-  return builtinEntryFor(support, owner, name);
 }
 
 /**

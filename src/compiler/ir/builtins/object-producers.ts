@@ -91,7 +91,7 @@ export function lowerRuntimeDataDescriptorValue(
   }
   return { key, value: descriptorValue, writable, enumerable, configurable };
 }
-export function descriptorObjectLiteralForExpression(
+function descriptorObjectLiteralForExpression(
   expression: JsIrValueExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrRuntimeObjectValue | undefined {
@@ -107,7 +107,7 @@ export function descriptorObjectLiteralForExpression(
   }
   return binding.value;
 }
-export function literalBooleanValue(expression: JsIrValueExpression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean | undefined {
+function literalBooleanValue(expression: JsIrValueExpression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean | undefined {
   if (expression.kind === "boolean" && expression.value.kind === "boolean") {
     return expression.value.value;
   }
@@ -192,7 +192,7 @@ export function lowerRuntimeObjectOwnPropertyDescriptorsBinding(
   }
   return produced({ kind: "runtimeObjectOwnPropertyDescriptors", name, targetName: target.name, targetKind: target.kind });
 }
-export function lowerUnaryObjectAggregateCall(
+function lowerUnaryObjectAggregateCall(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   method: string

@@ -7,7 +7,7 @@ import {
 } from "../llvm-ir/index.js";
 import { sameSet, successors } from "./graph.js";
 
-export interface GcLiveness {
+interface GcLiveness {
   readonly after: ReadonlyMap<string, readonly ReadonlySet<string>[]>;
 }
 

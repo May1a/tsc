@@ -10,15 +10,15 @@ import type { BoxedValue } from "./value-boundary.js";
 
 type ContractOf<S extends RuntimeSymbol> = (typeof runtimeContracts)[S];
 type ReturnOf<S extends RuntimeSymbol> = RuntimeCallees[S]["returns"];
-export type SymbolsOfKind<Kind extends ContractOf<RuntimeSymbol>["resultKind"]> = {
+type SymbolsOfKind<Kind extends ContractOf<RuntimeSymbol>["resultKind"]> = {
   [S in RuntimeSymbol]: ContractOf<S>["resultKind"] extends Kind ? S : never;
 }[RuntimeSymbol];
-export type VoidSymbol = Exclude<SymbolsOfKind<"void">, "gcRootPush" | "gcRootPushSlot" | "gcRootRestore" | "gcRootPop">;
-export type PlainSymbol = Exclude<SymbolsOfKind<"scalar" | "aggregate">, "gcRootSave">;
-export type BoxedSymbol = SymbolsOfKind<"boxed">;
-export type PointerSymbol = SymbolsOfKind<"pointer">;
-export type CompletionSymbol = SymbolsOfKind<"completion">;
-export type StringSymbol = SymbolsOfKind<"string">;
+type VoidSymbol = Exclude<SymbolsOfKind<"void">, "gcRootPush" | "gcRootPushSlot" | "gcRootRestore" | "gcRootPop">;
+type PlainSymbol = Exclude<SymbolsOfKind<"scalar" | "aggregate">, "gcRootSave">;
+type BoxedSymbol = SymbolsOfKind<"boxed">;
+type PointerSymbol = SymbolsOfKind<"pointer">;
+type CompletionSymbol = SymbolsOfKind<"completion">;
+type StringSymbol = SymbolsOfKind<"string">;
 
 export interface RuntimeString {
   readonly bytes: LlvmValue<typeof llvm.ptr>;

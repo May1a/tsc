@@ -28,7 +28,7 @@ export interface JsIrOperationTrace {
   readonly origin: JsIrTraceOrigin;
 }
 
-export interface JsIrSourceModule {
+interface JsIrSourceModule {
   readonly fileName: string;
   readonly statementCount: number;
   readonly loweringMode: JsIrLoweringMode;

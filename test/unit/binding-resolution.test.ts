@@ -297,7 +297,7 @@ describe("hoisting", () => {
     expect(returned?.kind === "returnNumber" && returned.expression.kind === "parameter"
       ? returned.expression.name.binding : undefined).toBe(later.kind === "constNumber" ? later.name.binding : undefined);
     expect(result.module.bindings.declarations.map((entry) => [entry.spelling, entry.captured])).toEqual([
-      ["read", false], ["later", true]
+      ["read", false], ["later", true], ["this", false]
     ]);
   });
 
@@ -535,7 +535,11 @@ describe("function metadata and isolation", () => {
     expect(callback.captures?.[0].sourceBinding?.binding).toBe(counter.id);
     const [returned] = callback.callbackBody;
     expect(returned.kind === "returnValue" && returned.expression.kind === "variable" ? returned.expression.name : undefined).toBe(callback.thisBinding);
-    expect(callback.thisBinding?.binding).toBe(declaration(result.module, "this").id);
+    const thisDeclarations = declarationsNamed(result.module, "this");
+    expect(thisDeclarations).toHaveLength(2);
+    expect(callback.thisBinding?.binding).toBeDefined();
+    expect(thisDeclarations.map((entry) => entry.id)).toContain(callback.thisBinding?.binding);
+    expect(outer.kind === "function" ? outer.thisBinding?.binding : undefined).not.toBe(callback.thisBinding?.binding);
   });
 
   test("explicit closure capture lists promote outer locals even without body reads", () => {

@@ -1,4 +1,4 @@
-import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, knownBuiltinMessage } from "./support.js";
+import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, knownBuiltinMessage } from "./support.js";
 
 /**
  * What this build does with `Number`, `Number.prototype`, and the numeric globals.
@@ -14,7 +14,7 @@ import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, kn
  */
 
 /** The `Number`, `Number.prototype` and global numeric members this build knows about. */
-export type NumberBuiltin =
+type NumberBuiltin =
   | "EPSILON"
   | "MAX_SAFE_INTEGER"
   | "MAX_VALUE"
@@ -77,7 +77,7 @@ export const numberBuiltinSupport: BuiltinSupport<"number", NumberBuiltin> = {
  * `Number` static, and the table is keyed by the source-level name, so one key cannot hold two
  * entries. The manifest ids are what keep them apart.
  */
-export type NumberGlobalBuiltin = "isFinite" | "isNaN" | "parseFloat" | "parseInt";
+type NumberGlobalBuiltin = "isFinite" | "isNaN" | "parseFloat" | "parseInt";
 
 export const numberGlobalBuiltinSupport: BuiltinSupport<"number", NumberGlobalBuiltin> = {
   isNaN: { arity: 1, state: "supported", id: "number.globalIsNaN", placement: "global", fixture: "global-is-nan" },
@@ -96,10 +96,6 @@ export function numberGlobalNames(): readonly string[] {
   return Object.keys(numberGlobalBuiltinSupport);
 }
 
-/** The `Number` member with this name, or `undefined` if the name is not one of them. */
-export function numberBuiltinFor(name: string): BuiltinEntry<"number"> | undefined {
-  return builtinFor(numberBuiltinSupport, "number", name);
-}
 
 /**
  * The diagnostic for a `Number` member or numeric global this build has not written, or `undefined`

@@ -51,7 +51,7 @@ export type BindingRepresentation =
   /** A function's own frame. Its parameters are separate bindings. */
   | { readonly kind: "function" };
 
-export type BindingLocation =
+type BindingLocation =
   /** An `alloca` or a register in the frame of the function that declares it. */
   | { readonly kind: "frame" }
   /** A module-level global. Stable-addressed, and shared by every function in the source file. */

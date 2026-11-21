@@ -18,13 +18,13 @@ const negativeZeroBits = "0x8000000000000000";
 /** The quiet NaN IEEE-754 binary64 spells as; JS has one NaN, LLVM needs the bits. */
 const quietNaNBits = "0x7FF8000000000000";
 
-export type LlvmIntegerBitWidth =
+type LlvmIntegerBitWidth =
   | typeof booleanBitWidth
   | typeof byteBitWidth
   | typeof integerBitWidth
   | typeof valueBitWidth;
 
-export interface LlvmVoidType {
+interface LlvmVoidType {
   readonly kind: "void";
 }
 
@@ -41,7 +41,7 @@ export interface LlvmPointerType {
   readonly kind: "pointer";
 }
 
-export interface LlvmArrayType {
+interface LlvmArrayType {
   readonly kind: "array";
   readonly element: LlvmValueType;
   readonly length: number;
@@ -61,7 +61,7 @@ export type LlvmStructIndex<T extends LlvmStructType> = keyof T["elements"] & nu
 /** Tuple positions resolve to one element type; widened lists retain runtime position checks. */
 export type LlvmStructElementAt<T extends LlvmStructType, I extends LlvmStructIndex<T>> = T["elements"][I];
 
-export interface LlvmFunctionType {
+interface LlvmFunctionType {
   readonly kind: "function";
   readonly parameters: readonly LlvmValueType[];
   readonly returns: LlvmType;
@@ -109,8 +109,6 @@ export function freezeLlvmType<T extends LlvmType>(type: T): T {
 
 /** Void and function types are not first-class values. Function addresses use opaque pointers. */
 export type LlvmValueType = LlvmIntegerType | LlvmDoubleType | LlvmPointerType | LlvmArrayType | LlvmStructType;
-/** The types an instruction or constant operand may have. */
-export type LlvmNumericType = LlvmIntegerType | LlvmDoubleType;
 
 export interface LlvmValue<T extends LlvmValueType = LlvmValueType> {
   readonly type: T;
@@ -167,20 +165,8 @@ export interface LlvmBooleanType {
   readonly bits: 1;
 }
 
-export function isLlvmBooleanType(type: LlvmType): type is LlvmBooleanType {
-  return type.kind === "integer" && type.bits === booleanBitWidth;
-}
-
 export function isLlvmIntegerType(type: LlvmType): type is LlvmIntegerType {
   return type.kind === "integer";
-}
-
-export function isLlvmDoubleType(type: LlvmType): type is LlvmDoubleType {
-  return type.kind === "double";
-}
-
-export function isLlvmStructType(type: LlvmType): type is LlvmStructType {
-  return type.kind === "struct";
 }
 
 /** Value width for bitcasts. Host validation requires 64-bit pointers. */
@@ -261,7 +247,7 @@ export function renderLlvmStructBody(type: LlvmStructType): string {
 }
 
 /** `i32 (ptr, ...)`, the spelling a variadic call site and its declaration both need. */
-export function renderLlvmCallableType(type: LlvmFunctionType): string {
+function renderLlvmCallableType(type: LlvmFunctionType): string {
   const fixed = type.parameters.map(renderLlvmType);
   const parameters = type.variadic ? [...fixed, "..."] : fixed;
   return `${renderLlvmType(type.returns)} (${parameters.join(", ")})`;
