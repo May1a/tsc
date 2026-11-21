@@ -11,6 +11,7 @@ import { isNonExecutableDeclaration } from "./comparisons.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { updateBindings } from "./binding-updates.js";
 import { collectMethodEnclosingCaptureNames } from "./captures.js";
+import { withHoistedVars } from "./var-hoisting.js";
 
 export function lowerClassAccessor(
   context: LoweringContext,
@@ -127,33 +128,43 @@ function lowerClassMethodBody(
   block: ts.Block,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<readonly JsIrOperation[]> {
-  const operations: JsIrOperation[] = [];
   const bodyBindings = new Map(bindings);
-  for (const statement of block.statements) {
-    if (isNonExecutableDeclaration(statement)) {
-      continue;
-    }
-    if (ts.isReturnStatement(statement)) {
-      let value: JsIrValueExpression | undefined = { kind: "undefined" };
-      if (statement.expression !== undefined) {
-        const valueExpressionResult = context.lowerValueExpression(context, statement.expression, bodyBindings);
-        if (valueExpressionResult.kind === "unsupported") {
-          return valueExpressionResult;
-        }
-        value = loweredPayload(valueExpressionResult);
+  const parameterNames = new Set<string>([CLASS_THIS_NAME]);
+  if (ts.isFunctionLike(block.parent)) {
+    for (const parameter of block.parent.parameters) {
+      if (ts.isIdentifier(parameter.name)) {
+        parameterNames.add(parameter.name.text);
       }
-      if (value === undefined) {
-        return unsupportedIn("The return value in a class member body is not an expression this build can evaluate");
-      }
-      operations.push({ kind: "returnValue", expression: value });
-      continue;
     }
-    const result = context.lowerStatement(context, statement, bodyBindings);
-    if (result.kind !== "lowered") {
-      return unsupportedIn(classAbortReason(result));
-    }
-    operations.push(result.operation);
-    updateBindings(result.operation, bodyBindings);
   }
-  return produced(operations);
+  return withHoistedVars(context, block.statements, bodyBindings, parameterNames, (preface) => {
+    const operations: JsIrOperation[] = [...preface];
+    for (const statement of block.statements) {
+      if (isNonExecutableDeclaration(statement)) {
+        continue;
+      }
+      if (ts.isReturnStatement(statement)) {
+        let value: JsIrValueExpression | undefined = { kind: "undefined" };
+        if (statement.expression !== undefined) {
+          const valueExpressionResult = context.lowerValueExpression(context, statement.expression, bodyBindings);
+          if (valueExpressionResult.kind === "unsupported") {
+            return valueExpressionResult;
+          }
+          value = loweredPayload(valueExpressionResult);
+        }
+        if (value === undefined) {
+          return unsupportedIn("The return value in a class member body is not an expression this build can evaluate");
+        }
+        operations.push({ kind: "returnValue", expression: value });
+        continue;
+      }
+      const result = context.lowerStatement(context, statement, bodyBindings);
+      if (result.kind !== "lowered") {
+        return unsupportedIn(classAbortReason(result));
+      }
+      operations.push(result.operation);
+      updateBindings(result.operation, bodyBindings);
+    }
+    return produced(operations);
+  });
 }

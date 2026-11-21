@@ -175,7 +175,7 @@ test("typed value handlers preserve lazy evaluation, heap operands, and completi
     const source = path.join(directory, "main.ll");
     const executable = path.join(directory, "main");
     await writeFile(source, valueModule().render().text);
-    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable]).pipe(Effect.provide(commandExecutorLayer)));
+    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable, "-lm"]).pipe(Effect.provide(commandExecutorLayer)));
     expect(compiled.status, compiled.stderr).toBe(0);
     const result = await Effect.runPromise(captureCommand(executable, []).pipe(Effect.provide(commandExecutorLayer)));
     expect(result).toEqual({ status: 0, stderr: "", stdout: [
@@ -231,7 +231,7 @@ test.each([
     const source = path.join(directory, "main.ll");
     const executable = path.join(directory, "main");
     await writeFile(source, throwingModule(expression).render().text);
-    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable]).pipe(Effect.provide(commandExecutorLayer)));
+    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable, "-lm"]).pipe(Effect.provide(commandExecutorLayer)));
     expect(compiled.status, compiled.stderr).toBe(0);
     const result = await Effect.runPromise(captureCommand(executable, []).pipe(Effect.provide(commandExecutorLayer)));
     expect(result).toEqual({ status: 0, stderr: "", stdout: expected });

@@ -122,17 +122,7 @@ export function lowerStringRuntimeExpression(
   }
 
   if (ts.isTypeOfExpression(expression)) {
-    const typeName = lowerTypeOfResult(expression.expression, bindings);
-    if (typeName !== undefined) {
-      const binding = ts.isIdentifier(expression.expression) ? bindings.get(expression.expression.text) : undefined;
-      // Mutable storage may be uninitialized or hold a hoisted var's undefined value.
-      if (ts.isIdentifier(expression.expression) && (binding?.kind === "valueVariable" || binding?.kind === "stringVariable" ||
-        binding?.kind === "booleanVariable" || binding?.kind === "number" && binding.value.kind === "variable")) {
-        return produced({ kind: "valueTypeOf", value: { kind: "variable", name: expression.expression.text } });
-      }
-      return produced({ kind: "typeof", value: typeName });
-    }
-    return unsupportedIn(unsupportedTypeOfMessage(expression.expression, bindings));
+    return lowerTypeOfExpression(context, expression, bindings);
   }
 
   if (!ts.isConditionalExpression(expression)) {
@@ -350,6 +340,33 @@ function lowerDateIsoStringExpression(
     return notApplicable;
   }
   return produced({ kind: "literal", value: "1970-01-01T00:00:00.000Z" });
+}
+
+function lowerTypeOfExpression(
+  context: LoweringContext,
+  expression: ts.TypeOfExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrStringExpression> {
+  const operand = expression.expression;
+  const typeName = lowerTypeOfResult(operand, bindings);
+  if (typeName !== undefined) {
+    const binding = ts.isIdentifier(operand) ? bindings.get(operand.text) : undefined;
+    // Mutable storage may be uninitialized or hold a hoisted var's undefined value.
+    if (ts.isIdentifier(operand) && (binding?.kind === "valueVariable" || binding?.kind === "stringVariable" ||
+      binding?.kind === "booleanVariable" || binding?.kind === "number" && binding.value.kind === "variable")) {
+      return produced({ kind: "valueTypeOf", value: { kind: "variable", name: operand.text } });
+    }
+    return produced({ kind: "typeof", value: typeName });
+  }
+  if (ts.isIdentifier(operand) && !bindings.has(operand.text) &&
+    context.typeChecker !== undefined && context.typeChecker.getSymbolAtLocation(operand) === undefined) {
+    return produced({ kind: "typeof", value: "undefined" });
+  }
+  const value = context.lowerValueExpression(context, operand, bindings);
+  if (value.kind === "lowered") {
+    return produced({ kind: "valueTypeOf", value: value.operation });
+  }
+  return unsupportedIn(unsupportedTypeOfMessage(operand, bindings));
 }
 
 /**

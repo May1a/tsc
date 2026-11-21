@@ -90,7 +90,7 @@ async function run(module: NativeModule): Promise<string> {
     const ir = path.join(directory, "main.ll");
     const binary = path.join(directory, "main");
     await writeFile(ir, module.render().text);
-    const compiled = await Effect.runPromise(captureCommand(clang, [ir, "-o", binary]).pipe(Effect.provide(commandExecutorLayer)));
+    const compiled = await Effect.runPromise(captureCommand(clang, [ir, "-o", binary, "-lm"]).pipe(Effect.provide(commandExecutorLayer)));
     expect(compiled.status, compiled.stderr).toBe(0);
     const executed = await Effect.runPromise(captureCommand(binary, []).pipe(Effect.provide(commandExecutorLayer)));
     expect(executed.status, executed.stderr).toBe(0);

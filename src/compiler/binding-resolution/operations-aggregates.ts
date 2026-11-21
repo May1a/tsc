@@ -82,36 +82,36 @@ export const aggregateHandlers = {
     arrayName: resolver.reference(node.arrayName)
   }),
 
-  runtimeMapNew: (node, resolver) => ({ ...node, name: declareFromOperation(node.name, "const", node, resolver) }),
-  runtimeSetNew: (node, resolver) => ({ ...node, name: declareFromOperation(node.name, "const", node, resolver) }),
+  runtimeMapNew: (node, resolver) => ({ ...node, name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver) }),
+  runtimeSetNew: (node, resolver) => ({ ...node, name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver) }),
   runtimeMapFromArray: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "const", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver),
     sourceName: resolver.reference(node.sourceName)
   }),
   runtimeSetFromArray: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "const", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver),
     sourceName: resolver.reference(node.sourceName)
   }),
   runtimeMapFromIterable: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "const", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver),
     iterable: resolver.value(node.iterable)
   }),
   runtimeSetFromIterable: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "const", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver),
     iterable: resolver.value(node.iterable)
   }),
   runtimeMapFromCollection: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "const", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver),
     sourceName: resolver.reference(node.sourceName)
   }),
   runtimeSetFromCollection: (node, resolver) => ({
     ...node,
-    name: declareFromOperation(node.name, "const", node, resolver),
+    name: declareFromOperation(node.name, node.functionScoped === true ? "var" : "const", node, resolver),
     sourceName: resolver.reference(node.sourceName)
   }),
   runtimeMapSet: (node, resolver) => ({

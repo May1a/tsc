@@ -190,8 +190,12 @@ const handlers: VariantHandlers<NumberVariants, ExpressionContext, NumberValue> 
   },
   runtimeCollectionSize: (expression, context) => rawLength(context.runtime.call("collectionSize",
     [context.bindings.pointer(expression.collectionName)], context.cursor.uniqueName("collection.size")), context),
-  valueToNumber: (expression, context) => context.runtime.call("valueToNumber", [context.expressions.value(expression.value)],
-    context.cursor.uniqueName("number.coerce")),
+  valueToNumber: (expression, context) => {
+    const value = context.expressions.value(expression.value);
+    const converted = context.runtime.callWithCompletion("valueToNumberObservable", [value],
+      context.cursor.uniqueName("number.coerce"), context.exceptionTarget());
+    return context.values.forBlock(context.cursor.currentBlock()).unboxNumber(converted);
+  },
   parseInt: (expression, context) => {
     const value = context.expressions.string(expression.value);
     return context.runtime.call("parseInt", [value.length, value.bytes], context.cursor.uniqueName("number.parse"));

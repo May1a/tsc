@@ -11,6 +11,7 @@ import { collectFunctionObjectDefinitions, collectPromotedAggregateNames } from 
 import { type ClassInfo, appendClassOperations } from "./class-info.js";
 import { collectClassHierarchy } from "./class-hierarchy.js";
 import { collectStoragePlan } from "./storage-plan.js";
+import { withHoistedVars } from "./var-hoisting.js";
 import { isNonExecutableDeclaration, unsupportedStatementDiagnostic } from "./comparisons.js";
 import { lowerClassStatement } from "./classes.js";
 import { markRuntimeObjectShadows, updateBindings } from "./binding-updates.js";
@@ -215,31 +216,34 @@ function lowerTopLevelStatements(context: LoweringContext,
   const promotedAggregates = collectPromotedAggregateNames(sourceFile.statements);
   const { classes } = context;
 
-  for (const statement of sourceFile.statements) {
-    if (isNonExecutableDeclaration(statement)) {
-      continue;
-    }
-
-    const classResult = lowerClassStatement(context, statement, bindings, classes);
-    if (classResult !== undefined) {
-      if (classResult.kind === "unsupported") {
-        diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, classResult, bindings));
-      } else {
-        appendClassOperations(operations, classResult.operation, statement, bindings);
+  return withHoistedVars(context, sourceFile.statements, bindings, new Set(), (preface) => {
+    operations.push(...preface);
+    for (const statement of sourceFile.statements) {
+      if (isNonExecutableDeclaration(statement)) {
+        continue;
       }
-      continue;
+
+      const classResult = lowerClassStatement(context, statement, bindings, classes);
+      if (classResult !== undefined) {
+        if (classResult.kind === "unsupported") {
+          diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, classResult, bindings));
+        } else {
+          appendClassOperations(operations, classResult.operation, statement, bindings);
+        }
+        continue;
+      }
+
+      const result = context.lowerStatement(context, statement, bindings, promotedAggregates);
+      if (result.kind === "lowered") {
+        operations.push(result.operation);
+        updateBindings(result.operation, bindings);
+        continue;
+      }
+      diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result, bindings));
     }
 
-    const result = context.lowerStatement(context, statement, bindings, promotedAggregates);
-    if (result.kind === "lowered") {
-      operations.push(result.operation);
-      updateBindings(result.operation, bindings);
-      continue;
-    }
-    diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result, bindings));
-  }
-
-  return { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" };
+    return { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" };
+  });
 }
 
 /**

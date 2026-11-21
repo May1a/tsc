@@ -7,6 +7,7 @@ import { declaredFunctionReturnKind } from "./function-parameters.js";
 import { lowerFunctionParameters } from "./function-parameter-lowering.js";
 import { isPlainObjectReturningConstructor } from "./class-info.js";
 import { lowerBlockStatements } from "./statement-lists.js";
+import { withHoistedVars } from "./var-hoisting.js";
 import { collectFunctionDeclarationEnclosingCaptureNames } from "./captures.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
 
@@ -41,7 +42,12 @@ export function lowerFunctionDeclaration(
     returnKind: declaredFunctionReturnKind(statement.type)
   });
 
-  const loweredBody = lowerBlockStatements(context, statement.body, fnBindings);
+  const { body: statementBody } = statement;
+  const parameterNames = new Set(parameters.map((parameter) => parameter.name));
+  const loweredBody = withHoistedVars(context, statementBody.statements, fnBindings, parameterNames, (preface) => {
+    const body = lowerBlockStatements(context, statementBody, fnBindings);
+    return body.kind === "unsupported" ? body : { kind: "lowered" as const, operation: [...preface, ...body.operation] };
+  });
   if (loweredBody.kind === "unsupported") {
     return loweredBody;
   }

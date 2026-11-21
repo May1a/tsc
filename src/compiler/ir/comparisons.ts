@@ -97,7 +97,7 @@ export function lowerTypeOfResult(expression: ts.Expression, bindings: ReadonlyM
       if (binding.value.kind === "string") return "string";
       if (binding.value.kind === "objectRef" || binding.value.kind === "arrayRef" || binding.value.kind === "objectLiteralValue") return "object";
     }
-    if (binding?.kind === "runtimeObject" || binding?.kind === "runtimeArray" || binding?.kind === "object" || binding?.kind === "array") {
+    if (binding?.kind === "runtimeObject" || binding?.kind === "runtimeArray" || binding?.kind === "object" || binding?.kind === "array" || binding?.kind === "runtimeMap" || binding?.kind === "runtimeSet") {
       return "object";
     }
     if (binding?.kind === "function" || binding?.kind === "closure" || binding?.kind === "closureFactory") {

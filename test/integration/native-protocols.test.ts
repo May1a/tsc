@@ -247,7 +247,7 @@ test("typed iterator cleanup preserves completion and mutable bindings across co
     const source = path.join(directory, "main.ll");
     const executable = path.join(directory, "main");
     await writeFile(source, protocolModule().render().text);
-    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable]).pipe(Effect.provide(commandExecutorLayer)));
+    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable, "-lm"]).pipe(Effect.provide(commandExecutorLayer)));
     expect(compiled.status, compiled.stderr).toBe(0);
     const result = await Effect.runPromise(captureCommand(executable, []).pipe(Effect.provide(commandExecutorLayer)));
     expect(result).toEqual({ status: 0, stderr: "", stdout: "0\n1\n1\n0\n1\n2\nclosed\n3\nclosed\n4\nclosed\n5\nclosed\n99\n77\nclosed\n0\n7\n1\n8\n77\nclosed\n1\n1\n9\nclosed\n0\n0\n10\nclosed\ntrue\n13\nclosed\n11\n20\n21\n0\n1\nA\n🐇\nB\nB\nC\nD\nD\nfirst\nsecond\n22\n23\n22\n24\n25\n12\n0\n" });

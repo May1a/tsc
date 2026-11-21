@@ -11,6 +11,7 @@ import { functionFrameBindings } from "./function-parameters.js";
 import { functionReturnKind } from "./binding-updates.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { collectFunctionExpressionCaptureNames, lowerInlineFunctionCaptures } from "./captures.js";
+import { withHoistedVars } from "./var-hoisting.js";
 
 const arrayReduceMethodByDirection: Readonly<Record<"left" | "right", "reduce" | "reduceRight">> = {
   left: "reduce",
@@ -328,7 +329,22 @@ export function lowerInlineFunctionBody(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<readonly JsIrOperation[]> {
   if (ts.isBlock(body)) {
-    return lowerBlockStatements(context, body, bindings);
+    const bodyBindings = new Map(bindings);
+    const parameterNames = new Set<string>([CLASS_THIS_NAME]);
+    if (ts.isFunctionLike(body.parent)) {
+      for (const parameter of body.parent.parameters) {
+        if (ts.isIdentifier(parameter.name)) {
+          parameterNames.add(parameter.name.text);
+        }
+      }
+    }
+    return withHoistedVars(context, body.statements, bodyBindings, parameterNames, (preface) => {
+      const lowered = lowerBlockStatements(context, body, bodyBindings);
+      if (lowered.kind !== "lowered") {
+        return lowered;
+      }
+      return produced([...preface, ...lowered.operation]);
+    });
   }
   const expression = context.lowerValueExpression(context, body, bindings);
   if (expression.kind !== "lowered") {

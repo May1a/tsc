@@ -61,7 +61,7 @@ export const jsIrLeafOperationKinds: Readonly<Record<Exclude<JsIrOperation["kind
   "runtimeObjectStore": true, "valueObjectStore": true, "defineAccessor": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
   "runtimeObjectDelete": true, "valueObjectDelete": true, "valueArrayDelete": true, "runtimeObjectSetPrototype": true, "valueObjectSetPrototype": true,
   "runtimeObjectPreventExtensions": true, "runtimeObjectSeal": true, "runtimeObjectFreeze": true, "runtimeObjectAssign": true, "runtimeObjectDefineDataProperty": true,
-  "runtimeObjectDefineDataProperties": true, "print": true, "throwValue": true, "discardValue": true, "break": true, "continue": true,
+  "runtimeObjectDefineDataProperties": true, "print": true, "consoleLog": true, "throwValue": true, "discardValue": true, "break": true, "continue": true,
   "call": true, "callValue": true, "inlineCpp": true, "returnNumber": true, "returnString": true,
   "returnValue": true
 };

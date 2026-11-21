@@ -1,7 +1,6 @@
 import { describe, expect, test } from "vitest";
 import path from "node:path";
 import {
-  compileFixture,
   countOccurrences,
   expectLlvmAsVerificationIfAvailable,
   expectNativeBehaviorIfAvailable,
@@ -192,16 +191,8 @@ describe("tscn objects", () => {
     }
   });
 
-  test("rejects nested known-shape object dynamic lookup explicitly", async () => {
-    const result = await compileFixture("object-nested-dynamic-key.ts");
-
-    try {
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("error TSCN1002");
-      expect(result.stderr).toContain("Dynamic computed object keys on nested known-shape objects are not supported yet");
-    } finally {
-      await result.cleanup();
-    }
+  test("promotes nested object literals to runtime objects on dynamic key lookup", async () => {
+    await expectNativeMatchesNodeIfAvailable("object-nested-dynamic-key.ts");
   });
 
   test("lowers runtime-only object value fields through dictionary objects", async () => {

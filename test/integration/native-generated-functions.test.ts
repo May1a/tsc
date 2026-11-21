@@ -97,7 +97,7 @@ for (const program of programs) {
       if (inputs.length > 1) {
         await writeFile(collectSource, "extern void gcCollect(void); unsigned long long forceCollect(void) { gcCollect(); return 9222246136947933184ULL; }");
       }
-      const compiled = await Effect.runPromise(captureCommand(clang, [...inputs, "-o", executable]).pipe(Effect.provide(commandExecutorLayer)));
+      const compiled = await Effect.runPromise(captureCommand(clang, [...inputs, "-o", executable, "-lm"]).pipe(Effect.provide(commandExecutorLayer)));
       expect(compiled.status, compiled.stderr).toBe(0);
       const result = await Effect.runPromise(captureCommand(executable, []).pipe(Effect.provide(commandExecutorLayer)));
       expect(result).toEqual({ status: 0, stdout: program.expected, stderr: "" });

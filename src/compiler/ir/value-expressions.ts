@@ -308,7 +308,7 @@ function lowerAggregatePropertyValueAccess(
   }
   const receiver = unwrapTypeOnlyExpression(expression.expression);
   if (!ts.isIdentifier(receiver)) {
-    return notApplicable;
+    return lowerChainedPropertyValueAccess(context, receiver, expression.name, bindings);
   }
   const binding = bindings.get(receiver.text);
   if (isFunctionPrototypeAccess(expression, bindings)) {
@@ -320,6 +320,13 @@ function lowerAggregatePropertyValueAccess(
   if (binding?.kind === "runtimeObject") {
     return produced({ kind: "objectDynamicAccess", objectName: binding.name, key: { kind: "literal", value: expression.name.text } });
   }
+  if (binding?.kind === "runtimeArray" && plannedBuiltinMessageFor(receiver, expression.name.text, bindings) === undefined) {
+    return produced({
+      kind: "valueObjectDynamicAccess",
+      value: { kind: "arrayRef", name: binding.name },
+      key: { kind: "literal", value: expression.name.text }
+    });
+  }
   if (isBoxedAggregateCandidateBinding(binding)) {
     const value = context.lowerValueExpression(context, receiver, bindings);
     if (value.kind === "unsupported") {
@@ -330,6 +337,48 @@ function lowerAggregatePropertyValueAccess(
     }
   }
   return notApplicable;
+}
+
+const staticBuiltinRootNames: ReadonlySet<string> = new Set([
+  "Array",
+  "Date",
+  "JSON",
+  "Map",
+  "Math",
+  "Number",
+  "Object",
+  "RegExp",
+  "Set",
+  "String",
+  "Symbol",
+  "console"
+]);
+
+function isStaticBuiltinRoot(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean {
+  let current = unwrapTypeOnlyExpression(expression);
+  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    current = unwrapTypeOnlyExpression(current.expression);
+  }
+  return ts.isIdentifier(current) && !bindings.has(current.text) && staticBuiltinRootNames.has(current.text);
+}
+
+function lowerChainedPropertyValueAccess(
+  context: LoweringContext,
+  receiver: ts.Expression,
+  propertyName: ts.MemberName,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrValueExpression> {
+  if (ts.isPrivateIdentifier(propertyName) || isStaticBuiltinRoot(receiver, bindings)) {
+    return notApplicable;
+  }
+  if (plannedBuiltinMessageFor(receiver, propertyName.text, bindings) !== undefined) {
+    return notApplicable;
+  }
+  const value = context.lowerValueExpression(context, receiver, bindings);
+  if (value.kind !== "lowered") {
+    return value;
+  }
+  return produced({ kind: "valueObjectDynamicAccess", value: value.operation, key: { kind: "literal", value: propertyName.text } });
 }
 
 function lowerValueElementAccess(
@@ -369,17 +418,18 @@ function lowerValueElementReceiver(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  if (ts.isElementAccessExpression(expression)) {
-    return context.lowerValueExpression(context, expression, bindings);
+  const unwrapped = unwrapTypeOnlyExpression(expression);
+  if (ts.isIdentifier(unwrapped)) {
+    const binding = bindings.get(unwrapped.text);
+    if (!isBoxedAggregateCandidateBinding(binding) && binding?.kind !== "runtimeObject" && binding?.kind !== "runtimeArray") {
+      return notApplicable;
+    }
+    return context.lowerValueExpression(context, unwrapped, bindings);
   }
-  if (!ts.isIdentifier(expression)) {
+  if (isStaticBuiltinRoot(unwrapped, bindings)) {
     return notApplicable;
   }
-  const binding = bindings.get(expression.text);
-  if (!isBoxedAggregateCandidateBinding(binding)) {
-    return notApplicable;
-  }
-  return context.lowerValueExpression(context, expression, bindings);
+  return context.lowerValueExpression(context, unwrapped, bindings);
 }
 
 function lowerRuntimeArrayValueAccess(

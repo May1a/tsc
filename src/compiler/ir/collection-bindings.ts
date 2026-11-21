@@ -5,6 +5,7 @@ import type { JsIrOperation } from "./types.js";
 import { lowerSymbolIteratorKeyExpression } from "./class-info.js";
 import type { LoweringContext } from "./context.js";
 import { iteratorErrorSubject } from "./iterator-subject.js";
+import type { DeclarationScope } from "./declaration-kind.js";
 
 export function lowerRuntimeIteratorBinding(
   name: string,
@@ -61,9 +62,10 @@ export function lowerRuntimeCollectionBinding(
   context: LoweringContext,
   name: string,
   initializer: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  scope: DeclarationScope = {}
 ): Lowered {
-  const constructed = lowerRuntimeCollectionConstructorBinding(context, name, initializer, bindings);
+  const constructed = lowerRuntimeCollectionConstructorBinding(context, name, initializer, bindings, scope);
   if (constructed.kind !== "notApplicable") {
     return constructed;
   }
@@ -104,17 +106,18 @@ function lowerRuntimeCollectionConstructorBinding(
   context: LoweringContext,
   name: string,
   initializer: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  scope: DeclarationScope
 ): Lowered {
   if (!ts.isNewExpression(initializer) || !ts.isIdentifier(initializer.expression)) {
     return notApplicable;
   }
   const argumentCount = initializer.arguments?.length ?? 0;
   if (argumentCount === 0 && initializer.expression.text === "Map" && !bindings.has("Map")) {
-    return produced({ kind: "runtimeMapNew", name });
+    return produced({ kind: "runtimeMapNew", name, ...scope });
   }
   if (argumentCount === 0 && initializer.expression.text === "Set" && !bindings.has("Set")) {
-    return produced({ kind: "runtimeSetNew", name });
+    return produced({ kind: "runtimeSetNew", name, ...scope });
   }
   if (argumentCount !== 1 || initializer.arguments === undefined) {
     return notApplicable;
@@ -125,7 +128,7 @@ function lowerRuntimeCollectionConstructorBinding(
   if (!isMap && !isSet) {
     return notApplicable;
   }
-  const fromCollection = lowerRuntimeCollectionCopyConstructor(name, sourceExpression, isMap, bindings);
+  const fromCollection = lowerRuntimeCollectionCopyConstructor(name, sourceExpression, isMap, bindings, scope);
   if (fromCollection !== undefined) {
     return produced(fromCollection);
   }
@@ -135,9 +138,9 @@ function lowerRuntimeCollectionConstructorBinding(
   }
   const notIterableMessage = `${iteratorErrorSubject(sourceExpression)} is not iterable`;
   if (isMap) {
-    return produced({ kind: "runtimeMapFromIterable", name, iterable: iterable.operation, notIterableMessage });
+    return produced({ kind: "runtimeMapFromIterable", name, iterable: iterable.operation, notIterableMessage, ...scope });
   }
-  return produced({ kind: "runtimeSetFromIterable", name, iterable: iterable.operation, notIterableMessage });
+  return produced({ kind: "runtimeSetFromIterable", name, iterable: iterable.operation, notIterableMessage, ...scope });
 }
 
 // Map/Set values to be boxed as JSValues.
@@ -145,7 +148,8 @@ function lowerRuntimeCollectionCopyConstructor(
   name: string,
   sourceExpression: ts.Expression,
   isMap: boolean,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  scope: DeclarationScope
 ): JsIrOperation | undefined {
   if (!ts.isIdentifier(sourceExpression)) {
     return undefined;
@@ -153,15 +157,15 @@ function lowerRuntimeCollectionCopyConstructor(
   const source = bindings.get(sourceExpression.text);
   if (source?.kind === "runtimeMap") {
     if (isMap) {
-      return { kind: "runtimeMapFromCollection", name, sourceName: source.name, sourceKind: "map" };
+      return { kind: "runtimeMapFromCollection", name, sourceName: source.name, sourceKind: "map", ...scope };
     }
-    return { kind: "runtimeSetFromCollection", name, sourceName: source.name, sourceKind: "map" };
+    return { kind: "runtimeSetFromCollection", name, sourceName: source.name, sourceKind: "map", ...scope };
   }
   if (source?.kind === "runtimeSet") {
     if (isMap) {
-      return { kind: "runtimeMapFromCollection", name, sourceName: source.name, sourceKind: "set" };
+      return { kind: "runtimeMapFromCollection", name, sourceName: source.name, sourceKind: "set", ...scope };
     }
-    return { kind: "runtimeSetFromCollection", name, sourceName: source.name, sourceKind: "set" };
+    return { kind: "runtimeSetFromCollection", name, sourceName: source.name, sourceKind: "set", ...scope };
   }
   return undefined;
 }

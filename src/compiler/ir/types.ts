@@ -440,23 +440,31 @@ export type JsIrOperationNode =
   | {
       readonly kind: "runtimeMapNew" | "runtimeSetNew";
       readonly name: string;
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "runtimeMapFromArray" | "runtimeSetFromArray";
       readonly name: string;
       readonly sourceName: string;
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "runtimeMapFromIterable" | "runtimeSetFromIterable";
       readonly name: string;
       readonly iterable: JsIrValueExpression;
       readonly notIterableMessage: string;
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "runtimeMapFromCollection" | "runtimeSetFromCollection";
       readonly name: string;
       readonly sourceName: string;
       readonly sourceKind: "map" | "set";
+      /** Set when the source declared the binding with `var`; see `letValue`. */
+      readonly functionScoped?: true;
     }
   | {
       readonly kind: "runtimeMapSet";
@@ -605,6 +613,10 @@ export type JsIrOperationNode =
   | {
       readonly kind: "print";
       readonly expression: JsIrExpression;
+    }
+  | {
+      readonly kind: "consoleLog";
+      readonly arguments: readonly JsIrValueExpression[];
     }
   | {
       readonly kind: "throwValue";

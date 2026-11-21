@@ -109,3 +109,45 @@ describe("storage plan", () => {
     expect(boxed('var v = 1; var v = "s";', "v")).toEqual([true, false]);
   });
 });
+
+function runtimeAggregate(source: string, name: string): readonly boolean[] {
+  const file = sourceFile(source);
+  const plan = collectStoragePlan(file);
+  const found: boolean[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) {
+      found.push(plan.runtimeAggregates.has(node));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
+}
+
+describe("aggregate storage demotion plan", () => {
+  test("fixed arrays stay specialized for indexing, length, const for-of, and spreads", () => {
+    expect(runtimeAggregate("const a = [1, 2]; print(a[0] + a.length);", "a")).toEqual([false]);
+    expect(runtimeAggregate("const a = [1, 2]; for (const x of a) print(x);", "a")).toEqual([false]);
+    expect(runtimeAggregate("const a = [1, 2]; const b = [...a, 3];", "a")).toEqual([false]);
+    expect(runtimeAggregate("const a = [1, 2]; const [x, y] = a;", "a")).toEqual([false]);
+  });
+
+  test("fixed arrays demote on methods, escapes, let destructuring, and local captures", () => {
+    expect(runtimeAggregate("const a = [3, 1, 2]; a.sort();", "a")).toEqual([true]);
+    expect(runtimeAggregate("const a = [1, 2]; f(a);", "a")).toEqual([true]);
+    expect(runtimeAggregate("const a = [1, 2]; let [x, y] = a;", "a")).toEqual([true]);
+    expect(runtimeAggregate("function g() { const a = [1, 2]; return () => a[0]; }", "a")).toEqual([true]);
+  });
+
+  test("fixed objects stay specialized for known-key reads and numeric writes", () => {
+    expect(runtimeAggregate('const o = { a: 1 }; o.a = 2; print(o["a"]);', "o")).toEqual([false]);
+    expect(runtimeAggregate("const o = { a: 1 }; const { a } = o;", "o")).toEqual([false]);
+  });
+
+  test("fixed objects demote on dynamic keys, unknown keys, escapes, and let destructuring", () => {
+    expect(runtimeAggregate("const o = { a: 1 }; const k = 'a'; print(o[k]);", "o")).toEqual([true]);
+    expect(runtimeAggregate("const o = { a: 1 }; o.b = 2;", "o")).toEqual([true]);
+    expect(runtimeAggregate("const o = { a: 1 }; f(o);", "o")).toEqual([true]);
+    expect(runtimeAggregate("const o = { a: 1 }; let { a } = o;", "o")).toEqual([true]);
+  });
+});

@@ -126,7 +126,7 @@ test("typed scalar tiers execute JavaScript integer conversions and skip untaken
     const source = path.join(directory, "main.ll");
     const executable = path.join(directory, "main");
     await writeFile(source, scalarModule().render().text);
-    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable]).pipe(Effect.provide(commandExecutorLayer)));
+    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable, "-lm"]).pipe(Effect.provide(commandExecutorLayer)));
     expect(compiled.status, compiled.stderr).toBe(0);
     const result = await Effect.runPromise(captureCommand(executable, []).pipe(Effect.provide(commandExecutorLayer)));
     expect(result).toEqual({ status: 0, stderr: "", stdout: [

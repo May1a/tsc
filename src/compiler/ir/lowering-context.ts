@@ -25,6 +25,7 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     classes: new Map(),
     classHierarchy: emptyClassHierarchy,
     storagePlan: emptyStoragePlan,
+    hoistedVars: new Set(),
     typeChecker: options.typeChecker,
     inlineCpp: options.inlineCpp,
     lowerStatement,
