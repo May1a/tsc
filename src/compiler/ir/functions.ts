@@ -32,10 +32,8 @@ export function lowerFunctionDeclaration(
   }
   const { parameters, bindings: fnBindings } = loweredParameters.operation;
 
-  // A nested `function` declaration has its own dynamic `this`: it must not read the enclosing
-  // frame's through the bindings, or uses of `this` inside it would capture an environment cell
-  // the callee never fills. Without a binding the uses are refused instead of miscompiled.
-  fnBindings.delete(CLASS_THIS_NAME);
+  // Every ordinary function receives its own dynamic `this` binding from the uniform ABI.
+  fnBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
   fnBindings.set(statement.name.text, {
     kind: "functionReference",
     parameters,
@@ -43,7 +41,7 @@ export function lowerFunctionDeclaration(
   });
 
   const { body: statementBody } = statement;
-  const parameterNames = collectParameterBindingNames(statement.parameters);
+  const parameterNames = collectParameterBindingNames(statement.parameters, [CLASS_THIS_NAME]);
   const loweredBody = withHoistedVars(context, statementBody.statements, fnBindings, parameterNames, (preface) => {
     const body = lowerBlockStatements(context, statementBody, fnBindings);
     return body.kind === "unsupported" ? body : { kind: "lowered" as const, operation: [...preface, ...body.operation] };

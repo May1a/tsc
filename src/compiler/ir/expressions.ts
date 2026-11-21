@@ -188,6 +188,27 @@ export type JsIrValueExpression =
       readonly key: JsIrValueExpression;
     }
   | {
+      readonly kind: "runtimeCollectionIterator";
+      readonly collectionName: string;
+      readonly sourceKind: "map" | "set";
+      readonly iterationKind: "keys" | "values" | "entries";
+    }
+  | {
+      readonly kind: "runtimeCollectionClear";
+      readonly collectionName: string;
+    }
+  | {
+      readonly kind: "runtimeCollectionForEach";
+      readonly collectionName: string;
+      readonly isMap: boolean;
+      readonly callback: JsIrValueExpression;
+      readonly thisArg?: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "dateNew";
+      readonly milliseconds?: JsIrNumberExpression;
+    }
+  | {
       readonly kind: "optionalChain";
       readonly guard: JsIrValueExpression;
       readonly access: JsIrValueExpression;
@@ -421,8 +442,15 @@ export type JsIrNumberExpression =
         | "sin"
         | "cos"
         | "tan"
+        | "asin"
+        | "acos"
+        | "atan"
+        | "atan2"
         | "sign";
       readonly arguments: readonly JsIrNumberExpression[];
+    }
+  | {
+      readonly kind: "dateNow";
     }
   | {
       readonly kind: "parseInt" | "parseFloat";
@@ -542,6 +570,12 @@ export type JsIrRuntimeObjectField =
       readonly kind: "field";
       readonly key: JsIrStringExpression;
       readonly value: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "accessor";
+      readonly key: JsIrStringExpression;
+      readonly getter?: JsIrValueExpression;
+      readonly setter?: JsIrValueExpression;
     }
   | {
       readonly kind: "spread";
@@ -690,7 +724,7 @@ export type JsIrCondition =
     }
   | {
       readonly kind: "numberPredicate";
-      readonly predicate: "globalIsNaN" | "numberIsNaN" | "numberIsFinite" | "numberIsInteger" | "numberIsSafeInteger";
+      readonly predicate: "globalIsNaN" | "globalIsFinite" | "numberIsNaN" | "numberIsFinite" | "numberIsInteger" | "numberIsSafeInteger";
       readonly value: JsIrValueExpression;
     }
   | {

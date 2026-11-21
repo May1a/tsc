@@ -241,4 +241,11 @@ export const stringsContracts = {
     name: "stringPropertyGet", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.i64, variadic: false,
     effects: { allocates: true, collects: false, completion: "none" }
   },
+  "stringLocaleCompare": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "stringLocaleCompare", parameters: [llvm.i64, llvm.ptr, llvm.i64, llvm.ptr], returns: llvm.double, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

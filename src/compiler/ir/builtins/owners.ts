@@ -122,6 +122,7 @@ const recognizedGlobalCallees: ReadonlySet<string> = new Set([
   "Boolean",
   "Number",
   "String",
+  "isFinite",
   "isNaN",
   "parseFloat",
   "parseInt",
@@ -249,6 +250,9 @@ export function builtinOwnerOfReceiver(
   if (ts.isCallExpression(receiver) && ts.isIdentifier(receiver.expression)) {
     return staticBuiltinOwners[receiver.expression.text];
   }
+  if (ts.isNewExpression(receiver) && ts.isIdentifier(receiver.expression) && receiver.expression.text === "Date" && !bindings.has("Date")) {
+    return "date";
+  }
   return undefined;
 }
 
@@ -331,6 +335,9 @@ function builtinOwnerOfValueExpression(value: JsIrValueExpression | undefined): 
     }
     case "number": {
       return numberBindingOwner(value.value);
+    }
+    case "dateNew": {
+      return "date";
     }
     default: {
       return undefined;

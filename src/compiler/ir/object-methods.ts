@@ -19,12 +19,18 @@ import { collectMethodEnclosingCaptureNames, lowerInlineFunctionCaptures } from 
  * parameter list and a body, which is everything read here — an object-literal method and an exported
  * namespace function differ only in the syntax they are written in.
  */
+type ObjectMethodLike =
+  | ts.MethodDeclaration
+  | ts.FunctionDeclaration
+  | ts.GetAccessorDeclaration
+  | ts.SetAccessorDeclaration;
+
 export function lowerObjectMethodFunctionValue(
   context: LoweringContext,
-  method: ts.MethodDeclaration | ts.FunctionDeclaration,
+  method: ObjectMethodLike,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  if (method.asteriskToken !== undefined) {
+  if ((ts.isMethodDeclaration(method) || ts.isFunctionDeclaration(method)) && method.asteriskToken !== undefined) {
     if (ts.isMethodDeclaration(method) && ts.isObjectLiteralExpression(method.parent)) {
       return unsupportedIn(unsupportedFormMessage("object-literal-generator-method"));
     }
@@ -77,7 +83,7 @@ function lowerObjectMethodBody(
 }
 
 function bindObjectMethodParameters(
-  method: ts.MethodDeclaration | ts.FunctionDeclaration,
+  method: ObjectMethodLike,
   parameters: JsIrFunctionParameter[],
   methodBindings: Map<string, JsIrBindingValue>
 ): boolean {
@@ -98,7 +104,7 @@ function bindObjectMethodParameters(
  */
 function lowerObjectMethodCaptures(
   context: LoweringContext,
-  method: ts.MethodDeclaration | ts.FunctionDeclaration,
+  method: ObjectMethodLike,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly JsIrFunctionObjectCapture[] | undefined {
   if (method.body === undefined) {

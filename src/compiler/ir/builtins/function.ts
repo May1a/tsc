@@ -25,12 +25,12 @@ export type FunctionBuiltin =
 
 /** The members, keyed by name so a name cannot be stated twice. */
 export const functionBuiltinSupport: BuiltinSupport<"function", FunctionBuiltin> = {
-  "apply": { arity: { from: 0, to: 8 }, state: "planned", id: "function.apply" },
-  "bind": { arity: 0, state: "planned", id: "function.bind" },
-  "call": { arity: { from: 0, to: 8 }, state: "planned", id: "function.call" },
-  "length": { arity: 0, state: "planned", id: "function.length" },
-  "name": { arity: 0, state: "planned", id: "function.name" },
-  "toString": { arity: 0, state: "planned", id: "function.toString" },
+  "apply": { arity: { from: 0, to: 8 }, state: "supported", id: "function.apply" },
+  "bind": { arity: { from: 0, to: 8 }, state: "supported", id: "function.bind" },
+  "call": { arity: { from: 0, to: 8 }, state: "supported", id: "function.call" },
+  "length": { arity: 0, state: "supported", id: "function.length" },
+  "name": { arity: 0, state: "supported", id: "function.name" },
+  "toString": { arity: 0, state: "supported", id: "function.toString" },
 };
 
 /** The `Function` member with this name, or `undefined` if the name is not one of them. */

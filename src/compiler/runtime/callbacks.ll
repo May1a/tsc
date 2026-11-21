@@ -1,4 +1,4 @@
-; Method ids: map=0, filter=1, flatMap=2, forEach=3, find=4, findIndex=5.
+; Method ids: map=0, filter=1, flatMap=2, forEach=3, find=4, findIndex=5, every=6, some=7.
 define { i64, i1 } @arraySortCallback(i64 %source, i64 %callback) {
 entry:
   %frame = call i64 @gcRootSave()
@@ -122,6 +122,8 @@ dispatch:
     i8 2, label %flatmap
     i8 4, label %find
     i8 5, label %find
+    i8 6, label %every
+    i8 7, label %some
   ]
 map:
   call void @arraySet(ptr %result.array, i64 %index, i64 %mapped)
@@ -145,6 +147,16 @@ append.scalar:
 find:
   %matches = call i1 @valueTruthy(i64 %mapped)
   br i1 %matches, label %found, label %advance
+every:
+  %every.ok = call i1 @valueTruthy(i64 %mapped)
+  br i1 %every.ok, label %advance, label %every.false
+every.false:
+  br label %success
+some:
+  %some.ok = call i1 @valueTruthy(i64 %mapped)
+  br i1 %some.ok, label %some.true, label %advance
+some.true:
+  br label %success
 found:
   %is.index = icmp eq i8 %method, 5
   %found.value = select i1 %is.index, i64 %index.value, i64 %element
@@ -154,11 +166,15 @@ advance:
   br label %loop
 finish:
   %is.find.index = icmp eq i8 %method, 5
+  %is.every = icmp eq i8 %method, 6
+  %is.some = icmp eq i8 %method, 7
   %missing.index = call i64 @valueBoxNumber(double -1.0)
-  %finished.value = select i1 %is.find.index, i64 %missing.index, i64 %array.value
+  %fin.0 = select i1 %is.find.index, i64 %missing.index, i64 %array.value
+  %fin.1 = select i1 %is.every, i64 9222246136947933186, i64 %fin.0
+  %finished.value = select i1 %is.some, i64 9222246136947933185, i64 %fin.1
   br label %success
 success:
-  %value = phi i64 [ %found.value, %found ], [ %finished.value, %finish ]
+  %value = phi i64 [ %found.value, %found ], [ 9222246136947933185, %every.false ], [ 9222246136947933186, %some.true ], [ %finished.value, %finish ]
   %ok.payload = insertvalue { i64, i1 } undef, i64 %value, 0
   %ok = insertvalue { i64, i1 } %ok.payload, i1 false, 1
   call void @gcRootRestore(i64 %frame)
@@ -193,6 +209,88 @@ entry:
 define { i64, i1 } @arrayFindIndexCallback(i64 %source, i64 %callback, i64 %this.arg) {
 entry:
   %result = call { i64, i1 } @arrayVisitCallback(i64 %source, i64 %callback, i64 %this.arg, i8 5)
+  ret { i64, i1 } %result
+}
+define { i64, i1 } @arrayEveryCallback(i64 %source, i64 %callback, i64 %this.arg) {
+entry:
+  %result = call { i64, i1 } @arrayVisitCallback(i64 %source, i64 %callback, i64 %this.arg, i8 6)
+  ret { i64, i1 } %result
+}
+define { i64, i1 } @arraySomeCallback(i64 %source, i64 %callback, i64 %this.arg) {
+entry:
+  %result = call { i64, i1 } @arrayVisitCallback(i64 %source, i64 %callback, i64 %this.arg, i8 7)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @arrayFindLastVisitCallback(i64 %source, i64 %callback, i64 %this.arg, i1 %return.index) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %source)
+  call void @gcRootPush(i64 %callback)
+  call void @gcRootPush(i64 %this.arg)
+  %callable = call i1 @valueIsFunction(i64 %callback)
+  br i1 %callable, label %prepare, label %invalid.callback
+invalid.callback:
+  %message = call i64 @iteratorNotCallableMessage(i64 %callback)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %error
+prepare:
+  %array = call ptr @valueArrayPtr(i64 %source)
+  %length = call i64 @arrayLength(ptr %array)
+  %argv = alloca [3 x i64]
+  %arg0 = getelementptr [3 x i64], ptr %argv, i64 0, i64 0
+  %arg1 = getelementptr [3 x i64], ptr %argv, i64 0, i64 1
+  %arg2 = getelementptr [3 x i64], ptr %argv, i64 0, i64 2
+  store i64 %source, ptr %arg2
+  %loop.frame = call i64 @gcRootSave()
+  br label %loop
+loop:
+  %remaining = phi i64 [ %length, %prepare ], [ %index, %invoke.check ]
+  call void @gcRootRestore(i64 %loop.frame)
+  %done = icmp eq i64 %remaining, 0
+  br i1 %done, label %finish, label %invoke
+invoke:
+  %index = sub i64 %remaining, 1
+  %element = call i64 @arrayGet(ptr %array, i64 %index)
+  call void @gcRootPush(i64 %element)
+  %index.number = uitofp i64 %index to double
+  %index.value = call i64 @valueBoxNumber(double %index.number)
+  store i64 %element, ptr %arg0
+  store i64 %index.value, ptr %arg1
+  %call = call { i64, i1 } @jsCall(i64 %callback, i64 3, ptr %argv, i64 %this.arg)
+  %mapped = extractvalue { i64, i1 } %call, 0
+  %threw = extractvalue { i64, i1 } %call, 1
+  br i1 %threw, label %fail, label %invoke.check
+invoke.check:
+  %matches = call i1 @valueTruthy(i64 %mapped)
+  br i1 %matches, label %found, label %loop
+found:
+  %found.value = select i1 %return.index, i64 %index.value, i64 %element
+  br label %success
+finish:
+  %missing.index = call i64 @valueBoxNumber(double -1.0)
+  %finished.value = select i1 %return.index, i64 %missing.index, i64 9222246136947933184
+  br label %success
+fail:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %call
+success:
+  %value = phi i64 [ %found.value, %found ], [ %finished.value, %finish ]
+  %ok.payload = insertvalue { i64, i1 } undef, i64 %value, 0
+  %ok = insertvalue { i64, i1 } %ok.payload, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ok
+}
+
+define { i64, i1 } @arrayFindLastCallback(i64 %source, i64 %callback, i64 %this.arg) {
+entry:
+  %result = call { i64, i1 } @arrayFindLastVisitCallback(i64 %source, i64 %callback, i64 %this.arg, i1 false)
+  ret { i64, i1 } %result
+}
+define { i64, i1 } @arrayFindLastIndexCallback(i64 %source, i64 %callback, i64 %this.arg) {
+entry:
+  %result = call { i64, i1 } @arrayFindLastVisitCallback(i64 %source, i64 %callback, i64 %this.arg, i1 true)
   ret { i64, i1 } %result
 }
 

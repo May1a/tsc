@@ -146,12 +146,16 @@ export const controlHandlers = {
         : node.enclosingCaptureNames.map((capture) => state.reference(capture));
     const frame = state.inFunction((functionId) => {
       for (const capture of enclosingCaptureNames ?? []) state.capture(capture);
-      return { functionId, parameters: resolveFunctionParameters(node.parameters, resolver), body: resolver.operations(node.body) };
+      const parameters = resolveFunctionParameters(node.parameters, resolver);
+      const hasExplicitThis = node.parameters.some((parameter) => parameter.name === "this");
+      const thisBinding = hasExplicitThis ? undefined : state.declare("this", "parameter", { kind: "value" });
+      return { functionId, thisBinding, parameters, body: resolver.operations(node.body) };
     });
     return {
       ...node,
       name,
       functionId: frame.functionId,
+      thisBinding: frame.thisBinding,
       parameters: frame.parameters,
       body: frame.body,
       enclosingCaptureNames

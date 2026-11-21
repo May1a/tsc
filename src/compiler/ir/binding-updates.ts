@@ -282,6 +282,13 @@ export function collectOperationValueExpressions(operation: JsIrOperation, names
     for (const field of operation.value.fields) {
       if (field.kind === "spread") {
         names.add(field.sourceName);
+      } else if (field.kind === "accessor") {
+        if (field.getter !== undefined) {
+          collectValueExpressionObjectNames(field.getter, names);
+        }
+        if (field.setter !== undefined) {
+          collectValueExpressionObjectNames(field.setter, names);
+        }
       } else {
         collectValueExpressionObjectNames(field.value, names);
       }

@@ -138,15 +138,11 @@ function attachFunctionProperties(operation: OperationNode<"attachFunctionProper
 }
 
 function store(operation: OperationNode<"runtimeObjectStore" | "valueObjectStore">, context: OperationContext): void {
-  const target = operation.kind === "runtimeObjectStore" ? objectPointer(operation.objectName, context)
-    : keep(context.bindings.value(operation.targetName), context);
+  const reference = operation.kind === "runtimeObjectStore" ? operation.objectName : operation.targetName;
+  const target = keep(context.bindings.value(reference), context);
   const key = context.expressions.string(operation.key);
   boxString(key, context);
   const value = keep(context.expressions.value(operation.value), context);
-  if (operation.kind === "runtimeObjectStore") {
-    context.runtime.callVoid("objectSet", [target, key.length, key.bytes, value]);
-    return;
-  }
   context.runtime.callWithCompletion("valueObjectSet", [target, key.length, key.bytes, value],
     context.cursor.uniqueName("object.store"), context.exceptionTarget());
 }

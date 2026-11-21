@@ -10,6 +10,13 @@ export const numbersContracts = {
     name: "globalIsNaN", parameters: [llvm.i64], returns: llvm.i1, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "globalIsFinite": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "globalIsFinite", parameters: [llvm.i64], returns: llvm.i1, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
   "numberIsNaN": {
     resultKind: "scalar",
     pointerResult: { kind: "none" },
@@ -204,7 +211,7 @@ export const numbersContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "mathRandom", parameters: [], returns: llvm.double, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: true, completion: "none" }
   },
   "mathFround": {
     resultKind: "scalar",
@@ -247,6 +254,90 @@ export const numbersContracts = {
     origin: "staticRuntime",
     name: "mathTan", parameters: [llvm.double], returns: llvm.double, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "mathAsin": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "mathAsin", parameters: [llvm.double], returns: llvm.double, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "mathAcos": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "mathAcos", parameters: [llvm.double], returns: llvm.double, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "mathAtan": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "mathAtan", parameters: [llvm.double], returns: llvm.double, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "mathAtan2": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "mathAtan2", parameters: [llvm.double, llvm.double], returns: llvm.double, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "dateNow": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "dateNow", parameters: [], returns: llvm.double, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "dateReadTimestamp": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "dateReadTimestamp", parameters: [llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "dateFormatIso": {
+    resultKind: "string",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "dateFormatIso", parameters: [llvm.double], returns: llvm.struct([llvm.ptr, llvm.i64]), variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "dateGetTimeMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "dateGetTimeMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "dateToIsoStringMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "dateToIsoStringMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "dateToStringMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "dateToStringMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "datePrototype": {
+    resultKind: "pointer",
+    pointerResult: { kind: "heap" },
+    origin: "staticRuntime",
+    name: "datePrototype", parameters: [], returns: llvm.ptr, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "dateNew": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "dateNew", parameters: [llvm.double], returns: llvm.i64, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
   },
   "numberToInt32": {
     resultKind: "scalar",

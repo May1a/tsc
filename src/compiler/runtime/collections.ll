@@ -282,3 +282,72 @@ delete:
 missing:
   ret i1 false
 }
+
+define void @collectionClear(ptr %collection) {
+entry:
+  store i64 0, ptr %collection
+  %used.slot = getelementptr i8, ptr %collection, i64 8
+  store i64 0, ptr %used.slot
+  ret void
+}
+
+define { i64, i1 } @collectionForEach(ptr %collection, i1 %is.map, i64 %callback, i64 %this.arg) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %boxed.collection = call i64 @valueBoxObject(ptr %collection)
+  call void @gcRootPush(i64 %boxed.collection)
+  call void @gcRootPush(i64 %callback)
+  call void @gcRootPush(i64 %this.arg)
+  %callable = call i1 @valueIsFunction(i64 %callback)
+  br i1 %callable, label %prepare, label %invalid
+invalid:
+  %message = call i64 @iteratorNotCallableMessage(i64 %callback)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %error
+prepare:
+  %argv = alloca [3 x i64]
+  %arg0 = getelementptr [3 x i64], ptr %argv, i64 0, i64 0
+  %arg1 = getelementptr [3 x i64], ptr %argv, i64 0, i64 1
+  %arg2 = getelementptr [3 x i64], ptr %argv, i64 0, i64 2
+  store i64 %boxed.collection, ptr %arg2
+  %used.slot = getelementptr i8, ptr %collection, i64 8
+  %entries.slot = getelementptr i8, ptr %collection, i64 24
+  %loop.frame = call i64 @gcRootSave()
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %prepare ], [ %next, %advance ]
+  call void @gcRootRestore(i64 %loop.frame)
+  %used = load i64, ptr %used.slot
+  %done = icmp uge i64 %i, %used
+  br i1 %done, label %finish, label %check
+check:
+  %entries = load ptr, ptr %entries.slot
+  %entry.bytes = mul i64 %i, 24
+  %entry.ptr = getelementptr i8, ptr %entries, i64 %entry.bytes
+  %active = load i64, ptr %entry.ptr
+  %is.active = icmp ne i64 %active, 0
+  br i1 %is.active, label %invoke, label %advance
+invoke:
+  %key.slot = getelementptr i8, ptr %entry.ptr, i64 8
+  %key = load i64, ptr %key.slot
+  %val.slot = getelementptr i8, ptr %entry.ptr, i64 16
+  %val = load i64, ptr %val.slot
+  call void @gcRootPush(i64 %key)
+  call void @gcRootPush(i64 %val)
+  %first.arg = select i1 %is.map, i64 %val, i64 %key
+  store i64 %first.arg, ptr %arg0
+  store i64 %key, ptr %arg1
+  %call = call { i64, i1 } @jsCall(i64 %callback, i64 3, ptr %argv, i64 %this.arg)
+  %threw = extractvalue { i64, i1 } %call, 1
+  br i1 %threw, label %fail, label %advance
+advance:
+  %next = add i64 %i, 1
+  br label %loop
+fail:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %call
+finish:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } { i64 9222246136947933184, i1 false }
+}

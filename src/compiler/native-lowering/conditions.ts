@@ -13,7 +13,7 @@ type BooleanValue = LlvmValue<typeof llvm.i1>;
 const numberPredicates = { "===": "oeq", "!==": "une", "<": "olt", "<=": "ole", ">": "ogt", ">=": "oge" } as const;
 const relationalCodes = { "<": 0n, "<=": 1n, ">": 2n, ">=": 3n, "==": 4n, "!=": 5n } as const;
 const predicateHelpers = {
-  globalIsNaN: "globalIsNaN", numberIsNaN: "numberIsNaN", numberIsFinite: "numberIsFinite",
+  globalIsNaN: "globalIsNaN", globalIsFinite: "globalIsFinite", numberIsNaN: "numberIsNaN", numberIsFinite: "numberIsFinite",
   numberIsInteger: "numberIsInteger", numberIsSafeInteger: "numberIsSafeInteger"
 } as const;
 const searchHelpers = { includes: "stringIncludes", startsWith: "stringStartsWith", endsWith: "stringEndsWith" } as const;

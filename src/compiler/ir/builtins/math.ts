@@ -68,20 +68,12 @@ export const mathBuiltinSupport: BuiltinSupport<"math", MathBuiltin> = {
   cos: { arity: 1, state: "supported", placement: "static", id: "math.cos" },
   tan: { arity: 1, state: "supported", placement: "static", id: "math.tan" },
 
-  // Recognized but not written.
-  asin: { arity: 1, state: "planned", placement: "static", id: "math.asin" },
-  acos: { arity: 1, state: "planned", placement: "static", id: "math.acos" },
-  atan: { arity: 1, state: "planned", placement: "static", id: "math.atan" },
-  atan2: { arity: 2, state: "planned", id: "math.atan2", placement: "static" },
-  // Not random: each call site gets a fixed value chosen at compile time, and two runs of the same
-  // program produce the same sequence. That is the batch-3 case, so the entry is `"stubbed"`.
-  random: {
-    arity: 0,
-    state: "stubbed",
-    id: "math.random",
-    placement: "static",
-    reason: "each call site is given a fixed value at compile time, so the sequence is identical on every run"
-  }
+  // Inverse trigonometric functions and runtime PRNG.
+  asin: { arity: 1, state: "supported", placement: "static", id: "math.asin" },
+  acos: { arity: 1, state: "supported", placement: "static", id: "math.acos" },
+  atan: { arity: 1, state: "supported", placement: "static", id: "math.atan" },
+  atan2: { arity: 2, state: "supported", id: "math.atan2", placement: "static" },
+  random: { arity: 0, state: "supported", id: "math.random", placement: "static" }
 };
 
 /** The `Math` member with this name, or `undefined` if the name is not one of them. */

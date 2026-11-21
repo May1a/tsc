@@ -37,5 +37,13 @@ export function createPrototypesCallees(module: LlvmModuleBuilder): RuntimeCalle
     "arrayReduceMethod": registerRuntimeContract(module, prototypesContracts.arrayReduceMethod),
     "arrayReduceRightMethod": registerRuntimeContract(module, prototypesContracts.arrayReduceRightMethod),
     "arraySortMethod": registerRuntimeContract(module, prototypesContracts.arraySortMethod),
+    "arrayEveryMethod": registerRuntimeContract(module, prototypesContracts.arrayEveryMethod),
+    "arraySomeMethod": registerRuntimeContract(module, prototypesContracts.arraySomeMethod),
+    "arrayFindLastMethod": registerRuntimeContract(module, prototypesContracts.arrayFindLastMethod),
+    "arrayFindLastIndexMethod": registerRuntimeContract(module, prototypesContracts.arrayFindLastIndexMethod),
+    "arrayToReversedMethod": registerRuntimeContract(module, prototypesContracts.arrayToReversedMethod),
+    "arrayToSortedMethod": registerRuntimeContract(module, prototypesContracts.arrayToSortedMethod),
+    "arrayToSplicedMethod": registerRuntimeContract(module, prototypesContracts.arrayToSplicedMethod),
+    "arrayWithMethod": registerRuntimeContract(module, prototypesContracts.arrayWithMethod),
   };
 }

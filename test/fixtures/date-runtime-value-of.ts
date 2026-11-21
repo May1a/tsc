@@ -1,3 +1,4 @@
 declare function print(value: unknown): void;
 
-print(isFinite(7));
+const d = new Date(5678);
+print(d.valueOf());

@@ -6,6 +6,7 @@ import { type RuntimeCalleeTable, registerRuntimeContract } from "../register.js
 export function createNumbersCallees(module: LlvmModuleBuilder): RuntimeCalleeTable<typeof numbersContracts> {
   return {
     "globalIsNaN": registerRuntimeContract(module, numbersContracts.globalIsNaN),
+    "globalIsFinite": registerRuntimeContract(module, numbersContracts.globalIsFinite),
     "numberIsNaN": registerRuntimeContract(module, numbersContracts.numberIsNaN),
     "numberIsFinite": registerRuntimeContract(module, numbersContracts.numberIsFinite),
     "numberIsInteger": registerRuntimeContract(module, numbersContracts.numberIsInteger),
@@ -40,6 +41,18 @@ export function createNumbersCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "mathSin": registerRuntimeContract(module, numbersContracts.mathSin),
     "mathCos": registerRuntimeContract(module, numbersContracts.mathCos),
     "mathTan": registerRuntimeContract(module, numbersContracts.mathTan),
+    "mathAsin": registerRuntimeContract(module, numbersContracts.mathAsin),
+    "mathAcos": registerRuntimeContract(module, numbersContracts.mathAcos),
+    "mathAtan": registerRuntimeContract(module, numbersContracts.mathAtan),
+    "mathAtan2": registerRuntimeContract(module, numbersContracts.mathAtan2),
+    "dateNow": registerRuntimeContract(module, numbersContracts.dateNow),
+    "dateReadTimestamp": registerRuntimeContract(module, numbersContracts.dateReadTimestamp),
+    "dateFormatIso": registerRuntimeContract(module, numbersContracts.dateFormatIso),
+    "dateGetTimeMethod": registerRuntimeContract(module, numbersContracts.dateGetTimeMethod),
+    "dateToIsoStringMethod": registerRuntimeContract(module, numbersContracts.dateToIsoStringMethod),
+    "dateToStringMethod": registerRuntimeContract(module, numbersContracts.dateToStringMethod),
+    "datePrototype": registerRuntimeContract(module, numbersContracts.datePrototype),
+    "dateNew": registerRuntimeContract(module, numbersContracts.dateNew),
     "numberToInt32": registerRuntimeContract(module, numbersContracts.numberToInt32),
     "numberToIndex": registerRuntimeContract(module, numbersContracts.numberToIndex),
   };

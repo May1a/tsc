@@ -99,7 +99,7 @@ export const objectsContracts = {
     pointerResult: { kind: "heap" },
     origin: "staticRuntime",
     name: "valueObjectOwnPropertyDescriptors", parameters: [llvm.i64], returns: llvm.ptr, variadic: false,
-    effects: { allocates: true, collects: false, completion: "none" }
+    effects: { allocates: true, collects: true, completion: "none" }
   },
   "objectNew": {
     resultKind: "pointer",
@@ -274,21 +274,21 @@ export const objectsContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "objectAssign", parameters: [llvm.ptr, llvm.ptr], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: true, completion: "none" }
   },
   "objectAssignArray": {
     resultKind: "void",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "objectAssignArray", parameters: [llvm.ptr, llvm.ptr], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: true, completion: "none" }
   },
   "valueObjectAssign": {
     resultKind: "void",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "valueObjectAssign", parameters: [llvm.ptr, llvm.i64], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: true, completion: "none" }
   },
   "objectValues": {
     resultKind: "pointer",
@@ -353,11 +353,25 @@ export const objectsContracts = {
     name: "objectKeys", parameters: [llvm.ptr], returns: llvm.ptr, variadic: false,
     effects: { allocates: true, collects: false, completion: "none" }
   },
+  "objectDefineAccessorWithFlags": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectDefineAccessorWithFlags", parameters: [llvm.ptr, llvm.i64, llvm.ptr, llvm.i64, llvm.i64, llvm.i64], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
   "objectDefineAccessor": {
     resultKind: "void",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "objectDefineAccessor", parameters: [llvm.ptr, llvm.i64, llvm.ptr, llvm.i64, llvm.i64], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "objectDefineEnumerableAccessor": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectDefineEnumerableAccessor", parameters: [llvm.ptr, llvm.i64, llvm.ptr, llvm.i64, llvm.i64], returns: llvm.void, variadic: false,
     effects: { allocates: true, collects: false, completion: "none" }
   },
   "objectFindProperty": {

@@ -164,4 +164,39 @@ export const declaresContracts = {
     name: "strlen", parameters: [llvm.ptr], returns: llvm.i64, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "asin": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "asin", parameters: [llvm.double], returns: llvm.double, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "acos": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "acos", parameters: [llvm.double], returns: llvm.double, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "atan": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "atan", parameters: [llvm.double], returns: llvm.double, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "atan2": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "atan2", parameters: [llvm.double, llvm.double], returns: llvm.double, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "gettimeofday": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "gettimeofday", parameters: [llvm.ptr, llvm.ptr], returns: llvm.i32, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

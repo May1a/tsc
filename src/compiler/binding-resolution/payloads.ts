@@ -256,6 +256,14 @@ function resolveRuntimeObjectField(field: JsIrRuntimeObjectField, resolver: Reso
   if (field.kind === "spread") {
     return { kind: "spread", sourceName: resolver.reference(field.sourceName) };
   }
+  if (field.kind === "accessor") {
+    return {
+      kind: "accessor",
+      key: resolver.string(field.key),
+      getter: optional(field.getter, resolver.value),
+      setter: optional(field.setter, resolver.value)
+    };
+  }
   return { kind: "field", key: resolver.string(field.key), value: resolver.value(field.value) };
 }
 

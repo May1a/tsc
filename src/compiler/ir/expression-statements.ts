@@ -15,6 +15,7 @@ import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
 import { constWriteRefusal } from "./throwing-forms.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
+import { lowerCollectionForEachPayload } from "./collection-values.js";
 
 // eslint-disable-next-line max-statements -- Statement expression routing is centralized for the current lowering slice.
 export function lowerExpressionStatement(
@@ -250,32 +251,28 @@ function lowerRuntimeCollectionCallStatement(
   if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression)) {
     return notApplicable;
   }
-  const receiver = expression.expression.expression.text;
-  const binding = bindings.get(receiver);
-  const method = expression.expression.name.text;
-  if (binding?.kind === "runtimeMap" && method === "set" && expression.arguments.length === 2) {
-    const keyResult = context.lowerValueExpression(context, expression.arguments[0], bindings);
-    if (keyResult.kind === "unsupported") {
-      return keyResult;
-    }
-    const key = loweredPayload(keyResult);
-    const valueResult = context.lowerValueExpression(context, expression.arguments[1], bindings);
-    if (valueResult.kind === "unsupported") {
-      return valueResult;
-    }
-    const value = loweredPayload(valueResult);
-    if (key !== undefined && value !== undefined) {
-      return produced({ kind: "runtimeMapSet", mapName: binding.name, key, value });
-    }
+  const binding = bindings.get(expression.expression.expression.text);
+  if (binding?.kind !== "runtimeMap" && binding?.kind !== "runtimeSet") {
+    return notApplicable;
   }
-  if (binding?.kind === "runtimeSet" && method === "add" && expression.arguments.length === 1) {
+  const method = expression.expression.name.text;
+  if (binding.kind === "runtimeMap" && method === "set" && expression.arguments.length === 2) {
+    const key = context.lowerValueExpression(context, expression.arguments[0], bindings);
+    if (key.kind !== "lowered") {
+      return key;
+    }
+    const value = context.lowerValueExpression(context, expression.arguments[1], bindings);
+    return value.kind === "lowered" ? produced({ kind: "runtimeMapSet", mapName: binding.name, key: key.operation, value: value.operation }) : value;
+  }
+  if (binding.kind === "runtimeSet" && method === "add" && expression.arguments.length === 1) {
     const value = context.lowerValueExpression(context, expression.arguments[0], bindings);
-    if (value.kind === "unsupported") {
-      return value;
-    }
-    if (value.kind === "lowered") {
-      return produced({ kind: "runtimeSetAdd", setName: binding.name, value: value.operation });
-    }
+    return value.kind === "lowered" ? produced({ kind: "runtimeSetAdd", setName: binding.name, value: value.operation }) : value;
+  }
+  if (method === "clear" && expression.arguments.length === 0) {
+    return produced({ kind: "runtimeCollectionClear", collectionName: binding.name });
+  }
+  if (method === "forEach") {
+    return lowerCollectionForEachPayload(context, binding, expression.arguments, bindings);
   }
   return notApplicable;
 }

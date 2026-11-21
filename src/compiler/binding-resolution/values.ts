@@ -150,6 +150,27 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     mapName: resolver.reference(node.mapName),
     key: resolver.value(node.key)
   }),
+  runtimeCollectionIterator: (node, resolver) => ({
+    kind: "runtimeCollectionIterator",
+    collectionName: resolver.reference(node.collectionName),
+    sourceKind: node.sourceKind,
+    iterationKind: node.iterationKind
+  }),
+  runtimeCollectionClear: (node, resolver) => ({
+    kind: "runtimeCollectionClear",
+    collectionName: resolver.reference(node.collectionName)
+  }),
+  runtimeCollectionForEach: (node, resolver) => ({
+    kind: "runtimeCollectionForEach",
+    collectionName: resolver.reference(node.collectionName),
+    isMap: node.isMap,
+    callback: resolver.value(node.callback),
+    thisArg: optional(node.thisArg, resolver.value)
+  }),
+  dateNew: (node, resolver) => ({
+    kind: "dateNew",
+    milliseconds: optional(node.milliseconds, resolver.number)
+  }),
 
   optionalChain: (node, resolver) => ({
     kind: "optionalChain",

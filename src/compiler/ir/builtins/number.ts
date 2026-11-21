@@ -38,15 +38,7 @@ export const numberBuiltinSupport: BuiltinSupport<"number", NumberBuiltin> = {
   toFixed: { arity: 1, state: "supported", id: "number.toFixed" },
   toPrecision: { arity: 1, state: "supported", id: "number.toPrecision" },
   toExponential: { arity: 1, state: "supported", id: "number.toExponential" },
-  // `(3.75).toString(16)` is `3`, where JavaScript gives `3.c`: the lowered slice drops the
-  // fraction. `(255).toString(16)` is `ff`, so an integer is right. That is the batch-3 case, not a
-  // missing method, so the entry is `"stubbed"` rather than either of the other two states.
-  toString: {
-    arity: { from: 0, to: 1 },
-    state: "stubbed",
-    id: "number.toString",
-    reason: "the base argument is a numeric literal only, and the fraction is dropped: (3.75).toString(16) is 3 where JavaScript gives 3.c"
-  },
+  toString: { arity: { from: 0, to: 1 }, state: "supported", id: "number.toString" },
 
   // `Number` statics.
   isInteger: { arity: 1, state: "supported", id: "number.isInteger", placement: "static" },
@@ -92,18 +84,7 @@ export const numberGlobalBuiltinSupport: BuiltinSupport<"number", NumberGlobalBu
   parseInt: { arity: { from: 1, to: 2 }, state: "supported", id: "number.globalParseInt", placement: "global", fixture: "global-parse-int" },
   parseFloat: { arity: 1, state: "supported", id: "number.globalParseFloat", placement: "global", fixture: "global-parse-float" },
 
-  // The lowering recognizes the global `isFinite` and emits a direct call to `@isFinite`, which the
-  // runtime does not define. The compile therefore dies in clang with `use of undefined value
-  // '@isFinite'` instead of producing a diagnostic, which is the worst version of "compiled and
-  // miscompiled". `Number.isFinite` is the form that works.
-  isFinite: {
-    arity: 1,
-    state: "planned",
-    id: "number.globalIsFinite",
-    placement: "global",
-    fixture: "global-is-finite",
-    reason: "lowered to a call to a runtime function that does not exist, so the compile fails in clang rather than here; Number.isFinite is the form that works"
-  }
+  isFinite: { arity: 1, state: "supported", id: "number.globalIsFinite", placement: "global", fixture: "global-is-finite" }
 };
 
 /**

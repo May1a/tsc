@@ -195,10 +195,8 @@ const declaredForms = [
   {
     form: "get or set accessor in an object literal",
     id: "object-literal-accessor",
-    state: "planned",
-    syntax: "{ get v(): number {} }",
-    reason:
-      "an accessor is a property descriptor, and the runtime has only `objectDefineDataProperty`, so an accessor would have to be simulated at each access site — which reads correctly through `o.v` and silently wrong through every dynamic read: object rest, spread, `Object.keys` and `JSON.stringify` all see a property that is not there. `obj-ptrn-rest-getter.js` in Test262 is exactly that case, and simulating it moves that test from rejected to compiled-and-wrong. Defining a real accessor property is runtime breadth, which this plan defers."
+    state: "admitted",
+    syntax: "{ get v(): number {} }"
   },
   {
     form: "new.target",
@@ -217,9 +215,8 @@ const declaredForms = [
   {
     form: "Date constructor",
     id: "date-constructor",
-    state: "planned",
-    syntax: "new Date(0)",
-    reason: "no date value can exist, so `Date.prototype`'s members are unreachable and their table entries would never fire"
+    state: "admitted",
+    syntax: "new Date(0)"
   },
 
   {

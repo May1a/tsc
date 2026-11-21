@@ -35,7 +35,7 @@ export function lowerRuntimeDataDescriptorMapValue(
 ): readonly JsIrRuntimeDataDescriptor[] | undefined {
   const descriptors: JsIrRuntimeDataDescriptor[] = [];
   for (const field of value.fields) {
-    if (field.kind === "spread" || field.key.kind !== "literal") {
+    if (field.kind !== "field" || field.key.kind !== "literal") {
       return undefined;
     }
     const descriptor = lowerRuntimeDataDescriptorValue(field.key, field.value, bindings);
@@ -61,7 +61,7 @@ export function lowerRuntimeDataDescriptorValue(
   let enumerable = false;
   let configurable = false;
   for (const field of value.fields) {
-    if (field.kind === "spread" || field.key.kind !== "literal") {
+    if (field.kind !== "field" || field.key.kind !== "literal") {
       return undefined;
     }
     if (field.key.value === "value") {

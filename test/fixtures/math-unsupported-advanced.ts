@@ -1,3 +1,3 @@
 declare function print(value: unknown): void;
 
-print(Math.asin(1));
+print(Math.acosh(2));

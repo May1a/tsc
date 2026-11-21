@@ -307,6 +307,21 @@ function lowerValueTypedArrayLiteralExpression(
   return produced({ kind: "runtimeArrayValue", elements: valueElements });
 }
 
+function isDynamicPropertyReceiver(
+  context: LoweringContext,
+  receiverName: string,
+  binding: JsIrBindingValue | undefined,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): boolean {
+  if (isBoxedAggregateCandidateBinding(binding)) {
+    return true;
+  }
+  if (binding?.kind === "function" || binding?.kind === "functionReference" || binding?.kind === "closure") {
+    return true;
+  }
+  return !bindings.has(receiverName) && context.classes.has(receiverName);
+}
+
 function lowerAggregatePropertyValueAccess(
   context: LoweringContext,
   expression: ts.PropertyAccessExpression,
@@ -314,12 +329,9 @@ function lowerAggregatePropertyValueAccess(
 ): Lowered<JsIrValueExpression> {
   if (expression.expression.kind === ts.SyntaxKind.ThisKeyword) {
     const value = context.lowerValueExpression(context, expression.expression, bindings);
-    if (value.kind === "unsupported") {
-      return value;
-    }
-    if (value.kind === "lowered") {
-      return produced({ kind: "valueObjectDynamicAccess", value: value.operation, key: { kind: "literal", value: expression.name.text } });
-    }
+    return value.kind === "lowered"
+      ? produced({ kind: "valueObjectDynamicAccess", value: value.operation, key: { kind: "literal", value: expression.name.text } })
+      : value;
   }
   const receiver = unwrapTypeOnlyExpression(expression.expression);
   if (!ts.isIdentifier(receiver)) {
@@ -329,27 +341,20 @@ function lowerAggregatePropertyValueAccess(
   if (isFunctionPrototypeAccess(expression, bindings)) {
     return notApplicable;
   }
-  if (binding?.kind === "runtimeObject" && binding.errorName !== undefined && expression.name.text === "stack") {
-    return notApplicable;
-  }
   if (binding?.kind === "runtimeObject") {
+    if (binding.errorName !== undefined && expression.name.text === "stack") {
+      return notApplicable;
+    }
     return produced({ kind: "objectDynamicAccess", objectName: binding.name, key: { kind: "literal", value: expression.name.text } });
   }
   if (binding?.kind === "runtimeArray" && plannedBuiltinMessageFor(receiver, expression.name.text, bindings) === undefined) {
-    return produced({
-      kind: "valueObjectDynamicAccess",
-      value: { kind: "arrayRef", name: binding.name },
-      key: { kind: "literal", value: expression.name.text }
-    });
+    return produced({ kind: "valueObjectDynamicAccess", value: { kind: "arrayRef", name: binding.name }, key: { kind: "literal", value: expression.name.text } });
   }
-  if (isBoxedAggregateCandidateBinding(binding) || (!bindings.has(receiver.text) && context.classes.has(receiver.text))) {
+  if (isDynamicPropertyReceiver(context, receiver.text, binding, bindings)) {
     const value = context.lowerValueExpression(context, receiver, bindings);
-    if (value.kind === "unsupported") {
-      return value;
-    }
-    if (value.kind === "lowered") {
-      return produced({ kind: "valueObjectDynamicAccess", value: value.operation, key: { kind: "literal", value: expression.name.text } });
-    }
+    return value.kind === "lowered"
+      ? produced({ kind: "valueObjectDynamicAccess", value: value.operation, key: { kind: "literal", value: expression.name.text } })
+      : value;
   }
   return notApplicable;
 }

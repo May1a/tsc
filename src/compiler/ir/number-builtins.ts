@@ -142,7 +142,7 @@ function lowerDateNumberCall(
   const method = expression.expression.name.text;
   if (ts.isIdentifier(receiver) && receiver.text === "Date" && !bindings.has("Date")) {
     if (method === "now" && expression.arguments.length === 0) {
-      return produced({ kind: "literal", value: 0 });
+      return produced({ kind: "dateNow" });
     }
     if (method === "parse" && expression.arguments.length === 1) {
       const value = lowerStringExpression(expression.arguments[0], bindings);

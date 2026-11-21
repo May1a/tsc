@@ -103,6 +103,8 @@ export const operationRoles = {
   runtimeSetFromCollection: { name: declaration, sourceName: reference },
   runtimeMapSet: { mapName: reference },
   runtimeCollectionSetIterator: { collectionName: reference },
+  runtimeCollectionClear: { collectionName: reference },
+  runtimeCollectionForEach: { collectionName: reference },
   runtimeSetAdd: { setName: reference },
   runtimeMapSetResult: { name: declaration, mapName: reference },
   runtimeSetAddResult: { name: declaration, setName: reference },

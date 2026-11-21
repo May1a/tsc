@@ -19,5 +19,7 @@ export function createCollectionsCallees(module: LlvmModuleBuilder): RuntimeCall
     "collectionGet": registerRuntimeContract(module, collectionsContracts.collectionGet),
     "collectionHas": registerRuntimeContract(module, collectionsContracts.collectionHas),
     "collectionDelete": registerRuntimeContract(module, collectionsContracts.collectionDelete),
+    "collectionClear": registerRuntimeContract(module, collectionsContracts.collectionClear),
+    "collectionForEach": registerRuntimeContract(module, collectionsContracts.collectionForEach),
   };
 }

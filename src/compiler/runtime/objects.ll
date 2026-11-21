@@ -1015,6 +1015,11 @@ exit:
 }
 define void @objectAssign(ptr %target, ptr %source) {
 entry:
+  %frame = call i64 @gcRootSave()
+  %target.val = call i64 @valueBoxObject(ptr %target)
+  %source.val = call i64 @valueBoxObject(ptr %source)
+  call void @gcRootPush(i64 %target.val)
+  call void @gcRootPush(i64 %source.val)
   %count = load i64, ptr %source
   %entries.slot = getelementptr i8, ptr %source, i64 16
   %entries = load ptr, ptr %entries.slot
@@ -1034,10 +1039,19 @@ descriptor.block:
   %descriptor = load i64, ptr %descriptor.slot
   %enumerable.bit = and i64 %descriptor, 2
   %enumerable = icmp ne i64 %enumerable.bit, 0
-  br i1 %enumerable, label %copy, label %advance
-copy:
+  br i1 %enumerable, label %copy.kind, label %advance
+copy.kind:
   %key.slot = getelementptr i8, ptr %entry.ptr, i64 8
   %key.ptr = load ptr, ptr %key.slot
+  %acc.bit = and i64 %descriptor, 8
+  %is.acc = icmp ne i64 %acc.bit, 0
+  br i1 %is.acc, label %copy.accessor, label %copy.data
+copy.accessor:
+  %got = call { i64, i1 } @objectPropertyGetWithThis(ptr %source, i64 %source.val, i64 %stored.len, ptr %key.ptr)
+  %got.val = extractvalue { i64, i1 } %got, 0
+  call void @objectSet(ptr %target, i64 %stored.len, ptr %key.ptr, i64 %got.val)
+  br label %advance
+copy.data:
   %value.slot = getelementptr i8, ptr %entry.ptr, i64 16
   %value = load i64, ptr %value.slot
   call void @objectSet(ptr %target, i64 %stored.len, ptr %key.ptr, i64 %value)
@@ -1046,6 +1060,7 @@ advance:
   %next = add i64 %i, 1
   br label %scan
 exit:
+  call void @gcRootRestore(i64 %frame)
   ret void
 }
 define void @objectAssignArray(ptr %target, ptr %source) {
@@ -1610,7 +1625,7 @@ exit:
 @.accessor.set = private unnamed_addr constant [4 x i8] c"set\00"
 
 ; Accessor entries retain their getter and setter in a traced descriptor object, with flag bit 8.
-define void @objectDefineAccessor(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter) {
+define void @objectDefineAccessorWithFlags(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter, i64 %acc.flags) {
 entry:
   %frame = call i64 @gcRootSave()
   %owner = call i64 @valueBoxObject(ptr %object)
@@ -1666,10 +1681,22 @@ create.new:
   call void @objectSet(ptr %descriptor, i64 3, ptr @.accessor.get, i64 %getter)
   call void @objectSet(ptr %descriptor, i64 3, ptr @.accessor.set, i64 %setter)
   %boxed = call i64 @valueBoxObject(ptr %descriptor)
-  call void @objectDefineDataProperty(ptr %object, i64 %key.len, ptr %key.ptr, i64 %boxed, i64 12)
+  call void @objectDefineDataProperty(ptr %object, i64 %key.len, ptr %key.ptr, i64 %boxed, i64 %acc.flags)
   br label %finish
 finish:
   call void @gcRootRestore(i64 %frame)
+  ret void
+}
+
+define void @objectDefineAccessor(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter) {
+entry:
+  call void @objectDefineAccessorWithFlags(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter, i64 12)
+  ret void
+}
+
+define void @objectDefineEnumerableAccessor(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter) {
+entry:
+  call void @objectDefineAccessorWithFlags(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter, i64 14)
   ret void
 }
 

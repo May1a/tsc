@@ -21,11 +21,21 @@ the manifest's `forms` half, not as eleven prototype members that cannot be reac
 
 /** The Date members this build knows about, keyed by the name they have in source. */
 export type DateBuiltin =
-  | "now";
+  | "now"
+  | "getTime"
+  | "valueOf"
+  | "toISOString"
+  | "toString"
+  | "getFullYear";
 
 /** The members, keyed by name so a name cannot be stated twice. */
 export const dateBuiltinSupport: BuiltinSupport<"date", DateBuiltin> = {
-  "now": { arity: 0, state: "stubbed", id: "date.now", placement: "static", fixture: "now", reason: "lowered to 0, which is not the current time" },
+  "now": { arity: 0, state: "supported", id: "date.now", placement: "static", fixture: "now" },
+  "getTime": { arity: 0, state: "supported", id: "date.getTime" },
+  "valueOf": { arity: 0, state: "supported", id: "date.valueOf" },
+  "toISOString": { arity: 0, state: "supported", id: "date.toISOString", fixture: "to-iso-string" },
+  "toString": { arity: 0, state: "supported", id: "date.toString" },
+  "getFullYear": { arity: 0, state: "planned", id: "date.getFullYear" },
 };
 
 /** The `Date` member with this name, or `undefined` if the name is not one of them. */

@@ -1,10 +1,11 @@
-import { unsupportedFormMessage } from "./builtins/manifest.js";
 import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import { isUndefinedExpression } from "./predicates.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
+import { lowerStringExpression } from "./string-constants.js";
+import { numberExpressionFromNumber } from "./number-constants.js";
 import { lowerRegexValueExpression } from "./regex.js";
 import { lowerFunctionObjectValue, lowerPlainConstructorArguments } from "./closures.js";
 import { lowerOptionalChainValueExpression } from "./optional-chains.js";
@@ -105,10 +106,27 @@ export function lowerDirectValueExpression(
 
   if (ts.isNewExpression(expression) && ts.isIdentifier(expression.expression)) {
     const constructorName = expression.expression.text;
-    // The `Date` constructor is a known builtin this build has not written: refusing it by name here
-    // reports the missing builtin from every position, not just statement position.
     if (constructorName === "Date" && !bindings.has("Date")) {
-      return unsupportedIn(unsupportedFormMessage("date-constructor"));
+      const args = expression.arguments ?? [];
+      if (args.length === 0) {
+        return produced({ kind: "dateNew" });
+      }
+      if (args.length === 1) {
+        const stringLiteral = lowerStringExpression(args[0], bindings);
+        if (stringLiteral !== undefined) {
+          return produced({ kind: "dateNew", milliseconds: numberExpressionFromNumber(Date.parse(stringLiteral)) });
+        }
+        const millis = context.lowerNumberExpression(context, args[0], bindings);
+        if (millis.kind === "lowered") {
+          return produced({ kind: "dateNew", milliseconds: millis.operation });
+        }
+        const coerced = context.lowerValueExpression(context, args[0], bindings);
+        if (coerced.kind === "lowered") {
+          return produced({ kind: "dateNew", milliseconds: { kind: "valueToNumber", value: coerced.operation } });
+        }
+        return withRefusal(coerced, unsupportedIn("Arguments to `new Date(...)` must be expressions this build can evaluate"));
+      }
+      return unsupportedIn("`new Date(...)` accepts at most one argument");
     }
     const constructor = bindings.get(constructorName);
     if (constructor?.kind === "function" && constructor.constructibleByObjectReturn === true) {

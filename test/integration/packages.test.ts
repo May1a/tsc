@@ -174,11 +174,11 @@ describe("tscn string methods (package CB)", () => {
     }
   });
 
-  test("evaluates localeCompare on runtime strings (stubbed to first char code)", async () => {
+  test("evaluates localeCompare on runtime strings", async () => {
     const result = await expectSuccessfulCompile("string-locale-compare-basic.ts", { link: true });
 
     try {
-      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "104\n104\n", stderr: "" });
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "-1\n0\n", stderr: "" });
     } finally {
       await result.cleanup();
     }

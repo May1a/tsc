@@ -35,9 +35,9 @@ export type ResolvedLeafOperationKind = keyof typeof jsIrLeafOperationKinds;
 
 export type ResolvedOperation = WithTrace<ResolveTier<JsIrOperationNode, typeof operationRoles>>;
 
-type WithTrace<M> = M extends { readonly kind: "runtimeArrayMapFunctionObject" }
+type WithTrace<M> = M extends { readonly kind: "runtimeArrayMapFunctionObject" | "function" }
   ? M & { readonly functionId: FunctionId; readonly thisBinding?: BindingRef; readonly trace?: JsIrOperationTrace }
-  : M extends { readonly kind: "function" | "returnClosure" }
+  : M extends { readonly kind: "returnClosure" }
   ? M & { readonly functionId: FunctionId; readonly trace?: JsIrOperationTrace }
   : M extends unknown ? M & { readonly trace?: JsIrOperationTrace } : never;
 
@@ -106,6 +106,7 @@ export interface ResolvedObjectValue {
 /** One field of a runtime object literal, resolved. A `spread` source is a binding. */
 export type ResolvedRuntimeObjectField =
   | { readonly kind: "field"; readonly key: ResolvedStringExpression; readonly value: ResolvedValueExpression }
+  | { readonly kind: "accessor"; readonly key: ResolvedStringExpression; readonly getter?: ResolvedValueExpression; readonly setter?: ResolvedValueExpression }
   | { readonly kind: "spread"; readonly sourceName: BindingRef };
 
 /** A runtime object literal, resolved. */

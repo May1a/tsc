@@ -17,5 +17,13 @@ export function createFunctionsCallees(module: LlvmModuleBuilder): RuntimeCallee
     "functionObjectAttachProperties": registerRuntimeContract(module, functionsContracts.functionObjectAttachProperties),
     "functionObjectPropertyGet": registerRuntimeContract(module, functionsContracts.functionObjectPropertyGet),
     "functionObjectOwnPropertyDescriptor": registerRuntimeContract(module, functionsContracts.functionObjectOwnPropertyDescriptor),
+    "functionPrototypeInit": registerRuntimeContract(module, functionsContracts.functionPrototypeInit),
+    "functionPrototypeMethod": registerRuntimeContract(module, functionsContracts.functionPrototypeMethod),
+    "functionProtoReceiverError": registerRuntimeContract(module, functionsContracts.functionProtoReceiverError),
+    "functionProtoCall": registerRuntimeContract(module, functionsContracts.functionProtoCall),
+    "functionProtoApply": registerRuntimeContract(module, functionsContracts.functionProtoApply),
+    "functionBoundTrampoline": registerRuntimeContract(module, functionsContracts.functionBoundTrampoline),
+    "functionProtoBind": registerRuntimeContract(module, functionsContracts.functionProtoBind),
+    "functionProtoToString": registerRuntimeContract(module, functionsContracts.functionProtoToString),
   };
 }

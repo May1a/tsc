@@ -26,6 +26,12 @@ export function objectLiteral(value: ResolvedRuntimeObjectValue, context: Expres
     if (field.kind === "spread") {
       const source = keep(context.bindings.value(field.sourceName), context);
       context.runtime.callVoid("valueObjectAssign", [object, source]);
+    } else if (field.kind === "accessor") {
+      const key = context.expressions.string(field.key);
+      boxString(key, context);
+      const getter = field.getter === undefined ? undefinedValue(context) : keep(context.expressions.value(field.getter), context);
+      const setter = field.setter === undefined ? undefinedValue(context) : keep(context.expressions.value(field.setter), context);
+      context.runtime.callVoid("objectDefineEnumerableAccessor", [object, key.length, key.bytes, getter, setter]);
     } else {
       const key = context.expressions.string(field.key);
       boxString(key, context);

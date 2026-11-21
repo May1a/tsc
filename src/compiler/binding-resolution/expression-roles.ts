@@ -40,6 +40,10 @@ export const valueExpressionRoles = {
   jsonStringify: { replacerName: reference },
   jsonParse: {},
   runtimeMapGet: { mapName: reference },
+  runtimeCollectionIterator: { collectionName: reference },
+  runtimeCollectionClear: { collectionName: reference },
+  runtimeCollectionForEach: { collectionName: reference },
+  dateNew: {},
   optionalChain: {},
   optionalTarget: {},
   errorConstructor: { errorName: preserved("errorName") },
@@ -88,6 +92,7 @@ export const numberExpressionRoles = {
   objectAccess: { objectName: reference, path: preservedList("propertyKey") },
   valueToNumber: {},
   mathCall: {},
+  dateNow: {},
   parseInt: {},
   parseFloat: {}
 } satisfies RoleTable<JsIrNumberExpression>;

@@ -248,6 +248,10 @@ export const mathMethods = new Set<string>([
   "sin",
   "cos",
   "tan",
+  "asin",
+  "acos",
+  "atan",
+  "atan2",
   "sign"
 ]);
 export function isMathMethod(method: string): method is Extract<JsIrNumberExpression, { readonly kind: "mathCall" }>["method"] {

@@ -56,7 +56,7 @@ export const jsIrLeafOperationKinds: Readonly<Record<Exclude<JsIrOperation["kind
   "runtimeArrayUnshift": true, "runtimeArrayFill": true, "runtimeArrayReverse": true, "runtimeArrayForEachCallback": true, "runtimeArrayFindCallback": true,
   "runtimeArrayFindIndexCallback": true, "runtimeArrayReduceCallback": true, "runtimeMapNew": true, "runtimeSetNew": true, "runtimeMapFromArray": true,
   "runtimeSetFromArray": true, "runtimeMapFromIterable": true, "runtimeSetFromIterable": true, "runtimeMapFromCollection": true, "runtimeSetFromCollection": true,
-  "runtimeMapSet": true, "runtimeCollectionSetIterator": true, "runtimeSetAdd": true, "runtimeMapSetResult": true, "runtimeSetAddResult": true,
+  "runtimeMapSet": true, "runtimeCollectionSetIterator": true, "runtimeCollectionClear": true, "runtimeCollectionForEach": true, "runtimeSetAdd": true, "runtimeMapSetResult": true, "runtimeSetAddResult": true,
   "runtimeIteratorNew": true, "runtimeArrayCopyWithin": true, "runtimeArrayPop": true, "runtimeArrayShift": true, "objectStore": true,
   "runtimeObjectStore": true, "valueObjectStore": true, "defineAccessor": true, "attachFunctionProperties": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
   "runtimeObjectDelete": true, "valueObjectDelete": true, "valueArrayDelete": true, "runtimeObjectSetPrototype": true, "valueObjectSetPrototype": true,
