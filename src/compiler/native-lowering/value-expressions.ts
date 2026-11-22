@@ -7,7 +7,6 @@ import { coalesce, lazyDefault, logical, optionalChain, ternary } from "./value-
 import { jsonParse, jsonStringify, regexCompile, regexMatch, stringCodeUnit, stringIndex, stringPredicate } from "./value-builtins.js";
 import { callValue, newInstance } from "./value-invocations.js";
 import { type ValueNode, arrayPointer, keep, numericValue, property, stringValue, undefinedValue } from "./value-support.js";
-import { numberIndex } from "./numbers.js";
 import { errorClassId } from "./error-classes.js";
 import { llvm } from "../llvm-ir/index.js";
 
@@ -55,8 +54,12 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   },
   valueArrayAccess: (expression, context) => {
     const receiver = keep(context.expressions.value(expression.value), context);
-    numberIndex(expression.index, context);
-    return property(receiver, context.expressions.string(expression.key), context);
+    if (expression.index.kind === "literal") {
+      return property(receiver, context.expressions.string(expression.key), context);
+    }
+    const index = context.expressions.number(expression.index);
+    const key = context.runtime.callString("numberToShortestString", [index], context.cursor.uniqueName("index.key"));
+    return property(receiver, key, context);
   },
   privateFieldAccess: privateField,
   runtimeMapGet: (expression, context) => {

@@ -9,7 +9,7 @@ import { lowerInlineCppValueExpression } from "./inline-cpp.js";
 import { lowerCallStatement } from "./call-statements.js";
 import { lowerPrintExpression } from "./print.js";
 import { lowerUpdateNumberExpression } from "./number-expressions.js";
-import type { JsIrNumberExpression, JsIrNumberOperator } from "./expressions.js";
+import type { JsIrNumberExpression, JsIrNumberOperator, JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
@@ -84,14 +84,25 @@ export function lowerExpressionStatement(
     return lowerDiscardedValue(context, expression, bindings);
   }
 
+  return lowerCallExpressionStatement(context, expression, bindings);
+}
+
+function lowerCallExpressionStatement(
+  context: LoweringContext,
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
   const callOp = lowerCallStatement(context, expression, bindings);
   if (callOp.kind !== "notApplicable") {
     return callOp;
   }
-
   const printCall = lowerPrintCallStatement(context, expression, bindings);
   if (printCall.kind !== "notApplicable") {
     return printCall;
+  }
+  const consoleLogCall = lowerConsoleLogStatement(context, expression, bindings);
+  if (consoleLogCall.kind !== "notApplicable") {
+    return consoleLogCall;
   }
   return lowerDiscardedCall(context, expression, bindings);
 }
@@ -157,6 +168,32 @@ function lowerPrintCallStatement(
     return unsupported(reason);
   }
   return notApplicable;
+}
+
+/** `console.log(...args)` lowers every argument as a boxed value and prints them space-separated. */
+function lowerConsoleLogStatement(
+  context: LoweringContext,
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    !ts.isIdentifier(expression.expression.expression) ||
+    expression.expression.expression.text !== "console" ||
+    expression.expression.name.text !== "log" ||
+    bindings.has("console")
+  ) {
+    return notApplicable;
+  }
+  const args: JsIrValueExpression[] = [];
+  for (const argument of expression.arguments) {
+    const lowered = context.lowerValueExpression(context, argument, bindings);
+    if (lowered.kind !== "lowered") {
+      return withRefusal(lowered, unsupportedIn("Arguments to `console.log` must be expressions this build can evaluate"));
+    }
+    args.push(lowered.operation);
+  }
+  return produced({ kind: "consoleLog", arguments: args });
 }
 
 export function lowerUpdateExpressionStatement(

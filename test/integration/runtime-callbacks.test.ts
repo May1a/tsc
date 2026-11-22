@@ -26,7 +26,7 @@ test("shared array callbacks preserve results, receiver and throws during forced
       "declare void @exit(i32)",
       runtimeIrText(), module.render().text, fixture
     ].join("\n"));
-    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable])
+    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable, "-lm"])
       .pipe(Effect.provide(commandExecutorLayer)));
     expect(compiled.status, compiled.stderr).toBe(0);
     const result = await Effect.runPromise(captureCommand(executable, []).pipe(Effect.provide(commandExecutorLayer)));

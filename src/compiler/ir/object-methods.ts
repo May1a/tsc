@@ -8,6 +8,7 @@ import { CLASS_THIS_NAME } from "./class-names.js";
 import { parameterValueKind, runtimeParameters } from "./class-info.js";
 import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
 import { lowerBlockStatements } from "./statement-lists.js";
+import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
 import { functionReturnKind } from "./binding-updates.js";
 import { collectMethodEnclosingCaptureNames, lowerInlineFunctionCaptures } from "./captures.js";
 
@@ -45,7 +46,8 @@ export function lowerObjectMethodFunctionValue(
   if (!bindObjectMethodParameters(method, parameters, methodBindings)) {
     return notApplicable;
   }
-  const bodyResult = lowerBlockStatements(context, method.body, methodBindings);
+  const { body: methodBody } = method;
+  const bodyResult = lowerObjectMethodBody(context, methodBody, method.parameters, methodBindings);
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
@@ -53,16 +55,25 @@ export function lowerObjectMethodFunctionValue(
   if (captures === undefined) {
     return notApplicable;
   }
-  let displayName = "method";
-  const declaredName = method.name;
-  if (declaredName !== undefined && ts.isIdentifier(declaredName)) {
-    displayName = declaredName.text;
-  }
+  const displayName = method.name !== undefined && ts.isIdentifier(method.name) ? method.name.text : "method";
   const codeName = `__tscn_fnobj_${displayName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   context.nextFunctionObjectId += 1;
   const body = bodyResult.operation;
   return produced({ kind: "functionObject", definition: { codeName, parameters, functionKind: "ordinary", returnKind: functionReturnKind(body), body,
     ...(captures.length === 0 ? {} : { captures }) } });
+}
+
+function lowerObjectMethodBody(
+  context: LoweringContext,
+  methodBody: ts.Block,
+  parameters: readonly ts.ParameterDeclaration[],
+  methodBindings: Map<string, JsIrBindingValue>
+) {
+  const parameterNames = collectParameterBindingNames(parameters, [CLASS_THIS_NAME]);
+  return withHoistedVars(context, methodBody.statements, methodBindings, parameterNames, (preface) => {
+    const body = lowerBlockStatements(context, methodBody, methodBindings);
+    return body.kind === "unsupported" ? body : { kind: "lowered" as const, operation: [...preface, ...body.operation] };
+  });
 }
 
 function bindObjectMethodParameters(

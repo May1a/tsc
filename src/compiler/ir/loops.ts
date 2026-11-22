@@ -142,7 +142,8 @@ function loopItemDeclaration(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<DeclarationKind> {
   const kind = declarationKindOf(list);
-  const redeclared = kind === "var" ? redeclaredVarName(context.typeChecker, declaration.name, bindings) : undefined;
+  const hoisted = kind === "var" && ts.isIdentifier(declaration.name) && context.hoistedVars.has(declaration.name.text);
+  const redeclared = kind === "var" && !hoisted ? redeclaredVarName(context.typeChecker, declaration.name, bindings) : undefined;
   if (redeclared !== undefined) {
     return unsupportedIn(`A \`var\` loop item that redeclares \`${redeclared}\` is not supported yet`);
   }
@@ -176,6 +177,12 @@ export function lowerForOfStatement(
     return declared;
   }
   const kind = declared.operation;
+  if (kind === "var" && ts.isIdentifier(declaration.name) && context.hoistedVars.has(declaration.name.text)) {
+    const hoistedForOf = lowerHoistedVarForOf(context, statement, declaration.name, bindings);
+    if (hoistedForOf.kind !== "notApplicable") {
+      return hoistedForOf;
+    }
+  }
   const scope = declarationScope(kind);
   const itemName = forOfItemName(declaration.name);
   const bodyStatement = statement.statement;
@@ -356,29 +363,27 @@ export function lowerForInStatement(
   }
   const sourceName = statement.expression.text;
   const sourceBinding = bindings.get(sourceName);
-  if (sourceBinding?.kind === "runtimeObject") {
-    const bodyBindings = new Map(bindings);
-    bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const bodyResult = lowerLoopBody(context, statement.statement, bodyBindings);
-    if (bodyResult.kind === "unsupported") {
-      return bodyResult;
-    }
-    const body = bodyResult.operation;
-
-    return produced({ kind: "forInObject", itemName: declaration.name.text, objectName: sourceBinding.name, body, ...scope });
+  if (sourceBinding?.kind !== "runtimeObject" && sourceBinding?.kind !== "runtimeArray") {
+    return unsupported("A `for...in` statement must iterate over a runtime dictionary object or a runtime array");
   }
-  if (sourceBinding?.kind === "runtimeArray") {
-    const bodyBindings = new Map(bindings);
-    bodyBindings.set(declaration.name.text, { kind: "stringVariable", name: declaration.name.text });
-    const bodyResult = lowerLoopBody(context, statement.statement, bodyBindings);
-    if (bodyResult.kind === "unsupported") {
-      return bodyResult;
-    }
-    const body = bodyResult.operation;
-
-    return produced({ kind: "forInArray", itemName: declaration.name.text, arrayName: sourceBinding.name, body, ...scope });
+  const hoisted = declared.operation === "var" && context.hoistedVars.has(declaration.name.text);
+  const itemName = hoisted ? `for.in.item.${declaration.pos}` : declaration.name.text;
+  const bodyBindings = new Map(bindings);
+  if (!hoisted) {
+    bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
   }
-  return unsupported("A `for...in` statement must iterate over a runtime dictionary object or a runtime array");
+  const bodyResult = lowerLoopBody(context, statement.statement, bodyBindings);
+  if (bodyResult.kind === "unsupported") {
+    return bodyResult;
+  }
+  const assignPrefix: readonly JsIrOperation[] = hoisted
+    ? [{ kind: "assignValue", name: declaration.name.text, value: { kind: "string", value: { kind: "variable", name: itemName } } }]
+    : [];
+  const body = [...assignPrefix, ...bodyResult.operation];
+  if (sourceBinding.kind === "runtimeObject") {
+    return produced({ kind: "forInObject", itemName, objectName: sourceBinding.name, body, ...(hoisted ? {} : scope) });
+  }
+  return produced({ kind: "forInArray", itemName, arrayName: sourceBinding.name, body, ...(hoisted ? {} : scope) });
 }
 
 /**
@@ -495,4 +500,31 @@ function lowerForOfAssignmentHead(
     notIterableMessage: `${iteratorErrorSubject(statement.expression)} is not iterable`,
     body: [...assigned.operation, ...body.operation]
   });
+}
+
+function lowerHoistedVarForOf(
+  context: LoweringContext,
+  statement: ts.ForOfStatement,
+  target: ts.Identifier,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (ts.isIdentifier(statement.expression)) {
+    const sourceBinding = bindings.get(statement.expression.text);
+    if (sourceBinding?.kind === "runtimeSet" || sourceBinding?.kind === "runtimeMap") {
+      const tempName = `for.of.item.${target.pos}`;
+      const body = lowerLoopBody(context, statement.statement, bindings);
+      if (body.kind === "unsupported") {
+        return body;
+      }
+      const assignOp: JsIrOperation = {
+        kind: "assignValue",
+        name: target.text,
+        value: sourceBinding.kind === "runtimeMap" ? { kind: "arrayRef", name: tempName } : { kind: "variable", name: tempName }
+      };
+      return sourceBinding.kind === "runtimeSet"
+        ? produced({ kind: "forOfSet", itemName: tempName, setName: sourceBinding.name, body: [assignOp, ...body.operation] })
+        : produced({ kind: "forOfMap", itemName: tempName, mapName: sourceBinding.name, body: [assignOp, ...body.operation] });
+    }
+  }
+  return lowerForOfAssignmentHead(context, statement, target, bindings);
 }

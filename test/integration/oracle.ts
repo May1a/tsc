@@ -468,4 +468,14 @@ export const oracleFixtures: readonly string[] = [
   "labeled-block-break-finally.ts",
   "labeled-break-frames.ts",
   "logical-assign-member.ts",
+  "console-log.ts",
+  "chained-method-calls.ts",
+  "object-runtime-to-string.ts",
+  "object-runtime-is-prototype-of.ts",
+  "aggregate-storage-demotion.ts",
+  "collections-and-errors-in-let.ts",
+  "var-hoisting-blocks-and-loops.ts",
+  "typeof-runtime-values.ts",
+  "observable-to-number-arithmetic.ts",
+  "pr77-review-fixes.ts"
 ] as const;

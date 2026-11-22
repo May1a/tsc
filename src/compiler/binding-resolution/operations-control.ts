@@ -3,6 +3,7 @@ import { declareFromOperation, optional, resolveCallArguments, resolveFunctionPa
 
 export const controlHandlers = {
   print: (node, resolver) => ({ ...node, expression: resolver.expression(node.expression) }),
+  consoleLog: (node, resolver) => ({ ...node, arguments: node.arguments.map(resolver.value) }),
   throwValue: (node, resolver) => ({ ...node, value: resolver.value(node.value) }),
   discardValue: (node, resolver) => ({ ...node, value: resolver.value(node.value) }),
   block: (node, resolver) => ({

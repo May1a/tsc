@@ -83,14 +83,14 @@ export function lowerRuntimeDataDescriptor(
   return produced({ key, value, writable, enumerable, configurable });
 }
 
-export function fixedObjectToRuntimeObjectValue(value: JsIrObjectValue): JsIrRuntimeObjectValue | undefined {
-  const fields: JsIrRuntimeObjectField[] = [];
-  for (const field of value.fields) {
-    if (field.value.kind !== "number") {
-      return undefined;
-    }
-    fields.push({ kind: "field", key: { kind: "literal", value: field.name }, value: { kind: "number", value: field.value.value } });
-  }
+export function fixedObjectToRuntimeObjectValue(value: JsIrObjectValue): JsIrRuntimeObjectValue {
+  const fields: JsIrRuntimeObjectField[] = value.fields.map((field) => ({
+    kind: "field",
+    key: { kind: "literal", value: field.name },
+    value: field.value.kind === "number"
+      ? { kind: "number", value: field.value.value }
+      : { kind: "objectLiteralValue", value: fixedObjectToRuntimeObjectValue(field.value.value) }
+  }));
   return { fields };
 }
 

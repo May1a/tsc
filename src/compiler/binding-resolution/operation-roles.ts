@@ -134,6 +134,7 @@ export const operationRoles = {
 
   // Control flow.
   print: {},
+  consoleLog: {},
   throwValue: {},
   discardValue: {},
   block: {},

@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { isRuntimeIdentifierReference } from "./captures.js";
 import { isUndefinedExpression, unwrapTypeOnlyExpression } from "./predicates.js";
+import { type PlannedAggregate, aggregateCandidateFor, useRequiresRuntimeAggregate } from "./aggregate-plan.js";
 
 /**
  * Which `let` and `var` declarations of a source file need boxed storage.
@@ -23,12 +24,17 @@ import { isUndefinedExpression, unwrapTypeOnlyExpression } from "./predicates.js
  */
 export interface StoragePlan {
   readonly boxed: ReadonlySet<ts.VariableDeclaration>;
+  readonly runtimeAggregates: ReadonlySet<ts.VariableDeclaration>;
 }
 
-export const emptyStoragePlan: StoragePlan = { boxed: new Set() };
+export const emptyStoragePlan: StoragePlan = { boxed: new Set(), runtimeAggregates: new Set() };
 
 export function isBoxedDeclaration(plan: StoragePlan, declaration: ts.VariableDeclaration): boolean {
   return plan.boxed.has(declaration);
+}
+
+export function isRuntimeAggregateDeclaration(plan: StoragePlan, declaration: ts.VariableDeclaration): boolean {
+  return plan.runtimeAggregates.has(declaration);
 }
 
 /**
@@ -108,15 +114,21 @@ interface PlannedBinding {
 interface PlanScope {
   readonly parent: PlanScope | undefined;
   readonly isFunction: boolean;
+  readonly ownerFunction: ts.Node | undefined;
   readonly names: Map<string, PlannedBinding | undefined>;
+  readonly aggregates: Map<string, PlannedAggregate | undefined>;
 }
 
 class StoragePlanWalk {
   readonly #bindings: PlannedBinding[] = [];
+  readonly #aggregates: PlannedAggregate[] = [];
   readonly #declarations = new WeakSet<ts.VariableDeclarationList>();
 
   public plan(): StoragePlan {
-    return { boxed: new Set(this.#bindings.filter(needsBoxedStorage).map((binding) => binding.declaration)) };
+    return {
+      boxed: new Set(this.#bindings.filter(needsBoxedStorage).map((binding) => binding.declaration)),
+      runtimeAggregates: new Set(this.#aggregates.filter((aggregate) => aggregate.promoted).map((aggregate) => aggregate.declaration))
+    };
   }
 
   public statements(statements: readonly ts.Statement[], scope: PlanScope): void {
@@ -130,13 +142,25 @@ class StoragePlanWalk {
   }
 
   #node(node: ts.Node, scope: PlanScope): void {
-    if (this.#scopeNode(node, scope) || this.#writeNode(node, scope) || ts.isIdentifier(node)) {
+    if (ts.isIdentifier(node)) {
+      this.#recordAggregateUse(node, scope);
+      return;
+    }
+    if (this.#scopeNode(node, scope) || this.#writeNode(node, scope)) {
       return;
     }
     if (ts.isClassDeclaration(node) || ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node)) {
       if (node.name !== undefined && ts.isIdentifier(node.name)) shadow(scope, node.name.text);
     }
     ts.forEachChild(node, (child) => this.#node(child, scope));
+  }
+
+  #recordAggregateUse(identifier: ts.Identifier, scope: PlanScope): void {
+    const aggregate = resolveAggregate(scope, identifier.text);
+    if (aggregate !== undefined && !aggregate.promoted &&
+      useRequiresRuntimeAggregate(identifier, aggregate, scope.ownerFunction, classifyStorageWrite)) {
+      aggregate.promoted = true;
+    }
   }
 
   /** Walks a node that opens a scope or declares names, and reports whether it was one. */
@@ -184,9 +208,9 @@ class StoragePlanWalk {
 
   #function(node: ts.SignatureDeclaration, scope: PlanScope): void {
     // A named function expression binds its own name in a scope between the outer one and its body.
-    const named = childScope(scope, true);
+    const named = childScope(scope, true, node);
     if (ts.isFunctionExpression(node) && node.name !== undefined) shadow(named, node.name.text);
-    const body = childScope(named, true);
+    const body = childScope(named, true, node);
     for (const parameter of node.parameters) {
       this.#bindingName(parameter.name, body);
       if (parameter.initializer !== undefined) this.#node(parameter.initializer, body);
@@ -298,11 +322,21 @@ class StoragePlanWalk {
     if (this.#declarations.has(list)) return;
     this.#declarations.add(list);
     const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
+    const targetScope = isVarList(list) ? functionScope(scope) : scope;
     for (const declaration of list.declarations) {
+      if (ts.isIdentifier(declaration.name)) {
+        const candidate = aggregateCandidateFor(declaration, targetScope.ownerFunction);
+        if (candidate === undefined) {
+          targetScope.aggregates.set(declaration.name.text, undefined);
+        } else {
+          this.#aggregates.push(candidate);
+          targetScope.aggregates.set(declaration.name.text, candidate);
+        }
+      }
       if (isConst || !ts.isIdentifier(declaration.name)) {
         this.#bindingName(declaration.name, scope);
       } else {
-        this.#declare(declaration, declaration.name.text, isVarList(list) ? functionScope(scope) : scope);
+        this.#declare(declaration, declaration.name.text, targetScope);
       }
     }
   }
@@ -364,8 +398,8 @@ function needsBoxedStorage(binding: PlannedBinding): boolean {
   return scalarKinds.size > 1;
 }
 
-function childScope(parent: PlanScope, isFunction: boolean): PlanScope {
-  return { parent, isFunction, names: new Map() };
+function childScope(parent: PlanScope, isFunction: boolean, ownerFunction: ts.Node | undefined = parent.ownerFunction): PlanScope {
+  return { parent, isFunction, ownerFunction, names: new Map(), aggregates: new Map() };
 }
 
 function functionScope(scope: PlanScope): PlanScope {
@@ -376,11 +410,19 @@ function functionScope(scope: PlanScope): PlanScope {
 
 function shadow(scope: PlanScope, name: string): void {
   if (!scope.names.has(name)) scope.names.set(name, undefined);
+  if (!scope.aggregates.has(name)) scope.aggregates.set(name, undefined);
 }
 
 function resolve(scope: PlanScope, name: string): PlannedBinding | undefined {
   for (let current: PlanScope | undefined = scope; current !== undefined; current = current.parent) {
     if (current.names.has(name)) return current.names.get(name);
+  }
+  return undefined;
+}
+
+function resolveAggregate(scope: PlanScope, name: string): PlannedAggregate | undefined {
+  for (let current: PlanScope | undefined = scope; current !== undefined; current = current.parent) {
+    if (current.aggregates.has(name)) return current.aggregates.get(name);
   }
   return undefined;
 }
@@ -400,7 +442,7 @@ function isAssignmentOperator(operator: ts.SyntaxKind): boolean {
 /** Plans every `let` and `var` declaration in a source file, before any of it lowers. */
 export function collectStoragePlan(sourceFile: ts.SourceFile): StoragePlan {
   const walk = new StoragePlanWalk();
-  walk.statements(sourceFile.statements, { parent: undefined, isFunction: true, names: new Map() });
+  walk.statements(sourceFile.statements, { parent: undefined, isFunction: true, ownerFunction: undefined, names: new Map(), aggregates: new Map() });
   return walk.plan();
 }
 

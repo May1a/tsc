@@ -6,8 +6,16 @@ import type { LlvmGlobalReference } from "./module-items.js";
 import { type LlvmInstruction, type LlvmPhiInstruction, llvmInstructionOperands, llvmInstructionTargets } from "./instructions.js";
 import type { LlvmFunctionSpec, LlvmOwnedCallable } from "./signatures.js";
 import { TraceStack } from "./traces.js";
-import { type LlvmValue, type LlvmValueType, sameLlvmType } from "./types.js";
-import { createLlvmValue, llvmValueData, llvmValueText } from "./values.js";
+import {
+  type LlvmPointerType,
+  type LlvmValue,
+  type LlvmValueType,
+  freezeLlvmType,
+  llvm,
+  llvmIntegerFits,
+  sameLlvmType
+} from "./types.js";
+import { createLlvmValue, defineLlvmValue, llvmValueData, llvmValueText } from "./values.js";
 
 /** Labels may name future blocks. SSA result names belong to one definition. Both are checked at finish. */
 export interface LlvmFunctionBuilder {
@@ -17,6 +25,8 @@ export interface LlvmFunctionBuilder {
   block(name: string, build: (block: LlvmBlockBuilder) => void): void;
   /** Keeps the block appendable until function completion; blocks may be filled in any order. */
   openBlock(name: string): LlvmBlockBuilder;
+  /** Allocates a fixed-size stack buffer at the start of the entry block so loops do not grow the stack. */
+  entryAllocaArray(type: LlvmValueType, count: bigint, name: string): LlvmValue<LlvmPointerType>;
   /** Records operation provenance across all blocks visited during the callback. */
   withTrace<A>(traceId: string, build: () => A): A;
   /** Seals every block, runs the whole-graph checks, and returns the finished IR. */
@@ -26,6 +36,8 @@ export interface LlvmFunctionBuilder {
 /** A block this function owns, kept until `finish` seals it. */
 interface OpenBlock {
   readonly name: string;
+  readonly owner: symbol;
+  readonly instructions: LlvmInstruction[];
   readonly builder: BlockBuilder;
 }
 
@@ -106,9 +118,37 @@ export class FunctionBuilder implements LlvmFunctionBuilder {
     this.#blockNames.add(name);
     const owner = Symbol(`llvm-block:${name}`);
     this.#blockNamesByOwner.set(owner, name);
-    const builder = new BlockBuilder(this.#context(this.label(name)), owner);
-    this.#openBlocks.push({ name, builder });
+    const instructions: LlvmInstruction[] = [];
+    const builder = new BlockBuilder(this.#context(this.label(name), instructions), owner);
+    this.#openBlocks.push({ name, owner, instructions, builder });
     return builder;
+  }
+
+  public entryAllocaArray(type: LlvmValueType, count: bigint, name: string): LlvmValue<LlvmPointerType> {
+    this.#assertActive();
+    const entry = this.#openBlocks.at(0);
+    if (entry === undefined) {
+      throw llvmError(`LLVM function ${this.#spec.name} has no entry block`);
+    }
+    if (count < 0n || !llvmIntegerFits(llvm.i64, count)) {
+      throw llvmError(`invalid entry alloca count ${count}`);
+    }
+    const result = createLlvmValue(llvm.ptr, this.#owner, this.#allocateName(assertLlvmName(name, "SSA name hint")));
+    const countValue = createLlvmValue(llvm.i64, this.#owner, count.toString());
+    const instruction: LlvmInstruction = Object.freeze({
+      kind: "alloca",
+      allocatedType: freezeLlvmType(type),
+      count: countValue,
+      alignment: undefined,
+      result,
+      provenance: Object.freeze({
+        origin: this.#spec.name,
+        traceIds: Object.freeze([...this.#traces.active()])
+      })
+    });
+    entry.instructions.unshift(instruction);
+    defineLlvmValue(result, entry.owner, 0);
+    return result;
   }
 
   /** Seals all blocks before checking edges, phi predecessors, and operand dominance. */
@@ -145,8 +185,7 @@ export class FunctionBuilder implements LlvmFunctionBuilder {
     }
   }
 
-  #context(label: LlvmBlockLabel): BlockContext {
-    const instructions: LlvmInstruction[] = [];
+  #context(label: LlvmBlockLabel, instructions: LlvmInstruction[]): BlockContext {
     return {
       origin: this.#spec.name,
       label,

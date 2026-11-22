@@ -1,5 +1,5 @@
 import type { GcFunctionFacts } from "../gc-liveness/index.js";
-import { type BuiltLlvmFunction, type LlvmBlockBuilder, type LlvmBlockLabel, type LlvmFunctionBuilder, type LlvmType, type LlvmValue, type LlvmValueType, llvm } from "../llvm-ir/index.js";
+import { type BuiltLlvmFunction, type LlvmBlockBuilder, type LlvmBlockLabel, type LlvmFunctionBuilder, type LlvmPointerType, type LlvmType, type LlvmValue, type LlvmValueType, llvm } from "../llvm-ir/index.js";
 import type { RuntimeCallees } from "../runtime-contracts/callables/index.js";
 import { type CompletionCallCapability, createCompletionCalls } from "./completion-calls.js";
 import type { BlockCursor } from "./cursor.js";
@@ -42,15 +42,15 @@ export interface NativeFunctionBuilder {
   finish(): GcFunctionFacts;
 }
 
-export type FunctionBuilderPort = Pick<LlvmFunctionBuilder, "openBlock" | "label" | "parameter" | "withTrace">;
+export type FunctionBuilderPort = Pick<LlvmFunctionBuilder, "openBlock" | "label" | "parameter" | "entryAllocaArray" | "withTrace">;
 
 export class FunctionCursor implements BlockCursor {
-  readonly #builder: Pick<FunctionBuilderPort, "openBlock" | "label">;
+  readonly #builder: Pick<FunctionBuilderPort, "openBlock" | "label" | "entryAllocaArray">;
   readonly #used = new Set<string>();
   readonly #targets = new Set<LlvmBlockLabel>();
   #current: LlvmBlockBuilder | undefined;
 
-  public constructor(builder: Pick<FunctionBuilderPort, "openBlock" | "label">) { this.#builder = builder; }
+  public constructor(builder: Pick<FunctionBuilderPort, "openBlock" | "label" | "entryAllocaArray">) { this.#builder = builder; }
 
   public currentBlock(): LlvmBlockBuilder {
     if (this.#current === undefined) { throw new Error("No native block is open"); }
@@ -72,6 +72,10 @@ export class FunctionCursor implements BlockCursor {
     const target = this.reserveBlock(hint);
     this.openBlock(target);
     return target;
+  }
+
+  public entryAllocaArray(type: LlvmValueType, count: bigint, name: string): LlvmValue<LlvmPointerType> {
+    return this.#builder.entryAllocaArray(type, count, name);
   }
 
   public uniqueName(hint: string): string {

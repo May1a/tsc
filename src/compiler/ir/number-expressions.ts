@@ -11,7 +11,7 @@ import { numberConstantValue, numberExpressionFromNumber } from "./number-consta
 import { lowerClassNumberAccess, lowerNumberAccessExpression } from "./number-access.js";
 import { lowerNumberOperator } from "./number-operators.js";
 import { isPlannedBuiltinCall } from "./builtins/index.js";
-import { lowerCallThisValue, lowerSpreadCallValue } from "./value-calls.js";
+import { lowerCallThisValue, lowerSpreadCallValue, resolveCallValueTarget } from "./value-calls.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
 
 // eslint-disable-next-line complexity, max-statements -- Numeric literal/identifier/NaN/prefix-unary recognition centralizes the canonical JSValue conversion paths.
@@ -127,7 +127,7 @@ export function lowerNumberExpression(
   }
 
   if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.MinusToken) {
-    const value = context.lowerNumberExpression(context, expression.operand, bindings);
+    const value = lowerCoercedNumberOperand(context, expression.operand, bindings);
     if (value.kind !== "lowered") {
       return value;
     }
@@ -140,7 +140,7 @@ export function lowerNumberExpression(
   }
 
   if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.TildeToken) {
-    const value = context.lowerNumberExpression(context, expression.operand, bindings);
+    const value = lowerCoercedNumberOperand(context, expression.operand, bindings);
     if (value.kind !== "lowered") {
       return value;
     }
@@ -219,27 +219,43 @@ function lowerRuntimeCollectionSizeExpression(
   return { kind: "runtimeCollectionSize", collectionName: binding.name };
 }
 
+function lowerCoercedNumberOperand(
+  context: LoweringContext,
+  operand: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrNumberExpression> {
+  const numeric = context.lowerNumberExpression(context, operand, bindings);
+  if (numeric.kind !== "notApplicable") {
+    return numeric;
+  }
+  const value = context.lowerValueExpression(context, operand, bindings);
+  if (value.kind !== "lowered") {
+    return value;
+  }
+  return produced({ kind: "valueToNumber", value: value.operation });
+}
+
 function lowerNumberBinaryExpression(
   context: LoweringContext,
   expression: ts.BinaryExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrNumberExpression> {
-  const leftResult = context.lowerNumberExpression(context, expression.left, bindings);
+  const operator = lowerNumberOperator(expression.operatorToken.kind);
+  if (operator === undefined) {
+    return notApplicable;
+  }
+  const lowerOperand = operator === "add" ? context.lowerNumberExpression : lowerCoercedNumberOperand;
+  const leftResult = lowerOperand(context, expression.left, bindings);
   if (leftResult.kind === "unsupported") {
     return leftResult;
   }
   const left = loweredPayload(leftResult);
-  const rightResult = context.lowerNumberExpression(context, expression.right, bindings);
+  const rightResult = lowerOperand(context, expression.right, bindings);
   if (rightResult.kind === "unsupported") {
     return rightResult;
   }
   const right = loweredPayload(rightResult);
   if (left === undefined || right === undefined) {
-    return notApplicable;
-  }
-
-  const operator = lowerNumberOperator(expression.operatorToken.kind);
-  if (operator === undefined) {
     return notApplicable;
   }
 
@@ -328,11 +344,14 @@ function lowerNumberCallExpression(
       }
       return notApplicable;
     }
-    const callThisValueResult = lowerCallThisValue(context, expression.expression, bindings);
-    if (callThisValueResult.kind === "unsupported") {
-      return callThisValueResult;
+    const target = resolveCallValueTarget(context, expression.expression, calleeValue, bindings);
+    if (target.kind !== "lowered") {
+      return target;
     }
-    return produced({ kind: "valueToNumber", value: { kind: "callValue", callee: calleeValue, arguments: dynamicArgs, thisValue: loweredPayload(callThisValueResult) } });
+    return produced({
+      kind: "valueToNumber",
+      value: { kind: "callValue", arguments: dynamicArgs, ...target.operation }
+    });
   }
 
   if (expression.expression.text === "Number" && expression.arguments.length === 1) {

@@ -69,32 +69,17 @@ export const objectBuiltinSupport: BuiltinSupport<"object", ObjectBuiltin> = {
   setPrototypeOf: { arity: 2, state: "supported", id: "object.setPrototypeOf", placement: "static" },
   values: { arity: 1, state: "supported", id: "object.values", placement: "static" },
 
-  // Lowered in the condition tier, where the runtime has the own-property and enumerability
-  // operations. Written as a statement they are not lowered at all.
+  // Prototype methods inherited from Object.prototype (and also lowered in the condition tier for
+  // direct own-property checks).
   hasOwnProperty: { arity: 1, state: "supported", id: "object.hasOwnProperty" },
+  isPrototypeOf: { arity: 1, state: "supported", id: "object.isPrototypeOf" },
   propertyIsEnumerable: { arity: 1, state: "supported", id: "object.propertyIsEnumerable" },
+  toString: { arity: 0, state: "supported", id: "object.toString" },
+  valueOf: { arity: 0, state: "supported", id: "object.valueOf" },
 
   // Members of the object API this build has not written.
   getOwnPropertySymbols: { arity: 1, state: "planned", id: "object.getOwnPropertySymbols", placement: "static" },
-  groupBy: { arity: 2, state: "planned", id: "object.groupBy", placement: "static" },
-  isPrototypeOf: {
-    arity: 1,
-    state: "planned",
-    id: "object.isPrototypeOf",
-    reason: "the runtime has no prototype-chain query to answer it with"
-  },
-  toString: {
-    arity: 0,
-    state: "planned",
-    id: "object.toString",
-    reason: "only the boxed-primitive receiver is lowered, and a plain object would have to return \"[object Object]\""
-  },
-  valueOf: {
-    arity: 0,
-    state: "planned",
-    id: "object.valueOf",
-    reason: "only the boxed-primitive receiver is lowered, and a plain object would have to return the object itself"
-  }
+  groupBy: { arity: 2, state: "planned", id: "object.groupBy", placement: "static" }
 };
 
 /** The `Object` member with this name, or `undefined` if the name is not one of them. */

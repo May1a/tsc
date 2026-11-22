@@ -307,7 +307,8 @@ export function isBoxedAggregateCandidateBinding(binding: JsIrBindingValue | und
   if (binding?.kind !== "value") {
     return false;
   }
-  return binding.value.kind === "objectRef" || binding.value.kind === "arrayRef" || binding.value.kind === "objectDynamicAccess" || binding.value.kind === "arrayAccess" || binding.value.kind === "valueObjectDynamicAccess" || binding.value.kind === "valueArrayAccess" || binding.value.kind === "boxedPrimitive";
+  const { kind } = binding.value;
+  return kind !== "number" && kind !== "string" && kind !== "boolean";
 }
 export function lowerObjectAccessPath(
   expression: ts.PropertyAccessExpression | ts.ElementAccessExpression,

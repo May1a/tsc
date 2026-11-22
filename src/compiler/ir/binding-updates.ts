@@ -298,6 +298,11 @@ export function collectOperationValueExpressions(operation: JsIrOperation, names
   if (operation.kind === "print" && operation.expression.kind === "value") {
     collectValueExpressionObjectNames(operation.expression.value, names);
   }
+  if (operation.kind === "consoleLog") {
+    for (const argument of operation.arguments) {
+      collectValueExpressionObjectNames(argument, names);
+    }
+  }
   if (operation.kind === "if") {
     for (const nested of [...operation.thenOperations, ...operation.elseOperations]) {
       collectRuntimeShadowObjectNames(nested, names);

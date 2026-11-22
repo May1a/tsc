@@ -5,11 +5,11 @@ import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 import { updateBindings } from "./binding-updates.js";
-import { isBoxedDeclaration } from "./storage-plan.js";
+import { isBoxedDeclaration, isRuntimeAggregateDeclaration } from "./storage-plan.js";
 import { lowerDestructuringBinding } from "./destructuring.js";
 import { type DeclarationScope, declarationKindOf, declarationScope } from "./declaration-kind.js";
 import { lowerClosureFactoryCall, lowerFunctionObjectValue } from "./closures.js";
-import { errorConstructorNames, isUndefinedExpression, isUnsupportedSymbolExpression, unwrapTypeOnlyExpression } from "./predicates.js";
+import { isUndefinedExpression, isUnsupportedSymbolExpression, unwrapTypeOnlyExpression } from "./predicates.js";
 import { expressionSnippet, unsupportedNewExpressionMessage } from "./diagnostics.js";
 import { classifyArrayLiteral } from "./array-literals.js";
 import { lowerStringExpression } from "./string-constants.js";
@@ -74,6 +74,8 @@ export function lowerVariableDeclarator(
   }
   const name = declaration.name.text;
 
+  const forceRuntimeAggregate = isRuntimeAggregateDeclaration(context.storagePlan, declaration) || promotedAggregates.has(name);
+
   if (isConst) {
     if (initializer === undefined) {
       return unsupported("A `const` declaration must have an initializer");
@@ -83,20 +85,18 @@ export function lowerVariableDeclarator(
       initializer,
       bindings,
       declaration.type?.kind === ts.SyntaxKind.UnknownKeyword || declaration.type?.kind === ts.SyntaxKind.AnyKeyword,
-      isRuntimeArrayTypeHint(declaration.type) || promotedAggregates.has(name),
-      promotedAggregates.has(name)
+      isRuntimeArrayTypeHint(declaration.type) || forceRuntimeAggregate,
+      forceRuntimeAggregate
     );
   }
 
-  // Simple `var` bindings flow through the `let` path. Function-scoped hoisting
-  // (use before declaration) is not modeled, so a `var` is only supported where
-  // a `let` in the same position would be. A redeclaration in the same scope
-  // merges with the existing binding, matching function-scoped `var` semantics, while a `var`
-  // that shadows an outer binding declares a new one: the checker merges same-scope `var`
-  // declarations (and a `var` with its parameter) into one symbol, so a lone declaration with
-  // an outer name in scope is a shadowing declaration rather than a merge.
+  // Simple `var` bindings flow through the `let` path. Nested `var` declarations are pre-hoisted
+  // into `context.hoistedVars` at the enclosing function or module boundary so they stay visible
+  // after blocks and loops. A redeclaration in the same scope merges with the existing binding,
+  // matching function-scoped `var` semantics, while a `var` that shadows an outer binding declares
+  // a new one.
   const scope = declarationScope(kind);
-  if (isVar && bindings.has(name) && isSameScopeVarRedeclaration(context.typeChecker, declaration.name)) {
+  if (isVar && isHoistedOrRedeclaredVar(context, declaration.name, bindings)) {
     // `var x;` again leaves the binding's value alone.
     return initializer === undefined
       ? produced({ kind: "bindingGroup", operations: [] })
@@ -105,7 +105,70 @@ export function lowerVariableDeclarator(
   if (initializer === undefined || isBoxedDeclaration(context.storagePlan, declaration)) {
     return lowerBoxedLetBinding(context, name, initializer, bindings, scope);
   }
-  return lowerLetVariableBinding(context, name, initializer, bindings, scope);
+  return lowerLetVariableBinding(context, name, initializer, bindings, scope, isRuntimeArrayTypeHint(declaration.type) || forceRuntimeAggregate);
+}
+
+function isHoistedOrRedeclaredVar(
+  context: LoweringContext,
+  identifier: ts.Identifier,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): boolean {
+  return context.hoistedVars.has(identifier.text) ||
+    (bindings.has(identifier.text) && isSameScopeVarRedeclaration(context.typeChecker, identifier));
+}
+
+function lowerBoxedArrayLiteralInitializer(
+  context: LoweringContext,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<{ readonly preface: JsIrOperation; readonly value: JsIrValueExpression }> {
+  const arrayLiteralResult = classifyArrayLiteral(context, initializer, bindings);
+  if (arrayLiteralResult.kind === "unsupported") {
+    return arrayLiteralResult;
+  }
+  const arrayLiteral = loweredPayload(arrayLiteralResult);
+  if (arrayLiteral === undefined) {
+    return notApplicable;
+  }
+  const elements = arrayLiteral.kind === "runtime"
+    ? arrayLiteral.elements
+    : arrayLiteral.elements.map((value) => ({ kind: "value" as const, value: { kind: "number" as const, value } }));
+  const tempName = `__tscn_array_init_${context.nextSyntheticTempId}`;
+  context.nextSyntheticTempId += 1;
+  return produced({
+    preface: { kind: "runtimeArrayLiteral", name: tempName, elements },
+    value: { kind: "arrayRef", name: tempName }
+  });
+}
+
+function lowerBoxedValueInitializer(
+  context: LoweringContext,
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  build: (value: JsIrValueExpression) => JsIrOperation,
+  refusalMessage: string
+): Lowered {
+  const unwrapped = unwrapTypeOnlyExpression(initializer);
+  const functionValue = lowerFunctionObjectValue(context, unwrapped, bindings, name);
+  if (functionValue.kind !== "notApplicable") {
+    return functionValue.kind === "lowered" ? produced(build(functionValue.operation)) : functionValue;
+  }
+  const arrayInit = lowerBoxedArrayLiteralInitializer(context, initializer, bindings);
+  if (arrayInit.kind === "unsupported") {
+    return arrayInit;
+  }
+  if (arrayInit.kind === "lowered") {
+    return produced({
+      kind: "bindingGroup",
+      operations: [arrayInit.operation.preface, build(arrayInit.operation.value)]
+    });
+  }
+  const value = context.lowerValueExpression(context, unwrapped, bindings);
+  if (value.kind !== "lowered") {
+    return withRefusal(value, unsupportedIn(refusalMessage));
+  }
+  return produced(build(value.operation));
 }
 
 /**
@@ -122,16 +185,14 @@ function lowerBoxedLetBinding(
   if (initializer === undefined) {
     return produced({ kind: "letValue", name, value: { kind: "undefined" }, ...scope });
   }
-  const unwrapped = unwrapTypeOnlyExpression(initializer);
-  const functionValue = lowerFunctionObjectValue(context, unwrapped, bindings, name);
-  if (functionValue.kind !== "notApplicable") {
-    return functionValue.kind === "lowered" ? produced({ kind: "letValue", name, value: functionValue.operation, ...scope }) : functionValue;
-  }
-  const value = context.lowerValueExpression(context, unwrapped, bindings);
-  if (value.kind !== "lowered") {
-    return withRefusal(value, unsupportedIn(unsupportedLetInitializerMessage(initializer)));
-  }
-  return produced({ kind: "letValue", name, value: value.operation, ...scope });
+  return lowerBoxedValueInitializer(
+    context,
+    name,
+    initializer,
+    bindings,
+    (value) => ({ kind: "letValue", name, value, ...scope }),
+    unsupportedLetInitializerMessage(initializer)
+  );
 }
 
 /**
@@ -209,11 +270,14 @@ function lowerVarRedeclaration(
     return produced({ kind: "assignBoolean", name, value: booleanValue.operation });
   }
   if (binding?.kind === "valueVariable") {
-    const value = context.lowerValueExpression(context, initializer, bindings);
-    if (value.kind !== "lowered") {
-      return withRefusal(value, unsupportedIn(`The value redeclaring \`${name}\` is not an expression this build can evaluate`));
-    }
-    return produced({ kind: "assignValue", name, value: value.operation });
+    return lowerBoxedValueInitializer(
+      context,
+      name,
+      initializer,
+      bindings,
+      (value) => ({ kind: "assignValue", name, value }),
+      `The value redeclaring \`${name}\` is not an expression this build can evaluate`
+    );
   }
   if (binding?.kind !== "number" || binding.value.kind !== "variable") {
     return unsupported("`var` redeclaration is only supported for number, string, boolean, and boxed bindings");
@@ -230,9 +294,11 @@ function lowerLetVariableBinding(
   name: string,
   initializer: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
-  scope: DeclarationScope
+  scope: DeclarationScope,
+  forceRuntimeArray = false
 ): Lowered {
-  const functionValue = lowerFunctionObjectValue(context, unwrapTypeOnlyExpression(initializer), bindings, name);
+  const unwrapped = unwrapTypeOnlyExpression(initializer);
+  const functionValue = lowerFunctionObjectValue(context, unwrapped, bindings, name);
   if (functionValue.kind === "unsupported") {
     return functionValue;
   }
@@ -240,27 +306,14 @@ function lowerLetVariableBinding(
     return produced({ kind: "letValue", name, value: functionValue.operation, ...scope });
   }
 
-  const arrayLiteralResult = classifyArrayLiteral(context, initializer, bindings);
-  if (arrayLiteralResult.kind === "unsupported") {
-    return arrayLiteralResult;
-  }
-  const arrayLiteral = loweredPayload(arrayLiteralResult);
-  if (arrayLiteral?.kind === "fixed") {
-    return produced({
-      kind: "arrayLiteral",
-      ...scope,
-      name,
-      elements: arrayLiteral.elements
-    });
+  const arrayBinding = lowerLetArrayLiteralBinding(context, name, initializer, bindings, scope, forceRuntimeArray);
+  if (arrayBinding.kind !== "notApplicable") {
+    return arrayBinding;
   }
 
-  if (arrayLiteral?.kind === "runtime") {
-    return produced({
-      kind: "runtimeArrayLiteral",
-      ...scope,
-      name,
-      elements: arrayLiteral.elements
-    });
+  const collection = lowerRuntimeCollectionBinding(context, name, unwrapped, bindings, scope);
+  if (collection.kind !== "notApplicable") {
+    return collection;
   }
 
   // `undefined` and `null` initializers are values, not conditions: letting them fall through to
@@ -274,29 +327,46 @@ function lowerLetVariableBinding(
   if (booleanValue.kind === "unsupported") {
     return booleanValue;
   }
-  if (booleanValue.kind === "lowered") {
-    return produced({
-      kind: "letBoolean",
-      ...scope,
-      name,
-      value: booleanValue.operation
-    });
+  if (booleanValue.kind === "lowered" && booleanValue.operation.kind !== "valueTruthy") {
+    return produced({ kind: "letBoolean", ...scope, name, value: booleanValue.operation });
   }
 
   const stringValue = context.lowerStringRuntimeExpression(context, initializer, bindings);
-  if (stringValue.kind === "unsupported") {
-    return stringValue;
-  }
-  if (stringValue.kind === "lowered") {
-    return produced({
-      kind: "letString",
-      ...scope,
-      name,
-      value: stringValue.operation
-    });
+  if (stringValue.kind !== "notApplicable") {
+    return stringValue.kind === "lowered" ? produced({ kind: "letString", ...scope, name, value: stringValue.operation }) : stringValue;
   }
 
   return lowerLetNumberOrRefusal(context, name, initializer, bindings, scope);
+}
+
+function lowerLetArrayLiteralBinding(
+  context: LoweringContext,
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  scope: DeclarationScope,
+  forceRuntimeArray: boolean
+): Lowered {
+  const arrayLiteralResult = classifyArrayLiteral(context, initializer, bindings);
+  if (arrayLiteralResult.kind === "unsupported") {
+    return arrayLiteralResult;
+  }
+  const arrayLiteral = loweredPayload(arrayLiteralResult);
+  if (arrayLiteral === undefined) {
+    return notApplicable;
+  }
+  if (arrayLiteral.kind === "runtime") {
+    return produced({ kind: "runtimeArrayLiteral", ...scope, name, elements: arrayLiteral.elements });
+  }
+  if (forceRuntimeArray) {
+    return produced({
+      kind: "runtimeArrayLiteral",
+      ...scope,
+      name,
+      elements: arrayLiteral.elements.map((value) => ({ kind: "value", value: { kind: "number", value } }))
+    });
+  }
+  return produced({ kind: "arrayLiteral", ...scope, name, elements: arrayLiteral.elements });
 }
 
 /**
@@ -364,15 +434,15 @@ function unsupportedLetInitializerMessage(initializer: ts.Expression): string {
 }
 
 /**
- * Why a `let` or `var` cannot hold a collection or an error: a `const` keeps those in their own
- * aggregate storage, and the value tier cannot construct them.
+ * Why a boxed `let` or `var` cannot hold a collection: `Map` and `Set` live in collection storage
+ * rather than boxed slots, so a reassigned or uninitialized `let` cannot hold them yet.
  */
 function constOnlyAggregateRefusal(initializer: ts.Expression): string | undefined {
   if (!ts.isNewExpression(initializer) || !ts.isIdentifier(initializer.expression)) {
     return undefined;
   }
   const constructorName = initializer.expression.text;
-  if (constructorName !== "Map" && constructorName !== "Set" && !errorConstructorNames.has(constructorName)) {
+  if (constructorName !== "Map" && constructorName !== "Set") {
     return undefined;
   }
   return `\`new ${constructorName}()\` constructs a \`${constructorName}\`, which a \`let\` or \`var\` binding cannot hold yet`;
@@ -484,7 +554,7 @@ export function lowerConstVariableBinding(
   if (booleanCondition.kind === "unsupported") {
     return booleanCondition;
   }
-  if (booleanCondition.kind === "lowered") {
+  if (booleanCondition.kind === "lowered" && booleanCondition.operation.kind !== "valueTruthy") {
     return produced({
       kind: "constBooleanExpression",
       name,
@@ -541,11 +611,7 @@ export function lowerConstAggregateBinding(
   }
   const objectLiteral = loweredPayload(objectLiteralResult);
   if (forceRuntimeObject && objectLiteral?.kind === "fixed") {
-    const value = fixedObjectToRuntimeObjectValue(objectLiteral.value);
-    if (value === undefined) {
-      return notApplicable;
-    }
-    return produced({ kind: "runtimeObjectLiteral", name, value });
+    return produced({ kind: "runtimeObjectLiteral", name, value: fixedObjectToRuntimeObjectValue(objectLiteral.value) });
   }
   if (objectLiteral?.kind === "fixed") {
     return produced({ kind: "objectLiteral", name, value: objectLiteral.value, needsRuntimeShadow: false });

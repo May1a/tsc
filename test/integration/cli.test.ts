@@ -45,7 +45,7 @@ describe("tscn CLI", () => {
       // Continuing past it means the consequence is reported too. That is the plan's stated alternative
       // to aborting the file — one diagnostic per refused statement — and it is the behaviour a
       // statement-tier refusal already had.
-      expect(result.stderr).toContain("Unrecognized call target: new A().m()");
+      expect(result.stderr).toContain("`new A(...)` constructs `A`, which is not a class declared in this module");
       // Reported against the statement that caused it, not at position 0 as the file-level catch did.
       expect(result.stderr).toMatch(/class-refusal-reason-survives\.ts:6:1: error TSCN1002/);
     } finally {
@@ -464,10 +464,7 @@ describe("tscn CLI", () => {
       ["call-argument-unsupported.ts", "`eval` cannot be used as a value yet"],
       ["new-unknown-constructor-unsupported.ts", "`new Test262Error(...)` constructs `Test262Error`, which is not a class declared in this module"],
       ["eval-source-unsupported.ts", "Calling `eval` with source text is not supported yet"],
-      ["typeof-instance-unsupported.ts", "`typeof c` cannot be answered statically yet"],
-      ["map-in-let-unsupported.ts", "`new Map()` constructs a `Map`, which a `let` or `var` binding cannot hold yet"],
       ["member-read-argument-unsupported.ts", "The argument `Math.max` is not an expression this build can evaluate"],
-      ["let-destructuring-fixed-array-unsupported.ts", "A `let` destructuring cannot read `xs` yet"],
       ["for-update-clause-unsupported.ts", "A `for` statement update clause must be an assignment or update expression"],
       ["unary-plus-unsupported.ts", "Unary `+` expressions are not supported yet"],
       ["nested-class-unsupported.ts", "Class declarations inside function and block bodies are not supported yet"]

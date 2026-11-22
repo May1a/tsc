@@ -69,7 +69,10 @@ const defaultCompilerOptions = (): ts.ParsedCommandLine => ({
     // documents `ESNext` output, and it still maps an explicit `./x.js` specifier onto `x.ts`.
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     target: ts.ScriptTarget.ES2022,
-    strict: true
+    strict: true,
+    // Do not pick up ambient `@types` packages (such as `bun-types`) from the working directory's
+    // `node_modules` when no tsconfig selects them.
+    types: []
   },
   fileNames: [],
   errors: []
@@ -123,13 +126,10 @@ const findAncestorTsConfig = (
   const walk = (current: string): Effect.Effect<string | undefined, PlatformError, FileSystem.FileSystem | Path.Path> =>
     Effect.gen(function* walkGen() {
       const step = yield* probeStep(current);
-      if (step.step === "found") {
-        return step.path;
+      if (step.step === "descend") {
+        return yield* walk(step.path);
       }
-      if (step.step === "stop") {
-        return step.path;
-      }
-      return yield* walk(step.path);
+      return step.step === "found" ? step.path : undefined;
     });
   return Effect.gen(function* wrap() {
     const path = yield* Path.Path;

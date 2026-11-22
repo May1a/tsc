@@ -3,7 +3,7 @@ import type { VariantHandlers, VariantOfKind } from "../dispatch.js";
 import type { OperationContext } from "./operation-context.js";
 import { llvm } from "../llvm-ir/index.js";
 import { boxString } from "./expression-context.js";
-import { literalString } from "./value-support.js";
+import { keep, literalString } from "./value-support.js";
 
 /** Print expression kinds that are primitive by construction, which `print` formats directly. */
 const primitiveExpressionKinds: ReadonlySet<ResolvedExpression["kind"]> = new Set(["string", "stringExpression", "number", "boolean"]);
@@ -11,7 +11,7 @@ const primitiveExpressionKinds: ReadonlySet<ResolvedExpression["kind"]> = new Se
 type ScalarKind =
   | "constNumber" | "letNumber" | "assignNumber" | "constString" | "constStringExpression" | "letString" | "assignString"
   | "constBoolean" | "constBooleanExpression" | "letBoolean" | "assignBoolean" | "constValue" | "letValue" | "assignValue"
-  | "print" | "throwValue" | "discardValue" | "returnNumber" | "returnString" | "returnValue" | "call" | "callValue" | "inlineCpp"
+  | "print" | "consoleLog" | "throwValue" | "discardValue" | "returnNumber" | "returnString" | "returnValue" | "call" | "callValue" | "inlineCpp"
   | "requireObjectCoercible" | "block" | "labeledBlock" | "bindingGroup" | "if" | "tryCatch" | "switch" | "while" | "doWhile" | "for" | "break" | "continue";
 
 type ScalarVariants = { readonly [K in ScalarKind]: VariantOfKind<ResolvedOperation, K> };
@@ -59,6 +59,21 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
     const printable = context.runtime.callWithCompletion("valueToPrimitive", [value, context.cursor.currentBlock().int(llvm.i1, 0n)],
       context.cursor.uniqueName("print.primitive"), context.exceptionTarget());
     context.runtime.callVoid("valuePrint", [printable]);
+  },
+  consoleLog: (operation, context) => {
+    const values = operation.arguments.map((argument) => keep(context.expressions.value(argument), context));
+    const block = context.cursor.currentBlock();
+    const count = block.int(llvm.i64, BigInt(values.length));
+    if (values.length === 0) {
+      context.runtime.callVoid("valueConsoleLog", [count, block.nullPtr()]);
+      return;
+    }
+    const pointer = context.cursor.entryAllocaArray(llvm.i64, BigInt(values.length), context.cursor.uniqueName("console.arguments"));
+    for (const [index, value] of values.entries()) {
+      const slot = block.getElementPtr(llvm.i64, pointer, [{ type: llvm.i64, value: BigInt(index) }], context.cursor.uniqueName("console.argument"));
+      block.store(value, slot);
+    }
+    context.runtime.callVoid("valueConsoleLog", [count, pointer]);
   },
   throwValue: (operation, context) => context.throwValue(context.expressions.value(operation.value)),
   discardValue: (operation, context) => { context.expressions.value(operation.value); },

@@ -3,19 +3,43 @@ import { type VariantHandlers, type VariantOfKind, dispatchKind } from "../dispa
 import { type LlvmBlockBuilder, type LlvmValue, llvm } from "../llvm-ir/index.js";
 import { type ExpressionContext, boxString } from "./expression-context.js";
 import { branchValue } from "./expression-branches.js";
+import type { BoxedValue } from "./value-boundary.js";
 
 type NumberNode<K extends ResolvedNumberExpression["kind"]> = VariantOfKind<ResolvedNumberExpression, K>;
 type NumberVariants = { readonly [K in ResolvedNumberExpression["kind"]]: NumberNode<K> };
 type NumberValue = LlvmValue<typeof llvm.double>;
+
+function coerceValueToNumber(value: BoxedValue, context: ExpressionContext): NumberValue {
+  context.roots.push(value);
+  const converted = context.runtime.callWithCompletion("valueToNumberObservable", [value],
+    context.cursor.uniqueName("number.coerce"), context.exceptionTarget());
+  return context.values.forBlock(context.cursor.currentBlock()).unboxNumber(converted);
+}
 
 export function numberIndex(expression: ResolvedNumberExpression, context: ExpressionContext): LlvmValue<typeof llvm.i64> {
   const number = context.expressions.number(expression);
   return context.runtime.call("numberToIndex", [number], context.cursor.uniqueName("index"));
 }
 
-function binary(expression: NumberNode<"binary">, context: ExpressionContext): NumberValue {
-  const left = context.expressions.number(expression.left);
+function binaryOperands(expression: NumberNode<"binary">, context: ExpressionContext): readonly [NumberValue, NumberValue] {
+  if (expression.left.kind !== "valueToNumber") {
+    return [context.expressions.number(expression.left), context.expressions.number(expression.right)];
+  }
+  // ECMAScript evaluates both operands to values before applying ToNumeric(left) then ToNumeric(right),
+  // so side effects inside `left.valueOf()` cannot alter `right` or skip evaluating `right`.
+  const leftValue = context.expressions.value(expression.left.value);
+  context.roots.push(leftValue);
+  if (expression.right.kind === "valueToNumber") {
+    const rightValue = context.expressions.value(expression.right.value);
+    context.roots.push(rightValue);
+    return [coerceValueToNumber(leftValue, context), coerceValueToNumber(rightValue, context)];
+  }
   const right = context.expressions.number(expression.right);
+  return [coerceValueToNumber(leftValue, context), right];
+}
+
+function binary(expression: NumberNode<"binary">, context: ExpressionContext): NumberValue {
+  const [left, right] = binaryOperands(expression, context);
   const block = context.cursor.currentBlock();
   const name = context.cursor.uniqueName("number.binary");
   switch (expression.operator) {
@@ -190,8 +214,7 @@ const handlers: VariantHandlers<NumberVariants, ExpressionContext, NumberValue> 
   },
   runtimeCollectionSize: (expression, context) => rawLength(context.runtime.call("collectionSize",
     [context.bindings.pointer(expression.collectionName)], context.cursor.uniqueName("collection.size")), context),
-  valueToNumber: (expression, context) => context.runtime.call("valueToNumber", [context.expressions.value(expression.value)],
-    context.cursor.uniqueName("number.coerce")),
+  valueToNumber: (expression, context) => coerceValueToNumber(context.expressions.value(expression.value), context),
   parseInt: (expression, context) => {
     const value = context.expressions.string(expression.value);
     return context.runtime.call("parseInt", [value.length, value.bytes], context.cursor.uniqueName("number.parse"));

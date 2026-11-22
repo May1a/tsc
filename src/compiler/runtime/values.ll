@@ -121,8 +121,11 @@ true:
 false:
   ret i1 false
 }
+@.value.infinity = private unnamed_addr constant [9 x i8] c"Infinity\00"
+
 define double @valueToNumber(i64 %value) {
 entry:
+  %end.slot = alloca ptr
   %is.undefined = icmp eq i64 %value, 9222246136947933184
   br i1 %is.undefined, label %nan, label %check.null
 check.null:
@@ -151,28 +154,152 @@ string.skip.ws:
   %scan.ptr = getelementptr i8, ptr %ptr, i64 %scan.i
   %scan.byte = load i8, ptr %scan.ptr
   %scan.is.space = icmp eq i8 %scan.byte, 32
-  %scan.is.tab = icmp eq i8 %scan.byte, 9
-  %scan.is.lf = icmp eq i8 %scan.byte, 10
-  %scan.is.ws.0 = or i1 %scan.is.space, %scan.is.tab
-  %scan.is.ws = or i1 %scan.is.ws.0, %scan.is.lf
+  %scan.ctl.off = sub i8 %scan.byte, 9
+  %scan.is.ctl = icmp ule i8 %scan.ctl.off, 4
+  %scan.is.ws = or i1 %scan.is.space, %scan.is.ctl
   br i1 %scan.is.ws, label %scan_ws, label %string.validate
 scan_ws:
   %scan.next = add i64 %scan.i, 1
   br label %string.skip.ws
 string.validate:
-  %is.digit.low = icmp uge i8 %scan.byte, 48
-  %is.digit.high = icmp ule i8 %scan.byte, 57
-  %is.digit = and i1 %is.digit.low, %is.digit.high
+  %is.empty = icmp eq i8 %scan.byte, 0
+  br i1 %is.empty, label %zero, label %string.check.radix
+string.check.radix:
+  %start.ptr = getelementptr i8, ptr %ptr, i64 %scan.i
+  %starts.zero = icmp eq i8 %scan.byte, 48
+  br i1 %starts.zero, label %radix.prefix, label %string.check.sign
+radix.prefix:
+  %radix.ch.ptr = getelementptr i8, ptr %start.ptr, i64 1
+  %radix.ch = load i8, ptr %radix.ch.ptr
+  %is.hex.lo = icmp eq i8 %radix.ch, 120
+  %is.hex.hi = icmp eq i8 %radix.ch, 88
+  %is.hex = or i1 %is.hex.lo, %is.hex.hi
+  br i1 %is.hex, label %radix.hex, label %radix.check.bin
+radix.check.bin:
+  %is.bin.lo = icmp eq i8 %radix.ch, 98
+  %is.bin.hi = icmp eq i8 %radix.ch, 66
+  %is.bin = or i1 %is.bin.lo, %is.bin.hi
+  br i1 %is.bin, label %radix.bin, label %radix.check.oct
+radix.check.oct:
+  %is.oct.lo = icmp eq i8 %radix.ch, 111
+  %is.oct.hi = icmp eq i8 %radix.ch, 79
+  %is.oct = or i1 %is.oct.lo, %is.oct.hi
+  br i1 %is.oct, label %radix.oct, label %string.check.sign
+radix.hex:
+  br label %radix.start
+radix.bin:
+  br label %radix.start
+radix.oct:
+  br label %radix.start
+radix.start:
+  %radix.base = phi i8 [ 16, %radix.hex ], [ 2, %radix.bin ], [ 8, %radix.oct ]
+  %radix.base.f = phi double [ 16.0, %radix.hex ], [ 2.0, %radix.bin ], [ 8.0, %radix.oct ]
+  %radix.digits = getelementptr i8, ptr %start.ptr, i64 2
+  br label %radix.loop
+radix.loop:
+  %radix.ptr = phi ptr [ %radix.digits, %radix.start ], [ %radix.next.ptr, %radix.step ]
+  %radix.acc = phi double [ 0.0, %radix.start ], [ %radix.next.acc, %radix.step ]
+  %radix.count = phi i64 [ 0, %radix.start ], [ %radix.next.count, %radix.step ]
+  %radix.byte = load i8, ptr %radix.ptr
+  %r.dec = sub i8 %radix.byte, 48
+  %r.is.dec = icmp ule i8 %r.dec, 9
+  br i1 %r.is.dec, label %radix.check.bound, label %radix.check.lower
+radix.check.lower:
+  %r.lo = sub i8 %radix.byte, 97
+  %r.is.lo = icmp ule i8 %r.lo, 5
+  %r.lo.val = add i8 %r.lo, 10
+  br i1 %r.is.lo, label %radix.check.bound, label %radix.check.upper
+radix.check.upper:
+  %r.hi = sub i8 %radix.byte, 65
+  %r.is.hi = icmp ule i8 %r.hi, 5
+  %r.hi.val = add i8 %r.hi, 10
+  br i1 %r.is.hi, label %radix.check.bound, label %radix.done
+radix.check.bound:
+  %radix.digit = phi i8 [ %r.dec, %radix.loop ], [ %r.lo.val, %radix.check.lower ], [ %r.hi.val, %radix.check.upper ]
+  %radix.in.range = icmp ult i8 %radix.digit, %radix.base
+  br i1 %radix.in.range, label %radix.step, label %radix.done
+radix.step:
+  %radix.digit.f = uitofp i8 %radix.digit to double
+  %radix.scaled = fmul double %radix.acc, %radix.base.f
+  %radix.next.acc = fadd double %radix.scaled, %radix.digit.f
+  %radix.next.count = add i64 %radix.count, 1
+  %radix.next.ptr = getelementptr i8, ptr %radix.ptr, i64 1
+  br label %radix.loop
+radix.done:
+  %radix.empty = icmp eq i64 %radix.count, 0
+  br i1 %radix.empty, label %nan, label %string.tail
+string.check.sign:
   %is.plus = icmp eq i8 %scan.byte, 43
   %is.minus = icmp eq i8 %scan.byte, 45
-  %is.dot = icmp eq i8 %scan.byte, 46
-  %sign = or i1 %is.plus, %is.minus
-  %numeric.start.0 = or i1 %is.digit, %sign
-  %numeric.start = or i1 %numeric.start.0, %is.dot
-  br i1 %numeric.start, label %string.parse, label %nan
+  %has.sign = or i1 %is.plus, %is.minus
+  %sign.off = zext i1 %has.sign to i64
+  %num.ptr = getelementptr i8, ptr %start.ptr, i64 %sign.off
+  %first.byte = load i8, ptr %num.ptr
+  %starts.I = icmp eq i8 %first.byte, 73
+  br i1 %starts.I, label %inf.loop, label %decimal.check.dot
+inf.loop:
+  %inf.i = phi i64 [ 0, %string.check.sign ], [ %inf.next, %inf.match ]
+  %inf.done = icmp eq i64 %inf.i, 8
+  br i1 %inf.done, label %inf.matched, label %inf.cmp
+inf.cmp:
+  %inf.src.ptr = getelementptr i8, ptr %num.ptr, i64 %inf.i
+  %inf.src.byte = load i8, ptr %inf.src.ptr
+  %inf.exp.ptr = getelementptr i8, ptr @.value.infinity, i64 %inf.i
+  %inf.exp.byte = load i8, ptr %inf.exp.ptr
+  %inf.eq = icmp eq i8 %inf.src.byte, %inf.exp.byte
+  br i1 %inf.eq, label %inf.match, label %nan
+inf.match:
+  %inf.next = add i64 %inf.i, 1
+  br label %inf.loop
+inf.matched:
+  %inf.end = getelementptr i8, ptr %num.ptr, i64 8
+  %inf.val = select i1 %is.minus, double 0xFFF0000000000000, double 0x7FF0000000000000
+  br label %string.tail
+decimal.check.dot:
+  %is.dot = icmp eq i8 %first.byte, 46
+  br i1 %is.dot, label %decimal.after.dot, label %decimal.check.digit
+decimal.after.dot:
+  %after.dot.ptr = getelementptr i8, ptr %num.ptr, i64 1
+  %after.dot = load i8, ptr %after.dot.ptr
+  %after.dot.off = sub i8 %after.dot, 48
+  %after.dot.digit = icmp ule i8 %after.dot.off, 9
+  br i1 %after.dot.digit, label %string.parse, label %nan
+decimal.check.digit:
+  %first.off = sub i8 %first.byte, 48
+  %first.is.digit = icmp ule i8 %first.off, 9
+  br i1 %first.is.digit, label %decimal.check.signed.hex, label %nan
+decimal.check.signed.hex:
+  %first.is.zero = icmp eq i8 %first.byte, 48
+  br i1 %first.is.zero, label %decimal.check.hex.prefix, label %string.parse
+decimal.check.hex.prefix:
+  %second.ptr = getelementptr i8, ptr %num.ptr, i64 1
+  %second.byte = load i8, ptr %second.ptr
+  %signed.hex.lo = icmp eq i8 %second.byte, 120
+  %signed.hex.hi = icmp eq i8 %second.byte, 88
+  %signed.hex = or i1 %signed.hex.lo, %signed.hex.hi
+  br i1 %signed.hex, label %nan, label %string.parse
 string.parse:
-  %parsed = call double @strtod(ptr %ptr, ptr null)
-  ret double %parsed
+  %parsed = call double @strtod(ptr %start.ptr, ptr %end.slot)
+  %end.ptr = load ptr, ptr %end.slot
+  %no.digits = icmp eq ptr %end.ptr, %start.ptr
+  br i1 %no.digits, label %nan, label %string.tail
+string.tail:
+  %tail.val = phi double [ %radix.acc, %radix.done ], [ %inf.val, %inf.matched ], [ %parsed, %string.parse ], [ %tail.val, %string.tail.ws ]
+  %tail.ptr = phi ptr [ %radix.ptr, %radix.done ], [ %inf.end, %inf.matched ], [ %end.ptr, %string.parse ], [ %tail.next, %string.tail.ws ]
+  %tail.byte = load i8, ptr %tail.ptr
+  %tail.end = icmp eq i8 %tail.byte, 0
+  br i1 %tail.end, label %string.ok, label %string.tail.check
+string.tail.check:
+  %tail.sp = icmp eq i8 %tail.byte, 32
+  %tail.ctl.off = sub i8 %tail.byte, 9
+  %tail.ctl = icmp ule i8 %tail.ctl.off, 4
+  %tail.ws = or i1 %tail.sp, %tail.ctl
+  br i1 %tail.ws, label %string.tail.ws, label %nan
+string.tail.ws:
+  %tail.next = getelementptr i8, ptr %tail.ptr, i64 1
+  br label %string.tail
+string.ok:
+  ret double %tail.val
 as.number:
   %number = call double @valueNumber(i64 %value)
   ret double %number
@@ -182,6 +309,25 @@ one:
   ret double 1.0
 nan:
   ret double 0x7FF5000000000000
+}
+
+; Observable ToNumber(value): converts objects via ToPrimitive(value, NUMBER) before numeric parsing.
+define { i64, i1 } @valueToNumberObservable(i64 %value) {
+entry:
+  %converted = call { i64, i1 } @valueToPrimitive(i64 %value, i1 true)
+  %threw = extractvalue { i64, i1 } %converted, 1
+  br i1 %threw, label %error, label %parse
+error:
+  ret { i64, i1 } %converted
+parse:
+  %primitive = extractvalue { i64, i1 } %converted, 0
+  %number = call double @valueToNumber(i64 %primitive)
+  %is.nan = fcmp uno double %number, %number
+  %safe = select i1 %is.nan, double 0x7FF5000000000000, double %number
+  %boxed = call i64 @valueBoxNumber(double %safe)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
+  ret { i64, i1 } %ok
 }
 define i1 @valueLooseEquals(i64 %left, i64 %right) {
 entry:
@@ -1012,6 +1158,16 @@ invalid:
 
 ; The ordinary object prototype is real shared storage. Explicit null prototypes bypass it.
 @objectDefaultPrototypeRoot = internal global i64 0
+@.object.proto.hasOwnProperty = private unnamed_addr constant [15 x i8] c"hasOwnProperty\00"
+@.object.proto.propertyIsEnumerable = private unnamed_addr constant [21 x i8] c"propertyIsEnumerable\00"
+@.object.proto.isPrototypeOf = private unnamed_addr constant [14 x i8] c"isPrototypeOf\00"
+@.tostring.undefined.tag = private unnamed_addr constant [19 x i8] c"[object Undefined]\00"
+@.tostring.null.tag = private unnamed_addr constant [14 x i8] c"[object Null]\00"
+@.tostring.boolean.tag = private unnamed_addr constant [17 x i8] c"[object Boolean]\00"
+@.tostring.number.tag = private unnamed_addr constant [16 x i8] c"[object Number]\00"
+@.tostring.string.tag = private unnamed_addr constant [16 x i8] c"[object String]\00"
+@.tostring.function.tag = private unnamed_addr constant [18 x i8] c"[object Function]\00"
+@.tostring.error.tag = private unnamed_addr constant [15 x i8] c"[object Error]\00"
 
 define ptr @objectDefaultPrototype() {
 entry:
@@ -1019,14 +1175,32 @@ entry:
   %missing = icmp eq i64 %cached, 0
   br i1 %missing, label %create, label %done
 create:
-  %object = call ptr @objectCreateWithCapacity(ptr null, i64 2)
+  %object = call ptr @objectCreateWithCapacity(ptr null, i64 5)
   %boxed = call i64 @valueBoxObject(ptr %object)
   store i64 %boxed, ptr @objectDefaultPrototypeRoot
   call void @gcRegisterGlobalRoot(ptr @objectDefaultPrototypeRoot)
-  %to.string = call i64 @functionObjectNew(ptr @objectDefaultToString, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  %frame = call i64 @gcRootSave()
+  %to.string.name = call i64 @valueBoxString(ptr @.toprimitive.tostring, i64 8)
+  call void @gcRootPush(i64 %to.string.name)
+  %to.string = call i64 @functionObjectNew(ptr @objectDefaultToString, ptr null, i64 9222246136947933184, i64 %to.string.name, i64 0)
   call void @objectDefineDataProperty(ptr %object, i64 8, ptr @.toprimitive.tostring, i64 %to.string, i64 5)
-  %value.of = call i64 @functionObjectNew(ptr @objectDefaultValueOf, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  %value.of.name = call i64 @valueBoxString(ptr @.toprimitive.valueof, i64 7)
+  call void @gcRootPush(i64 %value.of.name)
+  %value.of = call i64 @functionObjectNew(ptr @objectDefaultValueOf, ptr null, i64 9222246136947933184, i64 %value.of.name, i64 0)
   call void @objectDefineDataProperty(ptr %object, i64 7, ptr @.toprimitive.valueof, i64 %value.of, i64 5)
+  %has.own.name = call i64 @valueBoxString(ptr @.object.proto.hasOwnProperty, i64 14)
+  call void @gcRootPush(i64 %has.own.name)
+  %has.own = call i64 @functionObjectNew(ptr @objectDefaultHasOwnProperty, ptr null, i64 9222246136947933184, i64 %has.own.name, i64 1)
+  call void @objectDefineDataProperty(ptr %object, i64 14, ptr @.object.proto.hasOwnProperty, i64 %has.own, i64 5)
+  %enum.name = call i64 @valueBoxString(ptr @.object.proto.propertyIsEnumerable, i64 20)
+  call void @gcRootPush(i64 %enum.name)
+  %enum.fn = call i64 @functionObjectNew(ptr @objectDefaultPropertyIsEnumerable, ptr null, i64 9222246136947933184, i64 %enum.name, i64 1)
+  call void @objectDefineDataProperty(ptr %object, i64 20, ptr @.object.proto.propertyIsEnumerable, i64 %enum.fn, i64 5)
+  %is.proto.name = call i64 @valueBoxString(ptr @.object.proto.isPrototypeOf, i64 13)
+  call void @gcRootPush(i64 %is.proto.name)
+  %is.proto = call i64 @functionObjectNew(ptr @objectDefaultIsPrototypeOf, ptr null, i64 9222246136947933184, i64 %is.proto.name, i64 1)
+  call void @objectDefineDataProperty(ptr %object, i64 13, ptr @.object.proto.isPrototypeOf, i64 %is.proto, i64 5)
+  call void @gcRootRestore(i64 %frame)
   ret ptr %object
 done:
   %pointer = call ptr @valueObjectPtr(i64 %cached)
@@ -1035,7 +1209,64 @@ done:
 
 define { i64, i1 } @objectDefaultToString(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
 entry:
-  %boxed = call i64 @valueBoxString(ptr @.tostring.object, i64 15)
+  %is.undefined = icmp eq i64 %this.value, 9222246136947933184
+  br i1 %is.undefined, label %tag.undefined, label %check.null
+check.null:
+  %is.null = icmp eq i64 %this.value, 9222246136947933187
+  br i1 %is.null, label %tag.null, label %check.bool
+check.bool:
+  %is.false = icmp eq i64 %this.value, 9222246136947933185
+  %is.true = icmp eq i64 %this.value, 9222246136947933186
+  %is.bool = or i1 %is.false, %is.true
+  br i1 %is.bool, label %tag.bool, label %check.ref
+check.ref:
+  %tag = and i64 %this.value, -281474976710656
+  %is.string = icmp eq i64 %tag, 9221683186994511872
+  br i1 %is.string, label %tag.string, label %check.array
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %tag.array, label %check.function
+check.function:
+  %is.function = icmp eq i64 %tag, 9221964661971222528
+  br i1 %is.function, label %tag.function, label %check.object
+check.object:
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  br i1 %is.object, label %check.error, label %tag.number
+check.error:
+  %object = call ptr @valueObjectPtr(i64 %this.value)
+  %class.slot = getelementptr i8, ptr %object, i64 48
+  %class.id = load i64, ptr %class.slot
+  %is.error = icmp ne i64 %class.id, 0
+  br i1 %is.error, label %tag.error, label %tag.object
+tag.undefined:
+  %s.undef = call i64 @valueBoxString(ptr @.tostring.undefined.tag, i64 18)
+  br label %done
+tag.null:
+  %s.null = call i64 @valueBoxString(ptr @.tostring.null.tag, i64 13)
+  br label %done
+tag.bool:
+  %s.bool = call i64 @valueBoxString(ptr @.tostring.boolean.tag, i64 16)
+  br label %done
+tag.number:
+  %s.num = call i64 @valueBoxString(ptr @.tostring.number.tag, i64 15)
+  br label %done
+tag.string:
+  %s.str = call i64 @valueBoxString(ptr @.tostring.string.tag, i64 15)
+  br label %done
+tag.array:
+  %s.arr = call i64 @valueBoxString(ptr @.tostring.array, i64 14)
+  br label %done
+tag.function:
+  %s.fn = call i64 @valueBoxString(ptr @.tostring.function.tag, i64 17)
+  br label %done
+tag.error:
+  %s.err = call i64 @valueBoxString(ptr @.tostring.error.tag, i64 14)
+  br label %done
+tag.object:
+  %s.obj = call i64 @valueBoxString(ptr @.tostring.object, i64 15)
+  br label %done
+done:
+  %boxed = phi i64 [ %s.undef, %tag.undefined ], [ %s.null, %tag.null ], [ %s.bool, %tag.bool ], [ %s.num, %tag.number ], [ %s.str, %tag.string ], [ %s.arr, %tag.array ], [ %s.fn, %tag.function ], [ %s.err, %tag.error ], [ %s.obj, %tag.object ]
   %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
   %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
   ret { i64, i1 } %ok
@@ -1043,9 +1274,625 @@ entry:
 
 define { i64, i1 } @objectDefaultValueOf(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
 entry:
-  %ok.0 = insertvalue { i64, i1 } undef, i64 %this.value, 0
+  %coercible = call { i64, i1 } @requireObjectCoercible(i64 %this.value)
+  ret { i64, i1 } %coercible
+}
+
+define { i64, i1 } @objectDefaultHasOwnProperty(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %this.value)
+  %has.arg = icmp ugt i64 %argc, 0
+  br i1 %has.arg, label %load.arg, label %convert.key
+load.arg:
+  %arg.val = load i64, ptr %argv
+  br label %convert.key
+convert.key:
+  %raw.key = phi i64 [ %arg.val, %load.arg ], [ 9222246136947933184, %entry ]
+  %key.result = call { i64, i1 } @valueToStringObservable(i64 %raw.key, i1 false)
+  %key.threw = extractvalue { i64, i1 } %key.result, 1
+  br i1 %key.threw, label %key.error, label %check
+key.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %key.result
+check:
+  %key.boxed = extractvalue { i64, i1 } %key.result, 0
+  call void @gcRootPush(i64 %key.boxed)
+  %key.ptr = call ptr @valueStringPtr(i64 %key.boxed)
+  %key.len = call i64 @valueStringLength(i64 %key.boxed)
+  %answer = call { i64, i1 } @valueHasOwnProperty(i64 %this.value, i64 %key.len, ptr %key.ptr)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %answer
+}
+
+define { i64, i1 } @objectDefaultPropertyIsEnumerable(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %this.value)
+  %has.arg = icmp ugt i64 %argc, 0
+  br i1 %has.arg, label %load.arg, label %convert.key
+load.arg:
+  %arg.val = load i64, ptr %argv
+  br label %convert.key
+convert.key:
+  %raw.key = phi i64 [ %arg.val, %load.arg ], [ 9222246136947933184, %entry ]
+  %key.result = call { i64, i1 } @valueToStringObservable(i64 %raw.key, i1 false)
+  %key.threw = extractvalue { i64, i1 } %key.result, 1
+  br i1 %key.threw, label %key.error, label %coercible
+key.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %key.result
+coercible:
+  %key.boxed = extractvalue { i64, i1 } %key.result, 0
+  call void @gcRootPush(i64 %key.boxed)
+  %checked = call { i64, i1 } @requireObjectCoercible(i64 %this.value)
+  %checked.threw = extractvalue { i64, i1 } %checked, 1
+  br i1 %checked.threw, label %coercible.error, label %dispatch
+coercible.error:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %checked
+dispatch:
+  %key.ptr = call ptr @valueStringPtr(i64 %key.boxed)
+  %key.len = call i64 @valueStringLength(i64 %key.boxed)
+  %is.object = call i1 @valueIsObject(i64 %this.value)
+  br i1 %is.object, label %object.check, label %check.array
+object.check:
+  %obj.ptr = call ptr @valueObjectPtr(i64 %this.value)
+  %obj.enum = call i1 @objectPropertyIsEnumerable(ptr %obj.ptr, i64 %key.len, ptr %key.ptr)
+  br label %answer
+check.array:
+  %is.array = call i1 @valueIsArray(i64 %this.value)
+  br i1 %is.array, label %array.check, label %check.string
+array.check:
+  %arr.ptr = call ptr @valueArrayPtr(i64 %this.value)
+  %arr.index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %arr.is.index = icmp sge i64 %arr.index, 0
+  br i1 %arr.is.index, label %array.elem, label %array.named
+array.elem:
+  %arr.has.elem = call i1 @arrayHasOwnIndex(ptr %arr.ptr, i64 %arr.index)
+  br label %answer
+array.named:
+  %arr.props.slot = getelementptr i8, ptr %arr.ptr, i64 32
+  %arr.props = load ptr, ptr %arr.props.slot
+  %arr.named.enum = call i1 @objectPropertyIsEnumerable(ptr %arr.props, i64 %key.len, ptr %key.ptr)
+  br label %answer
+check.string:
+  %is.string = call i1 @valueIsString(i64 %this.value)
+  br i1 %is.string, label %string.check, label %answer
+string.check:
+  %str.index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %str.nonneg = icmp sge i64 %str.index, 0
+  %str.len = call i64 @valueStringLength(i64 %this.value)
+  %str.in.bounds = icmp ult i64 %str.index, %str.len
+  %str.enum = and i1 %str.nonneg, %str.in.bounds
+  br label %answer
+answer:
+  %flag = phi i1 [ %obj.enum, %object.check ], [ %arr.has.elem, %array.elem ], [ %arr.named.enum, %array.named ], [ %str.enum, %string.check ], [ false, %check.string ]
+  %boxed = select i1 %flag, i64 9222246136947933186, i64 9222246136947933185
+  call void @gcRootRestore(i64 %frame)
+  %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
   %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
   ret { i64, i1 } %ok
+}
+
+define { i64, i1 } @objectDefaultIsPrototypeOf(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %has.arg = icmp ugt i64 %argc, 0
+  br i1 %has.arg, label %load.arg, label %return.false
+load.arg:
+  %candidate = load i64, ptr %argv
+  %cand.is.obj = call i1 @valueIsObject(i64 %candidate)
+  %cand.is.arr = call i1 @valueIsArray(i64 %candidate)
+  %cand.is.fn = call i1 @valueIsFunction(i64 %candidate)
+  %cand.obj.0 = or i1 %cand.is.obj, %cand.is.arr
+  %cand.obj.like = or i1 %cand.obj.0, %cand.is.fn
+  br i1 %cand.obj.like, label %check.this, label %return.false
+check.this:
+  %checked = call { i64, i1 } @requireObjectCoercible(i64 %this.value)
+  %threw = extractvalue { i64, i1 } %checked, 1
+  br i1 %threw, label %error, label %check.this.obj
+error:
+  ret { i64, i1 } %checked
+check.this.obj:
+  %this.is.obj = call i1 @valueIsObject(i64 %this.value)
+  br i1 %this.is.obj, label %target.ready, label %return.false
+target.ready:
+  %target.ptr = call ptr @valueObjectPtr(i64 %this.value)
+  %cand.non.obj = or i1 %cand.is.arr, %cand.is.fn
+  br i1 %cand.non.obj, label %array.proto, label %object.start
+array.proto:
+  %default.proto = call ptr @objectDefaultPrototype()
+  %is.default = icmp eq ptr %target.ptr, %default.proto
+  br i1 %is.default, label %return.true, label %return.false
+object.start:
+  %cand.ptr = call ptr @valueObjectPtr(i64 %candidate)
+  %first.proto = call ptr @objectGetPrototype(ptr %cand.ptr)
+  br label %walk
+walk:
+  %current = phi ptr [ %first.proto, %object.start ], [ %next.proto, %advance ]
+  %is.null = icmp eq ptr %current, null
+  br i1 %is.null, label %return.false, label %compare
+compare:
+  %matches = icmp eq ptr %current, %target.ptr
+  br i1 %matches, label %return.true, label %advance
+advance:
+  %next.proto = call ptr @objectGetPrototype(ptr %current)
+  br label %walk
+return.true:
+  ret { i64, i1 } { i64 9222246136947933186, i1 false }
+return.false:
+  ret { i64, i1 } { i64 9222246136947933185, i1 false }
+}
+
+@.console.fmt.space = private unnamed_addr constant [2 x i8] c" \00"
+@.console.fmt.newline = private unnamed_addr constant [2 x i8] c"\0A\00"
+@.console.fmt.str = private unnamed_addr constant [5 x i8] c"%.*s\00"
+@.console.fmt.s = private unnamed_addr constant [3 x i8] c"%s\00"
+@.console.fmt.negzero = private unnamed_addr constant [3 x i8] c"-0\00"
+@.console.fmt.empty.array = private unnamed_addr constant [3 x i8] c"[]\00"
+@.console.fmt.array.open = private unnamed_addr constant [3 x i8] c"[ \00"
+@.console.fmt.array.close = private unnamed_addr constant [3 x i8] c" ]\00"
+@.console.fmt.comma = private unnamed_addr constant [3 x i8] c", \00"
+@.console.fmt.empty.object = private unnamed_addr constant [3 x i8] c"{}\00"
+@.console.fmt.object.open = private unnamed_addr constant [3 x i8] c"{ \00"
+@.console.fmt.object.close = private unnamed_addr constant [3 x i8] c" }\00"
+@.console.fmt.colon = private unnamed_addr constant [3 x i8] c": \00"
+@.console.fmt.squote = private unnamed_addr constant [2 x i8] c"'\00"
+@.console.fmt.dquote = private unnamed_addr constant [2 x i8] c"\22\00"
+@.console.fmt.bslash = private unnamed_addr constant [3 x i8] c"\\\\\00"
+@.console.fmt.esc.squote = private unnamed_addr constant [3 x i8] c"\\'\00"
+@.console.fmt.esc.dquote = private unnamed_addr constant [3 x i8] c"\\\22\00"
+@.console.fmt.esc.n = private unnamed_addr constant [3 x i8] c"\\n\00"
+@.console.fmt.esc.r = private unnamed_addr constant [3 x i8] c"\\r\00"
+@.console.fmt.esc.t = private unnamed_addr constant [3 x i8] c"\\t\00"
+@.console.fmt.char = private unnamed_addr constant [3 x i8] c"%c\00"
+@.console.fmt.hole = private unnamed_addr constant [15 x i8] c"<1 empty item>\00"
+@.console.fmt.fn.named = private unnamed_addr constant [17 x i8] c"[Function: %.*s]\00"
+@.console.fmt.fn.anon = private unnamed_addr constant [23 x i8] c"[Function (anonymous)]\00"
+@.console.fmt.array.deep = private unnamed_addr constant [8 x i8] c"[Array]\00"
+@.console.fmt.object.deep = private unnamed_addr constant [9 x i8] c"[Object]\00"
+@.console.key.name = private unnamed_addr constant [5 x i8] c"name\00"
+
+define void @consolePrintQuotedString(ptr %bytes, i64 %length) {
+entry:
+  br label %scan.quotes
+scan.quotes:
+  %scan.i = phi i64 [ 0, %entry ], [ %scan.next, %scan.step ]
+  %has.single = phi i1 [ false, %entry ], [ %has.single.next, %scan.step ]
+  %has.double = phi i1 [ false, %entry ], [ %has.double.next, %scan.step ]
+  %scan.done = icmp eq i64 %scan.i, %length
+  br i1 %scan.done, label %choose.quote, label %scan.step
+scan.step:
+  %scan.ptr = getelementptr i8, ptr %bytes, i64 %scan.i
+  %scan.ch = load i8, ptr %scan.ptr
+  %is.sq = icmp eq i8 %scan.ch, 39
+  %is.dq = icmp eq i8 %scan.ch, 34
+  %has.single.next = or i1 %has.single, %is.sq
+  %has.double.next = or i1 %has.double, %is.dq
+  %scan.next = add i64 %scan.i, 1
+  br label %scan.quotes
+choose.quote:
+  %no.double = xor i1 %has.double, true
+  %use.double = and i1 %has.single, %no.double
+  %quote.str = select i1 %use.double, ptr @.console.fmt.dquote, ptr @.console.fmt.squote
+  %quote.byte = select i1 %use.double, i8 34, i8 39
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %quote.str)
+  br label %emit.loop
+emit.loop:
+  %i = phi i64 [ 0, %choose.quote ], [ %next.i, %emit.next ]
+  %done = icmp eq i64 %i, %length
+  br i1 %done, label %close.quote, label %emit.char
+emit.char:
+  %ptr = getelementptr i8, ptr %bytes, i64 %i
+  %ch = load i8, ptr %ptr
+  %is.bslash = icmp eq i8 %ch, 92
+  br i1 %is.bslash, label %emit.bslash, label %check.quote
+emit.bslash:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.bslash)
+  br label %emit.next
+check.quote:
+  %is.quote = icmp eq i8 %ch, %quote.byte
+  br i1 %is.quote, label %emit.quote, label %check.nl
+emit.quote:
+  %esc.q = select i1 %use.double, ptr @.console.fmt.esc.dquote, ptr @.console.fmt.esc.squote
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %esc.q)
+  br label %emit.next
+check.nl:
+  %is.nl = icmp eq i8 %ch, 10
+  br i1 %is.nl, label %emit.nl, label %check.cr
+emit.nl:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.esc.n)
+  br label %emit.next
+check.cr:
+  %is.cr = icmp eq i8 %ch, 13
+  br i1 %is.cr, label %emit.cr, label %check.tab
+emit.cr:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.esc.r)
+  br label %emit.next
+check.tab:
+  %is.tab = icmp eq i8 %ch, 9
+  br i1 %is.tab, label %emit.tab, label %emit.raw
+emit.tab:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.esc.t)
+  br label %emit.next
+emit.raw:
+  %ch.i32 = zext i8 %ch to i32
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.char, i32 %ch.i32)
+  br label %emit.next
+emit.next:
+  %next.i = add i64 %i, 1
+  br label %emit.loop
+close.quote:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %quote.str)
+  ret void
+}
+
+define void @consolePrintArray(ptr %array, i64 %depth) {
+entry:
+  %too.deep = icmp uge i64 %depth, 8
+  br i1 %too.deep, label %deep, label %check.empty
+deep:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.array.deep)
+  ret void
+check.empty:
+  %length = call i64 @arrayLength(ptr %array)
+  %empty = icmp eq i64 %length, 0
+  br i1 %empty, label %print.empty, label %print.open
+print.empty:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.empty.array)
+  ret void
+print.open:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.array.open)
+  %next.depth = add i64 %depth, 1
+  br label %loop
+loop:
+  %index = phi i64 [ 0, %print.open ], [ %next, %advance ]
+  %done = icmp eq i64 %index, %length
+  br i1 %done, label %print.close, label %body
+body:
+  %need.comma = icmp ne i64 %index, 0
+  br i1 %need.comma, label %comma, label %elem
+comma:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.comma)
+  br label %elem
+elem:
+  %has = call i1 @arrayHasOwnIndex(ptr %array, i64 %index)
+  br i1 %has, label %elem.present, label %elem.hole
+elem.hole:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.hole)
+  br label %advance
+elem.present:
+  %value = call i64 @arrayGet(ptr %array, i64 %index)
+  call void @consolePrintValue(i64 %value, i1 true, i64 %next.depth)
+  br label %advance
+advance:
+  %next = add i64 %index, 1
+  br label %loop
+print.close:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.array.close)
+  ret void
+}
+
+define void @consolePrintObject(ptr %object, i64 %depth) {
+entry:
+  %too.deep = icmp uge i64 %depth, 8
+  br i1 %too.deep, label %deep, label %start
+deep:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.object.deep)
+  ret void
+start:
+  %count = load i64, ptr %object
+  %entries.slot = getelementptr i8, ptr %object, i64 16
+  %entries = load ptr, ptr %entries.slot
+  %next.depth = add i64 %depth, 1
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %start ], [ %next.i, %advance ]
+  %printed = phi i64 [ 0, %start ], [ %next.printed, %advance ]
+  %done = icmp eq i64 %i, %count
+  br i1 %done, label %finish, label %check.entry
+check.entry:
+  %entry.bytes = mul i64 %i, 32
+  %entry.ptr = getelementptr i8, ptr %entries, i64 %entry.bytes
+  %stored.len = load i64, ptr %entry.ptr
+  %active = icmp sge i64 %stored.len, 0
+  br i1 %active, label %check.enum, label %skip
+check.enum:
+  %desc.slot = getelementptr i8, ptr %entry.ptr, i64 24
+  %desc = load i64, ptr %desc.slot
+  %enum.bit = and i64 %desc, 2
+  %is.enum = icmp ne i64 %enum.bit, 0
+  br i1 %is.enum, label %emit.entry, label %skip
+emit.entry:
+  %is.first = icmp eq i64 %printed, 0
+  br i1 %is.first, label %emit.open, label %emit.comma
+emit.open:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.object.open)
+  br label %emit.kv
+emit.comma:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.comma)
+  br label %emit.kv
+emit.kv:
+  %key.slot = getelementptr i8, ptr %entry.ptr, i64 8
+  %key.ptr = load ptr, ptr %key.slot
+  %key.len32 = trunc i64 %stored.len to i32
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.str, i32 %key.len32, ptr %key.ptr)
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.colon)
+  %val.slot = getelementptr i8, ptr %entry.ptr, i64 16
+  %val = load i64, ptr %val.slot
+  call void @consolePrintValue(i64 %val, i1 true, i64 %next.depth)
+  %inc.printed = add i64 %printed, 1
+  br label %advance
+skip:
+  br label %advance
+advance:
+  %next.printed = phi i64 [ %inc.printed, %emit.kv ], [ %printed, %skip ]
+  %next.i = add i64 %i, 1
+  br label %loop
+finish:
+  %none = icmp eq i64 %printed, 0
+  br i1 %none, label %print.empty, label %print.close
+print.empty:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.empty.object)
+  ret void
+print.close:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.object.close)
+  ret void
+}
+
+define void @consolePrintValue(i64 %value, i1 %nested, i64 %depth) {
+entry:
+  %is.undefined = icmp eq i64 %value, 9222246136947933184
+  br i1 %is.undefined, label %print.undefined, label %check.false
+check.false:
+  %is.false = icmp eq i64 %value, 9222246136947933185
+  br i1 %is.false, label %print.false, label %check.true
+check.true:
+  %is.true = icmp eq i64 %value, 9222246136947933186
+  br i1 %is.true, label %print.true, label %check.null
+check.null:
+  %is.null = icmp eq i64 %value, 9222246136947933187
+  br i1 %is.null, label %print.null, label %check.tag
+check.tag:
+  %tag = and i64 %value, -281474976710656
+  %is.string = icmp eq i64 %tag, 9221683186994511872
+  br i1 %is.string, label %print.string, label %check.array
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %print.array, label %check.object
+check.object:
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  br i1 %is.object, label %check.error, label %check.function
+check.error:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %class.slot = getelementptr i8, ptr %object.ptr, i64 48
+  %class.id = load i64, ptr %class.slot
+  %is.error = icmp ne i64 %class.id, 0
+  br i1 %is.error, label %print.error, label %print.object
+check.function:
+  %is.function = icmp eq i64 %tag, 9221964661971222528
+  br i1 %is.function, label %print.function, label %print.number
+print.undefined:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.value.undefined)
+  ret void
+print.false:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.value.false)
+  ret void
+print.true:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.value.true)
+  ret void
+print.null:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.value.null)
+  ret void
+print.string:
+  %str.ptr = call ptr @valueStringPtr(i64 %value)
+  %str.len = call i64 @valueStringLength(i64 %value)
+  br i1 %nested, label %print.string.quoted, label %print.string.raw
+print.string.raw:
+  %str.len32 = trunc i64 %str.len to i32
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.str, i32 %str.len32, ptr %str.ptr)
+  ret void
+print.string.quoted:
+  call void @consolePrintQuotedString(ptr %str.ptr, i64 %str.len)
+  ret void
+print.array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  call void @consolePrintArray(ptr %array.ptr, i64 %depth)
+  ret void
+print.error:
+  %error.str = call { ptr, i64 } @errorToString(ptr %object.ptr)
+  %error.ptr = extractvalue { ptr, i64 } %error.str, 0
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %error.ptr)
+  ret void
+print.object:
+  call void @consolePrintObject(ptr %object.ptr, i64 %depth)
+  ret void
+print.function:
+  %fn.name = call i64 @functionObjectGet(i64 %value, i64 4, ptr @.console.key.name)
+  %fn.has.str = call i1 @valueIsString(i64 %fn.name)
+  br i1 %fn.has.str, label %print.fn.check.len, label %print.fn.anon
+print.fn.check.len:
+  %fn.name.len = call i64 @valueStringLength(i64 %fn.name)
+  %fn.nonempty = icmp ne i64 %fn.name.len, 0
+  br i1 %fn.nonempty, label %print.fn.named, label %print.fn.anon
+print.fn.named:
+  %fn.name.ptr = call ptr @valueStringPtr(i64 %fn.name)
+  %fn.name.len32 = trunc i64 %fn.name.len to i32
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.fn.named, i32 %fn.name.len32, ptr %fn.name.ptr)
+  ret void
+print.fn.anon:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.fn.anon)
+  ret void
+print.number:
+  %is.negzero = icmp eq i64 %value, -9223372036854775808
+  br i1 %is.negzero, label %print.negzero, label %print.normal.num
+print.negzero:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.negzero)
+  ret void
+print.normal.num:
+  %number = call double @valueNumber(i64 %value)
+  %number.str = call { ptr, i64 } @numberToShortestString(double %number)
+  %number.ptr = extractvalue { ptr, i64 } %number.str, 0
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %number.ptr)
+  ret void
+}
+
+@.console.fmt.circular = private unnamed_addr constant [11 x i8] c"[Circular]\00"
+
+define void @consolePrintDouble(double %number) {
+entry:
+  %bits = bitcast double %number to i64
+  %is.negzero = icmp eq i64 %bits, -9223372036854775808
+  br i1 %is.negzero, label %print.negzero, label %print.normal
+print.negzero:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.negzero)
+  ret void
+print.normal:
+  %number.str = call { ptr, i64 } @numberToShortestString(double %number)
+  %number.ptr = extractvalue { ptr, i64 } %number.str, 0
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %number.ptr)
+  ret void
+}
+
+define void @valueConsoleLog(i64 %argc, ptr %argv) {
+entry:
+  %multi = icmp ugt i64 %argc, 1
+  br i1 %multi, label %check.format, label %plain.start
+check.format:
+  %first = load i64, ptr %argv
+  %first.is.str = call i1 @valueIsString(i64 %first)
+  br i1 %first.is.str, label %format.init, label %plain.start
+format.init:
+  %fmt.frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %first)
+  %fmt.len = call i64 @valueStringLength(i64 %first)
+  br label %format.loop
+format.loop:
+  %pos = phi i64 [ 0, %format.init ], [ %pos.next, %format.advance ]
+  %arg.idx = phi i64 [ 1, %format.init ], [ %arg.idx.next, %format.advance ]
+  %fmt.done = icmp uge i64 %pos, %fmt.len
+  br i1 %fmt.done, label %format.rest, label %format.char
+format.char:
+  %fmt.ptr = call ptr @valueStringPtr(i64 %first)
+  %ch.ptr = getelementptr i8, ptr %fmt.ptr, i64 %pos
+  %ch = load i8, ptr %ch.ptr
+  %is.pct = icmp eq i8 %ch, 37
+  %next.pos.1 = add i64 %pos, 1
+  %has.spec = icmp ult i64 %next.pos.1, %fmt.len
+  %try.spec = and i1 %is.pct, %has.spec
+  br i1 %try.spec, label %format.spec, label %format.literal
+format.spec:
+  %spec.ptr = getelementptr i8, ptr %fmt.ptr, i64 %next.pos.1
+  %spec = load i8, ptr %spec.ptr
+  %is.pct.pct = icmp eq i8 %spec, 37
+  br i1 %is.pct.pct, label %format.emit.pct, label %format.check.arg
+format.emit.pct:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.char, i32 37)
+  %pos.pct = add i64 %pos, 2
+  br label %format.advance
+format.check.arg:
+  %has.arg = icmp ult i64 %arg.idx, %argc
+  br i1 %has.arg, label %format.dispatch, label %format.literal
+format.dispatch:
+  %arg.slot = getelementptr i64, ptr %argv, i64 %arg.idx
+  %arg.val = load i64, ptr %arg.slot
+  %is.s = icmp eq i8 %spec, 115
+  br i1 %is.s, label %format.s, label %format.check.d
+format.s:
+  call void @consolePrintValue(i64 %arg.val, i1 false, i64 0)
+  br label %format.consumed
+format.check.d:
+  %is.d = icmp eq i8 %spec, 100
+  br i1 %is.d, label %format.d, label %format.check.i
+format.d:
+  %d.num = call double @valueToNumber(i64 %arg.val)
+  call void @consolePrintDouble(double %d.num)
+  br label %format.consumed
+format.check.i:
+  %is.i = icmp eq i8 %spec, 105
+  br i1 %is.i, label %format.i, label %format.check.f
+format.i:
+  %i.str = call { ptr, i64 } @valueToString(i64 %arg.val)
+  %i.bytes = extractvalue { ptr, i64 } %i.str, 0
+  %i.len = extractvalue { ptr, i64 } %i.str, 1
+  %i.num = call double @parseInt(i64 %i.len, ptr %i.bytes)
+  call void @consolePrintDouble(double %i.num)
+  br label %format.consumed
+format.check.f:
+  %is.f = icmp eq i8 %spec, 102
+  br i1 %is.f, label %format.f, label %format.check.j
+format.f:
+  %f.is.num = call i1 @valueIsNumberForSameValueZero(i64 %arg.val)
+  br i1 %f.is.num, label %format.f.num, label %format.f.parse
+format.f.num:
+  %f.direct = call double @valueNumber(i64 %arg.val)
+  call void @consolePrintDouble(double %f.direct)
+  br label %format.consumed
+format.f.parse:
+  %f.str = call { ptr, i64 } @valueToString(i64 %arg.val)
+  %f.bytes = extractvalue { ptr, i64 } %f.str, 0
+  %f.len = extractvalue { ptr, i64 } %f.str, 1
+  %f.parsed = call double @parseFloat(i64 %f.len, ptr %f.bytes)
+  call void @consolePrintDouble(double %f.parsed)
+  br label %format.consumed
+format.check.j:
+  %is.j = icmp eq i8 %spec, 106
+  br i1 %is.j, label %format.j, label %format.check.o
+format.j:
+  %j.res = call { i64, i1 } @jsonStringify(i64 %arg.val, ptr null, i64 0)
+  %j.threw = extractvalue { i64, i1 } %j.res, 1
+  br i1 %j.threw, label %format.j.err, label %format.j.ok
+format.j.err:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.circular)
+  br label %format.consumed
+format.j.ok:
+  %j.val = extractvalue { i64, i1 } %j.res, 0
+  call void @consolePrintValue(i64 %j.val, i1 false, i64 0)
+  br label %format.consumed
+format.check.o:
+  %is.o.lo = icmp eq i8 %spec, 111
+  %is.o.hi = icmp eq i8 %spec, 79
+  %is.o = or i1 %is.o.lo, %is.o.hi
+  br i1 %is.o, label %format.o, label %format.literal
+format.o:
+  call void @consolePrintValue(i64 %arg.val, i1 true, i64 0)
+  br label %format.consumed
+format.consumed:
+  %pos.spec = add i64 %pos, 2
+  %arg.next = add i64 %arg.idx, 1
+  br label %format.advance
+format.literal:
+  %ch.i32 = zext i8 %ch to i32
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.char, i32 %ch.i32)
+  br label %format.advance
+format.advance:
+  %pos.next = phi i64 [ %pos.pct, %format.emit.pct ], [ %pos.spec, %format.consumed ], [ %next.pos.1, %format.literal ]
+  %arg.idx.next = phi i64 [ %arg.idx, %format.emit.pct ], [ %arg.next, %format.consumed ], [ %arg.idx, %format.literal ]
+  br label %format.loop
+format.rest:
+  call void @gcRootRestore(i64 %fmt.frame)
+  br label %loop
+plain.start:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %plain.start ], [ %arg.idx, %format.rest ], [ %next, %step ]
+  %done = icmp uge i64 %i, %argc
+  br i1 %done, label %finish, label %body
+body:
+  %need.space = icmp ne i64 %i, 0
+  br i1 %need.space, label %space, label %step
+space:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.space)
+  br label %step
+step:
+  %slot = getelementptr i64, ptr %argv, i64 %i
+  %value = load i64, ptr %slot
+  call void @consolePrintValue(i64 %value, i1 false, i64 0)
+  %next = add i64 %i, 1
+  br label %loop
+finish:
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.console.fmt.newline)
+  ret void
 }
 
 ; Arrays and functions have intrinsic conversion methods even without object-layout prototypes.

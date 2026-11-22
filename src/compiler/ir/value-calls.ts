@@ -79,15 +79,14 @@ export function lowerValueCallExpression(
     }
     return notApplicable;
   }
-  const callThisValueResult = lowerCallThisValue(context, expression.expression, bindings);
-  if (callThisValueResult.kind === "unsupported") {
-    return callThisValueResult;
+  const target = resolveCallValueTarget(context, expression.expression, calleeValue, bindings);
+  if (target.kind !== "lowered") {
+    return target;
   }
   const built: Extract<JsIrValueExpression, { readonly kind: "callValue" }> = {
     kind: "callValue",
-    callee: calleeValue,
     arguments: args,
-    thisValue: loweredPayload(callThisValueResult),
+    ...target.operation,
     optionalCallee: optionalStatementCallee(expression)
   };
   return produced(optionalReceiverGuard(built) ?? built);
@@ -134,14 +133,14 @@ function lowerMethodCallTarget(
   callee: ts.LeftHandSideExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<{ readonly receiver: JsIrValueExpression; readonly key: JsIrStringExpression }> {
-  if (ts.isPropertyAccessExpression(callee)) {
+  if (ts.isPropertyAccessExpression(callee) && !ts.isPrivateIdentifier(callee.name) && callee.questionDotToken === undefined) {
     const receiver = context.lowerValueExpression(context, callee.expression, bindings);
     if (receiver.kind !== "lowered") {
       return receiver;
     }
     return produced({ receiver: receiver.operation, key: { kind: "literal", value: callee.name.text } });
   }
-  if (ts.isElementAccessExpression(callee)) {
+  if (ts.isElementAccessExpression(callee) && callee.questionDotToken === undefined) {
     const receiverResult = context.lowerValueExpression(context, callee.expression, bindings);
     if (receiverResult.kind === "unsupported") {
       return receiverResult;
@@ -151,7 +150,19 @@ function lowerMethodCallTarget(
     if (keyResult.kind === "unsupported") {
       return keyResult;
     }
-    const key = loweredPayload(keyResult);
+    let key = loweredPayload(keyResult);
+    if (key === undefined) {
+      const indexResult = context.lowerNumberExpression(context, callee.argumentExpression, bindings);
+      if (indexResult.kind === "unsupported") {
+        return indexResult;
+      }
+      const index = loweredPayload(indexResult);
+      if (index !== undefined) {
+        key = index.kind === "literal"
+          ? { kind: "literal", value: String(index.value) }
+          : { kind: "stringConversion", value: { kind: "number", value: index } };
+      }
+    }
     if (receiver === undefined || key === undefined) {
       return notApplicable;
     }
@@ -160,46 +171,147 @@ function lowerMethodCallTarget(
   return notApplicable;
 }
 
-// eslint-disable-next-line max-statements -- Spread lowering validates fixed and iterable arguments before preserving a single method receiver evaluation.
+interface MethodCallTarget {
+  readonly methodReceiver: JsIrValueExpression;
+  readonly methodKey: JsIrStringExpression;
+}
+
+function isNonOptionalPublicMemberCallee(callee: ts.LeftHandSideExpression): boolean {
+  return (ts.isPropertyAccessExpression(callee) && !ts.isPrivateIdentifier(callee.name) && callee.questionDotToken === undefined)
+    || (ts.isElementAccessExpression(callee) && callee.questionDotToken === undefined);
+}
+
+/**
+ * Reuses the already-lowered receiver and key from `calleeValue` when a non-optional member call
+ * lowered to a dynamic property or element lookup, avoiding re-lowering the receiver chain.
+ */
+function extractMethodCallTarget(
+  callee: ts.LeftHandSideExpression,
+  calleeValue: JsIrValueExpression
+): MethodCallTarget | undefined {
+  if (!isNonOptionalPublicMemberCallee(callee)) {
+    return undefined;
+  }
+  if (calleeValue.kind === "valueObjectDynamicAccess") {
+    return { methodReceiver: calleeValue.value, methodKey: calleeValue.key };
+  }
+  if (calleeValue.kind === "objectDynamicAccess") {
+    return { methodReceiver: { kind: "objectRef", name: calleeValue.objectName }, methodKey: calleeValue.key };
+  }
+  if (calleeValue.kind === "valueArrayAccess") {
+    const methodKey: JsIrStringExpression = calleeValue.index.kind === "literal"
+      ? { kind: "literal", value: String(calleeValue.index.value) }
+      : { kind: "stringConversion", value: { kind: "number", value: calleeValue.index } };
+    return { methodReceiver: calleeValue.value, methodKey };
+  }
+  if (calleeValue.kind === "arrayAccess") {
+    const methodKey: JsIrStringExpression = calleeValue.key
+      ?? (calleeValue.index.kind === "literal"
+        ? { kind: "literal", value: String(calleeValue.index.value) }
+        : { kind: "stringConversion", value: { kind: "number", value: calleeValue.index } });
+    return { methodReceiver: { kind: "arrayRef", name: calleeValue.arrayName }, methodKey };
+  }
+  return undefined;
+}
+
+export interface ResolvedCallValueTarget {
+  readonly callee: JsIrValueExpression;
+  readonly thisValue?: JsIrValueExpression;
+  readonly methodReceiver?: JsIrValueExpression;
+  readonly methodKey?: JsIrStringExpression;
+}
+
+/**
+ * Resolves the callee and receiver for a `callValue`. For non-optional member calls, lifts the
+ * receiver and key into `methodReceiver`/`methodKey` (dropping the redundant `callee` subtree) so
+ * chained calls stay linear in IR size and evaluate each receiver once.
+ */
+export function resolveCallValueTarget(
+  context: LoweringContext,
+  callee: ts.LeftHandSideExpression,
+  calleeValue: JsIrValueExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<ResolvedCallValueTarget> {
+  const extracted = extractMethodCallTarget(callee, calleeValue);
+  if (extracted !== undefined) {
+    return produced({ callee: { kind: "undefined" }, ...extracted });
+  }
+  if (calleeValue.kind !== "optionalChain") {
+    const methodTarget = lowerMethodCallTarget(context, callee, bindings);
+    if (methodTarget.kind === "unsupported") {
+      return methodTarget;
+    }
+    if (methodTarget.kind === "lowered") {
+      return produced({
+        callee: { kind: "undefined" },
+        methodReceiver: methodTarget.operation.receiver,
+        methodKey: methodTarget.operation.key
+      });
+    }
+  }
+  const callThis = lowerCallThisValue(context, callee, bindings);
+  if (callThis.kind === "unsupported") {
+    return callThis;
+  }
+  return produced({ callee: calleeValue, thisValue: loweredPayload(callThis) });
+}
+
 export function lowerSpreadCallValue(
   context: LoweringContext,
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<Extract<JsIrValueExpression, { readonly kind: "callValue" }>> {
-  if (!expression.arguments.some(ts.isSpreadElement)) {
+  if (!expression.arguments.some(ts.isSpreadElement) || isFixedRestSpreadCall(expression, bindings)) {
     return notApplicable;
-  }
-  if (ts.isIdentifier(expression.expression)) {
-    const directFunction = bindings.get(expression.expression.text);
-    const hasRestParameter = directFunction?.kind === "function" && directFunction.parameters.some((parameter) => parameter.isRest === true);
-    const spreadsAreFixed = expression.arguments.every((argument) => {
-      if (!ts.isSpreadElement(argument)) {
-        return true;
-      }
-      return ts.isIdentifier(argument.expression) && bindings.get(argument.expression.text)?.kind === "array";
-    });
-    if (hasRestParameter && spreadsAreFixed) {
-      return notApplicable;
-    }
   }
   const callee = context.lowerValueExpression(context, expression.expression, bindings);
   if (callee.kind !== "lowered") {
     return callee;
   }
-  const methodTargetResult = lowerMethodCallTarget(context, expression.expression, bindings);
-  if (methodTargetResult.kind === "unsupported") {
-    return methodTargetResult;
+  const target = resolveCallValueTarget(context, expression.expression, callee.operation, bindings);
+  if (target.kind !== "lowered") {
+    return target;
   }
-  const methodTarget = loweredPayload(methodTargetResult);
+  const spreadArguments = lowerSpreadElements(context, expression.arguments, bindings);
+  if (spreadArguments.kind !== "lowered") {
+    return spreadArguments;
+  }
+  return produced({
+    kind: "callValue",
+    arguments: [],
+    ...target.operation,
+    spreadArguments: spreadArguments.operation
+  });
+}
+
+function isFixedRestSpreadCall(
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): boolean {
+  if (!ts.isIdentifier(expression.expression)) {
+    return false;
+  }
+  const directFunction = bindings.get(expression.expression.text);
+  const hasRestParameter = directFunction?.kind === "function" && directFunction.parameters.some((parameter) => parameter.isRest === true);
+  if (!hasRestParameter) {
+    return false;
+  }
+  return expression.arguments.every((argument) =>
+    !ts.isSpreadElement(argument) || (ts.isIdentifier(argument.expression) && bindings.get(argument.expression.text)?.kind === "array")
+  );
+}
+
+function lowerSpreadElements(
+  context: LoweringContext,
+  argumentList: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<readonly JsIrRuntimeArrayElement[]> {
   const spreadArguments: JsIrRuntimeArrayElement[] = [];
-  for (const argument of expression.arguments) {
+  for (const argument of argumentList) {
     if (ts.isSpreadElement(argument)) {
-      if (ts.isIdentifier(argument.expression)) {
-        const binding = bindings.get(argument.expression.text);
-        if (binding?.kind === "array") {
-          spreadArguments.push({ kind: "spread", arrayName: binding.name, sourceKind: "fixed" });
-          continue;
-        }
+      if (ts.isIdentifier(argument.expression) && bindings.get(argument.expression.text)?.kind === "array") {
+        spreadArguments.push({ kind: "spread", arrayName: argument.expression.text, sourceKind: "fixed" });
+        continue;
       }
       const source = context.lowerValueExpression(context, argument.expression, bindings);
       if (source.kind !== "lowered") {
@@ -218,21 +330,5 @@ export function lowerSpreadCallValue(
     }
     spreadArguments.push({ kind: "value", value: value.operation });
   }
-  let thisValue: JsIrValueExpression | undefined;
-  if (methodTarget === undefined) {
-    const callThisValueResult2 = lowerCallThisValue(context, expression.expression, bindings);
-    if (callThisValueResult2.kind === "unsupported") {
-      return callThisValueResult2;
-    }
-    thisValue = loweredPayload(callThisValueResult2);
-  }
-  return produced({
-    kind: "callValue",
-    callee: callee.operation,
-    arguments: [],
-    thisValue,
-    methodReceiver: methodTarget?.receiver,
-    methodKey: methodTarget?.key,
-    spreadArguments
-  });
+  return produced(spreadArguments);
 }

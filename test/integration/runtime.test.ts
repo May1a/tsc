@@ -727,8 +727,6 @@ describe("tscn expanded runtime roadmap", () => {
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
-    await expectUnsupportedDiagnostic("array-runtime-find-unsupported-callback.ts");
-    await expectUnsupportedDiagnostic("array-runtime-for-each-unsupported-callback.ts");
   });
 
   test("supports package BO callback-driven runtime array methods", async () => {
@@ -1102,8 +1100,7 @@ describe("tscn expanded runtime roadmap", () => {
     await Promise.all([
       "number-to-fixed-range-error-unsupported.ts",
       "number-to-locale-string-unsupported.ts",
-      "parse-int-radix-unsupported.ts",
-      "array-runtime-map-noarg-unsupported.ts"
+      "parse-int-radix-unsupported.ts"
     ].map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 

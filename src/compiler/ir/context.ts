@@ -40,6 +40,7 @@ export interface LoweringContext {
   nextFunctionObjectId: number;
   nextJsonStatementValueId: number;
   nextOptionalCallStatementValueId: number;
+  nextSyntheticTempId: number;
   /**
    * The classes the source file being lowered has declared, under every name each answers to.
    *
@@ -59,6 +60,8 @@ export interface LoweringContext {
    * before any statement lowers. Set per source file with `classes`.
    */
   storagePlan: StoragePlan;
+  /** Names hoisted as function-scoped `var` slots in the module or function currently lowering. */
+  hoistedVars: ReadonlySet<string>;
   /**
    * The program's type checker, for the questions a type answers that lowering state cannot: which
    * class an identifier's static type names, and what a call returns.

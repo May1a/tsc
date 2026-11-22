@@ -38,6 +38,13 @@ export const valuesContracts = {
     name: "valueToNumber", parameters: [llvm.i64], returns: llvm.double, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "valueToNumberObservable": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueToNumberObservable", parameters: [llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
   "valueLooseEquals": {
     resultKind: "scalar",
     pointerResult: { kind: "none" },
@@ -260,7 +267,70 @@ export const valuesContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "objectDefaultValueOf", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
-    effects: { allocates: false, collects: false, completion: "explicit" }
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "objectDefaultHasOwnProperty": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectDefaultHasOwnProperty", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "objectDefaultPropertyIsEnumerable": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectDefaultPropertyIsEnumerable", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "objectDefaultIsPrototypeOf": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectDefaultIsPrototypeOf", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "consolePrintQuotedString": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "consolePrintQuotedString", parameters: [llvm.ptr, llvm.i64], returns: llvm.void, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "consolePrintArray": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "consolePrintArray", parameters: [llvm.ptr, llvm.i64], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "consolePrintObject": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "consolePrintObject", parameters: [llvm.ptr, llvm.i64], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "consolePrintValue": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "consolePrintValue", parameters: [llvm.i64, llvm.i1, llvm.i64], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "consolePrintDouble": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "consolePrintDouble", parameters: [llvm.double], returns: llvm.void, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "valueConsoleLog": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueConsoleLog", parameters: [llvm.i64, llvm.ptr], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
   },
   "valueConversionPropertyGet": {
     resultKind: "completion",

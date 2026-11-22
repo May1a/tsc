@@ -13,6 +13,7 @@ import { collectMethodEnclosingCaptureNames } from "./captures.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { expressionSnippet } from "./diagnostics.js";
 import { SYMBOL_ITERATOR_SENTINEL } from "../symbols.js";
+import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
 
 // eslint-disable-next-line complexity, max-statements -- Constructor lowering owns super ordering, instance initialization, and body scope restoration.
 export function lowerClassConstructor(
@@ -127,17 +128,13 @@ export function lowerClassConstructor(
       body.push(classFieldStore(field, initializer.operation));
     }
     if (constructorDeclaration?.body !== undefined) {
-      for (const statement of remainingStatements) {
-        if (isNonExecutableDeclaration(statement)) {
-          continue;
-        }
-        const result = context.lowerStatement(context, statement, fnBindings);
-        if (result.kind !== "lowered") {
-          return unsupportedIn(classAbortReason(result));
-        }
-        body.push(result.operation);
-        updateBindings(result.operation, fnBindings);
+      const loweredStatements = lowerConstructorBodyStatements(context, remainingStatements, constructorDeclaration.parameters, fnBindings);
+      if (loweredStatements.kind !== "lowered") {
+        return loweredStatements;
       }
+      // Isolate constructor body declarations (including hoisted `var`s) in a nested block scope so
+      // binding resolution does not let them shadow outer bindings read by field initializers.
+      body.push({ kind: "block", operations: loweredStatements.operation });
     }
     const constructorCaptures = constructorDeclaration?.body === undefined ? [] :
       collectMethodEnclosingCaptureNames(context.typeChecker, constructorDeclaration, constructorDeclaration.body,
@@ -151,6 +148,30 @@ export function lowerClassConstructor(
     context.activeEnclosingClass = previousClass;
     context.activeClassMethodStatic = previousStatic;
   }
+}
+
+function lowerConstructorBodyStatements(
+  context: LoweringContext,
+  statements: readonly ts.Statement[],
+  constructorParameters: readonly ts.ParameterDeclaration[],
+  bindings: Map<string, JsIrBindingValue>
+): Produced<readonly JsIrOperation[]> {
+  const parameterNames = collectParameterBindingNames(constructorParameters, [CLASS_THIS_NAME]);
+  return withHoistedVars(context, statements, bindings, parameterNames, (preface) => {
+    const operations: JsIrOperation[] = [...preface];
+    for (const statement of statements) {
+      if (isNonExecutableDeclaration(statement)) {
+        continue;
+      }
+      const result = context.lowerStatement(context, statement, bindings);
+      if (result.kind !== "lowered") {
+        return unsupportedIn(classAbortReason(result));
+      }
+      operations.push(result.operation);
+      updateBindings(result.operation, bindings);
+    }
+    return produced(operations);
+  });
 }
 
 /**

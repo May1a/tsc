@@ -165,7 +165,7 @@ test("typed cleanup paths run finally on return, throw, break and continue, and 
     const source = path.join(directory, "main.ll");
     const executable = path.join(directory, "main");
     await writeFile(source, controlModule().render().text);
-    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable]).pipe(Effect.provide(commandExecutorLayer)));
+    const compiled = await Effect.runPromise(captureCommand(clang, [source, "-o", executable, "-lm"]).pipe(Effect.provide(commandExecutorLayer)));
     expect(compiled.status, compiled.stderr).toBe(0);
     const result = await Effect.runPromise(captureCommand(executable, []).pipe(Effect.provide(commandExecutorLayer)));
     expect(result).toEqual({ status: 0, stderr: "", stdout: "finally\n7\n9\n11\ncaught.finally\n12\n1\n2\n3\n3\ncollected.finally\nretained\nouter.catch\n14\nouter.finally\n15\ninner.finally\nouter.catch.throw\n17\nouter.finally.throw\n18\n1\n19\n0\n1\n2\n3\nfirst.case\nmiddle.default\nlast.case\n20\n" });
