@@ -367,4 +367,39 @@ export const valuesContracts = {
     name: "boxedToStringMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
     effects: { allocates: true, collects: true, completion: "explicit" }
   },
+  "newInstanceResult": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "newInstanceResult", parameters: [llvm.i64, llvm.i64], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "newTargetGet": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "newTargetGet", parameters: [], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "newTargetSwap": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "newTargetSwap", parameters: [llvm.i64], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "jsCallWithNewTarget": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "jsCallWithNewTarget", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "valueInstanceOf": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueInstanceOf", parameters: [llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

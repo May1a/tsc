@@ -28,5 +28,10 @@ export function createDeclaresCallees(module: LlvmModuleBuilder): RuntimeCalleeT
     "llvm.ctlz.i32": registerRuntimeContract(module, declaresContracts["llvm.ctlz.i32"]),
     "strtod": registerRuntimeContract(module, declaresContracts.strtod),
     "strlen": registerRuntimeContract(module, declaresContracts.strlen),
+    "asin": registerRuntimeContract(module, declaresContracts.asin),
+    "acos": registerRuntimeContract(module, declaresContracts.acos),
+    "atan": registerRuntimeContract(module, declaresContracts.atan),
+    "atan2": registerRuntimeContract(module, declaresContracts.atan2),
+    "gettimeofday": registerRuntimeContract(module, declaresContracts.gettimeofday),
   };
 }

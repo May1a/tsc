@@ -78,49 +78,9 @@ function unresolvedDiagnostic(
 
 /** The declaration an identity names, or `undefined` when no declaration has that ordinal. */
 export { BindingRegistry } from "./binding-id.js";
-export type {
-  BindingDeclaration,
-  BindingId,
-  BindingKind,
-  BindingLocation,
-  BindingRef,
-  BindingRepresentation,
-  BindingStorage,
-  BindingTable,
-  FunctionId,
-  LexicalOwner
-} from "./binding-id.js";
+export type { BindingDeclaration, BindingId, BindingKind, BindingRef, BindingRepresentation, BindingStorage, BindingTable, FunctionId, LexicalOwner } from "./binding-id.js";
 export { UnresolvedBindingError } from "./scopes.js";
 export type { Resolver } from "./resolver.js";
-export type {
-  ResolvedArrayIsArrayOperand,
-  ResolvedArrayMutation,
-  ResolvedCallArgument,
-  ResolvedClosureValue,
-  ResolvedCondition,
-  ResolvedConcatElement,
-  ResolvedDataDescriptor,
-  ResolvedDestructureElement,
-  ResolvedDestructureSource,
-  ResolvedExpression,
-  ResolvedFunctionObject,
-  ResolvedFunctionObjectCapture,
-  ResolvedFunctionParameter,
-  ResolvedModule,
-  ResolvedLeafOperationKind,
-  ResolvedNumberExpression,
-  ResolvedObjectAssignSource,
-  ResolvedObjectField,
-  ResolvedObjectFieldValue,
-  ResolvedObjectValue,
-  ResolvedOperation,
-  ResolvedRuntimeArrayElement,
-  ResolvedRuntimeObjectField,
-  ResolvedRuntimeObjectValue,
-  ResolvedSourceModule,
-  ResolvedStringExpression,
-  ResolvedSwitchClause,
-  ResolvedValueExpression
-} from "./resolved-types.js";
+export type { ResolvedArrayMutation, ResolvedCallArgument, ResolvedClosureValue, ResolvedCondition, ResolvedConcatElement, ResolvedDataDescriptor, ResolvedDestructureElement, ResolvedDestructureSource, ResolvedExpression, ResolvedFunctionObject, ResolvedFunctionObjectCapture, ResolvedFunctionParameter, ResolvedModule, ResolvedNumberExpression, ResolvedObjectAssignSource, ResolvedObjectField, ResolvedObjectFieldValue, ResolvedObjectValue, ResolvedOperation, ResolvedRuntimeArrayElement, ResolvedRuntimeObjectField, ResolvedRuntimeObjectValue, ResolvedSourceModule, ResolvedStringExpression, ResolvedSwitchClause, ResolvedValueExpression } from "./resolved-types.js";
 
 export { resolvedOperationChildren, visitResolvedOperations } from "./visit.js";

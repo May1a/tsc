@@ -214,7 +214,7 @@ function extractMethodCallTarget(
   return undefined;
 }
 
-export interface ResolvedCallValueTarget {
+interface ResolvedCallValueTarget {
   readonly callee: JsIrValueExpression;
   readonly thisValue?: JsIrValueExpression;
   readonly methodReceiver?: JsIrValueExpression;

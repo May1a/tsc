@@ -1,4 +1,4 @@
-import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, knownBuiltinMessage } from "./support.js";
+import { type BuiltinSupport, builtinEntryFor, knownBuiltinMessage } from "./support.js";
 
 /**
  * What this build does with `Object` and `Object.prototype`.
@@ -14,7 +14,7 @@ import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, kn
  */
 
 /** The `Object` and `Object.prototype` members this build knows about. */
-export type ObjectBuiltin =
+type ObjectBuiltin =
   | "assign"
   | "create"
   | "defineProperties"
@@ -82,10 +82,6 @@ export const objectBuiltinSupport: BuiltinSupport<"object", ObjectBuiltin> = {
   groupBy: { arity: 2, state: "planned", id: "object.groupBy", placement: "static" }
 };
 
-/** The `Object` member with this name, or `undefined` if the name is not one of them. */
-export function objectBuiltinFor(name: string): BuiltinEntry<"object"> | undefined {
-  return builtinFor(objectBuiltinSupport, "object", name);
-}
 
 /**
  * The diagnostic for an `Object` member this build has not written, or `undefined` if the name is

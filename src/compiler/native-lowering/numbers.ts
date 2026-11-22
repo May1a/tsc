@@ -107,9 +107,9 @@ function update(expression: NumberNode<"update">, context: ExpressionContext): N
 const unaryMath = {
   abs: "mathAbs", floor: "mathFloor", ceil: "mathCeil", trunc: "mathTrunc", round: "mathRound", sqrt: "mathSqrt",
   cbrt: "mathCbrt", exp: "mathExp", log: "mathLog", log2: "mathLog2", log10: "mathLog10", fround: "mathFround",
-  clz32: "mathClz32", sin: "mathSin", cos: "mathCos", tan: "mathTan", sign: "mathSign"
+  clz32: "mathClz32", sin: "mathSin", cos: "mathCos", tan: "mathTan", asin: "mathAsin", acos: "mathAcos", atan: "mathAtan", sign: "mathSign"
 } as const;
-const binaryMath = { pow: "mathPow", hypot: "mathHypot2", imul: "mathImul" } as const;
+const binaryMath = { pow: "mathPow", hypot: "mathHypot2", imul: "mathImul", atan2: "mathAtan2" } as const;
 
 function math(expression: NumberNode<"mathCall">, context: ExpressionContext): NumberValue {
   const args = expression.arguments.map((argument) => context.expressions.number(argument));
@@ -124,7 +124,7 @@ function math(expression: NumberNode<"mathCall">, context: ExpressionContext): N
   }
   if (method === "random") return context.runtime.call("mathRandom", [], context.cursor.uniqueName("math.random"));
   const missing = context.cursor.currentBlock().double(Number.NaN);
-  if (method === "pow" || method === "hypot" || method === "imul") {
+  if (method === "pow" || method === "hypot" || method === "imul" || method === "atan2") {
     return context.runtime.call(binaryMath[method], [args.at(0) ?? missing, args.at(1) ?? missing], context.cursor.uniqueName(`math.${method}`));
   }
   return context.runtime.call(unaryMath[method], [args.at(0) ?? missing], context.cursor.uniqueName(`math.${method}`));
@@ -183,6 +183,7 @@ const handlers: VariantHandlers<NumberVariants, ExpressionContext, NumberValue> 
   parameter: (expression, context) => context.bindings.number(expression.name),
   variable: (expression, context) => context.bindings.number(expression.name),
   unary, binary, update, mathCall: math,
+  dateNow: (_expression, context) => context.runtime.call("dateNow", [], context.cursor.uniqueName("date.now")),
   ternary: (expression, context) => branchValue(context.cursor, context.expressions.condition(expression.condition), llvm.double,
     () => context.expressions.number(expression.consequent), () => context.expressions.number(expression.alternate), "number.ternary"),
   call: (expression, context) => {

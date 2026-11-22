@@ -1,8 +1,7 @@
 declare function print(value: unknown): void;
 
-// The runtime has no locale comparison, so `localeCompare` lowers to the first character's code
-// point. `packages.test.ts` pins the same number; the support manifest records the entry as
-// `"stubbed"` and its `reason` is what says so.
-const s: string = "hello";
-const compared: number = s.localeCompare("world");
-print(compared);
+const a: string = "apple";
+const b: string = "banana";
+print(a.localeCompare(b) < 0);
+print(b.localeCompare(a) > 0);
+print(a.localeCompare("apple") === 0);

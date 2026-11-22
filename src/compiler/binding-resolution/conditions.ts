@@ -17,6 +17,11 @@ export const conditionHandlers = tierHandlers<JsIrCondition, ResolvedCondition>(
     value: resolver.value(node.value),
     prototypeName: resolver.reference(node.prototypeName)
   }),
+  valueInstanceOf: (node, resolver) => ({
+    kind: "valueInstanceOf",
+    left: resolver.value(node.left),
+    right: resolver.value(node.right)
+  }),
   errorInstanceOf: (node, resolver) => ({
     kind: "errorInstanceOf",
     value: resolver.value(node.value),

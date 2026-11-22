@@ -1,8 +1,6 @@
 import {
-  type BuiltinEntry,
   type BuiltinSupport,
   builtinEntryFor,
-  builtinFor,
   knownBuiltinMessage
 } from "./support.js";
 
@@ -16,7 +14,7 @@ refused with that reason, which is more useful than the table's.
  */
 
 /** The JSON members this build knows about, keyed by the name they have in source. */
-export type JsonBuiltin =
+type JsonBuiltin =
   | "parse"
   | "stringify";
 
@@ -26,10 +24,6 @@ export const jsonBuiltinSupport: BuiltinSupport<"json", JsonBuiltin> = {
   "stringify": { arity: { from: 1, to: 3 }, state: "supported", id: "json.stringify", fixture: "stringify", reason: "the replacer must be a string-array binding and the indent a numeric literal between 0 and 10" },
 };
 
-/** The `JSON` member with this name, or `undefined` if the name is not one of them. */
-export function jsonBuiltinFor(name: string): BuiltinEntry<"json"> | undefined {
-  return builtinFor(jsonBuiltinSupport, "json", name);
-}
 
 /**
  * The diagnostic for a `JSON` member this build has not written, or `undefined` if the name

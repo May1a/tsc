@@ -64,50 +64,56 @@ export function lowerRuntimeStringSearchCondition(
   return produced({ kind: "stringSearch", method, receiver, search });
 }
 
-// eslint-disable-next-line complexity -- Number predicate routing is centralized with the existing predicate surface.
+const numberStaticPredicates: Readonly<Record<string, "numberIsNaN" | "numberIsFinite" | "numberIsInteger" | "numberIsSafeInteger" | undefined>> = {
+  isNaN: "numberIsNaN",
+  isFinite: "numberIsFinite",
+  isInteger: "numberIsInteger",
+  isSafeInteger: "numberIsSafeInteger"
+};
+
 export function lowerNumberPredicateCondition(
   context: LoweringContext,
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrCondition> {
-  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "Boolean" && expression.arguments.length === 1) {
-    const value = context.lowerValueExpression(context, expression.arguments[0], bindings);
-    if (value.kind === "unsupported") {
-      return value;
-    }
-    if (value.kind === "lowered") {
-      return produced({ kind: "valueTruthy", value: value.operation });
-    }
+  if (!ts.isCallExpression(expression) || expression.arguments.length !== 1) {
+    return notApplicable;
   }
-  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "isNaN" && expression.arguments.length === 1) {
-    const value = context.lowerValueExpression(context, expression.arguments[0], bindings);
-    if (value.kind === "unsupported") {
-      return value;
-    }
-    if (value.kind === "lowered") {
-      return produced({ kind: "numberPredicate", predicate: "globalIsNaN", value: value.operation });
-    }
+  const globalPredicate = lowerGlobalPredicateCondition(context, expression, bindings);
+  if (globalPredicate.kind !== "notApplicable") {
+    return globalPredicate;
   }
-  if (!ts.isCallExpression(expression) || !ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression) || expression.expression.expression.text !== "Number" || expression.arguments.length !== 1) {
+  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression) || expression.expression.expression.text !== "Number") {
+    return notApplicable;
+  }
+  const predicate = numberStaticPredicates[expression.expression.name.text];
+  if (predicate === undefined) {
+    return notApplicable;
+  }
+  const value = context.lowerValueExpression(context, expression.arguments[0], bindings);
+  return value.kind === "lowered" ? produced({ kind: "numberPredicate", predicate, value: value.operation }) : value;
+}
+
+function lowerGlobalPredicateCondition(
+  context: LoweringContext,
+  expression: ts.CallExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrCondition> {
+  if (!ts.isIdentifier(expression.expression)) {
+    return notApplicable;
+  }
+  const name = expression.expression.text;
+  if (name !== "Boolean" && name !== "isNaN" && name !== "isFinite") {
     return notApplicable;
   }
   const value = context.lowerValueExpression(context, expression.arguments[0], bindings);
   if (value.kind !== "lowered") {
     return value;
   }
-  if (expression.expression.name.text === "isNaN") {
-    return produced({ kind: "numberPredicate", predicate: "numberIsNaN", value: value.operation });
+  if (name === "Boolean") {
+    return produced({ kind: "valueTruthy", value: value.operation });
   }
-  if (expression.expression.name.text === "isFinite") {
-    return produced({ kind: "numberPredicate", predicate: "numberIsFinite", value: value.operation });
-  }
-  if (expression.expression.name.text === "isInteger") {
-    return produced({ kind: "numberPredicate", predicate: "numberIsInteger", value: value.operation });
-  }
-  if (expression.expression.name.text === "isSafeInteger") {
-    return produced({ kind: "numberPredicate", predicate: "numberIsSafeInteger", value: value.operation });
-  }
-  return notApplicable;
+  return produced({ kind: "numberPredicate", predicate: name === "isNaN" ? "globalIsNaN" : "globalIsFinite", value: value.operation });
 }
 
 export function lowerPresenceConditionExpression(

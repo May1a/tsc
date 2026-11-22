@@ -1,7 +1,8 @@
 import type { BindingRef } from "../binding-resolution/index.js";
+import { llvm } from "../llvm-ir/index.js";
 import { type OperationHandlers, type OperationNode, integer, ownAggregate } from "./aggregate-support.js";
 import type { OperationContext } from "./operation-context.js";
-import { keep, stringValue } from "./value-support.js";
+import { keep, stringValue, undefinedValue } from "./value-support.js";
 
 function collectionPointer(reference: BindingRef, context: OperationContext): ReturnType<OperationContext["bindings"]["pointer"]> {
   keep(context.bindings.value(reference), context);
@@ -81,9 +82,24 @@ function iterator(operation: OperationNode<"runtimeIteratorNew">, context: Opera
   context.writes.storeValue(operation.name, result);
 }
 
+function clearCollection(operation: OperationNode<"runtimeCollectionClear">, context: OperationContext): void {
+  const collection = collectionPointer(operation.collectionName, context);
+  context.runtime.callVoid("collectionClear", [collection]);
+}
+
+function forEachCollection(operation: OperationNode<"runtimeCollectionForEach">, context: OperationContext): void {
+  const collection = collectionPointer(operation.collectionName, context);
+  const callback = keep(context.expressions.value(operation.callback), context);
+  const thisArg = operation.thisArg === undefined ? undefinedValue(context) : keep(context.expressions.value(operation.thisArg), context);
+  const isMap = context.cursor.currentBlock().int(llvm.i1, operation.isMap ? 1n : 0n);
+  context.runtime.callWithCompletion("collectionForEach", [collection, isMap, callback, thisArg],
+    context.cursor.uniqueName("collection.for.each"), context.exceptionTarget());
+}
+
 export const collectionOperationHandlers = {
   runtimeMapNew: create, runtimeSetNew: create, runtimeMapFromIterable: fromIterable, runtimeSetFromIterable: fromIterable,
   runtimeMapFromArray: fromArray, runtimeSetFromArray: fromArray, runtimeMapFromCollection: fromCollection, runtimeSetFromCollection: fromCollection,
   runtimeMapSet: mapSet, runtimeMapSetResult: mapSet, runtimeSetAdd: setAdd, runtimeSetAddResult: setAdd,
-  runtimeCollectionSetIterator: setIterator, runtimeIteratorNew: iterator
+  runtimeCollectionSetIterator: setIterator, runtimeCollectionClear: clearCollection, runtimeCollectionForEach: forEachCollection,
+  runtimeIteratorNew: iterator
 } satisfies Partial<OperationHandlers>;

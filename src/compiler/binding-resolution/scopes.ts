@@ -4,7 +4,7 @@ import type { JsIrFunctionObjectDefinition } from "../ir/bindings.js";
 import type { ResolvedFunctionObject } from "./resolved-types.js";
 
 /** Why a scope exists. It decides nothing about resolution; it is recorded so diagnostics can say where a name came from. */
-export type ScopeKind = "module" | "function" | "block" | "loop" | "catch";
+type ScopeKind = "module" | "function" | "block" | "loop" | "catch";
 
 interface Scope {
   readonly kind: ScopeKind;
@@ -14,7 +14,7 @@ interface Scope {
 }
 
 /** The trace id of the operation being resolved, which an unresolved reference is reported against. */
-export type TraceId = string | undefined;
+type TraceId = string | undefined;
 
 export class UnresolvedBindingError extends Error {
   public readonly bindingName: string;

@@ -11,7 +11,7 @@ import { lowerString } from "./string-expressions.js";
 import { lowerCondition } from "./conditions.js";
 import { lowerValueExpression } from "./value-expressions.js";
 
-export interface OperationOwnerOptions {
+interface OperationOwnerOptions {
   readonly capabilities: FunctionCapabilities;
   readonly writes: BindingAccess;
   readonly flow: FlowCapability;

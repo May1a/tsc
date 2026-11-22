@@ -31,7 +31,8 @@ export function collectFunctionPlans(resolved: ResolvedModule): readonly Functio
         const captures = operation.enclosingCaptureNames ?? [];
         const symbol = `tscn.function.${operation.functionId.ordinal}`;
         plans.set(operation.functionId, { symbol, functionId: operation.functionId, parameters: operation.parameters, body: operation.body,
-          traceId: operation.trace?.id, binding: operation.name, captures, sources: captures.map(bindingSource), name: spelling(operation.name), arrow: false });
+          traceId: operation.trace?.id, binding: operation.name, thisBinding: operation.thisBinding, captures, sources: captures.map(bindingSource),
+          name: spelling(operation.name), arrow: false });
         break;
       }
       case "returnClosure": {

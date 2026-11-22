@@ -181,7 +181,7 @@ test("typed value handlers preserve lazy evaluation, heap operands, and completi
     expect(result).toEqual({ status: 0, stderr: "", stdout: [
       "undefined", "null", "12", "true", "native", "a2", "9", "7", "null", "0", "1", "0", "undefined", "42", "undefined", "0",
       "5", "undefined", "2", "[object Array]", "2", "3", "true", "1", "3", "1", "undefined", "[object Object]", "16", "16", "16", "8", "8", "wrapped", "18",
-      "true", "true", "65", "66", "67", "3", "3", "[1,2]", "17", "bb", "null", "[object Array]", "13", "before2", "[12,7]", "12", "2", "undefined", "undefined", "undefined", "undefined", ""
+      "true", "true", "65", "66", "1", "3", "3", "[1,2]", "17", "bb", "null", "[object Array]", "13", "before2", "[12,7]", "12", "2", "undefined", "undefined", "undefined", "undefined", ""
     ].join("\n") });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

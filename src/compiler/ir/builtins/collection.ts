@@ -1,8 +1,6 @@
 import {
-  type BuiltinEntry,
   type BuiltinSupport,
   builtinEntryFor,
-  builtinFor,
   knownBuiltinMessage
 } from "./support.js";
 
@@ -19,7 +17,7 @@ the same thing on both. Each entry's `ownerLabel` says which object a diagnostic
  */
 
 /** The Map members this build knows about, keyed by the name they have in source. */
-export type CollectionBuiltin =
+type CollectionBuiltin =
   | "add"
   | "clear"
   | "delete"
@@ -35,22 +33,18 @@ export type CollectionBuiltin =
 /** The members, keyed by name so a name cannot be stated twice. */
 export const collectionBuiltinSupport: BuiltinSupport<"collection", CollectionBuiltin> = {
   "add": { arity: 1, state: "supported", id: "collection.add", ownerLabel: "Set" },
-  "clear": { arity: 0, state: "planned", id: "collection.clear", ownerLabel: "Map / Set" },
+  "clear": { arity: 0, state: "supported", id: "collection.clear", ownerLabel: "Map / Set" },
   "delete": { arity: 1, state: "supported", id: "collection.delete", ownerLabel: "Map / Set" },
-  "entries": { arity: 0, state: "planned", id: "collection.entries", ownerLabel: "Map / Set" },
-  "forEach": { arity: 1, state: "planned", id: "collection.forEach", ownerLabel: "Map / Set" },
+  "entries": { arity: 0, state: "supported", id: "collection.entries", ownerLabel: "Map / Set" },
+  "forEach": { arity: { from: 1, to: 2 }, state: "supported", id: "collection.forEach", ownerLabel: "Map / Set" },
   "get": { arity: 1, state: "supported", id: "collection.get", ownerLabel: "Map" },
   "has": { arity: 1, state: "supported", id: "collection.has", ownerLabel: "Map / Set" },
-  "keys": { arity: 0, state: "planned", id: "collection.keys", ownerLabel: "Map / Set" },
+  "keys": { arity: 0, state: "supported", id: "collection.keys", ownerLabel: "Map / Set" },
   "set": { arity: { from: 1, to: 2 }, state: "supported", id: "collection.set", ownerLabel: "Map" },
   "size": { arity: 0, state: "supported", id: "collection.size", ownerLabel: "Map / Set" },
-  "values": { arity: 0, state: "planned", id: "collection.values", ownerLabel: "Map / Set" },
+  "values": { arity: 0, state: "supported", id: "collection.values", ownerLabel: "Map / Set" },
 };
 
-/** The `Map` member with this name, or `undefined` if the name is not one of them. */
-export function collectionBuiltinFor(name: string): BuiltinEntry<"collection"> | undefined {
-  return builtinFor(collectionBuiltinSupport, "collection", name);
-}
 
 /**
  * The diagnostic for a `Map` member this build has not written, or `undefined` if the name

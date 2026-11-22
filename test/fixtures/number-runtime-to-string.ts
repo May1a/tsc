@@ -1,7 +1,12 @@
 declare function print(value: unknown): void;
 
-// `toString(radix)` is lowered to the integer part only, so the fixture pins an integer.
-// The support manifest records the entry as `"stubbed"` and its reason says why.
-const n: number = 255;
-const r: string = n.toString(16);
-print(r);
+const n = 255;
+print(n.toString());
+print(n.toString(16));
+print((3.75).toString(16));
+print((0.5).toString(2));
+print((-2.25).toString(2));
+const base = 8;
+print((2.625).toString(base));
+print(NaN.toString(16));
+print(Infinity.toString(16));

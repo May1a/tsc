@@ -19,7 +19,7 @@ export type GlobalBlueprint =
   | { readonly kind: "fixedObject"; readonly shadow: LlvmGlobalReference; readonly shadowed: boolean;
       readonly fields: readonly { readonly key: string; readonly storage: GlobalBlueprint }[] };
 
-export interface IncomingCaptures {
+interface IncomingCaptures {
   readonly environment: LlvmValue<typeof llvm.ptr>;
   readonly bindings: readonly BindingRef[];
   readonly globalAliases?: readonly { readonly target: BindingRef; readonly source: BindingRef }[];

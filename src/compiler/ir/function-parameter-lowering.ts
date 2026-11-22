@@ -87,7 +87,7 @@ function lowerFunctionParameter(
  * A parameter's default, lowered against the parameters before it. `= undefined` is no default at
  * all. A default this build cannot evaluate refuses the parameter rather than being dropped.
  */
-export function lowerParameterDefault(
+function lowerParameterDefault(
   context: LoweringContext,
   initializer: ts.Expression | undefined,
   name: string,

@@ -125,6 +125,16 @@ export const aggregateHandlers = {
     collectionName: resolver.reference(node.collectionName),
     value: resolver.value(node.value)
   }),
+  runtimeCollectionClear: (node, resolver) => ({
+    ...node,
+    collectionName: resolver.reference(node.collectionName)
+  }),
+  runtimeCollectionForEach: (node, resolver) => ({
+    ...node,
+    collectionName: resolver.reference(node.collectionName),
+    callback: resolver.value(node.callback),
+    thisArg: optional(node.thisArg, resolver.value)
+  }),
   runtimeSetAdd: (node, resolver) => ({
     ...node,
     setName: resolver.reference(node.setName),
@@ -167,6 +177,11 @@ export const aggregateHandlers = {
     key: resolver.string(node.key),
     getter: resolver.value(node.getter),
     setter: resolver.value(node.setter)
+  }),
+  attachFunctionProperties: (node, resolver) => ({
+    ...node,
+    functionName: resolver.reference(node.functionName),
+    propertiesName: resolver.reference(node.propertiesName)
   }),
   valueObjectStore: (node, resolver) => ({
     ...node,

@@ -131,16 +131,18 @@ function defineAccessor(operation: OperationNode<"defineAccessor">, context: Ope
   context.runtime.callVoid("objectDefineAccessor", [object, key.length, key.bytes, getter, setter]);
 }
 
+function attachFunctionProperties(operation: OperationNode<"attachFunctionProperties">, context: OperationContext): void {
+  const fn = keep(context.bindings.value(operation.functionName), context);
+  const properties = keep(context.bindings.value(operation.propertiesName), context);
+  context.runtime.callVoid("functionObjectAttachProperties", [fn, properties]);
+}
+
 function store(operation: OperationNode<"runtimeObjectStore" | "valueObjectStore">, context: OperationContext): void {
-  const target = operation.kind === "runtimeObjectStore" ? objectPointer(operation.objectName, context)
-    : keep(context.bindings.value(operation.targetName), context);
+  const reference = operation.kind === "runtimeObjectStore" ? operation.objectName : operation.targetName;
+  const target = keep(context.bindings.value(reference), context);
   const key = context.expressions.string(operation.key);
   boxString(key, context);
   const value = keep(context.expressions.value(operation.value), context);
-  if (operation.kind === "runtimeObjectStore") {
-    context.runtime.callVoid("objectSet", [target, key.length, key.bytes, value]);
-    return;
-  }
   context.runtime.callWithCompletion("valueObjectSet", [target, key.length, key.bytes, value],
     context.cursor.uniqueName("object.store"), context.exceptionTarget());
 }
@@ -240,7 +242,7 @@ export const objectOperationHandlers = {
   runtimeObjectKeys: enumerate, runtimeObjectValues: enumerate, runtimeObjectEntries: enumerate,
   runtimeObjectOwnPropertyNames: enumerate, runtimeObjectOwnPropertyDescriptors: enumerate, runtimeObjectFromEntries: fromEntries,
   runtimeObjectOwnPropertyDescriptor: ownDescriptor, runtimeObjectGetPrototype: getPrototype, runtimeObjectSetPrototype: setPrototype,
-  defineAccessor, valueObjectSetPrototype: valuePrototype, objectStore: numberStore, runtimeObjectStore: store, valueObjectStore: store,
+  defineAccessor, attachFunctionProperties, valueObjectSetPrototype: valuePrototype, objectStore: numberStore, runtimeObjectStore: store, valueObjectStore: store,
   privateFieldStore: privateStore, runtimeObjectDelete: deleteProperty, valueObjectDelete: deleteProperty,
   runtimeObjectPreventExtensions: state, runtimeObjectSeal: state, runtimeObjectFreeze: state,
   runtimeObjectAssign: assign, runtimeObjectDefineDataProperty: defineProperty, runtimeObjectDefineDataProperties: defineProperties

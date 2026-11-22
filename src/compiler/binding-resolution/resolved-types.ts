@@ -29,15 +29,12 @@ import type { BindingRef, BindingTable, FunctionId } from "./binding-id.js";
 import type { ResolveTier } from "./role-tables.js";
 import type { conditionRoles, expressionRoles, numberExpressionRoles, stringExpressionRoles, valueExpressionRoles } from "./expression-roles.js";
 import type { operationRoles } from "./operation-roles.js";
-import type { jsIrLeafOperationKinds } from "../ir/visit.js";
-
-export type ResolvedLeafOperationKind = keyof typeof jsIrLeafOperationKinds;
 
 export type ResolvedOperation = WithTrace<ResolveTier<JsIrOperationNode, typeof operationRoles>>;
 
-type WithTrace<M> = M extends { readonly kind: "runtimeArrayMapFunctionObject" }
+type WithTrace<M> = M extends { readonly kind: "runtimeArrayMapFunctionObject" | "function" }
   ? M & { readonly functionId: FunctionId; readonly thisBinding?: BindingRef; readonly trace?: JsIrOperationTrace }
-  : M extends { readonly kind: "function" | "returnClosure" }
+  : M extends { readonly kind: "returnClosure" }
   ? M & { readonly functionId: FunctionId; readonly trace?: JsIrOperationTrace }
   : M extends unknown ? M & { readonly trace?: JsIrOperationTrace } : never;
 
@@ -106,6 +103,7 @@ export interface ResolvedObjectValue {
 /** One field of a runtime object literal, resolved. A `spread` source is a binding. */
 export type ResolvedRuntimeObjectField =
   | { readonly kind: "field"; readonly key: ResolvedStringExpression; readonly value: ResolvedValueExpression }
+  | { readonly kind: "accessor"; readonly key: ResolvedStringExpression; readonly getter?: ResolvedValueExpression; readonly setter?: ResolvedValueExpression }
   | { readonly kind: "spread"; readonly sourceName: BindingRef };
 
 /** A runtime object literal, resolved. */
@@ -113,7 +111,7 @@ export interface ResolvedRuntimeObjectValue {
   readonly fields: readonly ResolvedRuntimeObjectField[];
 }
 
-export type ResolvedArrayIsArrayOperand = boolean | ResolvedValueExpression;
+type ResolvedArrayIsArrayOperand = boolean | ResolvedValueExpression;
 
 /** A switch clause, resolved. One clause list shares one scope, which is what JavaScript does. */
 export interface ResolvedSwitchClause {
@@ -214,7 +212,7 @@ export type ResolveNested<T> =
       ? readonly ResolveNestedElement<E>[]
       : ResolveNestedElement<T>;
 
-export type ResolveNestedElement<T> =
+type ResolveNestedElement<T> =
   [T] extends [JsIrValueExpression] ? ResolvedValueExpression :
     [T] extends [JsIrNumberExpression] ? ResolvedNumberExpression :
       [T] extends [JsIrStringExpression] ? ResolvedStringExpression :

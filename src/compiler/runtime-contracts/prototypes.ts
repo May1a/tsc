@@ -227,4 +227,60 @@ export const prototypesContracts = {
     name: "arraySortMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
     effects: { allocates: true, collects: true, completion: "explicit" }
   },
+  "arrayEveryMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "arrayEveryMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "arraySomeMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "arraySomeMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "arrayFindLastMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "arrayFindLastMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "arrayFindLastIndexMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "arrayFindLastIndexMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "arrayToReversedMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "arrayToReversedMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "arrayToSortedMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "arrayToSortedMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "arrayToSplicedMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "arrayToSplicedMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
+  "arrayWithMethod": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "arrayWithMethod", parameters: [llvm.i64, llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: false, completion: "explicit" }
+  },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

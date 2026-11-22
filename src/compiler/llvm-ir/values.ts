@@ -1,7 +1,7 @@
 import { type LlvmValue, type LlvmValueType, freezeLlvmType } from "./types.js";
 
 /** Instruction results record their block and position. Parameters and literals have no definition. */
-export interface LlvmValueDefinition {
+interface LlvmValueDefinition {
   /** The block that produced the value. */
   readonly block: symbol;
   /** Index of the producing instruction in its block. */
@@ -9,7 +9,7 @@ export interface LlvmValueDefinition {
 }
 
 /** Private handle metadata used to check function ownership and SSA dominance. */
-export interface LlvmValueData {
+interface LlvmValueData {
   /** The function that minted the handle; one per `defineFunction`, not one per module. */
   readonly functionOwner: symbol;
   /** The already-substituted operand text: `%name`, `123`, `null`, `@global`. */
@@ -58,9 +58,4 @@ export function llvmValueData(value: LlvmValue): LlvmValueData {
 
 export function llvmValueText(value: LlvmValue): string {
   return llvmValueData(value).text;
-}
-
-/** Whether `value` is a handle this process minted, as opposed to a look-alike `{ type }` object. */
-export function isLlvmValue(value: unknown): value is LlvmValue {
-  return typeof value === "object" && value !== null && valueDataByValue.has(value);
 }

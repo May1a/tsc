@@ -7,7 +7,7 @@ import { type ExceptionTarget, completionAggregate } from "./completion.js";
 import type { BoxedValue } from "./value-boundary.js";
 
 export type CompletionFunctionSpec = LlvmFunctionSpec & { readonly returns: typeof completionAggregate };
-export type CompletionCallSignature = LlvmCallSignature & { readonly returns: typeof completionAggregate };
+type CompletionCallSignature = LlvmCallSignature & { readonly returns: typeof completionAggregate };
 
 export interface CompletionCallCapability {
   direct(spec: CompletionFunctionSpec, args: readonly LlvmValue[], name: string, exception: ExceptionTarget): BoxedValue;

@@ -20,7 +20,7 @@ export type LlvmConstant =
   | { readonly kind: "aggregate"; readonly type: LlvmType; readonly elements: readonly LlvmConstant[] };
 
 /** The three linkages the emitter uses. `external` renders bare; the others are named. */
-export type LlvmLinkage = "private" | "internal" | "external";
+type LlvmLinkage = "private" | "internal" | "external";
 
 export interface LlvmGlobalSpec {
   readonly name: string;
@@ -104,7 +104,7 @@ function renderAggregate(constant: Extract<LlvmConstant, { readonly kind: "aggre
 }
 
 /** A byte-string constant derives its [N x i8] type from its byte length. */
-export function llvmConstantType(constant: LlvmConstant): LlvmType {
+function llvmConstantType(constant: LlvmConstant): LlvmType {
   return constant.kind === "byteString" ? { kind: "integer", bits: 8 } : constant.type;
 }
 

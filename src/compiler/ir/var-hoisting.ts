@@ -8,7 +8,7 @@ import type { JsIrOperation } from "./types.js";
  * (without crossing into nested functions or classes) so they can be hoisted as function-scoped
  * boxed bindings at the top of the enclosing module or function body.
  */
-export function collectHoistedNestedVarNames(
+function collectHoistedNestedVarNames(
   statements: readonly ts.Statement[],
   excludedNames: ReadonlySet<string> = new Set()
 ): readonly string[] {

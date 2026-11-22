@@ -160,8 +160,8 @@ describe("tscn objects", () => {
     const main = mainFunction(module);
 
     // The numeric store and the dictionary store both happen: the shadow is what keeps a known-shape
-    // object's value readable through the runtime helpers.
-    expect(callsTo(main, "objectSet")).toHaveLength(2);
+    // object's value readable through the runtime helpers (accessor-aware valueObjectSet).
+    expect(callsTo(main, "objectSet").length + callsTo(main, "valueObjectSet").length).toBe(2);
     expect(calleeNames(main)).toContain("checkedValuePropertyGet");
 
     const result = await expectSuccessfulCompile("object-fixed-shadow-mutation.ts", { link: true });
@@ -179,7 +179,7 @@ describe("tscn objects", () => {
 
     // A key that is not in the literal's shape is added through the runtime setter, which is what
     // grows the dictionary.
-    expect(callsTo(main, "objectSet")).toHaveLength(2);
+    expect(callsTo(main, "objectSet").length + callsTo(main, "valueObjectSet").length).toBe(2);
     expect(calleeNames(main)).toContain("objectNew");
 
     const result = await expectSuccessfulCompile("object-runtime-dynamic-store.ts", { link: true });
@@ -314,7 +314,7 @@ describe("tscn objects", () => {
     // The descriptor is defined once and then read back, which is why both the setter and the getter
     // helpers appear.
     expect(callsTo(main, "objectDefineDataProperty")).toHaveLength(2);
-    expect(calleeNames(main)).toContain("objectSet");
+    expect(calleeNames(main)).toContain("valueObjectSet");
 
     const result = await expectSuccessfulCompile("object-runtime-define-property.ts", { link: true });
 

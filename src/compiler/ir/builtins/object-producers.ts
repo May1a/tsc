@@ -35,7 +35,7 @@ export function lowerRuntimeDataDescriptorMapValue(
 ): readonly JsIrRuntimeDataDescriptor[] | undefined {
   const descriptors: JsIrRuntimeDataDescriptor[] = [];
   for (const field of value.fields) {
-    if (field.kind === "spread" || field.key.kind !== "literal") {
+    if (field.kind !== "field" || field.key.kind !== "literal") {
       return undefined;
     }
     const descriptor = lowerRuntimeDataDescriptorValue(field.key, field.value, bindings);
@@ -61,7 +61,7 @@ export function lowerRuntimeDataDescriptorValue(
   let enumerable = false;
   let configurable = false;
   for (const field of value.fields) {
-    if (field.kind === "spread" || field.key.kind !== "literal") {
+    if (field.kind !== "field" || field.key.kind !== "literal") {
       return undefined;
     }
     if (field.key.value === "value") {
@@ -91,7 +91,7 @@ export function lowerRuntimeDataDescriptorValue(
   }
   return { key, value: descriptorValue, writable, enumerable, configurable };
 }
-export function descriptorObjectLiteralForExpression(
+function descriptorObjectLiteralForExpression(
   expression: JsIrValueExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrRuntimeObjectValue | undefined {
@@ -107,7 +107,7 @@ export function descriptorObjectLiteralForExpression(
   }
   return binding.value;
 }
-export function literalBooleanValue(expression: JsIrValueExpression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean | undefined {
+function literalBooleanValue(expression: JsIrValueExpression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean | undefined {
   if (expression.kind === "boolean" && expression.value.kind === "boolean") {
     return expression.value.value;
   }
@@ -192,7 +192,7 @@ export function lowerRuntimeObjectOwnPropertyDescriptorsBinding(
   }
   return produced({ kind: "runtimeObjectOwnPropertyDescriptors", name, targetName: target.name, targetKind: target.kind });
 }
-export function lowerUnaryObjectAggregateCall(
+function lowerUnaryObjectAggregateCall(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   method: string

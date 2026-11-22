@@ -150,6 +150,27 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     mapName: resolver.reference(node.mapName),
     key: resolver.value(node.key)
   }),
+  runtimeCollectionIterator: (node, resolver) => ({
+    kind: "runtimeCollectionIterator",
+    collectionName: resolver.reference(node.collectionName),
+    sourceKind: node.sourceKind,
+    iterationKind: node.iterationKind
+  }),
+  runtimeCollectionClear: (node, resolver) => ({
+    kind: "runtimeCollectionClear",
+    collectionName: resolver.reference(node.collectionName)
+  }),
+  runtimeCollectionForEach: (node, resolver) => ({
+    kind: "runtimeCollectionForEach",
+    collectionName: resolver.reference(node.collectionName),
+    isMap: node.isMap,
+    callback: resolver.value(node.callback),
+    thisArg: optional(node.thisArg, resolver.value)
+  }),
+  dateNew: (node, resolver) => ({
+    kind: "dateNew",
+    milliseconds: optional(node.milliseconds, resolver.number)
+  }),
 
   optionalChain: (node, resolver) => ({
     kind: "optionalChain",
@@ -230,6 +251,7 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     method: node.method,
     receiver: resolver.value(node.receiver)
   }),
+  newTarget: () => ({ kind: "newTarget" }),
   // `className` and `constructorName` are generated code names. `prototypeName` is a binding: the class
   // declared its prototype object, and construction and `instanceof` have to read it.
   newInstance: (node, resolver) => ({
@@ -238,6 +260,34 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     constructorName: resolver.reference(node.constructorName),
     fieldCount: node.fieldCount,
     prototypeName: resolver.reference(node.prototypeName),
+    newTargetName: optional(node.newTargetName, (name) => resolver.reference(name)),
     arguments: resolveCallArguments(node.arguments, resolver)
+  }),
+  generatorCreate: (node, resolver) => ({
+    kind: "generatorCreate",
+    step: resolver.value(node.step)
+  }),
+  asyncStart: (node, resolver) => ({
+    kind: "asyncStart",
+    step: resolver.value(node.step)
+  }),
+  iteratorResult: (node, resolver) => ({
+    kind: "iteratorResult",
+    value: resolver.value(node.value),
+    done: node.done
+  }),
+  iteratorOpen: (node, resolver) => ({
+    kind: "iteratorOpen",
+    iterable: resolver.value(node.iterable),
+    notIterableMessage: node.notIterableMessage
+  }),
+  promiseNew: (node, resolver) => ({
+    kind: "promiseNew",
+    executor: resolver.value(node.executor)
+  }),
+  promiseStatic: (node, resolver) => ({
+    kind: "promiseStatic",
+    method: node.method,
+    argument: optional(node.argument, resolver.value)
   })
 });

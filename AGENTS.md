@@ -41,11 +41,6 @@ pass does not rediscover them:
   through total tables. A future check could restrict entry points to handler selection.
   `no-layer-mixing` enforces module boundaries; it does not infer function responsibilities.
 
-- **`no-dead-export`.** Would immediately have flagged `src/runtime/effect.ts` (an orphan
-  mini-Effect with zero importers, whose name collided with the real library), the `Diagnostics`
-  service's 3 never-called methods, and 3 error classes with no producer. All removed by hand. The
-  general failure is a failure type nobody constructs: it widens every signature that mentions it
-  and lints as used. `knip` would cover this.
 - **`no-open-union-narrowing`.** The operation and four expression tiers now use total
   handler tables, so new variants require handlers at compile time. An AST check for
   non-exhaustive if-chains elsewhere remains open; `switch-exhaustiveness-check` covers switches.

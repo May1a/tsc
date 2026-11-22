@@ -9,7 +9,7 @@ import { isUndefinedExpression, lowerCanonicalArrayIndexString } from "./predica
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { lowerStringExpression } from "./string-constants.js";
-import { lowerClassPrivateFieldStore } from "./class-values.js";
+import { lowerClassPrivateFieldStore, lowerClassPrivateFieldValueStore } from "./class-values.js";
 import { lowerClassPropertyAssignment } from "./class-mutations.js";
 import { isAssignmentPattern, lowerDestructuringAssignment } from "./destructuring-assignment.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
@@ -125,7 +125,13 @@ function lowerCompoundAssignmentStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
   const operator = lowerCompoundAssignmentOperator(expression.operatorToken.kind);
-  if (operator === undefined || !ts.isIdentifier(expression.left)) {
+  if (operator === undefined) {
+    return notApplicable;
+  }
+  if (ts.isPropertyAccessExpression(expression.left) && ts.isPrivateIdentifier(expression.left.name)) {
+    return lowerPrivateFieldCompoundAssignment(context, expression.left, expression.right, operator, bindings);
+  }
+  if (!ts.isIdentifier(expression.left)) {
     return notApplicable;
   }
   const binding = bindings.get(expression.left.text);
@@ -158,6 +164,34 @@ function lowerCompoundAssignmentStatement(
     name: expression.left.text,
     value: { kind: "binary", operator, left: { kind: "variable", name: expression.left.text }, right: right.operation }
   });
+}
+
+function lowerPrivateFieldCompoundAssignment(
+  context: LoweringContext,
+  left: ts.PropertyAccessExpression,
+  rightExpression: ts.Expression,
+  operator: JsIrNumberOperator,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  const current = context.lowerValueExpression(context, left, bindings);
+  if (current.kind !== "lowered") {
+    return current;
+  }
+  let combined: JsIrValueExpression;
+  if (operator === "add") {
+    const right = context.lowerValueExpression(context, rightExpression, bindings);
+    if (right.kind !== "lowered") {
+      return right;
+    }
+    combined = { kind: "valuePlus", left: current.operation, right: right.operation };
+  } else {
+    const right = context.lowerNumberExpression(context, rightExpression, bindings);
+    if (right.kind !== "lowered") {
+      return right;
+    }
+    combined = { kind: "number", value: { kind: "binary", operator, left: { kind: "valueToNumber", value: current.operation }, right: right.operation } };
+  }
+  return lowerClassPrivateFieldValueStore(context, left, combined, bindings);
 }
 
 /** An assignment to a boxed binding, which holds whatever value it is given. */

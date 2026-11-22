@@ -5,7 +5,7 @@ import type { BlockCursor } from "./cursor.js";
 import { verifyRootFrames } from "./root-frame-verification.js";
 import type { BoxedValue } from "./value-boundary.js";
 
-export class RootFrame {
+class RootFrame {
   readonly #depth: LlvmValue<typeof llvm.i64>;
   public constructor(depth: LlvmValue<typeof llvm.i64>) { this.#depth = depth; }
   public depth(): LlvmValue<typeof llvm.i64> { return this.#depth; }

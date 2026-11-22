@@ -5,7 +5,7 @@ import ts from "typescript";
 import type { CompilerDiagnostic } from "./diagnostics.js";
 import { inlineCppTag, rewriteInlineCppSyntax } from "./inline-cpp-rewriter.js";
 
-export interface FrontendResult {
+interface FrontendResult {
   readonly program: ts.Program;
   readonly sourceFiles: readonly ts.SourceFile[];
   /**
@@ -68,7 +68,7 @@ const defaultCompilerOptions = (): ts.ParsedCommandLine => ({
     // every compile that did not supply a tsconfig. `Bundler` is the resolution mode that
     // documents `ESNext` output, and it still maps an explicit `./x.js` specifier onto `x.ts`.
     moduleResolution: ts.ModuleResolutionKind.Bundler,
-    target: ts.ScriptTarget.ES2022,
+    target: ts.ScriptTarget.ES2023,
     strict: true,
     // Do not pick up ambient `@types` packages (such as `bun-types`) from the working directory's
     // `node_modules` when no tsconfig selects them.

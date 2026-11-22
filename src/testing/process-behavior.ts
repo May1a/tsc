@@ -4,7 +4,7 @@ export interface ProcessOutput {
   readonly stderr: string;
 }
 
-export type ThrownObservation =
+type ThrownObservation =
   | {
       readonly kind: "error";
       readonly name: string;

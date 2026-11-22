@@ -1,10 +1,11 @@
-import { unsupportedFormMessage } from "./builtins/manifest.js";
 import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import { isUndefinedExpression } from "./predicates.js";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
+import { lowerStringExpression } from "./string-constants.js";
+import { numberExpressionFromNumber } from "./number-constants.js";
 import { lowerRegexValueExpression } from "./regex.js";
 import { lowerFunctionObjectValue, lowerPlainConstructorArguments } from "./closures.js";
 import { lowerOptionalChainValueExpression } from "./optional-chains.js";
@@ -23,7 +24,7 @@ export function lowerDirectValueExpression(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
   if (ts.isMetaProperty(expression) && expression.keywordToken === ts.SyntaxKind.NewKeyword) {
-    return unsupportedIn(unsupportedFormMessage("new-target"));
+    return produced(context.inClassConstructor ? { kind: "newTarget" } : { kind: "undefined" });
   }
 
   const regex = lowerRegexValueExpression(context, expression, bindings);
@@ -105,10 +106,38 @@ export function lowerDirectValueExpression(
 
   if (ts.isNewExpression(expression) && ts.isIdentifier(expression.expression)) {
     const constructorName = expression.expression.text;
-    // The `Date` constructor is a known builtin this build has not written: refusing it by name here
-    // reports the missing builtin from every position, not just statement position.
+    if (constructorName === "Promise" && !bindings.has("Promise")) {
+      const args = expression.arguments ?? [];
+      if (args.length !== 1) {
+        return unsupportedIn("`new Promise(...)` requires an executor function");
+      }
+      const executor = context.lowerValueExpression(context, args[0], bindings);
+      if (executor.kind !== "lowered") {
+        return withRefusal(executor, unsupportedIn("Executor argument to `new Promise(...)` must be an expression this build can evaluate"));
+      }
+      return produced({ kind: "promiseNew", executor: executor.operation });
+    }
     if (constructorName === "Date" && !bindings.has("Date")) {
-      return unsupportedIn(unsupportedFormMessage("date-constructor"));
+      const args = expression.arguments ?? [];
+      if (args.length === 0) {
+        return produced({ kind: "dateNew" });
+      }
+      if (args.length === 1) {
+        const stringLiteral = lowerStringExpression(args[0], bindings);
+        if (stringLiteral !== undefined) {
+          return produced({ kind: "dateNew", milliseconds: numberExpressionFromNumber(Date.parse(stringLiteral)) });
+        }
+        const millis = context.lowerNumberExpression(context, args[0], bindings);
+        if (millis.kind === "lowered") {
+          return produced({ kind: "dateNew", milliseconds: millis.operation });
+        }
+        const coerced = context.lowerValueExpression(context, args[0], bindings);
+        if (coerced.kind === "lowered") {
+          return produced({ kind: "dateNew", milliseconds: { kind: "valueToNumber", value: coerced.operation } });
+        }
+        return withRefusal(coerced, unsupportedIn("Arguments to `new Date(...)` must be expressions this build can evaluate"));
+      }
+      return unsupportedIn("`new Date(...)` accepts at most one argument");
     }
     const constructor = bindings.get(constructorName);
     if (constructor?.kind === "function" && constructor.constructibleByObjectReturn === true) {
@@ -133,6 +162,19 @@ export function lowerDirectValueExpression(
   }
 
   if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
+    if (ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "Promise" && !bindings.has("Promise")) {
+      const method = expression.expression.name.text;
+      if (method === "resolve" || method === "reject" || method === "all" || method === "race" || method === "allSettled" || method === "any") {
+        if (expression.arguments.length === 0) {
+          return produced({ kind: "promiseStatic", method });
+        }
+        const argument = context.lowerValueExpression(context, expression.arguments[0], bindings);
+        if (argument.kind !== "lowered") {
+          return withRefusal(argument, unsupportedIn(`Argument to \`Promise.${method}(...)\` must be an expression this build can evaluate`));
+        }
+        return produced({ kind: "promiseStatic", method, argument: argument.operation });
+      }
+    }
     // Object.getPrototypeOf(instance) where instance is a class instance returns the prototype
     if (ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "Object" && expression.expression.name.text === "getPrototypeOf" && expression.arguments.length === 1) {
       const [target] = expression.arguments;

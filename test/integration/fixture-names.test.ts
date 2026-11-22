@@ -13,6 +13,10 @@ const unsupportedFixtures: readonly string[] = readdirSync(path.join(repoRoot, "
   .filter((name) => name.endsWith("-unsupported.ts"))
   .toSorted();
 
+const defectFixtures: readonly string[] = readdirSync(path.join(repoRoot, "test/fixtures"))
+  .filter((name) => name.startsWith("defect-") && name.endsWith(".ts"))
+  .toSorted();
+
 describe("fixture names match outcomes", () => {
   test.each(unsupportedFixtures)("%s is refused with TSCN1002", async (fixture) => {
     // Without linking: refusal happens before emission, so there is nothing to link. The inline
@@ -22,6 +26,15 @@ describe("fixture names match outcomes", () => {
     try {
       expect(result.status, `${fixture} compiled but is named -unsupported:\n${result.stderr}`).not.toBe(0);
       expect(result.stderr, fixture).toContain("error TSCN1002");
+    } finally {
+      await result.cleanup();
+    }
+  }, roadmapIntegrationTimeoutMs);
+
+  test.each(defectFixtures)("%s compiles cleanly as a regression fixture", async (fixture) => {
+    const result = await compileFixture(fixture, { link: false });
+    try {
+      expect(result.status, `${fixture} failed to compile:\n${result.stderr}`).toBe(0);
     } finally {
       await result.cleanup();
     }

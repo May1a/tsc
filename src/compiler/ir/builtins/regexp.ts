@@ -1,8 +1,6 @@
 import {
-  type BuiltinEntry,
   type BuiltinSupport,
   builtinEntryFor,
-  builtinFor,
   knownBuiltinMessage
 } from "./support.js";
 
@@ -14,7 +12,7 @@ three members that read those are supported, and `test` and `exec` run it. `toSt
  */
 
 /** The RegExp members this build knows about, keyed by the name they have in source. */
-export type RegexpBuiltin =
+type RegexpBuiltin =
   | "exec"
   | "flags"
   | "lastIndex"
@@ -32,10 +30,6 @@ export const regexpBuiltinSupport: BuiltinSupport<"regexp", RegexpBuiltin> = {
   "toString": { arity: 0, state: "planned", id: "regexp.toString" },
 };
 
-/** The `RegExp` member with this name, or `undefined` if the name is not one of them. */
-export function regexpBuiltinFor(name: string): BuiltinEntry<"regexp"> | undefined {
-  return builtinFor(regexpBuiltinSupport, "regexp", name);
-}
 
 /**
  * The diagnostic for a `RegExp` member this build has not written, or `undefined` if the name

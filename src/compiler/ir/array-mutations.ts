@@ -118,7 +118,7 @@ function runtimeArrayRemoveOperationKind(method: "pop" | "shift"): "runtimeArray
  * change to how one of them read an argument left the other reading it differently, which is the kind of
  * divergence that shows up as `x.splice(0, 1)` and `const r = x.splice(0, 1)` disagreeing.
  */
-export interface LoweredSpliceArguments {
+interface LoweredSpliceArguments {
   readonly start: JsIrNumberExpression;
   readonly deleteCount: JsIrNumberExpression | undefined;
   readonly items: readonly JsIrValueExpression[];
@@ -173,7 +173,7 @@ export function lowerSpliceArguments(
 }
 
 /** `copyWithin`'s target/start/optional-end triple, read the same way from both call sites. */
-export interface LoweredCopyWithinArguments {
+interface LoweredCopyWithinArguments {
   readonly target: JsIrNumberExpression;
   readonly start: JsIrNumberExpression;
   readonly end: JsIrNumberExpression | undefined;

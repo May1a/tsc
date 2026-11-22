@@ -1,5 +1,4 @@
-import { unsupportedFormMessage } from "./builtins/manifest.js";
-import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrFunctionParameter, JsIrValueKind } from "./bindings.js";
@@ -12,6 +11,7 @@ import { functionReturnKind } from "./binding-updates.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { collectFunctionExpressionCaptureNames, lowerInlineFunctionCaptures } from "./captures.js";
 import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
+import { lowerSuspendableBody, suspendableKindFor } from "./state-machine.js";
 
 const arrayReduceMethodByDirection: Readonly<Record<"left" | "right", "reduce" | "reduceRight">> = {
   left: "reduce",
@@ -188,12 +188,7 @@ function lowerInlineArrayCallbackFunctionObject(
   if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
     return lowerArrayCallbackValueWrapper(context, name, arrayName, callback, thisArgExpression, bindings, maxParameters, method);
   }
-  if (callback.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
-    return unsupportedIn(unsupportedFormMessage("async-function"));
-  }
-  if (ts.isFunctionExpression(callback) && callback.asteriskToken !== undefined) {
-    return unsupportedIn(unsupportedFormMessage("generator-function"));
-  }
+  const suspendKind = suspendableKindFor(callback);
   const callbackKind: "arrow" | "ordinary" = ts.isArrowFunction(callback) ? "arrow" : "ordinary";
   const declaredParameters = [...callback.parameters];
   const firstParameter = declaredParameters.at(0);
@@ -235,7 +230,16 @@ function lowerInlineArrayCallbackFunctionObject(
   for (const capture of outerCaptures) {
     captures.push(capture);
   }
-  const body = lowerInlineFunctionBody(context, callback.body, callbackBindings);
+  const body = suspendKind === undefined
+    ? lowerInlineFunctionBody(context, callback.body, callbackBindings)
+    : lowerSuspendableBody(context, {
+        kind: suspendKind,
+        body: callback.body,
+        bindings: callbackBindings,
+        outerParameterNames: new Set([...parameters.map((parameter) => parameter.name), ...(callbackKind === "ordinary" ? [CLASS_THIS_NAME] : [])]),
+        outerCaptureNames: [...outerCaptureNames, ...(callbackKind === "arrow" && containsLexicalThis(callback.body) ? [CLASS_THIS_NAME] : [])],
+        nameHint: name
+      });
   if (body.kind !== "lowered") {
     return body;
   }

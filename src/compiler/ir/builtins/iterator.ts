@@ -1,8 +1,6 @@
 import {
-  type BuiltinEntry,
   type BuiltinSupport,
   builtinEntryFor,
-  builtinFor,
   knownBuiltinMessage
 } from "./support.js";
 
@@ -15,7 +13,7 @@ are separate members and are recorded as `"planned"` in the array table, not her
  */
 
 /** The Symbol members this build knows about, keyed by the name they have in source. */
-export type IteratorBuiltin =
+type IteratorBuiltin =
   | "Symbol.iterator";
 
 /** The members, keyed by name so a name cannot be stated twice. */
@@ -23,10 +21,6 @@ export const iteratorBuiltinSupport: BuiltinSupport<"iterator", IteratorBuiltin>
   "Symbol.iterator": { arity: 0, state: "supported", id: "iterator.Symbol.iterator", placement: "static", fixture: "symbol-iterator", reason: "`for...of` over an array, string, Map, Set or a user object with the method" },
 };
 
-/** The `Symbol` member with this name, or `undefined` if the name is not one of them. */
-export function iteratorBuiltinFor(name: string): BuiltinEntry<"iterator"> | undefined {
-  return builtinFor(iteratorBuiltinSupport, "iterator", name);
-}
 
 /**
  * The diagnostic for a `Symbol` member this build has not written, or `undefined` if the name

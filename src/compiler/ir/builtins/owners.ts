@@ -102,7 +102,7 @@ export function unlowerableCallee(
 }
 
 /** The refusal for a bare global this build has not written, or `undefined` when it is not one. */
-export function plannedGlobalMessage(name: string): string | undefined {
+function plannedGlobalMessage(name: string): string | undefined {
   return plannedNumberGlobalMessage(name);
 }
 
@@ -122,6 +122,7 @@ const recognizedGlobalCallees: ReadonlySet<string> = new Set([
   "Boolean",
   "Number",
   "String",
+  "isFinite",
   "isNaN",
   "parseFloat",
   "parseInt",
@@ -235,7 +236,7 @@ const staticBuiltinOwners: Readonly<Record<string, BuiltinOwner | undefined>> = 
 };
 
 /** The support-table owner a call target belongs to, from the receiver rather than its spelling. */
-export function builtinOwnerOfReceiver(
+function builtinOwnerOfReceiver(
   receiver: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): BuiltinOwner | undefined {
@@ -248,6 +249,9 @@ export function builtinOwnerOfReceiver(
   }
   if (ts.isCallExpression(receiver) && ts.isIdentifier(receiver.expression)) {
     return staticBuiltinOwners[receiver.expression.text];
+  }
+  if (ts.isNewExpression(receiver) && ts.isIdentifier(receiver.expression) && receiver.expression.text === "Date" && !bindings.has("Date")) {
+    return "date";
   }
   return undefined;
 }
@@ -331,6 +335,9 @@ function builtinOwnerOfValueExpression(value: JsIrValueExpression | undefined): 
     }
     case "number": {
       return numberBindingOwner(value.value);
+    }
+    case "dateNew": {
+      return "date";
     }
     default: {
       return undefined;

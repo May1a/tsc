@@ -1,4 +1,5 @@
 import { lowerStatement } from "./statements.js";
+import { lowerExpressionStatement } from "./expression-statements.js";
 import { lowerObjectMethodFunctionValue } from "./object-methods.js";
 import { lowerTypedCallArguments } from "./call-arguments.js";
 import { lowerValueExpression } from "./value-expressions.js";
@@ -17,6 +18,7 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     enclosingJumpTargets: [],
     pendingLoopLabel: undefined,
     classThisInScope: false,
+    inClassConstructor: false,
     activeEnclosingClass: undefined,
     activeClassMethodStatic: false,
     nextFunctionObjectId: 0,
@@ -30,6 +32,7 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     typeChecker: options.typeChecker,
     inlineCpp: options.inlineCpp,
     lowerStatement,
+    lowerExpressionStatement,
     lowerObjectMethodFunctionValue,
     lowerTypedCallArguments,
     lowerValueExpression,

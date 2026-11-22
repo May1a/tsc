@@ -5,7 +5,7 @@ import type { ExpressionCalls, ExpressionContext } from "./expression-context.js
 import type { BoxedValue } from "./value-boundary.js";
 import type { FlowCapability } from "./control-flow.js";
 
-export interface OperationEntries {
+interface OperationEntries {
   operation(operation: ResolvedOperation): void;
   operations(operations: readonly ResolvedOperation[]): void;
 }

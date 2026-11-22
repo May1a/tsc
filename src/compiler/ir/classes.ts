@@ -6,10 +6,10 @@ import { type ClassInfo, type CollectedClassMembers, buildClassInfo, classAccess
 import { type LoweredStatementList, type Produced, loweredOperationList, loweredUnsupportedStatementList, unsupportedIn } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
 import { unwrapTypeOnlyExpression } from "./predicates.js";
-import { lowerClassComputedKeySlot, lowerClassComputedMethodStore, lowerClassPrototypeStorage, lowerClassStaticStorage, lowerPrivateFunctionSlots, lowerPrototypeMethodStores } from "./class-storage.js";
+import { lowerClassComputedKeySlot, lowerClassComputedMethodStore, lowerClassConstructorValue, lowerClassPrototypeStorage, lowerClassStaticInitializers, lowerClassStaticStorage, lowerPrivateFunctionSlots, lowerPrototypeMethodStores } from "./class-storage.js";
 import { lowerClassConstructor } from "./class-constructors.js";
-import { lowerClassAccessor, lowerClassMethod } from "./class-methods.js";
-import { classAccessorFunctionName } from "./class-names.js";
+import { lowerClassAccessor, lowerClassMethod, lowerClassStaticBlock } from "./class-methods.js";
+import { classAccessorFunctionName, classComputedAccessorFunctionName, classStaticAccessorFunctionName, classStaticBlockFunctionName } from "./class-names.js";
 
 /**
  * The class result for a top-level statement, or `undefined` when it is not a class form.
@@ -81,14 +81,6 @@ function lowerClassDeclaration(
   if (hasDecorators(statement) || statement.members.some(hasMemberDecorators)) {
     return unsupportedIn(unsupportedFormMessage("decorator"));
   }
-  if (statement.members.some((member) => ts.isMethodDeclaration(member) && member.body !== undefined
-    && ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true)) {
-    return unsupportedIn(unsupportedFormMessage("async-function"));
-  }
-  if (statement.members.some((member) => ts.isMethodDeclaration(member) && member.body !== undefined
-    && member.asteriskToken !== undefined)) {
-    return unsupportedIn(unsupportedFormMessage("class-generator-method"));
-  }
   const before = new Map(classes);
   const result = lowerRegisteredClassDeclaration(context, statement, bindings, classes, expressionBindingName);
   if (result.kind === "unsupported") {
@@ -124,11 +116,7 @@ function lowerClassOperations(
     operations.push(slot.operation);
   }
   operations.push(lowerClassPrototypeStorage(info));
-  const staticStorage = lowerClassStaticStorage(context, info, members.staticFields, memberBindings);
-  if (staticStorage.kind !== "lowered") {
-    return loweredUnsupportedStatementList(staticStorage.reason);
-  }
-  operations.push(staticStorage.operation);
+  operations.push(lowerClassStaticStorage(info));
   const inheritance = lowerClassInheritanceOperations(info, baseName);
   if (inheritance.kind !== "unsupported") {
     operations.push(...inheritance.operation);
@@ -137,6 +125,7 @@ function lowerClassOperations(
 }
 
 /** Appends the per-member operations, stopping at the first member that cannot be placed. */
+// eslint-disable-next-line complexity, max-statements -- Emits class methods, accessors, constructor value, and static initializers in JS evaluation order.
 function lowerClassMemberOperations(
   context: LoweringContext,
   info: ClassInfo,
@@ -172,25 +161,47 @@ function lowerClassMemberOperations(
       operations.push(method.operation);
     }
   }
-  for (const [entries, isGetter] of classAccessorEntries(members)) {
+  for (const [entries, isGetter, isStatic] of classAccessorEntries(members)) {
     for (const entry of entries) {
-      const accessor = lowerClassAccessor(
-        context, info,
-        entry.declaration,
-        classAccessorFunctionName(info.name, entry.name, isGetter),
-        memberBindings
-      );
+      const fnName = isStatic
+        ? classStaticAccessorFunctionName(info.name, entry.name, isGetter)
+        : classAccessorFunctionName(info.name, entry.name, isGetter);
+      const accessor = lowerClassAccessor(context, info, entry.declaration, fnName, memberBindings, isStatic);
       if (accessor.kind !== "lowered") {
         return loweredUnsupportedStatementList(accessor.reason);
       }
       operations.push(accessor.operation);
     }
   }
-  // Prototype entries for dispatched calls come last, after the methods they wrap.
+  for (const entry of members.computedAccessors) {
+    const fnName = classComputedAccessorFunctionName(info.name, entry.isStatic, entry.isGetter, entry.index);
+    const accessor = lowerClassAccessor(context, info, entry.declaration, fnName, memberBindings, entry.isStatic);
+    if (accessor.kind !== "lowered") {
+      return loweredUnsupportedStatementList(accessor.reason);
+    }
+    operations.push(accessor.operation);
+  }
+  for (const item of members.staticInitializers) {
+    if (item.kind !== "block") {
+      continue;
+    }
+    const blockFn = lowerClassStaticBlock(context, info, item.declaration, classStaticBlockFunctionName(info.name, item.index), memberBindings);
+    if (blockFn.kind !== "lowered") {
+      return loweredUnsupportedStatementList(blockFn.reason);
+    }
+    operations.push(blockFn.operation);
+  }
+  // Prototype and static entries for dispatched calls come after the methods they wrap.
   for (const store of lowerPrototypeMethodStores(context, info, members)) {
     operations.push(store);
   }
   operations.push(...lowerPrivateFunctionSlots(context, info));
+  operations.push(...lowerClassConstructorValue(context, info));
+  const staticInit = lowerClassStaticInitializers(context, info, members.staticInitializers, memberBindings);
+  if (staticInit.kind !== "lowered") {
+    return loweredUnsupportedStatementList(staticInit.reason);
+  }
+  operations.push(...staticInit.operation);
   return loweredOperationList(operations);
 }
 

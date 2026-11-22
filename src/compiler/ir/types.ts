@@ -478,6 +478,17 @@ export type JsIrOperationNode =
       readonly value: JsIrValueExpression;
     }
   | {
+      readonly kind: "runtimeCollectionClear";
+      readonly collectionName: string;
+    }
+  | {
+      readonly kind: "runtimeCollectionForEach";
+      readonly collectionName: string;
+      readonly isMap: boolean;
+      readonly callback: JsIrValueExpression;
+      readonly thisArg?: JsIrValueExpression;
+    }
+  | {
       readonly kind: "runtimeSetAdd";
       readonly setName: string;
       readonly value: JsIrValueExpression;
@@ -532,6 +543,11 @@ export type JsIrOperationNode =
       readonly key: JsIrStringExpression;
       readonly getter: JsIrValueExpression;
       readonly setter: JsIrValueExpression;
+    }
+  | {
+      readonly kind: "attachFunctionProperties";
+      readonly functionName: string;
+      readonly propertiesName: string;
     }
   | {
       readonly kind: "valueObjectStore";

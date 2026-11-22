@@ -101,4 +101,18 @@ export const collectionsContracts = {
     name: "collectionDelete", parameters: [llvm.ptr, llvm.i64], returns: llvm.i1, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "collectionClear": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "collectionClear", parameters: [llvm.ptr], returns: llvm.void, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "collectionForEach": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "collectionForEach", parameters: [llvm.ptr, llvm.i1, llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

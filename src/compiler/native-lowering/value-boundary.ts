@@ -4,11 +4,11 @@ import type { LlvmBlockBuilder, LlvmDoubleType, LlvmPointerType, LlvmValue, llvm
 
 export type BoxedValue = LlvmValue<typeof llvm.i64>;
 
-export type ReferenceKind = Parameters<ReturnType<JsValueAbi["forLlvm"]>["boxReference"]>[0];
+type ReferenceKind = Parameters<ReturnType<JsValueAbi["forLlvm"]>["boxReference"]>[0];
 
-export type ImmediateKind = Parameters<ReturnType<JsValueAbi["forLlvm"]>["immediate"]>[0];
+type ImmediateKind = Parameters<ReturnType<JsValueAbi["forLlvm"]>["immediate"]>[0];
 
-export interface BlockValueBoundary {
+interface BlockValueBoundary {
   fromBoundary(value: BoxedValue): BoxedValue;
   boxNumber(value: LlvmValue<LlvmDoubleType>): BoxedValue;
   unboxNumber(value: BoxedValue): LlvmValue<LlvmDoubleType>;

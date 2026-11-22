@@ -43,7 +43,7 @@ export interface LlvmModuleBuilder {
 const llvmNamePattern = /^[A-Za-z$._][\w$.-]*$/;
 
 /** Function specs resolve through module-owned identities. LLVM values have separate function identities. */
-export class ModuleBuilder implements LlvmModuleBuilder {
+class ModuleBuilder implements LlvmModuleBuilder {
   readonly #types: LlvmTypeDefinition[] = [];
   readonly #globals = new Map<string, LlvmGlobalItem>();
   readonly #declarations = new Map<string, LlvmFunctionSpec>();

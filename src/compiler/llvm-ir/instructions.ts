@@ -36,7 +36,7 @@ interface LlvmInstructionBase {
   readonly provenance: LlvmProvenance;
 }
 
-export type LlvmIntegerBinaryOpcode =
+type LlvmIntegerBinaryOpcode =
   | "add"
   | "sub"
   | "mul"
@@ -51,11 +51,11 @@ export type LlvmIntegerBinaryOpcode =
   | "lshr"
   | "ashr";
 
-export type LlvmFloatingPointBinaryOpcode = "fadd" | "fsub" | "fmul" | "fdiv" | "frem";
+type LlvmFloatingPointBinaryOpcode = "fadd" | "fsub" | "fmul" | "fdiv" | "frem";
 
-export type LlvmIntegerPredicate = "eq" | "ne" | "ugt" | "uge" | "ult" | "ule" | "sgt" | "sge" | "slt" | "sle";
+type LlvmIntegerPredicate = "eq" | "ne" | "ugt" | "uge" | "ult" | "ule" | "sgt" | "sge" | "slt" | "sle";
 
-export type LlvmFloatingPointPredicate =
+type LlvmFloatingPointPredicate =
   | "false"
   | "oeq"
   | "ogt"
@@ -73,7 +73,7 @@ export type LlvmFloatingPointPredicate =
   | "uno"
   | "true";
 
-export type LlvmCastOpcode =
+type LlvmCastOpcode =
   | "trunc"
   | "zext"
   | "sext"
@@ -103,7 +103,7 @@ export interface LlvmFloatingPointBinaryInstruction extends LlvmInstructionBase 
   readonly result: LlvmValue<LlvmDoubleType>;
 }
 
-export interface LlvmFloatingPointUnaryInstruction extends LlvmInstructionBase {
+interface LlvmFloatingPointUnaryInstruction extends LlvmInstructionBase {
   readonly kind: "floatingPointUnary";
   readonly opcode: "fneg";
   readonly type: LlvmDoubleType;
@@ -139,7 +139,7 @@ export interface LlvmCastInstruction<S extends LlvmValueType, T extends LlvmValu
   readonly result: LlvmValue<T>;
 }
 
-export interface LlvmSelectInstruction<T extends LlvmValueType> extends LlvmInstructionBase {
+interface LlvmSelectInstruction<T extends LlvmValueType> extends LlvmInstructionBase {
   readonly kind: "select";
   readonly type: T;
   readonly condition: LlvmValue<LlvmBooleanType>;
@@ -148,7 +148,7 @@ export interface LlvmSelectInstruction<T extends LlvmValueType> extends LlvmInst
   readonly result: LlvmValue<T>;
 }
 
-export interface LlvmAllocaInstruction extends LlvmInstructionBase {
+interface LlvmAllocaInstruction extends LlvmInstructionBase {
   readonly kind: "alloca";
   readonly allocatedType: LlvmValueType;
   readonly count: LlvmValue<LlvmIntegerType> | undefined;
@@ -156,7 +156,7 @@ export interface LlvmAllocaInstruction extends LlvmInstructionBase {
   readonly result: LlvmValue<LlvmPointerType>;
 }
 
-export interface LlvmLoadInstruction<T extends LlvmValueType> extends LlvmInstructionBase {
+interface LlvmLoadInstruction<T extends LlvmValueType> extends LlvmInstructionBase {
   readonly kind: "load";
   readonly loadedType: T;
   readonly pointer: LlvmValue<LlvmPointerType>;
@@ -164,7 +164,7 @@ export interface LlvmLoadInstruction<T extends LlvmValueType> extends LlvmInstru
   readonly result: LlvmValue<T>;
 }
 
-export interface LlvmStoreInstruction extends LlvmInstructionBase {
+interface LlvmStoreInstruction extends LlvmInstructionBase {
   readonly kind: "store";
   readonly value: LlvmValue;
   readonly pointer: LlvmValue<LlvmPointerType>;
@@ -179,7 +179,7 @@ export interface LlvmGetElementPtrInstruction extends LlvmInstructionBase {
   readonly result: LlvmValue<LlvmPointerType>;
 }
 
-export interface LlvmInsertValueInstruction<T extends LlvmStructType> extends LlvmInstructionBase {
+interface LlvmInsertValueInstruction<T extends LlvmStructType> extends LlvmInstructionBase {
   readonly kind: "insertValue";
   readonly aggregateType: T;
   readonly aggregate: LlvmValue<T>;
@@ -188,7 +188,7 @@ export interface LlvmInsertValueInstruction<T extends LlvmStructType> extends Ll
   readonly result: LlvmValue<T>;
 }
 
-export interface LlvmExtractValueInstruction<T extends LlvmStructType> extends LlvmInstructionBase {
+interface LlvmExtractValueInstruction<T extends LlvmStructType> extends LlvmInstructionBase {
   readonly kind: "extractValue";
   readonly aggregateType: T;
   readonly aggregate: LlvmValue<T>;
@@ -204,14 +204,14 @@ export interface LlvmPhiInstruction<T extends LlvmValueType> extends LlvmInstruc
   readonly result: LlvmValue<T>;
 }
 
-export interface LlvmCallInstruction extends LlvmInstructionBase {
+interface LlvmCallInstruction extends LlvmInstructionBase {
   readonly kind: "call";
   readonly callee: LlvmCallCallee;
   readonly arguments: readonly LlvmValue[];
   readonly result: LlvmValue | undefined;
 }
 
-export interface LlvmSwitchInstruction<T extends LlvmIntegerType> extends LlvmInstructionBase {
+interface LlvmSwitchInstruction<T extends LlvmIntegerType> extends LlvmInstructionBase {
   readonly kind: "switch";
   readonly conditionType: T;
   readonly condition: LlvmValue<T>;
@@ -219,25 +219,25 @@ export interface LlvmSwitchInstruction<T extends LlvmIntegerType> extends LlvmIn
   readonly defaultTarget: LlvmBlockLabel;
 }
 
-export interface LlvmReturnInstruction extends LlvmInstructionBase {
+interface LlvmReturnInstruction extends LlvmInstructionBase {
   readonly kind: "return";
   readonly returnType: LlvmType;
   readonly value: LlvmValue | undefined;
 }
 
-export interface LlvmBranchInstruction extends LlvmInstructionBase {
+interface LlvmBranchInstruction extends LlvmInstructionBase {
   readonly kind: "branch";
   readonly target: LlvmBlockLabel;
 }
 
-export interface LlvmConditionalBranchInstruction extends LlvmInstructionBase {
+interface LlvmConditionalBranchInstruction extends LlvmInstructionBase {
   readonly kind: "conditionalBranch";
   readonly condition: LlvmValue<LlvmBooleanType>;
   readonly whenTrue: LlvmBlockLabel;
   readonly whenFalse: LlvmBlockLabel;
 }
 
-export interface LlvmUnreachableInstruction extends LlvmInstructionBase {
+interface LlvmUnreachableInstruction extends LlvmInstructionBase {
   readonly kind: "unreachable";
 }
 
@@ -266,8 +266,6 @@ export type LlvmInstruction =
   | LlvmBranchInstruction
   | LlvmConditionalBranchInstruction
   | LlvmUnreachableInstruction;
-
-export type LlvmInstructionKind = LlvmInstruction["kind"];
 
 /** The SSA value defined by this instruction, if any. */
 export function llvmInstructionResult(instruction: LlvmInstruction): LlvmValue | undefined {

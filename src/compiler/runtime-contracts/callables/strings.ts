@@ -39,5 +39,6 @@ export function createStringsCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "stringSplit": registerRuntimeContract(module, stringsContracts.stringSplit),
     "stringUtf16Length": registerRuntimeContract(module, stringsContracts.stringUtf16Length),
     "stringPropertyGet": registerRuntimeContract(module, stringsContracts.stringPropertyGet),
+    "stringLocaleCompare": registerRuntimeContract(module, stringsContracts.stringLocaleCompare),
   };
 }

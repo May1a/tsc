@@ -1,4 +1,3 @@
-import { unsupportedFormMessage } from "./builtins/manifest.js";
 import ts from "typescript";
 import { type Lowered, unsupported } from "./lowered.js";
 import type { JsIrBindingValue } from "./bindings.js";
@@ -144,10 +143,6 @@ function unsupportedExpressionMessage(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): string | undefined {
-  if (ts.isNewExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "Date" && !bindings.has("Date")) {
-    return unsupportedFormMessage("date-constructor");
-  }
-
   if (isUnsupportedSymbolExpression(expression, new Map())) {
     return unsupportedSymbolMessage;
   }

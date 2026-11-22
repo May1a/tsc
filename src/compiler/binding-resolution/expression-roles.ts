@@ -40,6 +40,10 @@ export const valueExpressionRoles = {
   jsonStringify: { replacerName: reference },
   jsonParse: {},
   runtimeMapGet: { mapName: reference },
+  runtimeCollectionIterator: { collectionName: reference },
+  runtimeCollectionClear: { collectionName: reference },
+  runtimeCollectionForEach: { collectionName: reference },
+  dateNew: {},
   optionalChain: {},
   optionalTarget: {},
   errorConstructor: { errorName: preserved("errorName") },
@@ -57,8 +61,15 @@ export const valueExpressionRoles = {
   taggedTemplateValue: { tag: reference, head: preserved("templateText"), middleTexts: preservedList("templateText") },
   boxedPrimitive: {},
   boxedMethodCall: {},
+  newTarget: {},
   // The constructor and prototype are declarations created by class lowering.
-  newInstance: { className: preserved("generatedSymbol"), prototypeName: reference, constructorName: reference }
+  newInstance: { className: preserved("generatedSymbol"), prototypeName: reference, constructorName: reference, newTargetName: reference },
+  generatorCreate: {},
+  asyncStart: {},
+  iteratorResult: {},
+  iteratorOpen: { notIterableMessage: preserved("message") },
+  promiseNew: {},
+  promiseStatic: {}
 } satisfies RoleTable<JsIrValueExpression>;
 
 export const numberExpressionRoles = {
@@ -87,6 +98,7 @@ export const numberExpressionRoles = {
   objectAccess: { objectName: reference, path: preservedList("propertyKey") },
   valueToNumber: {},
   mathCall: {},
+  dateNow: {},
   parseInt: {},
   parseFloat: {}
 } satisfies RoleTable<JsIrNumberExpression>;
@@ -114,6 +126,7 @@ export const conditionRoles = {
   boolean: {},
   // The prototype is a binding the class declared; the error class name is a runtime class identity.
   classInstanceOf: { prototypeName: reference },
+  valueInstanceOf: {},
   errorInstanceOf: { errorName: preserved("errorName") },
   regexTest: {},
   valueHasOwnProperty: {},

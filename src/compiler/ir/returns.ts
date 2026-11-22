@@ -1,4 +1,3 @@
-import { unsupportedFormMessage } from "./builtins/manifest.js";
 import { type Lowered, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
@@ -10,6 +9,7 @@ import { lowerInlineFunctionBody } from "./array-callbacks.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
 import { expressionSnippet } from "./diagnostics.js";
 import { functionReturnKind } from "./binding-updates.js";
+import { lowerSuspendableBody, suspendableKindFor } from "./state-machine.js";
 
 export function lowerReturnStatement(
   context: LoweringContext,
@@ -73,13 +73,7 @@ function lowerReturnedFunctionExpression(
     return notApplicable;
   }
 
-  if (expression.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
-    return unsupportedIn(unsupportedFormMessage("async-function"));
-  }
-  if (ts.isFunctionExpression(expression) && expression.asteriskToken !== undefined) {
-    return unsupportedIn(unsupportedFormMessage("generator-function"));
-  }
-
+  const suspendKind = suspendableKindFor(expression);
   const parameters: JsIrFunctionParameter[] = [];
   const nestedBindings = new Map(bindings);
   const localNames = new Set<string>();
@@ -100,8 +94,18 @@ function lowerReturnedFunctionExpression(
   }
 
   const captureNames = collectFunctionExpressionCaptureNames(expression, localNames, bindings);
+  const displayName = ts.isFunctionExpression(expression) ? expression.name?.text ?? "anonymous" : "arrow";
 
-  const body = lowerInlineFunctionBody(context, expression.body, nestedBindings);
+  const body = suspendKind === undefined
+    ? lowerInlineFunctionBody(context, expression.body, nestedBindings)
+    : lowerSuspendableBody(context, {
+        kind: suspendKind,
+        body: expression.body,
+        bindings: nestedBindings,
+        outerParameterNames: new Set([...parameters.map((parameter) => parameter.name), ...(ts.isFunctionExpression(expression) ? [CLASS_THIS_NAME] : [])]),
+        outerCaptureNames: captureNames,
+        nameHint: displayName
+      });
   if (body.kind !== "lowered") {
     return body;
   }
@@ -109,7 +113,6 @@ function lowerReturnedFunctionExpression(
   if (captures === undefined) {
     return notApplicable;
   }
-  const displayName = ts.isFunctionExpression(expression) ? expression.name?.text ?? "anonymous" : "arrow";
   const codeName = `__tscn_fnobj_${displayName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   context.nextFunctionObjectId += 1;
   return produced({

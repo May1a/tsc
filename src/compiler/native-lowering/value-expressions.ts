@@ -4,7 +4,7 @@ import { type ExpressionContext, boxBoolean, boxString } from "./expression-cont
 import type { BoxedValue } from "./value-boundary.js";
 import { arrayAccess, arrayAt, arrayIncludes, arrayRemove, boxedMethod, boxedPrimitive, freshArray, objectLiteral, privateField } from "./value-aggregates.js";
 import { coalesce, lazyDefault, logical, optionalChain, ternary } from "./value-branches.js";
-import { jsonParse, jsonStringify, regexCompile, regexMatch, stringCodeUnit, stringIndex, stringPredicate } from "./value-builtins.js";
+import { jsonParse, jsonStringify, regexCompile, regexMatch, stringCodeUnit, stringIndex, stringLocaleCompare, stringPredicate } from "./value-builtins.js";
 import { callValue, newInstance } from "./value-invocations.js";
 import { type ValueNode, arrayPointer, keep, numericValue, property, stringValue, undefinedValue } from "./value-support.js";
 import { errorClassId } from "./error-classes.js";
@@ -23,6 +23,7 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   callValue,
   functionObject: (expression, context) => context.calls.functionObject(expression),
   inlineCppValue: (expression, context) => context.calls.inlineCpp(expression.symbol),
+  newTarget: (_expression, context) => context.runtime.callBoxed("newTargetGet", [], context.cursor.uniqueName("new.target")),
   newInstance,
   taggedTemplateValue: (expression, context) => context.calls.tagged(expression),
   valuePlus: (expression, context) => {
@@ -68,6 +69,72 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
     const key = keep(context.expressions.value(expression.key), context);
     return context.runtime.callBoxed("collectionGet", [map, key], context.cursor.uniqueName("map.get"));
   },
+  runtimeCollectionIterator: (expression, context) => {
+    const owner = keep(context.bindings.value(expression.collectionName), context);
+    const collection = context.values.forBlock(context.cursor.currentBlock()).unboxReference(owner);
+    const block = context.cursor.currentBlock();
+    const sourceKind = block.int(llvm.i64, expression.sourceKind === "map" ? 2n : 3n);
+    const modes = { keys: 0n, values: 1n, entries: 2n } as const;
+    const mode = block.int(llvm.i64, modes[expression.iterationKind]);
+    return context.runtime.callBoxed("createCollectionIterator", [collection, sourceKind, mode],
+      context.cursor.uniqueName("collection.iterator"));
+  },
+  runtimeCollectionClear: (expression, context) => {
+    const owner = keep(context.bindings.value(expression.collectionName), context);
+    const collection = context.values.forBlock(context.cursor.currentBlock()).unboxReference(owner);
+    context.runtime.callVoid("collectionClear", [collection]);
+    return undefinedValue(context);
+  },
+  runtimeCollectionForEach: (expression, context) => {
+    const owner = keep(context.bindings.value(expression.collectionName), context);
+    const collection = context.values.forBlock(context.cursor.currentBlock()).unboxReference(owner);
+    const callback = keep(context.expressions.value(expression.callback), context);
+    const thisArg = expression.thisArg === undefined ? undefinedValue(context) : keep(context.expressions.value(expression.thisArg), context);
+    const isMap = context.cursor.currentBlock().int(llvm.i1, expression.isMap ? 1n : 0n);
+    return context.runtime.callWithCompletion("collectionForEach", [collection, isMap, callback, thisArg],
+      context.cursor.uniqueName("collection.for.each"), context.exceptionTarget());
+  },
+  dateNew: (expression, context) => {
+    const milliseconds = expression.milliseconds === undefined
+      ? context.runtime.call("dateNow", [], context.cursor.uniqueName("date.now"))
+      : context.expressions.number(expression.milliseconds);
+    return context.runtime.callBoxed("dateNew", [milliseconds], context.cursor.uniqueName("date.new"));
+  },
+  generatorCreate: (expression, context) => {
+    const step = keep(context.expressions.value(expression.step), context);
+    return context.runtime.callBoxed("generatorCreate", [step], context.cursor.uniqueName("generator.create"));
+  },
+  asyncStart: (expression, context) => {
+    const step = keep(context.expressions.value(expression.step), context);
+    return context.runtime.callBoxed("asyncStart", [step], context.cursor.uniqueName("async.start"));
+  },
+  iteratorResult: (expression, context) => {
+    const value = keep(context.expressions.value(expression.value), context);
+    const done = context.cursor.currentBlock().int(llvm.i1, expression.done ? 1n : 0n);
+    return context.runtime.callBoxed("iteratorResultObject", [value, done], context.cursor.uniqueName("iterator.result"));
+  },
+  iteratorOpen: (expression, context) => {
+    const iterable = keep(context.expressions.value(expression.iterable), context);
+    return context.runtime.callWithCompletion("getIteratorValue",
+      [iterable, stringValue(expression.notIterableMessage, context)],
+      context.cursor.uniqueName("iterator.open"), context.exceptionTarget());
+  },
+  promiseNew: (expression, context) => {
+    const executor = keep(context.expressions.value(expression.executor), context);
+    return context.runtime.callWithCompletion("promiseNew", [executor], context.cursor.uniqueName("promise.new"), context.exceptionTarget());
+  },
+  promiseStatic: (expression, context) => {
+    const runtimeByMethod = {
+      resolve: "promiseResolveStatic",
+      reject: "promiseRejectStatic",
+      all: "promiseAll",
+      race: "promiseRace",
+      allSettled: "promiseAllSettled",
+      any: "promiseAny"
+    } as const;
+    const argument = expression.argument === undefined ? undefinedValue(context) : keep(context.expressions.value(expression.argument), context);
+    return context.runtime.callBoxed(runtimeByMethod[expression.method], [argument], context.cursor.uniqueName("promise.static"));
+  },
   ternary,
   lazyDefault,
   logicalValue: logical,
@@ -95,7 +162,7 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   stringEndsWith: stringPredicate,
   stringCharCodeAt: stringCodeUnit,
   stringCodePointAt: stringCodeUnit,
-  stringLocaleCompare: stringCodeUnit,
+  stringLocaleCompare,
   stringIndexOf: stringIndex,
   stringLastIndexOf: stringIndex
 };

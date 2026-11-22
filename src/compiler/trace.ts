@@ -3,7 +3,7 @@ import type { JsIrLoweringMode, JsIrModule, JsIrTraceOrigin } from "./ir/module.
 import type { JsIrOperation } from "./ir/types.js";
 import { visitJsIrOperations } from "./ir/visit.js";
 
-export interface LlvmLineRange {
+interface LlvmLineRange {
   readonly startLine: number;
   readonly endLine: number;
 }
@@ -32,7 +32,7 @@ export interface TraceMapV1 {
   readonly operations: readonly TraceMapOperation[];
 }
 
-export function traceOperationId(operation: JsIrOperation): string {
+function traceOperationId(operation: JsIrOperation): string {
   if (operation.trace === undefined || operation.trace.id.length === 0) {
     throw new Error(`Internal compiler error: missing finalized trace metadata for ${operation.kind}`);
   }

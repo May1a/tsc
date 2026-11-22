@@ -22,7 +22,7 @@ function literal(value: string, context: ExpressionContext): NativeString {
   };
 }
 
-export function stringFromValue(value: LlvmValue<typeof llvm.i64>, context: ExpressionContext): NativeString {
+function stringFromValue(value: LlvmValue<typeof llvm.i64>, context: ExpressionContext): NativeString {
   context.roots.push(value);
   const bytes = context.runtime.callPointer("valueStringPtr", [value], context.cursor.uniqueName("string.bytes"));
   const length = context.runtime.call("valueStringLength", [value], context.cursor.uniqueName("string.length"));

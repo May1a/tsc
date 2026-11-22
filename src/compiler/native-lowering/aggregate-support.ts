@@ -10,7 +10,7 @@ export type OperationHandlers = {
   readonly [K in ResolvedOperation["kind"]]: (operation: OperationNode<K>, context: OperationContext) => void;
 };
 
-export interface OwnedAggregate {
+interface OwnedAggregate {
   readonly pointer: LlvmValue<typeof llvm.ptr>;
   readonly value: BoxedValue;
 }

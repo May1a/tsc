@@ -434,12 +434,25 @@ entry:
 define ptr @objectPrivateTable(i64 %value) {
 entry:
   %is.object = call i1 @valueIsObject(i64 %value)
-  br i1 %is.object, label %object, label %none
+  br i1 %is.object, label %object, label %check.function
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %table.slot = getelementptr i8, ptr %object.ptr, i64 56
   %table = load ptr, ptr %table.slot
   ret ptr %table
+check.function:
+  %is.function = call i1 @valueIsFunction(i64 %value)
+  br i1 %is.function, label %function, label %none
+function:
+  %fn.ptr = call ptr @valueFunctionPtr(i64 %value)
+  %fn.props.slot = getelementptr i8, ptr %fn.ptr, i64 56
+  %fn.props = load ptr, ptr %fn.props.slot
+  %has.props = icmp ne ptr %fn.props, null
+  br i1 %has.props, label %fn.table, label %none
+fn.table:
+  %fn.table.slot = getelementptr i8, ptr %fn.props, i64 56
+  %fn.priv = load ptr, ptr %fn.table.slot
+  ret ptr %fn.priv
 none:
   ret ptr null
 }
@@ -485,13 +498,24 @@ unbranded:
 define { i64, i1 } @valuePrivateAdd(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored, i64 %message) {
 entry:
   %is.object = call i1 @valueIsObject(i64 %value)
-  br i1 %is.object, label %check, label %refused
+  br i1 %is.object, label %check, label %check.function
+check.function:
+  %is.function = call i1 @valueIsFunction(i64 %value)
+  br i1 %is.function, label %check, label %refused
 check:
   %present = call i1 @valuePrivateHas(i64 %value, i64 %key.len, ptr %key.ptr)
-  br i1 %present, label %refused, label %table
-table:
+  br i1 %present, label %refused, label %resolve.owner
+resolve.owner:
+  br i1 %is.object, label %owner.object, label %owner.function
+owner.object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
-  %table.slot = getelementptr i8, ptr %object.ptr, i64 56
+  br label %table
+owner.function:
+  %fn.props = call ptr @functionObjectProperties(i64 %value)
+  br label %table
+table:
+  %owner.ptr = phi ptr [ %object.ptr, %owner.object ], [ %fn.props, %owner.function ]
+  %table.slot = getelementptr i8, ptr %owner.ptr, i64 56
   %existing = load ptr, ptr %table.slot
   %has.table = icmp ne ptr %existing, null
   br i1 %has.table, label %add, label %create
@@ -991,6 +1015,11 @@ exit:
 }
 define void @objectAssign(ptr %target, ptr %source) {
 entry:
+  %frame = call i64 @gcRootSave()
+  %target.val = call i64 @valueBoxObject(ptr %target)
+  %source.val = call i64 @valueBoxObject(ptr %source)
+  call void @gcRootPush(i64 %target.val)
+  call void @gcRootPush(i64 %source.val)
   %count = load i64, ptr %source
   %entries.slot = getelementptr i8, ptr %source, i64 16
   %entries = load ptr, ptr %entries.slot
@@ -1010,10 +1039,19 @@ descriptor.block:
   %descriptor = load i64, ptr %descriptor.slot
   %enumerable.bit = and i64 %descriptor, 2
   %enumerable = icmp ne i64 %enumerable.bit, 0
-  br i1 %enumerable, label %copy, label %advance
-copy:
+  br i1 %enumerable, label %copy.kind, label %advance
+copy.kind:
   %key.slot = getelementptr i8, ptr %entry.ptr, i64 8
   %key.ptr = load ptr, ptr %key.slot
+  %acc.bit = and i64 %descriptor, 8
+  %is.acc = icmp ne i64 %acc.bit, 0
+  br i1 %is.acc, label %copy.accessor, label %copy.data
+copy.accessor:
+  %got = call { i64, i1 } @objectPropertyGetWithThis(ptr %source, i64 %source.val, i64 %stored.len, ptr %key.ptr)
+  %got.val = extractvalue { i64, i1 } %got, 0
+  call void @objectSet(ptr %target, i64 %stored.len, ptr %key.ptr, i64 %got.val)
+  br label %advance
+copy.data:
   %value.slot = getelementptr i8, ptr %entry.ptr, i64 16
   %value = load i64, ptr %value.slot
   call void @objectSet(ptr %target, i64 %stored.len, ptr %key.ptr, i64 %value)
@@ -1022,6 +1060,7 @@ advance:
   %next = add i64 %i, 1
   br label %scan
 exit:
+  call void @gcRootRestore(i64 %frame)
   ret void
 }
 define void @objectAssignArray(ptr %target, ptr %source) {
@@ -1586,19 +1625,78 @@ exit:
 @.accessor.set = private unnamed_addr constant [4 x i8] c"set\00"
 
 ; Accessor entries retain their getter and setter in a traced descriptor object, with flag bit 8.
-define void @objectDefineAccessor(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter) {
+define void @objectDefineAccessorWithFlags(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter, i64 %acc.flags) {
 entry:
   %frame = call i64 @gcRootSave()
   %owner = call i64 @valueBoxObject(ptr %object)
   call void @gcRootPush(i64 %owner)
   call void @gcRootPush(i64 %getter)
   call void @gcRootPush(i64 %setter)
+  %count = load i64, ptr %object
+  %entries.slot = getelementptr i8, ptr %object, i64 16
+  %entries = load ptr, ptr %entries.slot
+  br label %scan
+scan:
+  %idx = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %done = icmp eq i64 %idx, %count
+  br i1 %done, label %create.new, label %check
+check:
+  %offset = mul i64 %idx, 32
+  %prop = getelementptr i8, ptr %entries, i64 %offset
+  %stored.len = load i64, ptr %prop
+  %same.len = icmp eq i64 %stored.len, %key.len
+  br i1 %same.len, label %compare, label %advance
+compare:
+  %stored.key.slot = getelementptr i8, ptr %prop, i64 8
+  %stored.key = load ptr, ptr %stored.key.slot
+  %cmp = call i32 @memcmp(ptr %stored.key, ptr %key.ptr, i64 %key.len)
+  %same.key = icmp eq i32 %cmp, 0
+  br i1 %same.key, label %check.existing.accessor, label %advance
+advance:
+  %next = add i64 %idx, 1
+  br label %scan
+check.existing.accessor:
+  %flags.slot = getelementptr i8, ptr %prop, i64 24
+  %flags = load i64, ptr %flags.slot
+  %acc.bit = and i64 %flags, 8
+  %is.acc = icmp ne i64 %acc.bit, 0
+  br i1 %is.acc, label %merge.existing, label %create.new
+merge.existing:
+  %existing.val.slot = getelementptr i8, ptr %prop, i64 16
+  %existing.val = load i64, ptr %existing.val.slot
+  %existing.desc = call ptr @valueObjectPtr(i64 %existing.val)
+  %has.new.getter = icmp ne i64 %getter, 9222246136947933184
+  br i1 %has.new.getter, label %merge.getter, label %check.new.setter
+merge.getter:
+  call void @objectSet(ptr %existing.desc, i64 3, ptr @.accessor.get, i64 %getter)
+  br label %check.new.setter
+check.new.setter:
+  %has.new.setter = icmp ne i64 %setter, 9222246136947933184
+  br i1 %has.new.setter, label %merge.setter, label %finish
+merge.setter:
+  call void @objectSet(ptr %existing.desc, i64 3, ptr @.accessor.set, i64 %setter)
+  br label %finish
+create.new:
   %descriptor = call ptr @objectCreateWithCapacity(ptr null, i64 2)
   call void @objectSet(ptr %descriptor, i64 3, ptr @.accessor.get, i64 %getter)
   call void @objectSet(ptr %descriptor, i64 3, ptr @.accessor.set, i64 %setter)
   %boxed = call i64 @valueBoxObject(ptr %descriptor)
-  call void @objectDefineDataProperty(ptr %object, i64 %key.len, ptr %key.ptr, i64 %boxed, i64 12)
+  call void @objectDefineDataProperty(ptr %object, i64 %key.len, ptr %key.ptr, i64 %boxed, i64 %acc.flags)
+  br label %finish
+finish:
   call void @gcRootRestore(i64 %frame)
+  ret void
+}
+
+define void @objectDefineAccessor(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter) {
+entry:
+  call void @objectDefineAccessorWithFlags(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter, i64 12)
+  ret void
+}
+
+define void @objectDefineEnumerableAccessor(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter) {
+entry:
+  call void @objectDefineAccessorWithFlags(ptr %object, i64 %key.len, ptr %key.ptr, i64 %getter, i64 %setter, i64 14)
   ret void
 }
 
@@ -1644,9 +1742,8 @@ missing:
   ret ptr null
 }
 
-define { i64, i1 } @objectPropertyGet(i64 %receiver, i64 %key.len, ptr %key.ptr) {
+define { i64, i1 } @objectPropertyGetWithThis(ptr %object, i64 %receiver, i64 %key.len, ptr %key.ptr) {
 entry:
-  %object = call ptr @valueObjectPtr(i64 %receiver)
   %property = call ptr @objectFindProperty(ptr %object, i64 %key.len, ptr %key.ptr)
   %missing = icmp eq ptr %property, null
   br i1 %missing, label %absent, label %found
@@ -1678,11 +1775,17 @@ data:
   ret { i64, i1 } %ok
 }
 
-@.accessor.no.setter = private unnamed_addr constant [32 x i8] c"Cannot set getter-only property\00"
-
-define { i64, i1 } @objectPropertySet(i64 %receiver, i64 %key.len, ptr %key.ptr, i64 %stored) {
+define { i64, i1 } @objectPropertyGet(i64 %receiver, i64 %key.len, ptr %key.ptr) {
 entry:
   %object = call ptr @valueObjectPtr(i64 %receiver)
+  %result = call { i64, i1 } @objectPropertyGetWithThis(ptr %object, i64 %receiver, i64 %key.len, ptr %key.ptr)
+  ret { i64, i1 } %result
+}
+
+@.accessor.no.setter = private unnamed_addr constant [32 x i8] c"Cannot set getter-only property\00"
+
+define { i64, i1 } @objectPropertySetWithThis(ptr %object, i64 %receiver, i64 %key.len, ptr %key.ptr, i64 %stored) {
+entry:
   %property = call ptr @objectFindProperty(ptr %object, i64 %key.len, ptr %key.ptr)
   %missing = icmp eq ptr %property, null
   br i1 %missing, label %data, label %found
@@ -1713,4 +1816,11 @@ data:
   %ok.0 = insertvalue { i64, i1 } undef, i64 %stored, 0
   %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
   ret { i64, i1 } %ok
+}
+
+define { i64, i1 } @objectPropertySet(i64 %receiver, i64 %key.len, ptr %key.ptr, i64 %stored) {
+entry:
+  %object = call ptr @valueObjectPtr(i64 %receiver)
+  %result = call { i64, i1 } @objectPropertySetWithThis(ptr %object, i64 %receiver, i64 %key.len, ptr %key.ptr, i64 %stored)
+  ret { i64, i1 } %result
 }

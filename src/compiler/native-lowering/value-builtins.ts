@@ -53,6 +53,16 @@ export function stringCodeUnit(expression: ValueNode<"stringCharCodeAt">, contex
   return numericValue(result, context);
 }
 
+export function stringLocaleCompare(expression: ValueNode<"stringLocaleCompare">, context: ExpressionContext): BoxedValue {
+  const receiver = context.expressions.string(expression.receiver);
+  boxString(receiver, context);
+  const other = context.expressions.string(expression.other ?? { kind: "literal", value: "" });
+  boxString(other, context);
+  const result = context.runtime.call("stringLocaleCompare", [receiver.length, receiver.bytes, other.length, other.bytes],
+    context.cursor.uniqueName("string.locale.compare"));
+  return numericValue(result, context);
+}
+
 export function stringIndex(expression: ValueNode<"stringIndexOf">, context: ExpressionContext): BoxedValue {
   const receiver = context.expressions.string(expression.receiver);
   boxString(receiver, context);

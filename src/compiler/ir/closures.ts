@@ -1,5 +1,4 @@
-import { unsupportedFormMessage } from "./builtins/manifest.js";
-import { type Lowered, notApplicable, produced, unsupportedIn } from "./lowered.js";
+import { type Lowered, notApplicable, produced } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionParameter } from "./bindings.js";
@@ -13,6 +12,7 @@ import { CLASS_THIS_NAME } from "./class-names.js";
 import { collectFunctionExpressionCaptureNames, functionExpressionSelfReferences, lowerInlineFunctionCaptures } from "./captures.js";
 import { lowerInlineFunctionBody } from "./array-callbacks.js";
 import { functionReturnKind } from "./binding-updates.js";
+import { lowerSuspendableBody, suspendableKindFor } from "./state-machine.js";
 
 export function lowerClosureFactoryCall(
   context: LoweringContext,
@@ -118,12 +118,7 @@ export function lowerFunctionObjectValue(
   if (!ts.isArrowFunction(expression) && !ts.isFunctionExpression(expression)) {
     return notApplicable;
   }
-  if (expression.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true) {
-    return unsupportedIn(unsupportedFormMessage("async-function"));
-  }
-  if (ts.isFunctionExpression(expression) && expression.asteriskToken !== undefined) {
-    return unsupportedIn(unsupportedFormMessage("generator-function"));
-  }
+  const suspendKind = suspendableKindFor(expression);
 
   const functionKind = functionExpressionKind(expression);
   if (functionKind === "arrow" && containsLexicalThis(expression.body)) {
@@ -165,7 +160,18 @@ export function lowerFunctionObjectValue(
     localNames.add(CLASS_THIS_NAME);
   }
   const captureNames = collectFunctionExpressionCaptureNames(expression, localNames, bindings);
-  const body = lowerInlineFunctionBody(context, expression.body, functionBindings);
+  const runtimeName = expression.name?.text ?? inferredName;
+  const displayName = runtimeName ?? "anonymous";
+  const body = suspendKind === undefined
+    ? lowerInlineFunctionBody(context, expression.body, functionBindings)
+    : lowerSuspendableBody(context, {
+        kind: suspendKind,
+        body: expression.body,
+        bindings: functionBindings,
+        outerParameterNames: new Set([...parameters.map((parameter) => parameter.name), ...(functionKind === "ordinary" ? [CLASS_THIS_NAME] : [])]),
+        outerCaptureNames: captureNames,
+        nameHint: displayName
+      });
   if (body.kind !== "lowered") {
     return body;
   }
@@ -173,8 +179,6 @@ export function lowerFunctionObjectValue(
   if (captures === undefined) {
     return notApplicable;
   }
-  const runtimeName = expression.name?.text ?? inferredName;
-  const displayName = runtimeName ?? "anonymous";
   const codeName = `__tscn_fnobj_${displayName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
   context.nextFunctionObjectId += 1;
   return produced({

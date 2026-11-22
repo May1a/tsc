@@ -858,3 +858,30 @@ surrogate:
 missing:
   ret i64 9222246136947933184
 }
+
+define double @stringLocaleCompare(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr) {
+entry:
+  %left.shorter = icmp ult i64 %left.len, %right.len
+  %min.len = select i1 %left.shorter, i64 %left.len, i64 %right.len
+  %empty.prefix = icmp eq i64 %min.len, 0
+  br i1 %empty.prefix, label %compare.len, label %compare.bytes
+compare.bytes:
+  %cmp = call i32 @memcmp(ptr %left.ptr, ptr %right.ptr, i64 %min.len)
+  %lt = icmp slt i32 %cmp, 0
+  br i1 %lt, label %less, label %check.gt
+check.gt:
+  %gt = icmp sgt i32 %cmp, 0
+  br i1 %gt, label %greater, label %compare.len
+compare.len:
+  %len.lt = icmp ult i64 %left.len, %right.len
+  br i1 %len.lt, label %less, label %check.len.gt
+check.len.gt:
+  %len.gt = icmp ugt i64 %left.len, %right.len
+  br i1 %len.gt, label %greater, label %equal
+less:
+  ret double -1.0
+greater:
+  ret double 1.0
+equal:
+  ret double 0.0
+}

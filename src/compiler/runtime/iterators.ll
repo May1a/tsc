@@ -619,3 +619,82 @@ result.not.object:
   call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %result.not.object.error
 }
+
+@.iter.key.throw = private unnamed_addr constant [6 x i8] c"throw\00"
+
+define { i64, i1 } @generatorStepDispatch(i64 %argc, ptr %argv, ptr %env, double %mode.num) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %step.fn = call i64 @environmentGet(ptr %env, i64 0)
+  call void @gcRootPush(i64 %step.fn)
+  %has.arg = icmp uge i64 %argc, 1
+  br i1 %has.arg, label %load.arg, label %no.arg
+load.arg:
+  %arg.val = load i64, ptr %argv
+  br label %invoke
+no.arg:
+  br label %invoke
+invoke:
+  %sent = phi i64 [ %arg.val, %load.arg ], [ 9222246136947933184, %no.arg ]
+  call void @gcRootPush(i64 %sent)
+  %mode.boxed = call i64 @valueBoxNumber(double %mode.num)
+  %call.argv = alloca [2 x i64]
+  %slot0 = getelementptr [2 x i64], ptr %call.argv, i64 0, i64 0
+  %slot1 = getelementptr [2 x i64], ptr %call.argv, i64 0, i64 1
+  store i64 %mode.boxed, ptr %slot0
+  store i64 %sent, ptr %slot1
+  %res = call { i64, i1 } @jsCall(i64 %step.fn, i64 2, ptr %call.argv, i64 9222246136947933184)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @generatorNextMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %res = call { i64, i1 } @generatorStepDispatch(i64 %argc, ptr %argv, ptr %env, double 0.0)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @generatorReturnMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %res = call { i64, i1 } @generatorStepDispatch(i64 %argc, ptr %argv, ptr %env, double 1.0)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @generatorThrowMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %res = call { i64, i1 } @generatorStepDispatch(i64 %argc, ptr %argv, ptr %env, double 2.0)
+  ret { i64, i1 } %res
+}
+
+define i64 @generatorCreate(i64 %step.fn) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %step.fn)
+  %env = call ptr @environmentNew(i64 1)
+  %env.boxed = call i64 @valueBoxObject(ptr %env)
+  call void @gcRootPush(i64 %env.boxed)
+  call void @environmentSet(ptr %env, i64 0, i64 %step.fn)
+  %next.name = call i64 @valueBoxString(ptr @.iter.key.next, i64 4)
+  call void @gcRootPush(i64 %next.name)
+  %next.fn = call i64 @functionObjectNew(ptr @generatorNextMethod, ptr %env, i64 9222246136947933184, i64 %next.name, i64 1)
+  call void @gcRootPush(i64 %next.fn)
+  %ret.name = call i64 @valueBoxString(ptr @.iter.key.return, i64 6)
+  call void @gcRootPush(i64 %ret.name)
+  %ret.fn = call i64 @functionObjectNew(ptr @generatorReturnMethod, ptr %env, i64 9222246136947933184, i64 %ret.name, i64 1)
+  call void @gcRootPush(i64 %ret.fn)
+  %throw.name = call i64 @valueBoxString(ptr @.iter.key.throw, i64 5)
+  call void @gcRootPush(i64 %throw.name)
+  %throw.fn = call i64 @functionObjectNew(ptr @generatorThrowMethod, ptr %env, i64 9222246136947933184, i64 %throw.name, i64 1)
+  call void @gcRootPush(i64 %throw.fn)
+  %self.fn = call i64 @functionObjectNew(ptr @iteratorSelfMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  call void @gcRootPush(i64 %self.fn)
+  %obj = call ptr @objectNew(i64 4)
+  %obj.boxed = call i64 @valueBoxObject(ptr %obj)
+  call void @gcRootPush(i64 %obj.boxed)
+  call void @objectSet(ptr %obj, i64 4, ptr @.iter.key.next, i64 %next.fn)
+  call void @objectSet(ptr %obj, i64 6, ptr @.iter.key.return, i64 %ret.fn)
+  call void @objectSet(ptr %obj, i64 5, ptr @.iter.key.throw, i64 %throw.fn)
+  call void @objectSet(ptr %obj, i64 18, ptr @.symbol.iterator.key, i64 %self.fn)
+  call void @gcRootRestore(i64 %frame)
+  ret i64 %obj.boxed
+}

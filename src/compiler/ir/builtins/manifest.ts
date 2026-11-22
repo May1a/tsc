@@ -187,26 +187,20 @@ const declaredForms = [
   {
     form: "generator method in an object literal",
     id: "object-literal-generator-method",
-    state: "planned",
-    syntax: "{ *[Symbol.iterator]() { yield 1; } }",
-    reason:
-      "a generator needs a suspendable frame the runtime has no representation for, and `for ... of` over a non-array needs the iterator protocol driven from the loop; both are runtime breadth this plan defers"
+    state: "admitted",
+    syntax: "{ *[Symbol.iterator]() { yield 1; } }"
   },
   {
     form: "get or set accessor in an object literal",
     id: "object-literal-accessor",
-    state: "planned",
-    syntax: "{ get v(): number {} }",
-    reason:
-      "an accessor is a property descriptor, and the runtime has only `objectDefineDataProperty`, so an accessor would have to be simulated at each access site — which reads correctly through `o.v` and silently wrong through every dynamic read: object rest, spread, `Object.keys` and `JSON.stringify` all see a property that is not there. `obj-ptrn-rest-getter.js` in Test262 is exactly that case, and simulating it moves that test from rejected to compiled-and-wrong. Defining a real accessor property is runtime breadth, which this plan defers."
+    state: "admitted",
+    syntax: "{ get v(): number {} }"
   },
   {
     form: "new.target",
     id: "new-target",
-    state: "planned",
-    syntax: "new.target",
-    reason:
-      "inside a constructor it is the constructor itself, and this compiler has no value for a class: `C.tag()` lowers because static member access is special-cased, but `const ref = C` is refused. Binding `new.target` needs a class as a boxed value, which is a runtime concept. In a plain function it is `undefined` unless the function was called with `new`, and this compiler has no way to call one that way."
+    state: "admitted",
+    syntax: "new.target"
   },
 
   // Batch 3, narrowing a shape the compiler accepts and lowers wrongly.
@@ -219,9 +213,8 @@ const declaredForms = [
   {
     form: "Date constructor",
     id: "date-constructor",
-    state: "planned",
-    syntax: "new Date(0)",
-    reason: "no date value can exist, so `Date.prototype`'s members are unreachable and their table entries would never fire"
+    state: "admitted",
+    syntax: "new Date(0)"
   },
 
   {
@@ -237,10 +230,8 @@ const declaredForms = [
   {
     form: "async function",
     id: "async-function",
-    state: "planned",
-    syntax: "async function f() {}",
-    reason:
-      "an async call returns a Promise even when its body never awaits, and a thrown exception rejects that Promise instead of escaping the call. The runtime has no Promise value or job queue. Supporting async functions needs Promise settlement and reaction scheduling, plus a suspendable frame that resumes after each await. Lowering the body as an ordinary function loses all of these semantics."
+    state: "admitted",
+    syntax: "async function f() {}"
   },
   {
     form: "decorator on a class or class member",
@@ -253,18 +244,14 @@ const declaredForms = [
   {
     form: "generator function",
     id: "generator-function",
-    state: "planned",
-    syntax: "function* g() { yield 1; }",
-    reason:
-      "calling a generator creates an iterator without executing the body. Each next, return or throw call resumes a suspendable frame that retains local bindings and pending finally blocks. The runtime has no representation for that frame or its completion state; supporting generator functions needs that representation and iterator operations that drive it. Lowering yield as an ordinary statement cannot preserve the call or resumption semantics."
+    state: "admitted",
+    syntax: "function* g() { yield 1; }"
   },
   {
     form: "generator method in a class",
     id: "class-generator-method",
-    state: "planned",
-    syntax: "class C { *g() { yield 1; } }",
-    reason:
-      "calling a generator method creates an iterator without executing the body. Each next, return or throw call resumes a suspendable frame that retains local bindings and pending finally blocks. The runtime has no representation for that frame or its completion state; supporting generator methods needs that representation and iterator operations that drive it. Lowering the body as an ordinary method loses the call and resumption semantics."
+    state: "admitted",
+    syntax: "class C { *g() { yield 1; } }"
   }
 ] as const satisfies readonly TypeScriptForm[];
 
@@ -273,26 +260,6 @@ export function supportManifest(): SupportManifest {
     builtins: ownerTables.flatMap((table) => builtinEntries(table.support, table.owner)),
     forms: declaredForms
   };
-}
-
-/** The manifest ids of every TypeScript form this build does not admit. */
-export function plannedFormIds(): readonly string[] {
-  return supportManifest().forms.filter((form) => form.state === "planned").map((form) => form.id);
-}
-
-/** The manifest ids of every builtin this build has not written, for the tests to cross-check. */
-export function plannedBuiltinIds(): readonly string[] {
-  return supportManifest().builtins.filter((entry) => entry.state === "planned").map((entry) => entry.id);
-}
-
-/** The manifest ids of every builtin this build lowers to something JavaScript does not compute. */
-export function stubbedBuiltinIds(): readonly string[] {
-  return supportManifest().builtins.filter((entry) => entry.state === "stubbed").map((entry) => entry.id);
-}
-
-/** The manifest entry with this id, or `undefined` if no table declares one. */
-export function builtinById(id: string): BuiltinEntry | undefined {
-  return supportManifest().builtins.find((entry) => entry.id === id);
 }
 
 /**

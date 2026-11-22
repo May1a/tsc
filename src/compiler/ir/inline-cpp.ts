@@ -30,8 +30,8 @@ export function createInlineCppCompilation(enabled: boolean): InlineCppCompilati
   return { enabled, blocks: [] };
 }
 
-export const inlineCppTag = "__tscn_inline_cpp";
-export function findInlineCppTaggedTemplate(sourceFile: ts.SourceFile): ts.TaggedTemplateExpression | undefined {
+const inlineCppTag = "__tscn_inline_cpp";
+function findInlineCppTaggedTemplate(sourceFile: ts.SourceFile): ts.TaggedTemplateExpression | undefined {
   let found: ts.TaggedTemplateExpression | undefined;
   const visit = (node: ts.Node): void => {
     if (found !== undefined) {
@@ -78,7 +78,7 @@ export function lowerInlineCppValueExpression(
   inlineCpp.blocks.push({ symbol, code: rawNoSubstitutionTemplateText(expression.template) });
   return produced({ kind: "inlineCppValue", symbol });
 }
-export function rawNoSubstitutionTemplateText(template: ts.NoSubstitutionTemplateLiteral): string {
+function rawNoSubstitutionTemplateText(template: ts.NoSubstitutionTemplateLiteral): string {
   const sourceFile = template.getSourceFile();
   const start = template.getStart(sourceFile);
   const end = template.getEnd();

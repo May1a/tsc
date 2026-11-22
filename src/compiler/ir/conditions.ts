@@ -59,14 +59,22 @@ function lowerInstanceOfCondition(
       }
     }
   }
-  if (!ts.isIdentifier(right) || !errorConstructorNames.has(right.text) || bindings.has(right.text)) {
-    return notApplicable;
+  if (ts.isIdentifier(right) && errorConstructorNames.has(right.text) && !bindings.has(right.text)) {
+    const errorCondition = lowerErrorInstanceOfCondition(context, expression.left, right.text, bindings);
+    if (errorCondition.kind !== "lowered") {
+      return errorCondition;
+    }
+    return produced(errorCondition.operation);
   }
-  const errorCondition = lowerErrorInstanceOfCondition(context, expression.left, right.text, bindings);
-  if (errorCondition.kind !== "lowered") {
-    return errorCondition;
+  const leftValue = context.lowerValueExpression(context, unwrapTypeOnlyExpression(expression.left), bindings);
+  if (leftValue.kind !== "lowered") {
+    return leftValue;
   }
-  return produced(errorCondition.operation);
+  const rightValue = context.lowerValueExpression(context, right, bindings);
+  if (rightValue.kind !== "lowered") {
+    return rightValue;
+  }
+  return produced({ kind: "valueInstanceOf", left: leftValue.operation, right: rightValue.operation });
 }
 
 function lowerErrorInstanceOfCondition(
@@ -216,6 +224,10 @@ export function lowerConditionExpression(
   const booleanValue = lowerBooleanExpression(expression, bindings);
   if (booleanValue !== undefined) {
     return produced({ kind: "boolean", value: booleanValue });
+  }
+
+  if (ts.isMetaProperty(expression) && expression.keywordToken === ts.SyntaxKind.NewKeyword) {
+    return produced({ kind: "valueTruthy", value: context.inClassConstructor ? { kind: "newTarget" } : { kind: "undefined" } });
   }
 
   const truthy = lowerTruthyConditionExpression(expression, bindings);

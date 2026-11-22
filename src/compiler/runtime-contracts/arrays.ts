@@ -197,7 +197,7 @@ export const arraysContracts = {
     pointerResult: { kind: "heap" },
     origin: "staticRuntime",
     name: "arrayOwnPropertyDescriptors", parameters: [llvm.ptr], returns: llvm.ptr, variadic: false,
-    effects: { allocates: true, collects: false, completion: "none" }
+    effects: { allocates: true, collects: true, completion: "none" }
   },
   "arrayIncludes": {
     resultKind: "scalar",

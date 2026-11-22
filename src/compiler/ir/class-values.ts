@@ -3,7 +3,7 @@ import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { type ClassInfo, type ClassPrivateAccessorInfo, classPrototypeName, findClassInChain, lowerClassStaticFieldAccess, resolveReceiverClass } from "./class-info.js";
-import { CLASS_THIS_NAME, classGetterFunctionName, classPrivateFieldReadMessage, classPrivateFieldWriteMessage } from "./class-names.js";
+import { CLASS_THIS_NAME, classConstructorValueName, classGetterFunctionName, classPrivateFieldReadMessage, classPrivateFieldWriteMessage } from "./class-names.js";
 import { lowerClassInstanceExpression, lowerClassMethodCall } from "./class-calls.js";
 import { type Lowered, type Produced, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 
@@ -14,6 +14,14 @@ export function lowerClassValueExpression(
 ): Lowered<JsIrValueExpression> {
   if (context.classThisInScope && expression.kind === ts.SyntaxKind.ThisKeyword) {
     return produced({ kind: "variable", name: CLASS_THIS_NAME });
+  }
+
+  // A class name used as a value (`const K = C`, `f(C)`, `typeof C`) reads its boxed constructor.
+  if (ts.isIdentifier(expression) && !bindings.has(expression.text)) {
+    const classInfo = context.classes.get(expression.text);
+    if (classInfo !== undefined) {
+      return produced({ kind: "variable", name: classConstructorValueName(classInfo.name) });
+    }
   }
 
   const instance = lowerClassInstanceExpression(context, expression, bindings);
@@ -111,11 +119,15 @@ function lowerClassPrivateFieldAccess(
 ): Produced<JsIrValueExpression> {
   const fieldName = expression.name.text;
   const enclosing = context.activeEnclosingClass;
-  const accessor = enclosing?.privateAccessors.get(fieldName);
+  const accessor = enclosing?.privateAccessors.get(fieldName) ?? enclosing?.staticPrivateAccessors.get(fieldName);
   if (accessor !== undefined) {
     return lowerPrivateGetterCall(context, expression, accessor, bindings);
   }
-  const storageKey = enclosing?.privateFields.get(fieldName) ?? enclosing?.privateMethods.get(fieldName)?.storageKey;
+  const storageKey =
+    enclosing?.privateFields.get(fieldName) ??
+    enclosing?.privateMethods.get(fieldName)?.storageKey ??
+    enclosing?.staticPrivateFields.get(fieldName) ??
+    enclosing?.staticPrivateMethods.get(fieldName)?.storageKey;
   if (storageKey === undefined) {
     return unsupportedIn(`\`#${fieldName}\` is not declared by the lexically enclosing class`);
   }
@@ -166,14 +178,22 @@ function lowerPrivateAccessorReceiver(
   if (receiver.kind === ts.SyntaxKind.ThisKeyword && context.classThisInScope) {
     return produced({ kind: "variable", name: CLASS_THIS_NAME });
   }
-  if (ts.isIdentifier(receiver) && bindings.get(receiver.text)?.kind === "valueVariable") {
-    return produced({ kind: "variable", name: receiver.text });
+  if (ts.isIdentifier(receiver)) {
+    if (bindings.get(receiver.text)?.kind === "valueVariable") {
+      return produced({ kind: "variable", name: receiver.text });
+    }
+    if (!bindings.has(receiver.text)) {
+      const classInfo = context.classes.get(receiver.text);
+      if (classInfo !== undefined) {
+        return produced({ kind: "variable", name: classConstructorValueName(classInfo.name) });
+      }
+    }
   }
   return unsupportedIn("The receiver of a private accessor must be `this` or a value variable");
 }
 
 // Resolves the receiver of a private field access to a stable instance value:
-// `this`, `new C(...)`, or a named value variable (e.g. a method parameter).
+// `this`, `new C(...)`, a class name, or a named value variable (e.g. a method parameter).
 function lowerClassPrivateFieldReceiver(
   context: LoweringContext,
   receiver: ts.Expression,
@@ -183,8 +203,16 @@ function lowerClassPrivateFieldReceiver(
   if (instance.kind !== "notApplicable") {
     return instance;
   }
-  if (ts.isIdentifier(receiver) && bindings.get(receiver.text)?.kind === "valueVariable") {
-    return produced({ kind: "variable", name: receiver.text } as JsIrValueExpression);
+  if (ts.isIdentifier(receiver)) {
+    if (bindings.get(receiver.text)?.kind === "valueVariable") {
+      return produced({ kind: "variable", name: receiver.text } as JsIrValueExpression);
+    }
+    if (!bindings.has(receiver.text)) {
+      const classInfo = context.classes.get(receiver.text);
+      if (classInfo !== undefined) {
+        return produced({ kind: "variable", name: classConstructorValueName(classInfo.name) } as JsIrValueExpression);
+      }
+    }
   }
   return unsupportedIn("The receiver of a private field access must be `this`, an instance, or a value variable");
 }
@@ -201,37 +229,70 @@ export function lowerClassPrivateFieldStore(
     return notApplicable;
   }
   const fieldName = left.name.text;
-  const accessor = context.activeEnclosingClass?.privateAccessors.get(fieldName);
+  const enclosing = context.activeEnclosingClass;
+  const accessor = enclosing?.privateAccessors.get(fieldName) ?? enclosing?.staticPrivateAccessors.get(fieldName);
   if (accessor !== undefined) {
     return lowerPrivateSetterCall(context, left, right, accessor, bindings);
-  }
-  if (context.activeEnclosingClass?.privateMethods.has(fieldName) === true) {
-    return unsupportedIn(`Assigning to the private method \`${fieldName}\`, which always throws a TypeError, is not supported yet`);
-  }
-  const storageKey = context.activeEnclosingClass?.privateFields.get(fieldName);
-  if (storageKey === undefined) {
-    return unsupportedIn(`\`#${fieldName}\` is not declared by the lexically enclosing class`);
-  }
-  let targetName: string | undefined;
-  if (left.expression.kind === ts.SyntaxKind.ThisKeyword && bindings.get(CLASS_THIS_NAME)?.kind === "valueVariable") {
-    targetName = CLASS_THIS_NAME;
-  } else if (ts.isIdentifier(left.expression) && bindings.get(left.expression.text)?.kind === "valueVariable") {
-    targetName = left.expression.text;
-  }
-  if (targetName === undefined) {
-    return unsupportedIn("The receiver of a private field write must be `this` or a value variable");
   }
   const value = context.lowerValueExpression(context, right, bindings);
   if (value.kind !== "lowered") {
     return withRefusal(value, unsupportedIn("The value written to a private field is not an expression this build can evaluate"));
   }
+  return lowerClassPrivateFieldValueStore(context, left, value.operation, bindings);
+}
+
+export function lowerClassPrivateFieldValueStore(
+  context: LoweringContext,
+  left: ts.PropertyAccessExpression,
+  value: JsIrValueExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (!ts.isPrivateIdentifier(left.name)) {
+    return notApplicable;
+  }
+  const fieldName = left.name.text;
+  const enclosing = context.activeEnclosingClass;
+  if (enclosing?.privateMethods.has(fieldName) === true || enclosing?.staticPrivateMethods.has(fieldName) === true) {
+    return unsupportedIn(`Assigning to the private method \`${fieldName}\`, which always throws a TypeError, is not supported yet`);
+  }
+  const storageKey = enclosing?.privateFields.get(fieldName) ?? enclosing?.staticPrivateFields.get(fieldName);
+  if (storageKey === undefined) {
+    return unsupportedIn(`\`#${fieldName}\` is not declared by the lexically enclosing class`);
+  }
+  const targetName = resolvePrivateWriteTarget(context, left.expression, bindings);
+  if (targetName === undefined) {
+    return unsupportedIn("The receiver of a private field write must be `this` or a value variable");
+  }
   return produced({
     kind: "privateFieldStore",
     targetName,
     key: storageKey,
-    value: value.operation,
+    value,
     message: classPrivateFieldWriteMessage(fieldName)
   });
+}
+
+function resolvePrivateWriteTarget(
+  context: LoweringContext,
+  receiver: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): string | undefined {
+  if (receiver.kind === ts.SyntaxKind.ThisKeyword && bindings.get(CLASS_THIS_NAME)?.kind === "valueVariable") {
+    return CLASS_THIS_NAME;
+  }
+  if (!ts.isIdentifier(receiver)) {
+    return undefined;
+  }
+  if (bindings.get(receiver.text)?.kind === "valueVariable") {
+    return receiver.text;
+  }
+  if (!bindings.has(receiver.text)) {
+    const classInfo = context.classes.get(receiver.text);
+    if (classInfo !== undefined) {
+      return classConstructorValueName(classInfo.name);
+    }
+  }
+  return undefined;
 }
 
 /** `recv.#x = value` for a private accessor calls its setter with `recv` as `this`. */

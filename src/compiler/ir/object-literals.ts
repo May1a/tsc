@@ -1,10 +1,9 @@
-import { unsupportedFormMessage } from "./builtins/manifest.js";
-import { type Lowered, loweredPayload, notApplicable, produced, unsupportedIn } from "./lowered.js";
+import { type Lowered, loweredPayload, notApplicable, produced } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { ObjectLiteralClassification } from "./literal-types.js";
-import type { JsIrObjectField, JsIrObjectValue, JsIrRuntimeObjectField, JsIrRuntimeObjectValue, JsIrStringExpression } from "./expressions.js";
+import type { JsIrObjectField, JsIrObjectValue, JsIrRuntimeObjectField, JsIrRuntimeObjectValue, JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 
 export function classifyObjectLiteral(
@@ -69,7 +68,6 @@ function lowerObjectLiteralExpression(
   return produced({ fields });
 }
 
-// eslint-disable-next-line max-statements -- Runtime object literals validate spread, shorthand, methods, and value fields in one pass.
 export function lowerRuntimeObjectLiteralExpression(
   context: LoweringContext,
   expression: ts.Expression,
@@ -78,65 +76,60 @@ export function lowerRuntimeObjectLiteralExpression(
   if (!ts.isObjectLiteralExpression(expression)) {
     return notApplicable;
   }
-
   const fields: JsIrRuntimeObjectField[] = [];
   for (const property of expression.properties) {
-    if (ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property)) {
-      return unsupportedIn(unsupportedFormMessage("object-literal-accessor"));
+    const field = lowerRuntimeObjectProperty(context, property, bindings);
+    if (field.kind !== "lowered") {
+      return field;
     }
-
-    if (ts.isSpreadAssignment(property)) {
-      const spread = lowerObjectSpreadField(property, bindings);
-      if (spread.kind !== "lowered") {
-        return spread;
-      }
-      fields.push(spread.operation);
-      continue;
-    }
-    if (ts.isShorthandPropertyAssignment(property)) {
-      const value = context.lowerValueExpression(context, property.name, bindings);
-      if (value.kind !== "lowered") {
-        return value;
-      }
-      fields.push({ kind: "field", key: { kind: "literal", value: property.name.text }, value: value.operation });
-      continue;
-    }
-    if (ts.isMethodDeclaration(property) && property.body !== undefined) {
-      const keyResult = lowerRuntimeObjectFieldName(context, property.name, bindings);
-      if (keyResult.kind === "unsupported") {
-        return keyResult;
-      }
-      const key = loweredPayload(keyResult);
-      const valueResult = context.lowerObjectMethodFunctionValue(context, property, bindings);
-      if (valueResult.kind === "unsupported") {
-        return valueResult;
-      }
-      const value = loweredPayload(valueResult);
-      if (key === undefined || value === undefined) {
-        return notApplicable;
-      }
-      fields.push({ kind: "field", key, value });
-      continue;
-    }
-    if (!ts.isPropertyAssignment(property)) {
-      return notApplicable;
-    }
-    const keyResult2 = lowerRuntimeObjectFieldName(context, property.name, bindings);
-    if (keyResult2.kind === "unsupported") {
-      return keyResult2;
-    }
-    const key = loweredPayload(keyResult2);
-    const valueResult2 = context.lowerValueExpression(context, property.initializer, bindings);
-    if (valueResult2.kind === "unsupported") {
-      return valueResult2;
-    }
-    const value = loweredPayload(valueResult2);
-    if (key === undefined || value === undefined) {
-      return notApplicable;
-    }
-    fields.push({ kind: "field", key, value });
+    fields.push(field.operation);
   }
   return produced({ fields });
+}
+
+function lowerRuntimeObjectProperty(
+  context: LoweringContext,
+  property: ts.ObjectLiteralElementLike,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrRuntimeObjectField> {
+  if (ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property)) {
+    return lowerObjectAccessorField(context, property, bindings);
+  }
+  if (ts.isSpreadAssignment(property)) {
+    return lowerObjectSpreadField(property, bindings);
+  }
+  if (ts.isShorthandPropertyAssignment(property)) {
+    const value = context.lowerValueExpression(context, property.name, bindings);
+    return value.kind === "lowered" ? produced({ kind: "field", key: { kind: "literal", value: property.name.text }, value: value.operation }) : value;
+  }
+  if (ts.isMethodDeclaration(property) && property.body !== undefined) {
+    return lowerKeyedObjectField(
+      lowerRuntimeObjectFieldName(context, property.name, bindings),
+      context.lowerObjectMethodFunctionValue(context, property, bindings)
+    );
+  }
+  if (ts.isPropertyAssignment(property)) {
+    return lowerKeyedObjectField(
+      lowerRuntimeObjectFieldName(context, property.name, bindings),
+      context.lowerValueExpression(context, property.initializer, bindings)
+    );
+  }
+  return notApplicable;
+}
+
+function lowerKeyedObjectField(
+  keyResult: Lowered<JsIrStringExpression>,
+  valueResult: Lowered<JsIrValueExpression>
+): Lowered<JsIrRuntimeObjectField> {
+  if (keyResult.kind === "unsupported") {
+    return keyResult;
+  }
+  if (valueResult.kind === "unsupported") {
+    return valueResult;
+  }
+  const key = loweredPayload(keyResult);
+  const value = loweredPayload(valueResult);
+  return key !== undefined && value !== undefined ? produced({ kind: "field", key, value }) : notApplicable;
 }
 
 export function lowerRuntimeObjectFieldName(
@@ -161,6 +154,30 @@ function lowerObjectFieldName(name: ts.PropertyName): string | undefined {
     return name.text;
   }
   return undefined;
+}
+
+function lowerObjectAccessorField(
+  context: LoweringContext,
+  property: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrRuntimeObjectField> {
+  const keyResult = lowerRuntimeObjectFieldName(context, property.name, bindings);
+  if (keyResult.kind === "unsupported") {
+    return keyResult;
+  }
+  const key = loweredPayload(keyResult);
+  const valueResult = context.lowerObjectMethodFunctionValue(context, property, bindings);
+  if (valueResult.kind === "unsupported") {
+    return valueResult;
+  }
+  const value = loweredPayload(valueResult);
+  if (key === undefined || value === undefined) {
+    return notApplicable;
+  }
+  if (ts.isGetAccessorDeclaration(property)) {
+    return produced({ kind: "accessor", key, getter: value });
+  }
+  return produced({ kind: "accessor", key, setter: value });
 }
 
 function lowerObjectSpreadField(

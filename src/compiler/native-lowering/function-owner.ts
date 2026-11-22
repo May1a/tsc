@@ -42,9 +42,9 @@ export interface NativeFunctionBuilder {
   finish(): GcFunctionFacts;
 }
 
-export type FunctionBuilderPort = Pick<LlvmFunctionBuilder, "openBlock" | "label" | "parameter" | "entryAllocaArray" | "withTrace">;
+type FunctionBuilderPort = Pick<LlvmFunctionBuilder, "openBlock" | "label" | "parameter" | "entryAllocaArray" | "withTrace">;
 
-export class FunctionCursor implements BlockCursor {
+class FunctionCursor implements BlockCursor {
   readonly #builder: Pick<FunctionBuilderPort, "openBlock" | "label" | "entryAllocaArray">;
   readonly #used = new Set<string>();
   readonly #targets = new Set<LlvmBlockLabel>();

@@ -13,7 +13,7 @@ type BooleanValue = LlvmValue<typeof llvm.i1>;
 const numberPredicates = { "===": "oeq", "!==": "une", "<": "olt", "<=": "ole", ">": "ogt", ">=": "oge" } as const;
 const relationalCodes = { "<": 0n, "<=": 1n, ">": 2n, ">=": 3n, "==": 4n, "!=": 5n } as const;
 const predicateHelpers = {
-  globalIsNaN: "globalIsNaN", numberIsNaN: "numberIsNaN", numberIsFinite: "numberIsFinite",
+  globalIsNaN: "globalIsNaN", globalIsFinite: "globalIsFinite", numberIsNaN: "numberIsNaN", numberIsFinite: "numberIsFinite",
   numberIsInteger: "numberIsInteger", numberIsSafeInteger: "numberIsSafeInteger"
 } as const;
 const searchHelpers = { includes: "stringIncludes", startsWith: "stringStartsWith", endsWith: "stringEndsWith" } as const;
@@ -109,6 +109,15 @@ const handlers: VariantHandlers<ConditionVariants, ExpressionContext, BooleanVal
     context.roots.push(value);
     const prototype = context.bindings.pointer(condition.prototypeName);
     return context.runtime.call("jsInstanceOf", [value, prototype], context.cursor.uniqueName("condition.instanceof"));
+  },
+  valueInstanceOf: (condition, context) => {
+    const left = context.expressions.value(condition.left);
+    context.roots.push(left);
+    const right = context.expressions.value(condition.right);
+    context.roots.push(right);
+    const result = context.runtime.callWithCompletion("valueInstanceOf", [left, right],
+      context.cursor.uniqueName("condition.value.instanceof"), context.exceptionTarget());
+    return context.runtime.call("valueTruthy", [result], context.cursor.uniqueName("condition.instanceof.bool"));
   },
   errorInstanceOf: errorInstance,
   regexTest: (condition, context) => {

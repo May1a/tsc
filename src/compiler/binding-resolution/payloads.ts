@@ -111,7 +111,7 @@ export function resolveFunctionObject(definition: JsIrFunctionObjectDefinition, 
 }
 
 /** A call argument carries one typed expression, or nothing at all for an omitted optional parameter. */
-export function resolveCallArgument(argument: JsIrCallArgument, resolver: Resolver): ResolvedCallArgument {
+function resolveCallArgument(argument: JsIrCallArgument, resolver: Resolver): ResolvedCallArgument {
   switch (argument.valueKind) {
     case "number": {
       return { valueKind: "number", value: resolver.number(argument.value) };
@@ -239,7 +239,7 @@ export function resolveObjectAssignSource(
   }
 }
 
-export function resolveObjectField(field: JsIrObjectField, resolver: Resolver): ResolvedObjectField {
+function resolveObjectField(field: JsIrObjectField, resolver: Resolver): ResolvedObjectField {
   const { value } = field;
   return value.kind === "number"
     ? { name: field.name, value: { kind: "number", value: resolver.number(value.value) } }
@@ -255,6 +255,14 @@ export function resolveObjectValue(value: JsIrObjectValue, resolver: Resolver): 
 function resolveRuntimeObjectField(field: JsIrRuntimeObjectField, resolver: Resolver): ResolvedRuntimeObjectField {
   if (field.kind === "spread") {
     return { kind: "spread", sourceName: resolver.reference(field.sourceName) };
+  }
+  if (field.kind === "accessor") {
+    return {
+      kind: "accessor",
+      key: resolver.string(field.key),
+      getter: optional(field.getter, resolver.value),
+      setter: optional(field.setter, resolver.value)
+    };
   }
   return { kind: "field", key: resolver.string(field.key), value: resolver.value(field.value) };
 }

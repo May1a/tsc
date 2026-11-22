@@ -35,9 +35,19 @@
 @.array.method.name.toString = private unnamed_addr constant [9 x i8] c"toString\00"
 @.array.method.name.unshift = private unnamed_addr constant [8 x i8] c"unshift\00"
 @.array.method.name.values = private unnamed_addr constant [7 x i8] c"values\00"
+@.array.method.name.every = private unnamed_addr constant [6 x i8] c"every\00"
+@.array.method.name.some = private unnamed_addr constant [5 x i8] c"some\00"
+@.array.method.name.findLast = private unnamed_addr constant [9 x i8] c"findLast\00"
+@.array.method.name.findLastIndex = private unnamed_addr constant [14 x i8] c"findLastIndex\00"
+@.array.method.name.toReversed = private unnamed_addr constant [11 x i8] c"toReversed\00"
+@.array.method.name.toSorted = private unnamed_addr constant [9 x i8] c"toSorted\00"
+@.array.method.name.toSpliced = private unnamed_addr constant [10 x i8] c"toSpliced\00"
+@.array.method.name.with = private unnamed_addr constant [5 x i8] c"with\00"
+@.array.range.error.name = private unnamed_addr constant [11 x i8] c"RangeError\00"
+@.array.invalid.index = private unnamed_addr constant [14 x i8] c"Invalid index\00"
 
 ; { key length, key bytes, method, arity } for every method a property read on an array can return.
-@arrayPrototypeMethods = private unnamed_addr constant [30 x { i64, ptr, ptr, i64 }] [
+@arrayPrototypeMethods = private unnamed_addr constant [38 x { i64, ptr, ptr, i64 }] [
   { i64, ptr, ptr, i64 } { i64 2, ptr @.array.method.name.at, ptr @arrayAtMethod, i64 1 },
   { i64, ptr, ptr, i64 } { i64 6, ptr @.array.method.name.concat, ptr @arrayConcatMethod, i64 1 },
   { i64, ptr, ptr, i64 } { i64 10, ptr @.array.method.name.copyWithin, ptr @arrayCopyWithinMethod, i64 2 },
@@ -67,22 +77,30 @@
   { i64, ptr, ptr, i64 } { i64 8, ptr @.array.method.name.toString, ptr @arrayToStringMethod, i64 0 },
   { i64, ptr, ptr, i64 } { i64 7, ptr @.array.method.name.unshift, ptr @arrayUnshiftMethod, i64 1 },
   { i64, ptr, ptr, i64 } { i64 6, ptr @.array.method.name.values, ptr @arrayValuesMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 5, ptr @.array.method.name.every, ptr @arrayEveryMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 4, ptr @.array.method.name.some, ptr @arraySomeMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 8, ptr @.array.method.name.findLast, ptr @arrayFindLastMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 13, ptr @.array.method.name.findLastIndex, ptr @arrayFindLastIndexMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 10, ptr @.array.method.name.toReversed, ptr @arrayToReversedMethod, i64 0 },
+  { i64, ptr, ptr, i64 } { i64 8, ptr @.array.method.name.toSorted, ptr @arrayToSortedMethod, i64 1 },
+  { i64, ptr, ptr, i64 } { i64 9, ptr @.array.method.name.toSpliced, ptr @arrayToSplicedMethod, i64 2 },
+  { i64, ptr, ptr, i64 } { i64 4, ptr @.array.method.name.with, ptr @arrayWithMethod, i64 2 },
   { i64, ptr, ptr, i64 } { i64 18, ptr @.symbol.iterator.key, ptr @arrayIteratorMethod, i64 0 }
 ]
 
 ; Cache slots are GC roots for the runtime lifetime, independent of any receiver or caller.
 ; Zero means the lazy function object has not been allocated yet.
-@arrayPrototypeFunctions = private global [29 x i64] zeroinitializer
+@arrayPrototypeFunctions = private global [37 x i64] zeroinitializer
 
 define void @arrayPrototypeInit() {
 entry:
   br label %loop
 loop:
   %index = phi i64 [ 0, %entry ], [ %next, %body ]
-  %done = icmp eq i64 %index, 29
+  %done = icmp eq i64 %index, 37
   br i1 %done, label %finish, label %body
 body:
-  %slot = getelementptr [29 x i64], ptr @arrayPrototypeFunctions, i64 0, i64 %index
+  %slot = getelementptr [37 x i64], ptr @arrayPrototypeFunctions, i64 0, i64 %index
   store i64 0, ptr %slot
   call void @gcRegisterGlobalRoot(ptr %slot)
   %next = add i64 %index, 1
@@ -97,37 +115,37 @@ entry:
   br label %scan
 scan:
   %index = phi i64 [ 0, %entry ], [ %next, %advance ]
-  %done = icmp eq i64 %index, 30
+  %done = icmp eq i64 %index, 38
   br i1 %done, label %missing, label %check.length
 check.length:
-  %length.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %index, i32 0
+  %length.slot = getelementptr [38 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %index, i32 0
   %length = load i64, ptr %length.slot
   %same.length = icmp eq i64 %length, %key.len
   br i1 %same.length, label %check.name, label %advance
 check.name:
-  %name.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %index, i32 1
+  %name.slot = getelementptr [38 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %index, i32 1
   %name = load ptr, ptr %name.slot
   %comparison = call i32 @memcmp(ptr %key.ptr, ptr %name, i64 %key.len)
   %same.name = icmp eq i32 %comparison, 0
   br i1 %same.name, label %found, label %advance
 found:
   ; Array.prototype[Symbol.iterator] is the same function as Array.prototype.values.
-  %is.iterator = icmp eq i64 %index, 29
+  %is.iterator = icmp eq i64 %index, 37
   %canonical = select i1 %is.iterator, i64 28, i64 %index
-  %cache.slot = getelementptr [29 x i64], ptr @arrayPrototypeFunctions, i64 0, i64 %canonical
+  %cache.slot = getelementptr [37 x i64], ptr @arrayPrototypeFunctions, i64 0, i64 %canonical
   %cached = load i64, ptr %cache.slot
   %uninitialized = icmp eq i64 %cached, 0
   br i1 %uninitialized, label %create, label %reuse
 reuse:
   ret i64 %cached
 create:
-  %method.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 2
+  %method.slot = getelementptr [38 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 2
   %method = load ptr, ptr %method.slot
-  %arity.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 3
+  %arity.slot = getelementptr [38 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 3
   %arity = load i64, ptr %arity.slot
-  %canonical.name.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 1
+  %canonical.name.slot = getelementptr [38 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 1
   %canonical.name = load ptr, ptr %canonical.name.slot
-  %canonical.length.slot = getelementptr [30 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 0
+  %canonical.length.slot = getelementptr [38 x { i64, ptr, ptr, i64 }], ptr @arrayPrototypeMethods, i64 0, i64 %canonical, i32 0
   %canonical.length = load i64, ptr %canonical.length.slot
   %name.value = call i64 @valueBoxString(ptr %canonical.name, i64 %canonical.length)
   %frame = call i64 @gcRootSave()
@@ -652,5 +670,191 @@ invalid:
   ret { i64, i1 } %invalid.error
 sort.callback:
   %result = call { i64, i1 } @arraySortCallback(i64 %this.value, i64 %compare)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @arrayEveryMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.array = call i1 @valueIsArray(i64 %this.value)
+  br i1 %is.array, label %visit, label %not.array
+not.array:
+  %error = call { i64, i1 } @arrayMethodReceiverError()
+  ret { i64, i1 } %error
+visit:
+  %callback = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %this.arg = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 1)
+  %result = call { i64, i1 } @arrayEveryCallback(i64 %this.value, i64 %callback, i64 %this.arg)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @arraySomeMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.array = call i1 @valueIsArray(i64 %this.value)
+  br i1 %is.array, label %visit, label %not.array
+not.array:
+  %error = call { i64, i1 } @arrayMethodReceiverError()
+  ret { i64, i1 } %error
+visit:
+  %callback = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %this.arg = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 1)
+  %result = call { i64, i1 } @arraySomeCallback(i64 %this.value, i64 %callback, i64 %this.arg)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @arrayFindLastMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.array = call i1 @valueIsArray(i64 %this.value)
+  br i1 %is.array, label %visit, label %not.array
+not.array:
+  %error = call { i64, i1 } @arrayMethodReceiverError()
+  ret { i64, i1 } %error
+visit:
+  %callback = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %this.arg = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 1)
+  %result = call { i64, i1 } @arrayFindLastCallback(i64 %this.value, i64 %callback, i64 %this.arg)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @arrayFindLastIndexMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.array = call i1 @valueIsArray(i64 %this.value)
+  br i1 %is.array, label %visit, label %not.array
+not.array:
+  %error = call { i64, i1 } @arrayMethodReceiverError()
+  ret { i64, i1 } %error
+visit:
+  %callback = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %this.arg = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 1)
+  %result = call { i64, i1 } @arrayFindLastIndexCallback(i64 %this.value, i64 %callback, i64 %this.arg)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @arrayToReversedMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.array = call i1 @valueIsArray(i64 %this.value)
+  br i1 %is.array, label %copy, label %not.array
+not.array:
+  %error = call { i64, i1 } @arrayMethodReceiverError()
+  ret { i64, i1 } %error
+copy:
+  %array = call ptr @valueArrayPtr(i64 %this.value)
+  %length = call i64 @arrayLength(ptr %array)
+  %copied = call ptr @arraySlice(ptr %array, i64 0, i64 %length)
+  call void @arrayReverse(ptr %copied)
+  %copied.value = call i64 @valueBoxArray(ptr %copied)
+  %result = call { i64, i1 } @arrayMethodResult(i64 %copied.value)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @arrayToSortedMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %this.value)
+  %is.array = call i1 @valueIsArray(i64 %this.value)
+  br i1 %is.array, label %comparator, label %not.array
+not.array:
+  %error = call { i64, i1 } @arrayMethodReceiverError()
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %error
+comparator:
+  %compare = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  call void @gcRootPush(i64 %compare)
+  %default = icmp eq i64 %compare, 9222246136947933184
+  br i1 %default, label %sort.default, label %check.callable
+check.callable:
+  %callable = call i1 @valueIsFunction(i64 %compare)
+  br i1 %callable, label %sort.callback, label %invalid
+invalid:
+  %message = call i64 @iteratorNotCallableMessage(i64 %compare)
+  %invalid.error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %invalid.error
+sort.default:
+  %array.d = call ptr @valueArrayPtr(i64 %this.value)
+  %length.d = call i64 @arrayLength(ptr %array.d)
+  %copy.d = call ptr @arraySlice(ptr %array.d, i64 0, i64 %length.d)
+  call void @arraySortDefault(ptr %copy.d)
+  %copy.d.val = call i64 @valueBoxArray(ptr %copy.d)
+  %sorted = call { i64, i1 } @arrayMethodResult(i64 %copy.d.val)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %sorted
+sort.callback:
+  %array.c = call ptr @valueArrayPtr(i64 %this.value)
+  %length.c = call i64 @arrayLength(ptr %array.c)
+  %copy.c = call ptr @arraySlice(ptr %array.c, i64 0, i64 %length.c)
+  %copy.c.val = call i64 @valueBoxArray(ptr %copy.c)
+  call void @gcRootPush(i64 %copy.c.val)
+  %result = call { i64, i1 } @arraySortCallback(i64 %copy.c.val, i64 %compare)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @arrayToSplicedMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %this.value)
+  %is.array = call i1 @valueIsArray(i64 %this.value)
+  br i1 %is.array, label %splice, label %not.array
+not.array:
+  %error = call { i64, i1 } @arrayMethodReceiverError()
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %error
+splice:
+  %array = call ptr @valueArrayPtr(i64 %this.value)
+  %length = call i64 @arrayLength(ptr %array)
+  %start = call i64 @arrayMethodPosition(i64 %argc, ptr %argv, i64 0, i64 0)
+  %start.only = icmp eq i64 %argc, 1
+  %delete.default = select i1 %start.only, i64 %length, i64 0
+  %delete = call i64 @arrayMethodPosition(i64 %argc, ptr %argv, i64 1, i64 %delete.default)
+  %copy = call ptr @arraySlice(ptr %array, i64 0, i64 %length)
+  %copy.value = call i64 @valueBoxArray(ptr %copy)
+  call void @gcRootPush(i64 %copy.value)
+  %items = call ptr @arrayFromArgv(i64 %argc, ptr %argv, i64 2)
+  %items.value = call i64 @valueBoxArray(ptr %items)
+  call void @gcRootPush(i64 %items.value)
+  %item.count = call i64 @arrayLength(ptr %items)
+  call ptr @arraySplice(ptr %copy, i64 %start, i64 %delete, i64 %item.count, ptr %items)
+  %result = call { i64, i1 } @arrayMethodResult(i64 %copy.value)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @arrayWithMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %this.value)
+  %is.array = call i1 @valueIsArray(i64 %this.value)
+  br i1 %is.array, label %prepare, label %not.array
+not.array:
+  %error = call { i64, i1 } @arrayMethodReceiverError()
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %error
+prepare:
+  %array = call ptr @valueArrayPtr(i64 %this.value)
+  %length = call i64 @arrayLength(ptr %array)
+  %raw.index = call i64 @arrayMethodPosition(i64 %argc, ptr %argv, i64 0, i64 0)
+  %new.value = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 1)
+  call void @gcRootPush(i64 %new.value)
+  %is.neg = icmp slt i64 %raw.index, 0
+  %adjusted = add i64 %length, %raw.index
+  %actual = select i1 %is.neg, i64 %adjusted, i64 %raw.index
+  %too.low = icmp slt i64 %actual, 0
+  %too.high = icmp sge i64 %actual, %length
+  %oob = or i1 %too.low, %too.high
+  br i1 %oob, label %range.error, label %copy
+range.error:
+  %msg = call i64 @valueBoxString(ptr @.array.invalid.index, i64 13)
+  %err.obj = call ptr @errorNew(i64 3, i64 10, ptr @.array.range.error.name, i64 %msg)
+  %err.val = call i64 @valueBoxObject(ptr %err.obj)
+  %t0 = insertvalue { i64, i1 } undef, i64 %err.val, 0
+  %t1 = insertvalue { i64, i1 } %t0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %t1
+copy:
+  %copied = call ptr @arraySlice(ptr %array, i64 0, i64 %length)
+  call void @arraySet(ptr %copied, i64 %actual, i64 %new.value)
+  %copied.value = call i64 @valueBoxArray(ptr %copied)
+  %result = call { i64, i1 } @arrayMethodResult(i64 %copied.value)
+  call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %result
 }

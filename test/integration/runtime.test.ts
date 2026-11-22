@@ -1229,10 +1229,7 @@ describe("tscn expanded runtime roadmap", () => {
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
 
-    await Promise.all([
-      expectUnsupportedMessage("instanceof-primitive-unsupported.ts", "instanceof on primitive values is not supported"),
-      expectUnsupportedMessage("instanceof-non-constructor-unsupported.ts", "instanceof right-hand sides are only supported for built-in error constructors")
-    ]);
+    await expectUnsupportedMessage("instanceof-primitive-unsupported.ts", "instanceof on primitive values is not supported");
   }, roadmapIntegrationTimeoutMs);
 
   test("supports typeof for bound identifiers across supported value kinds", async () => {
@@ -1425,11 +1422,6 @@ describe("tscn expanded runtime roadmap", () => {
     } finally {
       await privateField.cleanup();
     }
-
-    await expectUnsupportedMessage(
-      "class-instanceof-non-constructor-unsupported.ts",
-      "instanceof right-hand sides are only supported for built-in error constructors"
-    );
   }, roadmapIntegrationTimeoutMs);
 
   test("supports runtime JSON parse, catchable JSON errors, and toJSON", async () => {

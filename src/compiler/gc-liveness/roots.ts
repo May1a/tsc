@@ -13,22 +13,22 @@ interface RootSnapshot {
   readonly ancestors: ReadonlySet<string>;
 }
 
-export interface GcRootState {
+interface GcRootState {
   readonly roots: ReadonlySet<string>;
   readonly availableFrames: ReadonlySet<string>;
   readonly snapshots: ReadonlyMap<string, RootSnapshot>;
 }
 
-export interface GcRootAnalysis {
+interface GcRootAnalysis {
   readonly before: ReadonlyMap<string, readonly GcRootState[]>;
   readonly frameErrors: ReadonlyMap<LlvmInstruction, string>;
 }
 
-export function protectionKey(protection: GcProtection): string {
+function protectionKey(protection: GcProtection): string {
   return valueKey(protection.value);
 }
 
-export function valueKey(value: LlvmValue): string {
+function valueKey(value: LlvmValue): string {
   return `value:${llvmValueText(value)}`;
 }
 

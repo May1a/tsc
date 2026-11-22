@@ -1,4 +1,4 @@
-import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, knownBuiltinMessage } from "./support.js";
+import { type BuiltinSupport, builtinEntryFor, knownBuiltinMessage } from "./support.js";
 
 /**
  * What this build does with `Array.prototype` and `Array`.
@@ -19,7 +19,7 @@ import { type BuiltinEntry, type BuiltinSupport, builtinEntryFor, builtinFor, kn
  */
 
 /** The `Array.prototype` and `Array` members this build knows about. */
-export type ArrayBuiltin =
+type ArrayBuiltin =
   | "at"
   | "concat"
   | "copyWithin"
@@ -100,41 +100,23 @@ export const arrayBuiltinSupport: BuiltinSupport<"array", ArrayBuiltin> = {
   from: { arity: { from: 1, to: 3 }, state: "supported", id: "array.from", placement: "static" },
   of: { arity: { from: 0, to: 8 }, state: "supported", id: "array.of", placement: "static" },
 
-  // `every` and `some` lower only their zero-argument slice, which returns "is the array empty" and
-  // `false`. In Node that form throws, so the slice is a non-JavaScript extension rather than a
-  // wrong answer, and `runtime.test.ts` asserts its output; the table must not count it as support
-  // all the same, because the callback form a user actually writes is not lowered at all.
-  every: {
-    arity: 1,
-    state: "planned",
-    id: "array.every",
-    reason: "only the zero-argument slice is lowered; the callback form is not"
-  },
-  some: {
-    arity: 1,
-    state: "planned",
-    id: "array.some",
-    reason: "only the zero-argument slice is lowered; the callback form is not"
-  },
+  every: { arity: { from: 1, to: 2 }, state: "supported", id: "array.every" },
+  some: { arity: { from: 1, to: 2 }, state: "supported", id: "array.some" },
 
   entries: { arity: 0, state: "supported", id: "array.entries" },
   keys: { arity: 0, state: "supported", id: "array.keys" },
   values: { arity: 0, state: "supported", id: "array.values" },
 
-  // Members of the array API this build has not written. Calling one of these says so by name.
-  with: { arity: 2, state: "planned", id: "array.with" },
-  findLast: { arity: 1, state: "planned", id: "array.findLast" },
-  findLastIndex: { arity: 1, state: "planned", id: "array.findLastIndex" },
-  toSorted: { arity: 1, state: "planned", id: "array.toSorted" },
-  toReversed: { arity: 0, state: "planned", id: "array.toReversed" },
-  toSpliced: { arity: { from: 2, to: 3 }, state: "planned", id: "array.toSpliced" },
+  // Copying and reverse-search methods via Array.prototype.
+  with: { arity: 2, state: "supported", id: "array.with" },
+  findLast: { arity: { from: 1, to: 2 }, state: "supported", id: "array.findLast" },
+  findLastIndex: { arity: { from: 1, to: 2 }, state: "supported", id: "array.findLastIndex" },
+  toSorted: { arity: { from: 0, to: 1 }, state: "supported", id: "array.toSorted" },
+  toReversed: { arity: 0, state: "supported", id: "array.toReversed" },
+  toSpliced: { arity: { from: 0, to: 8 }, state: "supported", id: "array.toSpliced" },
   group: { arity: 1, state: "planned", id: "array.group" }
 };
 
-/** The `Array` member with this name, or `undefined` if the name is not one of them. */
-export function arrayBuiltinFor(name: string): BuiltinEntry<"array"> | undefined {
-  return builtinFor(arrayBuiltinSupport, "array", name);
-}
 
 /**
  * The diagnostic for an `Array` member this build has not written, or `undefined` if the name is

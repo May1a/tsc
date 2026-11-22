@@ -5,6 +5,17 @@ entry:
   %is.nan = xor i1 %ordered, true
   ret i1 %is.nan
 }
+define i1 @globalIsFinite(i64 %value) {
+entry:
+  %number = call double @valueToNumber(i64 %value)
+  %not.nan = fcmp ord double %number, %number
+  %lt.zero = fcmp olt double %number, 0.0
+  %neg = fneg double %number
+  %abs = select i1 %lt.zero, double %neg, double %number
+  %finite = fcmp olt double %abs, 0x7FF0000000000000
+  %result = and i1 %not.nan, %finite
+  ret i1 %result
+}
 define i1 @numberIsNaN(i64 %value) {
 entry:
   %tag = and i64 %value, -281474976710656
@@ -383,46 +394,88 @@ exponential.result:
   ret { ptr, i64 } %exponential.1
 }
 @.number.radix.digits = private unnamed_addr constant [37 x i8] c"0123456789abcdefghijklmnopqrstuvwxyz\00"
+@.number.radix.nan = private unnamed_addr constant [4 x i8] c"NaN\00"
+@.number.radix.inf = private unnamed_addr constant [9 x i8] c"Infinity\00"
+@.number.radix.ninf = private unnamed_addr constant [10 x i8] c"-Infinity\00"
 
 define { ptr, i64 } @numberToStringRadix(double %value, double %radix.value) {
 entry:
-  %radix = fptosi double %radix.value to i64
+  %radix.trunc = call double @llvm.trunc.f64(double %radix.value)
+  %radix = fptosi double %radix.trunc to i64
   %is.decimal = icmp eq i64 %radix, 10
-  br i1 %is.decimal, label %decimal, label %convert
+  br i1 %is.decimal, label %decimal, label %check.special
 decimal:
   %radix.decimal = call { ptr, i64 } @numberToShortestString(double %value)
   ret { ptr, i64 } %radix.decimal
-convert:
-  %raw = fptosi double %value to i64
-  %negative = icmp slt i64 %raw, 0
-  %negated = sub i64 0, %raw
-  %abs = select i1 %negative, i64 %negated, i64 %raw
-  %scratch = call ptr @malloc(i64 128)
-  %out = call ptr @malloc(i64 128)
-  %is.zero = icmp eq i64 %abs, 0
-  br i1 %is.zero, label %zero, label %digits.loop
+check.special:
+  %is.nan = fcmp uno double %value, %value
+  br i1 %is.nan, label %ret.nan, label %check.inf
+ret.nan:
+  %nan.buf = call ptr @malloc(i64 4)
+  call ptr @memcpy(ptr %nan.buf, ptr @.number.radix.nan, i64 4)
+  %nan.0 = insertvalue { ptr, i64 } undef, ptr %nan.buf, 0
+  %nan.1 = insertvalue { ptr, i64 } %nan.0, i64 3, 1
+  ret { ptr, i64 } %nan.1
+check.inf:
+  %abs.val = call double @llvm.fabs.f64(double %value)
+  %is.inf = fcmp oeq double %abs.val, 0x7FF0000000000000
+  br i1 %is.inf, label %ret.inf, label %check.zero
+ret.inf:
+  %inf.neg = fcmp olt double %value, 0.0
+  br i1 %inf.neg, label %ret.ninf, label %ret.pinf
+ret.pinf:
+  %pinf.buf = call ptr @malloc(i64 9)
+  call ptr @memcpy(ptr %pinf.buf, ptr @.number.radix.inf, i64 9)
+  %pinf.0 = insertvalue { ptr, i64 } undef, ptr %pinf.buf, 0
+  %pinf.1 = insertvalue { ptr, i64 } %pinf.0, i64 8, 1
+  ret { ptr, i64 } %pinf.1
+ret.ninf:
+  %ninf.buf = call ptr @malloc(i64 10)
+  call ptr @memcpy(ptr %ninf.buf, ptr @.number.radix.ninf, i64 10)
+  %ninf.0 = insertvalue { ptr, i64 } undef, ptr %ninf.buf, 0
+  %ninf.1 = insertvalue { ptr, i64 } %ninf.0, i64 9, 1
+  ret { ptr, i64 } %ninf.1
+check.zero:
+  %is.zero = fcmp oeq double %abs.val, 0.0
+  br i1 %is.zero, label %zero, label %convert
 zero:
-  store i8 48, ptr %out
-  %zero.end = getelementptr i8, ptr %out, i64 1
+  %zout = call ptr @malloc(i64 2)
+  store i8 48, ptr %zout
+  %zero.end = getelementptr i8, ptr %zout, i64 1
   store i8 0, ptr %zero.end
-  %zero.0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %zero.0 = insertvalue { ptr, i64 } undef, ptr %zout, 0
   %zero.1 = insertvalue { ptr, i64 } %zero.0, i64 1, 1
   ret { ptr, i64 } %zero.1
+convert:
+  %negative = fcmp olt double %value, 0.0
+  %radix.d = sitofp i64 %radix to double
+  %int.part = call double @llvm.floor.f64(double %abs.val)
+  %frac.init = fsub double %abs.val, %int.part
+  %scratch = call ptr @malloc(i64 1200)
+  %out = call ptr @malloc(i64 1280)
+  %int.zero = fcmp oeq double %int.part, 0.0
+  br i1 %int.zero, label %int.zero.digit, label %digits.loop
+int.zero.digit:
+  store i8 48, ptr %scratch
+  br label %copy.setup
 digits.loop:
-  %n = phi i64 [ %abs, %convert ], [ %next.n, %digits.more ]
-  %count = phi i64 [ 0, %convert ], [ %next.count, %digits.more ]
-  %done = icmp eq i64 %n, 0
+  %n = phi double [ %int.part, %convert ], [ %next.n, %digits.more ]
+  %count.loop = phi i64 [ 0, %convert ], [ %next.count, %digits.more ]
+  %done = fcmp ole double %n, 0.0
   br i1 %done, label %copy.setup, label %digits.more
 digits.more:
-  %rem = srem i64 %n, %radix
-  %digit.ptr = getelementptr [37 x i8], ptr @.number.radix.digits, i64 0, i64 %rem
+  %rem.d = frem double %n, %radix.d
+  %rem.i = fptosi double %rem.d to i64
+  %digit.ptr = getelementptr [37 x i8], ptr @.number.radix.digits, i64 0, i64 %rem.i
   %digit = load i8, ptr %digit.ptr
-  %scratch.slot = getelementptr i8, ptr %scratch, i64 %count
+  %scratch.slot = getelementptr i8, ptr %scratch, i64 %count.loop
   store i8 %digit, ptr %scratch.slot
-  %next.n = sdiv i64 %n, %radix
-  %next.count = add i64 %count, 1
+  %div.d = fdiv double %n, %radix.d
+  %next.n = call double @llvm.floor.f64(double %div.d)
+  %next.count = add i64 %count.loop, 1
   br label %digits.loop
 copy.setup:
+  %count = phi i64 [ 1, %int.zero.digit ], [ %count.loop, %digits.loop ]
   br i1 %negative, label %copy.sign, label %copy.loop
 copy.sign:
   store i8 45, ptr %out
@@ -431,7 +484,7 @@ copy.loop:
   %copy.i = phi i64 [ 0, %copy.setup ], [ 0, %copy.sign ], [ %copy.next, %copy.body ]
   %prefix = phi i64 [ 0, %copy.setup ], [ 1, %copy.sign ], [ %prefix, %copy.body ]
   %copy.done = icmp eq i64 %copy.i, %count
-  br i1 %copy.done, label %copy.end, label %copy.body
+  br i1 %copy.done, label %frac.check, label %copy.body
 copy.body:
   %rev.offset = sub i64 %count, %copy.i
   %src.index = sub i64 %rev.offset, 1
@@ -442,12 +495,57 @@ copy.body:
   store i8 %char, ptr %dst
   %copy.next = add i64 %copy.i, 1
   br label %copy.loop
-copy.end:
-  %len = add i64 %prefix, %count
-  %nul = getelementptr i8, ptr %out, i64 %len
+frac.check:
+  %int.len = add i64 %prefix, %count
+  call void @free(ptr %scratch)
+  %has.frac = fcmp ogt double %frac.init, 0.0
+  br i1 %has.frac, label %frac.start, label %finish
+frac.start:
+  %dot.slot = getelementptr i8, ptr %out, i64 %int.len
+  store i8 46, ptr %dot.slot
+  %frac.pos0 = add i64 %int.len, 1
+  %ulp.raw = fmul double %abs.val, 1.1102230246251565e-16
+  %ulp.tiny = fcmp olt double %ulp.raw, 2.2250738585072014e-308
+  %delta0 = select i1 %ulp.tiny, double 2.2250738585072014e-308, double %ulp.raw
+  br label %frac.loop
+frac.loop:
+  %fpos = phi i64 [ %frac.pos0, %frac.start ], [ %fpos.next, %frac.step ]
+  %fcur = phi double [ %frac.init, %frac.start ], [ %fnext, %frac.step ]
+  %fdelta = phi double [ %delta0, %frac.start ], [ %fdelta.next, %frac.step ]
+  %fdigits = phi i64 [ 0, %frac.start ], [ %fdigits.next, %frac.step ]
+  %fgt = fcmp ogt double %fcur, %fdelta
+  %flimit = icmp ult i64 %fdigits, 60
+  %fkeep = and i1 %fgt, %flimit
+  br i1 %fkeep, label %frac.step, label %finish
+frac.step:
+  %fscaled = fmul double %fcur, %radix.d
+  %fdelta.next = fmul double %fdelta, %radix.d
+  %fdigit.d = call double @llvm.floor.f64(double %fscaled)
+  %frem = fsub double %fscaled, %fdigit.d
+  %fround.lo = fcmp ogt double %frem, 5.000000e-01
+  %frem.plus = fadd double %frem, %fdelta.next
+  %fround.hi = fcmp oge double %frem.plus, 1.0
+  %fround = and i1 %fround.lo, %fround.hi
+  %fdigit.i0 = fptosi double %fdigit.d to i64
+  %fdigit.inc = add i64 %fdigit.i0, 1
+  %fmax.digit = sub i64 %radix, 1
+  %fcan.inc = icmp slt i64 %fdigit.i0, %fmax.digit
+  %fdo.round = and i1 %fround, %fcan.inc
+  %fdigit.i = select i1 %fdo.round, i64 %fdigit.inc, i64 %fdigit.i0
+  %fdigit.ptr = getelementptr [37 x i8], ptr @.number.radix.digits, i64 0, i64 %fdigit.i
+  %fdigit.ch = load i8, ptr %fdigit.ptr
+  %fslot = getelementptr i8, ptr %out, i64 %fpos
+  store i8 %fdigit.ch, ptr %fslot
+  %fpos.next = add i64 %fpos, 1
+  %fdigits.next = add i64 %fdigits, 1
+  %fnext = select i1 %fdo.round, double 0.0, double %frem
+  br label %frac.loop
+finish:
+  %final.len = phi i64 [ %int.len, %frac.check ], [ %fpos, %frac.loop ]
+  %nul = getelementptr i8, ptr %out, i64 %final.len
   store i8 0, ptr %nul
   %result.0 = insertvalue { ptr, i64 } undef, ptr %out, 0
-  %result.1 = insertvalue { ptr, i64 } %result.0, i64 %len, 1
+  %result.1 = insertvalue { ptr, i64 } %result.0, i64 %final.len, 1
   ret { ptr, i64 } %result.1
 }
 define double @parseInt(i64 %value.len, ptr %value.ptr) {
@@ -471,31 +569,23 @@ entry:
 }
 define double @mathFloor(double %value) {
 entry:
-  %int = fptosi double %value to i64
-  %result = sitofp i64 %int to double
+  %result = call double @llvm.floor.f64(double %value)
   ret double %result
 }
 define double @mathCeil(double %value) {
 entry:
-  %int = fptosi double %value to i64
-  %trunc = sitofp i64 %int to double
-  %has.frac = fcmp ogt double %value, %trunc
-  %next = add i64 %int, 1
-  %ceil.int = select i1 %has.frac, i64 %next, i64 %int
-  %result = sitofp i64 %ceil.int to double
+  %result = call double @llvm.ceil.f64(double %value)
   ret double %result
 }
 define double @mathTrunc(double %value) {
 entry:
-  %int = fptosi double %value to i64
-  %result = sitofp i64 %int to double
+  %result = call double @llvm.trunc.f64(double %value)
   ret double %result
 }
 define double @mathRound(double %value) {
 entry:
   %biased = fadd double %value, 5.000000e-01
-  %int = fptosi double %biased to i64
-  %result = sitofp i64 %int to double
+  %result = call double @llvm.floor.f64(double %biased)
   ret double %result
 }
 define double @mathSqrt(double %value) {
@@ -588,16 +678,52 @@ entry:
   ret double %result
 }
 @math.random.state = internal global i64 88172645463393265
+@math.random.seeded = internal global i1 false
 
 define double @mathRandom() {
 entry:
+  %seeded = load i1, ptr @math.random.seeded
+  br i1 %seeded, label %step, label %seed
+seed:
+  %tv = alloca [2 x i64]
+  store i64 0, ptr %tv
+  %tv.usec.slot = getelementptr [2 x i64], ptr %tv, i64 0, i64 1
+  store i64 0, ptr %tv.usec.slot
+  call i32 @gettimeofday(ptr %tv, ptr null)
+  %sec = load i64, ptr %tv
+  %usec32 = load i32, ptr %tv.usec.slot
+  %usec = sext i32 %usec32 to i64
+  %sec.us = mul i64 %sec, 1000000
+  %now.us = add i64 %sec.us, %usec
+  %addr.entropy = ptrtoint ptr %tv to i64
+  %mix0 = xor i64 %now.us, %addr.entropy
+  %mix1 = add i64 %mix0, -7046029254386353131
+  %s1 = lshr i64 %mix1, 30
+  %x1 = xor i64 %mix1, %s1
+  %m1 = mul i64 %x1, -4658895280553007687
+  %s2 = lshr i64 %m1, 27
+  %x2 = xor i64 %m1, %s2
+  %m2 = mul i64 %x2, -7723592293110705685
+  %s3 = lshr i64 %m2, 31
+  %init.state = xor i64 %m2, %s3
+  store i64 %init.state, ptr @math.random.state
+  store i1 true, ptr @math.random.seeded
+  br label %step
+step:
   %state = load i64, ptr @math.random.state
-  %mul = mul i64 %state, 2862933555777941757
-  %next = add i64 %mul, 3037000493
+  %next = add i64 %state, -7046029254386353131
   store i64 %next, ptr @math.random.state
-  %mantissa = lshr i64 %next, 12
+  %z1.s = lshr i64 %next, 30
+  %z1.x = xor i64 %next, %z1.s
+  %z1 = mul i64 %z1.x, -4658895280553007687
+  %z2.s = lshr i64 %z1, 27
+  %z2.x = xor i64 %z1, %z2.s
+  %z2 = mul i64 %z2.x, -7723592293110705685
+  %z3.s = lshr i64 %z2, 31
+  %z = xor i64 %z2, %z3.s
+  %mantissa = lshr i64 %z, 11
   %as.double = uitofp i64 %mantissa to double
-  %result = fdiv double %as.double, 4.503599627370496e+15
+  %result = fdiv double %as.double, 9.007199254740992e+15
   ret double %result
 }
 define double @mathFround(double %value) {
@@ -637,6 +763,287 @@ entry:
   %cos = call double @llvm.cos.f64(double %value)
   %result = fdiv double %sin, %cos
   ret double %result
+}
+define double @mathAsin(double %value) {
+entry:
+  %result = call double @asin(double %value)
+  ret double %result
+}
+define double @mathAcos(double %value) {
+entry:
+  %result = call double @acos(double %value)
+  ret double %result
+}
+define double @mathAtan(double %value) {
+entry:
+  %result = call double @atan(double %value)
+  ret double %result
+}
+define double @mathAtan2(double %y, double %x) {
+entry:
+  %result = call double @atan2(double %y, double %x)
+  ret double %result
+}
+
+define double @dateNow() {
+entry:
+  %tv = alloca [2 x i64]
+  store i64 0, ptr %tv
+  %usec.slot = getelementptr [2 x i64], ptr %tv, i64 0, i64 1
+  store i64 0, ptr %usec.slot
+  call i32 @gettimeofday(ptr %tv, ptr null)
+  %sec = load i64, ptr %tv
+  %usec32 = load i32, ptr %usec.slot
+  %usec = sext i32 %usec32 to i64
+  %sec.ms = mul i64 %sec, 1000
+  %usec.ms = sdiv i64 %usec, 1000
+  %total.ms = add i64 %sec.ms, %usec.ms
+  %as.double = sitofp i64 %total.ms to double
+  ret double %as.double
+}
+
+@.date.ms.key = private unnamed_addr constant [12 x i8] c"__date_ms__\00"
+@.date.key.getTime = private unnamed_addr constant [8 x i8] c"getTime\00"
+@.date.key.valueOf = private unnamed_addr constant [8 x i8] c"valueOf\00"
+@.date.key.toISOString = private unnamed_addr constant [12 x i8] c"toISOString\00"
+@.date.key.toString = private unnamed_addr constant [9 x i8] c"toString\00"
+@.date.not.date = private unnamed_addr constant [41 x i8] c"Date.prototype method called on non-Date\00"
+@.date.range.err = private unnamed_addr constant [11 x i8] c"RangeError\00"
+@.date.invalid.time = private unnamed_addr constant [19 x i8] c"Invalid time value\00"
+@.date.invalid.str = private unnamed_addr constant [13 x i8] c"Invalid Date\00"
+@.date.iso.fmt = private unnamed_addr constant [50 x i8] c"%04lld-%02lld-%02lldT%02lld:%02lld:%02lld.%03lldZ\00"
+
+@datePrototypeValue = private global i64 0
+
+define { i64, i1 } @dateReadTimestamp(i64 %this.value) {
+entry:
+  %is.obj = call i1 @valueIsObject(i64 %this.value)
+  br i1 %is.obj, label %check.priv, label %not.date
+check.priv:
+  %obj = call ptr @valueObjectPtr(i64 %this.value)
+  %priv.slot = getelementptr i8, ptr %obj, i64 56
+  %priv = load ptr, ptr %priv.slot
+  %has.priv = icmp ne ptr %priv, null
+  br i1 %has.priv, label %read, label %not.date
+read:
+  %has.key = call i1 @objectHasOwn(ptr %priv, i64 11, ptr @.date.ms.key)
+  br i1 %has.key, label %ok, label %not.date
+ok:
+  %ms = call i64 @objectGet(ptr %priv, i64 11, ptr @.date.ms.key)
+  %r0 = insertvalue { i64, i1 } undef, i64 %ms, 0
+  %r1 = insertvalue { i64, i1 } %r0, i1 false, 1
+  ret { i64, i1 } %r1
+not.date:
+  %msg = call i64 @valueBoxString(ptr @.date.not.date, i64 40)
+  %err = call { i64, i1 } @iteratorTypeError(i64 %msg)
+  ret { i64, i1 } %err
+}
+
+define { ptr, i64 } @dateFormatIso(double %ms.val) {
+entry:
+  %total.ms = fptosi double %ms.val to i64
+  %q = sdiv i64 %total.ms, 86400000
+  %r = srem i64 %total.ms, 86400000
+  %r.neg = icmp slt i64 %r, 0
+  %days = select i1 %r.neg, i64 -1, i64 0
+  %days.adj = add i64 %q, %days
+  %rem.adj = add i64 %r, 86400000
+  %rem.ms = select i1 %r.neg, i64 %rem.adj, i64 %r
+  %hour = sdiv i64 %rem.ms, 3600000
+  %rem1 = srem i64 %rem.ms, 3600000
+  %minute = sdiv i64 %rem1, 60000
+  %rem2 = srem i64 %rem1, 60000
+  %second = sdiv i64 %rem2, 1000
+  %msec = srem i64 %rem2, 1000
+  %z = add i64 %days.adj, 719468
+  %z.neg = icmp slt i64 %z, 0
+  %z.sub = sub i64 %z, 146096
+  %z.num = select i1 %z.neg, i64 %z.sub, i64 %z
+  %era = sdiv i64 %z.num, 146097
+  %era.days = mul i64 %era, 146097
+  %doe = sub i64 %z, %era.days
+  %doe.4 = sdiv i64 %doe, 1460
+  %doe.100 = sdiv i64 %doe, 36524
+  %doe.400 = sdiv i64 %doe, 146096
+  %t1 = sub i64 %doe, %doe.4
+  %t2 = add i64 %t1, %doe.100
+  %t3 = sub i64 %t2, %doe.400
+  %yoe = sdiv i64 %t3, 365
+  %era.years = mul i64 %era, 400
+  %y = add i64 %yoe, %era.years
+  %yoe.365 = mul i64 %yoe, 365
+  %yoe.4 = sdiv i64 %yoe, 4
+  %yoe.100 = sdiv i64 %yoe, 100
+  %y.days1 = add i64 %yoe.365, %yoe.4
+  %y.days = sub i64 %y.days1, %yoe.100
+  %doy = sub i64 %doe, %y.days
+  %doy.5 = mul i64 %doy, 5
+  %doy.5p2 = add i64 %doy.5, 2
+  %mp = sdiv i64 %doy.5p2, 153
+  %mp.153 = mul i64 %mp, 153
+  %mp.p2 = add i64 %mp.153, 2
+  %mp.div5 = sdiv i64 %mp.p2, 5
+  %d0 = sub i64 %doy, %mp.div5
+  %day = add i64 %d0, 1
+  %mp.lt10 = icmp slt i64 %mp, 10
+  %m.a = add i64 %mp, 3
+  %m.b = sub i64 %mp, 9
+  %month = select i1 %mp.lt10, i64 %m.a, i64 %m.b
+  %m.le2 = icmp sle i64 %month, 2
+  %y.inc = add i64 %y, 1
+  %year = select i1 %m.le2, i64 %y.inc, i64 %y
+  %buf = call ptr @malloc(i64 64)
+  %written = call i32 (ptr, ptr, ...) @sprintf(ptr %buf, ptr @.date.iso.fmt, i64 %year, i64 %month, i64 %day, i64 %hour, i64 %minute, i64 %second, i64 %msec)
+  %len = sext i32 %written to i64
+  %r0 = insertvalue { ptr, i64 } undef, ptr %buf, 0
+  %r1 = insertvalue { ptr, i64 } %r0, i64 %len, 1
+  ret { ptr, i64 } %r1
+}
+
+define { i64, i1 } @dateGetTimeMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %res = call { i64, i1 } @dateReadTimestamp(i64 %this.value)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @dateToIsoStringMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %this.value)
+  %ts = call { i64, i1 } @dateReadTimestamp(i64 %this.value)
+  %threw = extractvalue { i64, i1 } %ts, 1
+  br i1 %threw, label %fail, label %check
+fail:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ts
+check:
+  %ms.boxed = extractvalue { i64, i1 } %ts, 0
+  %ms.num = call double @valueToNumber(i64 %ms.boxed)
+  %ordered = fcmp ord double %ms.num, %ms.num
+  %abs.ms = call double @llvm.fabs.f64(double %ms.num)
+  %in.range = fcmp ole double %abs.ms, 8.640000e+15
+  %valid = and i1 %ordered, %in.range
+  br i1 %valid, label %format, label %invalid
+invalid:
+  %msg = call i64 @valueBoxString(ptr @.date.invalid.time, i64 18)
+  %err.obj = call ptr @errorNew(i64 3, i64 10, ptr @.date.range.err, i64 %msg)
+  %err.val = call i64 @valueBoxObject(ptr %err.obj)
+  %e0 = insertvalue { i64, i1 } undef, i64 %err.val, 0
+  %e1 = insertvalue { i64, i1 } %e0, i1 true, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %e1
+format:
+  %formatted = call { ptr, i64 } @dateFormatIso(double %ms.num)
+  %ptr = extractvalue { ptr, i64 } %formatted, 0
+  %len = extractvalue { ptr, i64 } %formatted, 1
+  %str = call i64 @valueBoxString(ptr %ptr, i64 %len)
+  %o0 = insertvalue { i64, i1 } undef, i64 %str, 0
+  %o1 = insertvalue { i64, i1 } %o0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %o1
+}
+
+define { i64, i1 } @dateToStringMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %this.value)
+  %ts = call { i64, i1 } @dateReadTimestamp(i64 %this.value)
+  %threw = extractvalue { i64, i1 } %ts, 1
+  br i1 %threw, label %fail, label %check
+fail:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %ts
+check:
+  %ms.boxed = extractvalue { i64, i1 } %ts, 0
+  %ms.num = call double @valueToNumber(i64 %ms.boxed)
+  %ordered = fcmp ord double %ms.num, %ms.num
+  %abs.ms = call double @llvm.fabs.f64(double %ms.num)
+  %in.range = fcmp ole double %abs.ms, 8.640000e+15
+  %valid = and i1 %ordered, %in.range
+  br i1 %valid, label %format, label %invalid
+invalid:
+  %inv = call i64 @valueBoxString(ptr @.date.invalid.str, i64 12)
+  %i0 = insertvalue { i64, i1 } undef, i64 %inv, 0
+  %i1 = insertvalue { i64, i1 } %i0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %i1
+format:
+  %formatted = call { ptr, i64 } @dateFormatIso(double %ms.num)
+  %ptr = extractvalue { ptr, i64 } %formatted, 0
+  %len = extractvalue { ptr, i64 } %formatted, 1
+  %str = call i64 @valueBoxString(ptr %ptr, i64 %len)
+  %o0 = insertvalue { i64, i1 } undef, i64 %str, 0
+  %o1 = insertvalue { i64, i1 } %o0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %o1
+}
+
+define ptr @datePrototype() {
+entry:
+  %cached = load i64, ptr @datePrototypeValue
+  %ready = icmp ne i64 %cached, 0
+  br i1 %ready, label %reuse, label %create
+reuse:
+  %ptr = call ptr @valueObjectPtr(i64 %cached)
+  ret ptr %ptr
+create:
+  %frame = call i64 @gcRootSave()
+  %proto = call ptr @objectNew(i64 4)
+  %boxed = call i64 @valueBoxObject(ptr %proto)
+  call void @gcRootPush(i64 %boxed)
+  %gt.name = call i64 @valueBoxString(ptr @.date.key.getTime, i64 7)
+  call void @gcRootPush(i64 %gt.name)
+  %gt.fn = call i64 @functionObjectNew(ptr @dateGetTimeMethod, ptr null, i64 9222246136947933184, i64 %gt.name, i64 0)
+  call void @gcRootPush(i64 %gt.fn)
+  call void @objectDefineDataProperty(ptr %proto, i64 7, ptr @.date.key.getTime, i64 %gt.fn, i64 5)
+  %vo.name = call i64 @valueBoxString(ptr @.date.key.valueOf, i64 7)
+  call void @gcRootPush(i64 %vo.name)
+  %vo.fn = call i64 @functionObjectNew(ptr @dateGetTimeMethod, ptr null, i64 9222246136947933184, i64 %vo.name, i64 0)
+  call void @gcRootPush(i64 %vo.fn)
+  call void @objectDefineDataProperty(ptr %proto, i64 7, ptr @.date.key.valueOf, i64 %vo.fn, i64 5)
+  %iso.name = call i64 @valueBoxString(ptr @.date.key.toISOString, i64 11)
+  call void @gcRootPush(i64 %iso.name)
+  %iso.fn = call i64 @functionObjectNew(ptr @dateToIsoStringMethod, ptr null, i64 9222246136947933184, i64 %iso.name, i64 0)
+  call void @gcRootPush(i64 %iso.fn)
+  call void @objectDefineDataProperty(ptr %proto, i64 11, ptr @.date.key.toISOString, i64 %iso.fn, i64 5)
+  %ts.name = call i64 @valueBoxString(ptr @.date.key.toString, i64 8)
+  call void @gcRootPush(i64 %ts.name)
+  %ts.fn = call i64 @functionObjectNew(ptr @dateToStringMethod, ptr null, i64 9222246136947933184, i64 %ts.name, i64 0)
+  call void @gcRootPush(i64 %ts.fn)
+  call void @objectDefineDataProperty(ptr %proto, i64 8, ptr @.date.key.toString, i64 %ts.fn, i64 5)
+  store i64 %boxed, ptr @datePrototypeValue
+  call void @gcRegisterGlobalRoot(ptr @datePrototypeValue)
+  call void @gcRootRestore(i64 %frame)
+  ret ptr %proto
+}
+
+define i64 @dateNew(double %ms) {
+entry:
+  %frame = call i64 @gcRootSave()
+  %abs.ms = call double @llvm.fabs.f64(double %ms)
+  %ordered = fcmp ord double %ms, %ms
+  %in.range = fcmp ole double %abs.ms, 8.640000e+15
+  %valid = and i1 %ordered, %in.range
+  %trunc.ms = call double @llvm.trunc.f64(double %ms)
+  %is.neg.zero = fcmp oeq double %trunc.ms, 0.0
+  %clean.ms = select i1 %is.neg.zero, double 0.0, double %trunc.ms
+  %final.ms = select i1 %valid, double %clean.ms, double 0x7FF8000000000000
+  %proto = call ptr @datePrototype()
+  %proto.boxed = call i64 @valueBoxObject(ptr %proto)
+  call void @gcRootPush(i64 %proto.boxed)
+  %obj = call ptr @objectNew(i64 0)
+  %obj.boxed = call i64 @valueBoxObject(ptr %obj)
+  call void @gcRootPush(i64 %obj.boxed)
+  call void @objectSetPrototype(ptr %obj, ptr %proto)
+  %priv = call ptr @objectNew(i64 1)
+  %priv.boxed = call i64 @valueBoxObject(ptr %priv)
+  call void @gcRootPush(i64 %priv.boxed)
+  %ms.boxed = call i64 @valueBoxNumber(double %final.ms)
+  call void @objectSet(ptr %priv, i64 11, ptr @.date.ms.key, i64 %ms.boxed)
+  %priv.slot = getelementptr i8, ptr %obj, i64 56
+  store ptr %priv, ptr %priv.slot
+  call void @gcRootRestore(i64 %frame)
+  ret i64 %obj.boxed
 }
 
 define i32 @numberToInt32(double %value) {

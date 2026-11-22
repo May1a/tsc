@@ -18,6 +18,29 @@ export function classConstructorName(className: string): string {
   return `${className}$constructor`;
 }
 
+/** The module slot holding the boxed constructor function value for `className`. */
+export function classConstructorValueName(className: string): string {
+  return `${className}$ctor`;
+}
+
+/** The generated function name for a static initialization block on `className`. */
+export function classStaticBlockFunctionName(className: string, index: number): string {
+  return `${className}$staticBlock$${index}`;
+}
+
+/** The generated function name for a computed accessor on `className`. */
+export function classComputedAccessorFunctionName(className: string, isStatic: boolean, isGetter: boolean, index: number): string {
+  const scope = isStatic ? "static$" : "";
+  const half = isGetter ? "get" : "set";
+  return `${className}$${scope}computed$${half}$${index}`;
+}
+
+/** The generated function name for a static accessor on `className`. */
+export function classStaticAccessorFunctionName(className: string, propertyName: string, isGetter: boolean): string {
+  const half = isGetter ? "get" : "set";
+  return `${className}$static$${half}$${propertyName}`;
+}
+
 /** The generated function name for a method or accessor, static or not. */
 export function classMethodFunctionName(className: string, methodName: string, isStatic: boolean): string {
   if (isStatic) {

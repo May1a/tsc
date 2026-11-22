@@ -6,7 +6,7 @@ import { renderLlvmType } from "./types.js";
 
 /** Render the verified module, including its immutable Static Runtime IR fragments. */
 
-export interface MutableLineRange {
+interface MutableLineRange {
   readonly startLine: number;
   endLine: number;
 }
@@ -27,7 +27,7 @@ export function renderLlvmFunctionBody(function_: BuiltLlvmFunction): readonly R
 }
 
 /** Derive trace markers from consecutive instructions' trace stacks. */
-export function renderInstructions(instructions: readonly LlvmInstruction[]): readonly RenderLine[] {
+function renderInstructions(instructions: readonly LlvmInstruction[]): readonly RenderLine[] {
   const last = instructions.at(-1);
   return [
     ...instructions.flatMap((instruction, index) => [

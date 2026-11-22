@@ -169,7 +169,7 @@ export function lowerBooleanComparisonExpression(
 
   return { kind: "booleanComparison", operator, left, right };
 }
-export function lowerBooleanOperandExpression(
+function lowerBooleanOperandExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): JsIrCondition | undefined {
@@ -225,7 +225,7 @@ export function lowerComparisonOperator(kind: ts.SyntaxKind): "===" | "!==" | "=
     }
   }
 }
-export const mathMethods = new Set<string>([
+const mathMethods = new Set<string>([
   "abs",
   "floor",
   "ceil",
@@ -248,6 +248,10 @@ export const mathMethods = new Set<string>([
   "sin",
   "cos",
   "tan",
+  "asin",
+  "acos",
+  "atan",
+  "atan2",
   "sign"
 ]);
 export function isMathMethod(method: string): method is Extract<JsIrNumberExpression, { readonly kind: "mathCall" }>["method"] {
