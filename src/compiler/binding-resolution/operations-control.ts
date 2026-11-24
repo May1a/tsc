@@ -133,6 +133,14 @@ export const controlHandlers = {
       body: resolver.operations(node.body)
     }))
   }),
+  forInValue: (node, resolver) => ({
+    ...node,
+    ...resolver.state.inScope("loop", () => ({
+      itemName: declareFromOperation(node.itemName, loopItemKind(node), node, resolver),
+      source: resolver.value(node.source),
+      body: resolver.operations(node.body)
+    }))
+  }),
 
   break: (node) => ({ ...node }),
   continue: (node) => ({ ...node }),
@@ -149,13 +157,15 @@ export const controlHandlers = {
       const parameters = resolveFunctionParameters(node.parameters, resolver);
       const hasExplicitThis = node.parameters.some((parameter) => parameter.name === "this");
       const thisBinding = hasExplicitThis ? undefined : state.declare("this", "parameter", { kind: "value" });
-      return { functionId, thisBinding, parameters, body: resolver.operations(node.body) };
+      const argumentsBinding = node.usesArguments === true ? state.declare("arguments", "parameter", { kind: "value" }) : undefined;
+      return { functionId, thisBinding, argumentsBinding, parameters, body: resolver.operations(node.body) };
     });
     return {
       ...node,
       name,
       functionId: frame.functionId,
       thisBinding: frame.thisBinding,
+      argumentsBinding: frame.argumentsBinding,
       parameters: frame.parameters,
       body: frame.body,
       enclosingCaptureNames

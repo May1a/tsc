@@ -858,3 +858,414 @@ copy:
   call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %result
 }
+
+; First-class Map / Set / WeakMap / WeakSet prototype methods and `.size` lookup.
+@.col.method.not.col = private unnamed_addr constant [50 x i8] c"Collection method called on incompatible receiver\00"
+@.col.key.size = private unnamed_addr constant [5 x i8] c"size\00"
+@.col.name.get = private unnamed_addr constant [4 x i8] c"get\00"
+@.col.name.set = private unnamed_addr constant [4 x i8] c"set\00"
+@.col.name.add = private unnamed_addr constant [4 x i8] c"add\00"
+@.col.name.has = private unnamed_addr constant [4 x i8] c"has\00"
+@.col.name.delete = private unnamed_addr constant [7 x i8] c"delete\00"
+@.col.name.clear = private unnamed_addr constant [6 x i8] c"clear\00"
+@.col.name.keys = private unnamed_addr constant [5 x i8] c"keys\00"
+@.col.name.values = private unnamed_addr constant [7 x i8] c"values\00"
+@.col.name.entries = private unnamed_addr constant [8 x i8] c"entries\00"
+@.col.name.forEach = private unnamed_addr constant [8 x i8] c"forEach\00"
+
+; { keyLen, keyPtr, methodPtr, arity, kindMask (bit0=Map, bit1=Set, bit2=WeakMap, bit3=WeakSet) }
+@collectionPrototypeMethods = private unnamed_addr constant [14 x { i64, ptr, ptr, i64, i64 }] [
+  { i64, ptr, ptr, i64, i64 } { i64 3, ptr @.col.name.get, ptr @collectionGetMethod, i64 1, i64 5 },
+  { i64, ptr, ptr, i64, i64 } { i64 3, ptr @.col.name.set, ptr @collectionSetMethod, i64 2, i64 5 },
+  { i64, ptr, ptr, i64, i64 } { i64 3, ptr @.col.name.add, ptr @collectionAddMethod, i64 1, i64 10 },
+  { i64, ptr, ptr, i64, i64 } { i64 3, ptr @.col.name.has, ptr @collectionHasMethod, i64 1, i64 15 },
+  { i64, ptr, ptr, i64, i64 } { i64 6, ptr @.col.name.delete, ptr @collectionDeleteMethod, i64 1, i64 15 },
+  { i64, ptr, ptr, i64, i64 } { i64 5, ptr @.col.name.clear, ptr @collectionClearMethod, i64 0, i64 3 },
+  { i64, ptr, ptr, i64, i64 } { i64 4, ptr @.col.name.keys, ptr @mapKeysMethod, i64 0, i64 1 },
+  { i64, ptr, ptr, i64, i64 } { i64 6, ptr @.col.name.values, ptr @mapValuesMethod, i64 0, i64 1 },
+  { i64, ptr, ptr, i64, i64 } { i64 7, ptr @.col.name.entries, ptr @mapEntriesMethod, i64 0, i64 1 },
+  { i64, ptr, ptr, i64, i64 } { i64 7, ptr @.col.name.forEach, ptr @mapForEachMethod, i64 1, i64 1 },
+  { i64, ptr, ptr, i64, i64 } { i64 4, ptr @.col.name.keys, ptr @setKeysMethod, i64 0, i64 2 },
+  { i64, ptr, ptr, i64, i64 } { i64 6, ptr @.col.name.values, ptr @setValuesMethod, i64 0, i64 2 },
+  { i64, ptr, ptr, i64, i64 } { i64 7, ptr @.col.name.entries, ptr @setEntriesMethod, i64 0, i64 2 },
+  { i64, ptr, ptr, i64, i64 } { i64 7, ptr @.col.name.forEach, ptr @setForEachMethod, i64 1, i64 2 }
+]
+
+@collectionPrototypeFunctions = private global [14 x i64] zeroinitializer
+
+define void @collectionPrototypeInit() {
+entry:
+  br label %loop
+loop:
+  %index = phi i64 [ 0, %entry ], [ %next, %body ]
+  %done = icmp eq i64 %index, 14
+  br i1 %done, label %finish, label %body
+body:
+  %slot = getelementptr [14 x i64], ptr @collectionPrototypeFunctions, i64 0, i64 %index
+  store i64 0, ptr %slot
+  call void @gcRegisterGlobalRoot(ptr %slot)
+  %next = add i64 %index, 1
+  br label %loop
+finish:
+  ret void
+}
+
+define i64 @collectionCachedMethod(i64 %index) {
+entry:
+  %cache.slot = getelementptr [14 x i64], ptr @collectionPrototypeFunctions, i64 0, i64 %index
+  %cached = load i64, ptr %cache.slot
+  %uninit = icmp eq i64 %cached, 0
+  br i1 %uninit, label %create, label %reuse
+reuse:
+  ret i64 %cached
+create:
+  %name.len.slot = getelementptr [14 x { i64, ptr, ptr, i64, i64 }], ptr @collectionPrototypeMethods, i64 0, i64 %index, i32 0
+  %name.len = load i64, ptr %name.len.slot
+  %name.ptr.slot = getelementptr [14 x { i64, ptr, ptr, i64, i64 }], ptr @collectionPrototypeMethods, i64 0, i64 %index, i32 1
+  %name.ptr = load ptr, ptr %name.ptr.slot
+  %fn.ptr.slot = getelementptr [14 x { i64, ptr, ptr, i64, i64 }], ptr @collectionPrototypeMethods, i64 0, i64 %index, i32 2
+  %fn.ptr = load ptr, ptr %fn.ptr.slot
+  %arity.slot = getelementptr [14 x { i64, ptr, ptr, i64, i64 }], ptr @collectionPrototypeMethods, i64 0, i64 %index, i32 3
+  %arity = load i64, ptr %arity.slot
+  %name.val = call i64 @valueBoxString(ptr %name.ptr, i64 %name.len)
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %name.val)
+  %fn = call i64 @functionObjectNew(ptr %fn.ptr, ptr null, i64 9222246136947933184, i64 %name.val, i64 %arity)
+  store i64 %fn, ptr %cache.slot
+  call void @gcRootRestore(i64 %frame)
+  ret i64 %fn
+}
+
+@.col.key.toString = private unnamed_addr constant [9 x i8] c"toString\00"
+@.col.tag.map = private unnamed_addr constant [13 x i8] c"[object Map]\00"
+@.col.tag.set = private unnamed_addr constant [13 x i8] c"[object Set]\00"
+@.col.tag.weakmap = private unnamed_addr constant [17 x i8] c"[object WeakMap]\00"
+@.col.tag.weakset = private unnamed_addr constant [17 x i8] c"[object WeakSet]\00"
+@collectionTags = private unnamed_addr constant [4 x { i64, ptr }] [
+  { i64, ptr } { i64 12, ptr @.col.tag.map },
+  { i64, ptr } { i64 12, ptr @.col.tag.set },
+  { i64, ptr } { i64 16, ptr @.col.tag.weakmap },
+  { i64, ptr } { i64 16, ptr @.col.tag.weakset }
+]
+
+; Object.prototype.toString for a collection, named by its kind.
+define { i64, i1 } @collectionToStringMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.collection = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %is.collection, label %name, label %refuse
+refuse:
+  %error = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %error
+name:
+  %collection = call ptr @valueObjectPtr(i64 %this.value)
+  %kind = call i64 @collectionKind(ptr %collection)
+  %entry.slot = getelementptr [4 x { i64, ptr }], ptr @collectionTags, i64 0, i64 %kind
+  %length = load i64, ptr %entry.slot
+  %bytes.slot = getelementptr { i64, ptr }, ptr %entry.slot, i64 0, i32 1
+  %bytes = load ptr, ptr %bytes.slot
+  %text = call i64 @valueBoxString(ptr %bytes, i64 %length)
+  %result = call { i64, i1 } @arrayMethodResult(i64 %text)
+  ret { i64, i1 } %result
+}
+
+define i64 @collectionPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %col = call ptr @valueObjectPtr(i64 %value)
+  %kind = call i64 @collectionKind(ptr %col)
+  %kind.bit = shl i64 1, %kind
+  %is.sized = icmp ult i64 %kind, 2
+  %is.size.len = icmp eq i64 %key.len, 4
+  %check.size = and i1 %is.sized, %is.size.len
+  br i1 %check.size, label %size.cmp, label %check.iter
+size.cmp:
+  %scmp = call i32 @memcmp(ptr %key.ptr, ptr @.col.key.size, i64 4)
+  %is.size = icmp eq i32 %scmp, 0
+  br i1 %is.size, label %ret.size, label %check.iter
+ret.size:
+  %sz = call i64 @collectionSize(ptr %col)
+  %sz.d = uitofp i64 %sz to double
+  %sz.v = call i64 @valueBoxNumber(double %sz.d)
+  ret i64 %sz.v
+check.iter:
+  %is.iter.len = icmp eq i64 %key.len, 18
+  br i1 %is.iter.len, label %iter.cmp, label %scan.start
+iter.cmp:
+  %icmp = call i32 @memcmp(ptr %key.ptr, ptr @.symbol.iterator.key, i64 18)
+  %is.iter = icmp eq i32 %icmp, 0
+  br i1 %is.iter, label %iter.lookup, label %scan.start
+iter.lookup:
+  %override.slot = getelementptr i8, ptr %col, i64 32
+  %override = load i64, ptr %override.slot
+  %has.override = icmp ne i64 %override, 9222246136947933184
+  br i1 %has.override, label %iter.override, label %iter.default
+iter.override:
+  ret i64 %override
+iter.default:
+  %is.map = icmp eq i64 %kind, 0
+  br i1 %is.map, label %iter.map, label %iter.check.set
+iter.map:
+  %map.iter = call i64 @collectionCachedMethod(i64 8)
+  ret i64 %map.iter
+iter.check.set:
+  %is.set = icmp eq i64 %kind, 1
+  br i1 %is.set, label %iter.set, label %missing
+iter.set:
+  %set.iter = call i64 @collectionCachedMethod(i64 11)
+  ret i64 %set.iter
+scan.start:
+  br label %scan
+scan:
+  %index = phi i64 [ 0, %scan.start ], [ %next, %advance ]
+  %done = icmp eq i64 %index, 14
+  br i1 %done, label %missing, label %check.mask
+check.mask:
+  %mask.slot = getelementptr [14 x { i64, ptr, ptr, i64, i64 }], ptr @collectionPrototypeMethods, i64 0, i64 %index, i32 4
+  %mask = load i64, ptr %mask.slot
+  %masked = and i64 %mask, %kind.bit
+  %kind.ok = icmp ne i64 %masked, 0
+  br i1 %kind.ok, label %check.len, label %advance
+check.len:
+  %len.slot = getelementptr [14 x { i64, ptr, ptr, i64, i64 }], ptr @collectionPrototypeMethods, i64 0, i64 %index, i32 0
+  %len = load i64, ptr %len.slot
+  %same.len = icmp eq i64 %len, %key.len
+  br i1 %same.len, label %check.name, label %advance
+check.name:
+  %name.slot = getelementptr [14 x { i64, ptr, ptr, i64, i64 }], ptr @collectionPrototypeMethods, i64 0, i64 %index, i32 1
+  %name = load ptr, ptr %name.slot
+  %cmp = call i32 @memcmp(ptr %key.ptr, ptr %name, i64 %key.len)
+  %same.name = icmp eq i32 %cmp, 0
+  br i1 %same.name, label %found, label %advance
+found:
+  %method = call i64 @collectionCachedMethod(i64 %index)
+  ret i64 %method
+advance:
+  %next = add i64 %index, 1
+  br label %scan
+missing:
+  %is.tostring.length = icmp eq i64 %key.len, 8
+  br i1 %is.tostring.length, label %compare.tostring, label %inherited
+compare.tostring:
+  %tostring.comparison = call i32 @memcmp(ptr %key.ptr, ptr @.col.key.toString, i64 8)
+  %is.tostring = icmp eq i32 %tostring.comparison, 0
+  br i1 %is.tostring, label %tostring, label %inherited
+tostring:
+  %tostring.method = call i64 @functionObjectNew(ptr @collectionToStringMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
+  ret i64 %tostring.method
+inherited:
+  %object.prototype = call ptr @objectDefaultPrototype()
+  %inherited.value = call i64 @objectGet(ptr %object.prototype, i64 %key.len, ptr %key.ptr)
+  ret i64 %inherited.value
+}
+
+define { i64, i1 } @collectionMethodReceiverError() {
+entry:
+  %msg = call i64 @valueBoxString(ptr @.col.method.not.col, i64 49)
+  %err = call { i64, i1 } @iteratorTypeError(i64 %msg)
+  ret { i64, i1 } %err
+}
+
+define { i64, i1 } @collectionGetMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %key = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %val = call i64 @collectionGet(ptr %col, i64 %key)
+  %res = call { i64, i1 } @arrayMethodResult(i64 %val)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @collectionSetMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %key = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %val = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 1)
+  call void @collectionSet(ptr %col, i64 %key, i64 %val)
+  %res = call { i64, i1 } @arrayMethodResult(i64 %this.value)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @collectionAddMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %val = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  call void @collectionSet(ptr %col, i64 %val, i64 9222246136947933186)
+  %res = call { i64, i1 } @arrayMethodResult(i64 %this.value)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @collectionHasMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %key = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %has = call i1 @collectionHas(ptr %col, i64 %key)
+  %boxed = select i1 %has, i64 9222246136947933186, i64 9222246136947933185
+  %res = call { i64, i1 } @arrayMethodResult(i64 %boxed)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @collectionDeleteMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %key = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %deleted = call i1 @collectionDelete(ptr %col, i64 %key)
+  %boxed = select i1 %deleted, i64 9222246136947933186, i64 9222246136947933185
+  %res = call { i64, i1 } @arrayMethodResult(i64 %boxed)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @collectionClearMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  call void @collectionClear(ptr %col)
+  %res = call { i64, i1 } @arrayMethodResult(i64 9222246136947933184)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @mapKeysMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %it = call i64 @createCollectionIterator(ptr %col, i64 2, i64 0)
+  %res = call { i64, i1 } @arrayMethodResult(i64 %it)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @mapValuesMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %it = call i64 @createCollectionIterator(ptr %col, i64 2, i64 1)
+  %res = call { i64, i1 } @arrayMethodResult(i64 %it)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @mapEntriesMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %it = call i64 @createCollectionIterator(ptr %col, i64 2, i64 2)
+  %res = call { i64, i1 } @arrayMethodResult(i64 %it)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @setKeysMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %it = call i64 @createCollectionIterator(ptr %col, i64 3, i64 0)
+  %res = call { i64, i1 } @arrayMethodResult(i64 %it)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @setValuesMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %it = call i64 @createCollectionIterator(ptr %col, i64 3, i64 1)
+  %res = call { i64, i1 } @arrayMethodResult(i64 %it)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @setEntriesMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %it = call i64 @createCollectionIterator(ptr %col, i64 3, i64 2)
+  %res = call { i64, i1 } @arrayMethodResult(i64 %it)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @mapForEachMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %cb = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %this.arg = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 1)
+  %res = call { i64, i1 } @collectionForEach(ptr %col, i1 true, i64 %cb, i64 %this.arg)
+  ret { i64, i1 } %res
+}
+
+define { i64, i1 } @setForEachMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %ok = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %ok, label %run, label %bad
+bad:
+  %err = call { i64, i1 } @collectionMethodReceiverError()
+  ret { i64, i1 } %err
+run:
+  %col = call ptr @valueObjectPtr(i64 %this.value)
+  %cb = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 0)
+  %this.arg = call i64 @arrayMethodArgument(i64 %argc, ptr %argv, i64 1)
+  %res = call { i64, i1 } @collectionForEach(ptr %col, i1 false, i64 %cb, i64 %this.arg)
+  ret { i64, i1 } %res
+}

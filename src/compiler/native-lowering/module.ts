@@ -34,10 +34,23 @@ export function emitNativeModule(resolved: ResolvedModule, builder: LlvmModuleBu
     };
     if (plan.traceId === undefined) { lowerBody(); } else { fn.withTrace(plan.traceId, lowerBody); }
   });
-  module.defineFunction({ name: "main", parameters: [], returnsCompletion: false, returns: llvm.i32 }, (fn) => {
+  module.defineFunction({
+    name: "main",
+    parameters: [{ name: "argc", type: llvm.i32 }, { name: "argv", type: llvm.ptr }],
+    returnsCompletion: false,
+    returns: llvm.i32
+  }, (fn) => {
     fn.openEntry();
     const { cursor, runtime, roots } = fn.capabilities;
     runtime.callVoid("gcInit", []);
+    const entryConstant = module.stringConstant(resolved.entry);
+    const entryBlock = cursor.currentBlock();
+    runtime.callVoid("nodeProcessInit", [
+      fn.parameter(0, llvm.i32),
+      fn.parameter(1, llvm.ptr),
+      entryBlock.int(llvm.i64, BigInt(new TextEncoder().encode(resolved.entry).length)),
+      entryBlock.globalPointer(entryConstant)
+    ]);
     const frame = roots.save();
     bindings.registerGlobalRoots(fn.capabilities);
     const writes = bindings.allocate(fn.capabilities, "module");

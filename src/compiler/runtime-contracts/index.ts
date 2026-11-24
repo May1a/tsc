@@ -1,5 +1,6 @@
 // Generated from Static Runtime IR. Run npm run runtime:contracts to regenerate.
 import { arraysContracts } from "./arrays.js";
+import { builtinsContracts } from "./builtins.js";
 import { callbacksContracts } from "./callbacks.js";
 import { collectionsContracts } from "./collections.js";
 import { declaresContracts } from "./declares.js";
@@ -8,17 +9,21 @@ import { functionsContracts } from "./functions.js";
 import { gcContracts } from "./gc.js";
 import { iteratorsContracts } from "./iterators.js";
 import { jsonContracts } from "./json.js";
+import { nodeContracts } from "./node.js";
 import { numbersContracts } from "./numbers.js";
 import { objectsContracts } from "./objects.js";
 import { promisesContracts } from "./promises.js";
 import { prototypesContracts } from "./prototypes.js";
 import { regexContracts } from "./regex.js";
+import { stringprototypesContracts } from "./stringprototypes.js";
 import { stringsContracts } from "./strings.js";
+import { symbolsContracts } from "./symbols.js";
 import { valuesContracts } from "./values.js";
 import { entryRuntimeContracts, structuredRuntimeContracts } from "./structured.js";
 
 export const runtimeContracts = {
   ...arraysContracts,
+  ...builtinsContracts,
   ...callbacksContracts,
   ...collectionsContracts,
   ...declaresContracts,
@@ -27,12 +32,15 @@ export const runtimeContracts = {
   ...gcContracts,
   ...iteratorsContracts,
   ...jsonContracts,
+  ...nodeContracts,
   ...numbersContracts,
   ...objectsContracts,
   ...promisesContracts,
   ...prototypesContracts,
   ...regexContracts,
+  ...stringprototypesContracts,
   ...stringsContracts,
+  ...symbolsContracts,
   ...valuesContracts,
   ...structuredRuntimeContracts,
   ...entryRuntimeContracts,

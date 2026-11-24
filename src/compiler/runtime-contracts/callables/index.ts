@@ -4,6 +4,7 @@ import { entryRuntimeContracts, structuredRuntimeContracts } from "../structured
 import { type RuntimeCalleeTable, registerRuntimeContract } from "../register.js";
 import type { runtimeContracts } from "../index.js";
 import { createArraysCallees } from "./arrays.js";
+import { createBuiltinsCallees } from "./builtins.js";
 import { createCallbacksCallees } from "./callbacks.js";
 import { createCollectionsCallees } from "./collections.js";
 import { createDeclaresCallees } from "./declares.js";
@@ -12,17 +13,21 @@ import { createFunctionsCallees } from "./functions.js";
 import { createGcCallees } from "./gc.js";
 import { createIteratorsCallees } from "./iterators.js";
 import { createJsonCallees } from "./json.js";
+import { createNodeCallees } from "./node.js";
 import { createNumbersCallees } from "./numbers.js";
 import { createObjectsCallees } from "./objects.js";
 import { createPromisesCallees } from "./promises.js";
 import { createPrototypesCallees } from "./prototypes.js";
 import { createRegexCallees } from "./regex.js";
+import { createStringprototypesCallees } from "./stringprototypes.js";
 import { createStringsCallees } from "./strings.js";
+import { createSymbolsCallees } from "./symbols.js";
 import { createValuesCallees } from "./values.js";
 
 export function createRuntimeCallees(module: LlvmModuleBuilder): RuntimeCallees {
   return {
     ...createArraysCallees(module),
+    ...createBuiltinsCallees(module),
     ...createCallbacksCallees(module),
     ...createCollectionsCallees(module),
     ...createDeclaresCallees(module),
@@ -31,12 +36,15 @@ export function createRuntimeCallees(module: LlvmModuleBuilder): RuntimeCallees 
     ...createGcCallees(module),
     ...createIteratorsCallees(module),
     ...createJsonCallees(module),
+    ...createNodeCallees(module),
     ...createNumbersCallees(module),
     ...createObjectsCallees(module),
     ...createPromisesCallees(module),
     ...createPrototypesCallees(module),
     ...createRegexCallees(module),
+    ...createStringprototypesCallees(module),
     ...createStringsCallees(module),
+    ...createSymbolsCallees(module),
     ...createValuesCallees(module),
     valueBoxObject: registerRuntimeContract(module, structuredRuntimeContracts.valueBoxObject),
     valueBoxNumber: registerRuntimeContract(module, structuredRuntimeContracts.valueBoxNumber),

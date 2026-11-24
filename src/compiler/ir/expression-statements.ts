@@ -2,7 +2,7 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import { type Lowered, loweredPayload, notApplicable, produced, unsupported, unsupportedIn, withRefusal } from "./lowered.js";
-import { lowerAssignmentStatement } from "./assignments.js";
+import { lowerAssignmentStatement, lowerPropertyValueStore } from "./assignments.js";
 import { lowerRuntimeObjectCallStatement } from "./object-mutations.js";
 import { lowerRuntimeArrayCallStatement } from "./array-mutations.js";
 import { lowerInlineCppValueExpression } from "./inline-cpp.js";
@@ -14,7 +14,7 @@ import type { JsIrOperation } from "./types.js";
 import { isBoxedStoreReceiverBinding } from "./number-access.js";
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
 import { constWriteRefusal } from "./throwing-forms.js";
-import { lowerPropertyKeyExpression } from "./string-expressions.js";
+import { lowerPropertyKeyExpression, lowerValuePropertyKeyExpression } from "./string-expressions.js";
 import { lowerCollectionForEachPayload } from "./collection-values.js";
 
 // eslint-disable-next-line max-statements -- Statement expression routing is centralized for the current lowering slice.
@@ -31,7 +31,7 @@ export function lowerExpressionStatement(
   if (constWrite !== undefined) {
     return unsupportedIn(constWrite);
   }
-  const update = lowerUpdateExpressionStatement(expression, bindings);
+  const update = lowerUpdateExpressionStatement(context, expression, bindings);
   if (update.kind !== "notApplicable") {
     return update;
   }
@@ -148,7 +148,7 @@ function lowerPrintCallStatement(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
-  if (!ts.isIdentifier(expression.expression) || expression.expression.text !== "print") {
+  if (!ts.isIdentifier(expression.expression) || expression.expression.text !== "print" || bindings.has("print")) {
     return notApplicable;
   }
   if (expression.arguments.length !== 1) {
@@ -171,7 +171,7 @@ function lowerPrintCallStatement(
   return notApplicable;
 }
 
-/** `console.log(...args)` lowers every argument as a boxed value and prints them space-separated. */
+/** `console.log`/`console.error`/`console.warn` lowers every argument as a boxed value. */
 function lowerConsoleLogStatement(
   context: LoweringContext,
   expression: ts.CallExpression,
@@ -181,29 +181,42 @@ function lowerConsoleLogStatement(
     !ts.isPropertyAccessExpression(expression.expression) ||
     !ts.isIdentifier(expression.expression.expression) ||
     expression.expression.expression.text !== "console" ||
-    expression.expression.name.text !== "log" ||
     bindings.has("console")
   ) {
+    return notApplicable;
+  }
+  const method = expression.expression.name.text;
+  if (method !== "log" && method !== "error" && method !== "warn") {
     return notApplicable;
   }
   const args: JsIrValueExpression[] = [];
   for (const argument of expression.arguments) {
     const lowered = context.lowerValueExpression(context, argument, bindings);
     if (lowered.kind !== "lowered") {
-      return withRefusal(lowered, unsupportedIn("Arguments to `console.log` must be expressions this build can evaluate"));
+      return withRefusal(lowered, unsupportedIn(`Arguments to \`console.${method}\` must be expressions this build can evaluate`));
     }
     args.push(lowered.operation);
   }
-  return produced({ kind: "consoleLog", arguments: args });
+  return produced({ kind: "consoleLog", arguments: args, ...(method === "log" ? {} : { isStderr: true }) });
 }
 
+const updateOperators: ReadonlyMap<ts.SyntaxKind, JsIrNumberOperator> = new Map([
+  [ts.SyntaxKind.PlusPlusToken, "add"],
+  [ts.SyntaxKind.MinusMinusToken, "subtract"]
+]);
+
 export function lowerUpdateExpressionStatement(
+  context: LoweringContext,
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered {
   const boxedUpdate = lowerBoxedUpdateStatement(expression, bindings);
   if (boxedUpdate !== undefined) {
     return produced(boxedUpdate);
+  }
+  const propertyUpdate = lowerPropertyUpdateStatement(context, expression, bindings);
+  if (propertyUpdate.kind !== "notApplicable") {
+    return propertyUpdate;
   }
   const update = lowerUpdateNumberExpression(expression, bindings);
   if (update === undefined) {
@@ -214,10 +227,32 @@ export function lowerUpdateExpressionStatement(
   return produced({ kind: "assignNumber", name: update.name, value: { kind: "binary", operator, left: { kind: "variable", name: update.name }, right: step } });
 }
 
-const updateOperators: ReadonlyMap<ts.SyntaxKind, JsIrNumberOperator> = new Map([
-  [ts.SyntaxKind.PlusPlusToken, "add"],
-  [ts.SyntaxKind.MinusMinusToken, "subtract"]
-]);
+function lowerPropertyUpdateStatement(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered {
+  if (!(ts.isPrefixUnaryExpression(expression) || ts.isPostfixUnaryExpression(expression)) || !ts.isPropertyAccessExpression(expression.operand)) {
+    return notApplicable;
+  }
+  const operator = updateOperators.get(expression.operator);
+  if (operator === undefined) {
+    return notApplicable;
+  }
+  const target = expression.operand;
+  if (!ts.isIdentifier(target.expression) && target.expression.kind !== ts.SyntaxKind.ThisKeyword) {
+    return notApplicable;
+  }
+  const current = context.lowerValueExpression(context, target, bindings);
+  if (current.kind !== "lowered") {
+    return current;
+  }
+  const next: JsIrValueExpression = {
+    kind: "number",
+    value: { kind: "binary", operator, left: { kind: "valueToNumber", value: current.operation }, right: { kind: "literal", value: 1 } }
+  };
+  return lowerPropertyValueStore(target, next, bindings);
+}
 
 /**
  * `x++` or `--x` as a statement on a boxed binding: the value converts to a number, as `++` does in
@@ -341,7 +376,7 @@ function lowerDeleteExpression(
         return produced({ kind: "valueObjectDelete", targetName: target.expression.text, key: key.operation });
       }
     }
-    const keyResult2 = context.lowerStringRuntimeExpression(context, target.argumentExpression, bindings);
+    const keyResult2 = lowerValuePropertyKeyExpression(context, target.argumentExpression, bindings);
     if (keyResult2.kind === "unsupported") {
       return keyResult2;
     }

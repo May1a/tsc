@@ -94,6 +94,11 @@ export interface BindingDeclaration {
 
 export interface BindingTable {
   readonly declarations: readonly BindingDeclaration[];
+  /**
+   * The outer bindings each function must receive: those its body reads, and those a function
+   * nested in it reads through it. Resolution records them, so they follow lexical scope exactly.
+   */
+  readonly freeBindings: ReadonlyMap<FunctionId, readonly BindingRef[]>;
 }
 
 function locationFor(owner: LexicalOwner, captured: boolean): BindingLocation {
@@ -138,15 +143,22 @@ interface RecordedBinding {
   captured: boolean;
 }
 
+/** A function as resolution records it: where it nests, and the outer bindings read so far. */
+interface RecordedFunction {
+  readonly id: FunctionId;
+  readonly enclosing: FunctionId | undefined;
+  readonly free: Map<BindingId, BindingRef>;
+}
+
 export class BindingRegistry {
   readonly #recorded: RecordedBinding[] = [];
-  #functionCount = 0;
+  readonly #functions: RecordedFunction[] = [];
 
   /** A fresh function identity. Ordinals are dense and allocated in resolution order. */
-  public mintFunction(): FunctionId {
-    const functionId: FunctionId = { ordinal: this.#functionCount, [functionIdBrand]: true };
-    this.#functionCount += 1;
-    return functionId;
+  public mintFunction(enclosing?: FunctionId): FunctionId {
+    const id: FunctionId = { ordinal: this.#functions.length, [functionIdBrand]: true };
+    this.#functions.push({ id, enclosing, free: new Map() });
+    return id;
   }
 
   /** Declares a binding and returns a reference to it. */
@@ -171,9 +183,23 @@ export class BindingRegistry {
     this.#require(reference).captured = true;
   }
 
+  /** Records a read by `reader` in every function between it and the declaration's owner. */
+  public markFree(reference: BindingRef, reader: FunctionId): void {
+    const owner = this.ownerOf(reference);
+    let current: FunctionId | undefined = reader;
+    while (current !== undefined && !(owner.kind === "function" && owner.function === current)) {
+      const record = this.#requireFunction(current);
+      record.free.set(reference.binding, reference);
+      current = record.enclosing;
+    }
+  }
+
   /** The finished table. Locations are decided here, once every capture has been seen. */
   public table(): BindingTable {
-    return { declarations: this.#recorded.map((record) => this.#finalize(record)) };
+    return {
+      declarations: this.#recorded.map((record) => this.#finalize(record)),
+      freeBindings: new Map(this.#functions.map(({ id, free }) => [id, [...free.values()]]))
+    };
   }
 
   #finalize(record: RecordedBinding): BindingDeclaration {
@@ -186,6 +212,14 @@ export class BindingRegistry {
       perIteration: isPerIterationBinding(record),
       storage: { representation: record.representation, location: locationFor(record.owner, record.captured) }
     };
+  }
+
+  #requireFunction(id: FunctionId): RecordedFunction {
+    const record = this.#functions.at(id.ordinal);
+    if (record === undefined || record.id !== id) {
+      throw new Error("Function identity belongs to another resolution");
+    }
+    return record;
   }
 
   #require(reference: BindingRef): RecordedBinding {

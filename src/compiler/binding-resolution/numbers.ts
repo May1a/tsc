@@ -93,6 +93,6 @@ export const numberHandlers = tierHandlers<JsIrNumberExpression, ResolvedNumberE
     arguments: node.arguments.map((argument) => resolver.number(argument))
   }),
   dateNow: () => ({ kind: "dateNow" }),
-  parseInt: (node, resolver) => ({ kind: "parseInt", value: resolver.string(node.value) }),
+  parseInt: (node, resolver) => ({ kind: "parseInt", value: resolver.string(node.value), radix: optional(node.radix, resolver.number) }),
   parseFloat: (node, resolver) => ({ kind: "parseFloat", value: resolver.string(node.value) })
 });

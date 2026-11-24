@@ -6,7 +6,7 @@ import type { JsIrValueExpression } from "./expressions.js";
 import { type ClassInfo, type ClassMethodInfo, classPrototypeName, findClassInChain, resolveReceiverClass } from "./class-info.js";
 import { isOverriddenBelow } from "./class-hierarchy.js";
 import { lowerValueCallArguments } from "./call-arguments.js";
-import { CLASS_THIS_NAME, classConstructorName, classConstructorValueName, classMethodFunctionName } from "./class-names.js";
+import { CLASS_THIS_NAME, classConstructorName, classConstructorValueName, classDynamicSuperName, classMethodFunctionName } from "./class-names.js";
 
 // A class method call lowers to a direct call, to a call dispatched through the receiver's prototype
 // chain when a subclass overrides the method, or — when the receiver itself is optional
@@ -251,8 +251,24 @@ function lowerSuperMethodCall(
   call: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   methodName: string
-): Lowered<Extract<JsIrValueExpression, { readonly kind: "call" }>> {
-  const base = baseClassOf(context.activeEnclosingClass, context.classes);
+): Lowered<ClassMethodCallValue> {
+  const enclosing = context.activeEnclosingClass;
+  if (enclosing?.hasDynamicBase === true) {
+    const args = lowerValueCallArguments(context, call.arguments, bindings, `super.${methodName}`);
+    if (args.kind !== "lowered") {
+      return withRefusal(args, unsupportedIn("`super(...)` method arguments must be expressions this build can evaluate"));
+    }
+    const superHolder: JsIrValueExpression = context.activeClassMethodStatic
+      ? { kind: "variable", name: classDynamicSuperName(enclosing.name) }
+      : { kind: "valueObjectDynamicAccess", value: { kind: "variable", name: classDynamicSuperName(enclosing.name) }, key: { kind: "literal", value: "prototype" } };
+    return produced({
+      kind: "callValue",
+      callee: { kind: "valueObjectDynamicAccess", value: superHolder, key: { kind: "literal", value: methodName } },
+      thisValue: { kind: "variable", name: CLASS_THIS_NAME },
+      arguments: args.operation
+    });
+  }
+  const base = baseClassOf(enclosing, context.classes);
   if (base === undefined) {
     return unsupportedIn(`\`super.${methodName}\` appears in a class with no base class this module lowered`);
   }

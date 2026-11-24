@@ -99,7 +99,7 @@ function lowerNamedValueCall(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
   const callee = bindings.get(target.text);
-  if (callee?.kind === "function" && callee.returnKind === "value") {
+  if ((callee?.kind === "function" || callee?.kind === "functionReference") && callee.returnKind === "value") {
     const args = lowerCallArguments(context, target.text, arguments_, bindings);
     return args.kind === "lowered" ? produced({ kind: "call", name: target.text, arguments: args.operation }) : args;
   }
@@ -292,7 +292,9 @@ function isFixedRestSpreadCall(
     return false;
   }
   const directFunction = bindings.get(expression.expression.text);
-  const hasRestParameter = directFunction?.kind === "function" && directFunction.parameters.some((parameter) => parameter.isRest === true);
+  const hasRestParameter =
+    (directFunction?.kind === "function" || directFunction?.kind === "functionReference") &&
+    directFunction.parameters.some((parameter) => parameter.isRest === true);
   if (!hasRestParameter) {
     return false;
   }
@@ -301,7 +303,7 @@ function isFixedRestSpreadCall(
   );
 }
 
-function lowerSpreadElements(
+export function lowerSpreadElements(
   context: LoweringContext,
   argumentList: ts.NodeArray<ts.Expression>,
   bindings: ReadonlyMap<string, JsIrBindingValue>

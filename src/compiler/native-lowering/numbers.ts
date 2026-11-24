@@ -218,7 +218,12 @@ const handlers: VariantHandlers<NumberVariants, ExpressionContext, NumberValue> 
   valueToNumber: (expression, context) => coerceValueToNumber(context.expressions.value(expression.value), context),
   parseInt: (expression, context) => {
     const value = context.expressions.string(expression.value);
-    return context.runtime.call("parseInt", [value.length, value.bytes], context.cursor.uniqueName("number.parse"));
+    if (expression.radix === undefined) {
+      return context.runtime.call("parseInt", [value.length, value.bytes], context.cursor.uniqueName("number.parse"));
+    }
+    boxString(value, context);
+    const radix = context.expressions.number(expression.radix);
+    return context.runtime.call("parseIntRadix", [value.length, value.bytes, radix], context.cursor.uniqueName("number.parse"));
   },
   parseFloat: (expression, context) => {
     const value = context.expressions.string(expression.value);

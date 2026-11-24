@@ -13,6 +13,7 @@ import type { lowerStringRuntimeExpression } from "./string-expressions.js";
 import type { lowerConditionExpression } from "./conditions.js";
 import type { lowerObjectDestructuringElements } from "./object-destructuring.js";
 import type { lowerConstAggregateBinding, lowerConstVariableBinding } from "./variable-bindings.js";
+import type { lowerFunctionParameters } from "./function-parameter-lowering.js";
 
 /** What one `lowerToJsIr` invocation was given, and nothing it has lowered yet. */
 export interface LoweringContextOptions {
@@ -51,6 +52,10 @@ export interface LoweringContext {
    * compilation, so two compilations of the same program produce the same ids.
    */
   classes: Map<string, ClassInfo>;
+  /** All lowered classes across every module in this compilation, keyed by canonical class name. */
+  allClasses: Map<string, ClassInfo>;
+  /** Declaring source file name for each canonical class name in `allClasses`. */
+  classOwnerFiles: Map<string, string>;
   /**
    * The source file's class declarations, collected before any of them lowers. Whether an instance
    * call dispatches depends on subclasses the registry above may not contain yet. Set per source file
@@ -64,6 +69,8 @@ export interface LoweringContext {
   storagePlan: StoragePlan;
   /** Names hoisted as function-scoped `var` slots in the module or function currently lowering. */
   hoistedVars: ReadonlySet<string>;
+  /** Top-level module `const`/`let`/`var` names referenced by functions declared earlier in the same module. */
+  moduleForwardBindings: ReadonlySet<string>;
   /**
    * The program's type checker, for the questions a type answers that lowering state cannot: which
    * class an identifier's static type names, and what a call returns.
@@ -82,4 +89,5 @@ export interface LoweringContext {
   readonly lowerObjectDestructuringElements: typeof lowerObjectDestructuringElements;
   readonly lowerConstVariableBinding: typeof lowerConstVariableBinding;
   readonly lowerConstAggregateBinding: typeof lowerConstAggregateBinding;
+  readonly lowerFunctionParameters: typeof lowerFunctionParameters;
 }

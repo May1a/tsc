@@ -2,8 +2,9 @@ import { loweredStatementResult } from "./diagnostics.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
-import { type Lowered, loweredOperation, notApplicable, produced, unsupported } from "./lowered.js";
+import { type Lowered, loweredOperation, notApplicable, produced } from "./lowered.js";
 import { traceOperationFromNode } from "./class-info.js";
+import { lowerNestedClassDeclaration } from "./classes.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { lowerVariableBinding } from "./variable-bindings.js";
 import { lowerIfStatement, lowerSwitchStatement } from "./branches.js";
@@ -22,7 +23,7 @@ export function lowerStatement(
   bindings: ReadonlyMap<string, JsIrBindingValue>,
   promotedAggregates: ReadonlySet<string> = new Set()
 ): Lowered {
-  const result = lowerNestedClassDeclaration(statement)
+  const result = lowerNestedClass(context, statement, bindings)
     ?? lowerNonDispatchedStatement(context, statement, bindings)
     ?? lowerStatementCore(context, statement, bindings, promotedAggregates);
   if (result.kind !== "lowered") {
@@ -31,16 +32,15 @@ export function lowerStatement(
   return loweredOperation(traceOperationFromNode(result.operation, statement));
 }
 
-/**
- * Only top-level classes lower: the class tier runs on source-file statements, so a class
- * declaration that reaches the statement tier is nested in a function or block body, which the
- * module-level class storage has no representation for.
- */
-function lowerNestedClassDeclaration(statement: ts.Statement): Lowered | undefined {
+function lowerNestedClass(
+  context: LoweringContext,
+  statement: ts.Statement,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered | undefined {
   if (!ts.isClassDeclaration(statement)) {
     return undefined;
   }
-  return unsupported("Class declarations inside function and block bodies are not supported yet");
+  return lowerNestedClassDeclaration(context, statement, bindings);
 }
 
 /**

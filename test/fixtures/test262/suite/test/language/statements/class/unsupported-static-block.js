@@ -5,6 +5,6 @@ features: [class-static-block]
 ---*/
 class Example {
   static {
-    (() => { class await {} });
+    eval("1");
   }
 }

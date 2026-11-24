@@ -38,7 +38,7 @@ export class Resolution {
   readonly #closureFunctions = new Map<string, FunctionId>();
   #definitions: ReadonlyMap<string, JsIrFunctionObjectDefinition> = new Map();
   readonly #modules = new Map<string, Scope>();
-  readonly #moduleFunctions = new Map<string, BindingRef>();
+  readonly #moduleFunctions = new Map<string, BindingRef | "ambiguous">();
   #scope: Scope | undefined;
   /** The function body being resolved, or `undefined` at module level. */
   #function: FunctionId | undefined;
@@ -73,11 +73,24 @@ export class Resolution {
       } else if (operation.kind === "function") {
         const binding = this.hoisted(operation.name);
         const existing = this.#moduleFunctions.get(operation.name);
-        if (existing !== undefined && existing.binding !== binding.binding) {
-          throw new Error(`Ambiguous module function '${operation.name}'`);
+        if (existing !== undefined && (existing === "ambiguous" || existing.binding !== binding.binding)) {
+          this.#moduleFunctions.set(operation.name, "ambiguous");
+        } else {
+          this.#moduleFunctions.set(operation.name, binding);
         }
-        this.#moduleFunctions.set(operation.name, binding);
       }
+    }
+  }
+
+  public importBinding(localName: string, sourceFileName: string, targetName: string): void {
+    const sourceScope = this.#modules.get(sourceFileName);
+    const reference = sourceScope?.names.get(targetName);
+    if (reference === undefined) {
+      return;
+    }
+    const targetScope = this.#requireInnermost();
+    if (!targetScope.has(localName)) {
+      targetScope.set(localName, reference);
     }
   }
 
@@ -94,7 +107,7 @@ export class Resolution {
 
   public inFunction<K>(body: (functionId: FunctionId) => K): K {
     const previousFunction = this.#function;
-    this.#function = this.#registry.mintFunction();
+    this.#function = this.#registry.mintFunction(previousFunction);
     try {
       return this.inScope("function", () => body(this.#requireFunction()));
     } finally {
@@ -145,13 +158,13 @@ export class Resolution {
     for (let scope = this.#scope; scope !== undefined; scope = scope.parent) {
       const reference = scope.names.get(name);
       if (reference !== undefined) {
-        this.#markCapture(reference);
+        this.#markRead(reference);
         return reference;
       }
     }
     const moduleFunction = this.#moduleFunctions.get(name);
-    if (moduleFunction !== undefined) {
-      this.#markCapture(moduleFunction);
+    if (moduleFunction !== undefined && moduleFunction !== "ambiguous") {
+      this.#markRead(moduleFunction);
       return moduleFunction;
     }
     throw new UnresolvedBindingError(name, this.#traceId, this.scopeChain());
@@ -189,6 +202,7 @@ export class Resolution {
     return [...this.#functionObjects.values()];
   }
 
+  /** Marks a declared capture, whose value arrives through the operation rather than a read by name. */
   public capture(reference: BindingRef): void {
     this.#markCapture(reference);
   }
@@ -220,6 +234,13 @@ export class Resolution {
       }
     }
     return false;
+  }
+
+  #markRead(reference: BindingRef): void {
+    this.#markCapture(reference);
+    if (this.#function !== undefined) {
+      this.#registry.markFree(reference, this.#function);
+    }
   }
 
   #markCapture(reference: BindingRef): void {

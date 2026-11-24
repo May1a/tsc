@@ -131,6 +131,17 @@ export const expectUnsupportedDiagnostic = async (fixture: string): Promise<void
   }
 };
 
+/** A program the TypeScript checker rejects, which therefore produces no executable. */
+export const expectCheckerRejection = async (fixture: string, diagnostic: string): Promise<void> => {
+  const result = await compileFixture(fixture);
+  try {
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(diagnostic);
+  } finally {
+    await result.cleanup();
+  }
+};
+
 export const expectUnsupportedMessage = async (fixture: string, message: string): Promise<void> => {
   const result = await compileFixture(fixture);
 

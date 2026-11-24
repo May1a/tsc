@@ -1,3 +1,4 @@
+import { boundNames } from "./predicates.js";
 import ts from "typescript";
 import type { JsIrValueExpression } from "./expressions.js";
 import type { JsIrBindingValue, JsIrFunctionObjectDefinition, JsIrValueKind } from "./bindings.js";
@@ -52,7 +53,8 @@ export function collectFunctionDeclarationEnclosingCaptureNames(
   outerBindings: ReadonlyMap<string, JsIrBindingValue>
 ): readonly string[] {
   const captures: string[] = [];
-  const seen = new Set<string>();
+  // A parameter shadows the outer name throughout the function.
+  const seen = new Set(declaration.parameters.flatMap((parameter) => boundNames(parameter.name)));
   const visit = (node: ts.Node): void => {
     if (node !== declaration && ts.isFunctionLike(node) && !ts.isArrowFunction(node)) {
       return;
@@ -148,19 +150,23 @@ export function collectFunctionExpressionCaptureNames(
 ): readonly string[] {
   const captures: string[] = [];
   const seen = new Set<string>();
-  const visit = (node: ts.Node): void => {
-    if (node !== expression && ts.isFunctionLike(node) && !ts.isArrowFunction(node)) {
-      return;
-    }
-    if (ts.isIdentifier(node) && bindings.has(node.text) && !localNames.has(node.text) && !seen.has(node.text)) {
+  const visit = (node: ts.Node, inNestedOrdinary: boolean): void => {
+    const nextNested = inNestedOrdinary || (node !== expression && ts.isFunctionLike(node) && !ts.isArrowFunction(node));
+    if (
+      ts.isIdentifier(node) &&
+      bindings.has(node.text) &&
+      !localNames.has(node.text) &&
+      !seen.has(node.text) &&
+      !(nextNested && node.text === "arguments")
+    ) {
       if (!(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)) {
         seen.add(node.text);
         captures.push(node.text);
       }
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => visit(child, nextNested));
   };
-  visit(expression.body);
+  visit(expression.body, false);
   return captures;
 }
 export function lowerCapturedBindingValue(

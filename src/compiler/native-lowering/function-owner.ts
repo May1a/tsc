@@ -1,5 +1,5 @@
 import type { GcFunctionFacts } from "../gc-liveness/index.js";
-import { type BuiltLlvmFunction, type LlvmBlockBuilder, type LlvmBlockLabel, type LlvmFunctionBuilder, type LlvmPointerType, type LlvmType, type LlvmValue, type LlvmValueType, llvm } from "../llvm-ir/index.js";
+import { type BuiltLlvmFunction, type LlvmBlockBuilder, type LlvmBlockLabel, type LlvmFunctionBuilder, type LlvmPointerType, type LlvmType, type LlvmValue, type LlvmValueType, NameAllocator, llvm } from "../llvm-ir/index.js";
 import type { RuntimeCallees } from "../runtime-contracts/callables/index.js";
 import { type CompletionCallCapability, createCompletionCalls } from "./completion-calls.js";
 import type { BlockCursor } from "./cursor.js";
@@ -46,7 +46,7 @@ type FunctionBuilderPort = Pick<LlvmFunctionBuilder, "openBlock" | "label" | "pa
 
 class FunctionCursor implements BlockCursor {
   readonly #builder: Pick<FunctionBuilderPort, "openBlock" | "label" | "entryAllocaArray">;
-  readonly #used = new Set<string>();
+  readonly #names = new NameAllocator();
   readonly #targets = new Set<LlvmBlockLabel>();
   #current: LlvmBlockBuilder | undefined;
 
@@ -78,13 +78,7 @@ class FunctionCursor implements BlockCursor {
     return this.#builder.entryAllocaArray(type, count, name);
   }
 
-  public uniqueName(hint: string): string {
-    let suffix = 0;
-    let name = hint;
-    while (this.#used.has(name)) { suffix += 1; name = `${hint}.${suffix}`; }
-    this.#used.add(name);
-    return name;
-  }
+  public uniqueName(hint: string): string { return this.#names.allocate(hint); }
 }
 
 class FunctionOwner implements NativeFunctionBuilder {

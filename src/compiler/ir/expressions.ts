@@ -1,4 +1,5 @@
 import type { JsIrCallArgument, JsIrFunctionObjectDefinition } from "./bindings.js";
+import type { JsGlobalName } from "./js-globals.js";
 import type { JsIrOperation } from "./types.js";
 
 /**
@@ -256,10 +257,15 @@ export type JsIrValueExpression =
       readonly search: JsIrStringExpression;
       readonly position?: JsIrNumberExpression;
     }
-  | {
-      readonly kind: "runtimeArrayValue";
-      readonly elements: readonly JsIrValueExpression[];
-    }
+  | { readonly kind: "runtimeArrayValue"; readonly elements: readonly JsIrRuntimeArrayElement[] }
+  | { readonly kind: "objectFreeze" | "objectSeal" | "objectPreventExtensions"; readonly value: JsIrValueExpression }
+  | { readonly kind: "objectAssignValue"; readonly target: JsIrValueExpression; readonly sources: readonly JsIrValueExpression[] }
+  | { readonly kind: "objectEnumerateValue"; readonly method: "keys" | "values" | "entries" | "getOwnPropertyNames"; readonly target: JsIrValueExpression }
+  | { readonly kind: "stringSplitValue"; readonly receiver: JsIrStringExpression; readonly separator: JsIrStringExpression; readonly limit?: JsIrNumberExpression }
+  | { readonly kind: "regexSplitValue"; readonly receiver: JsIrStringExpression; readonly regex: JsIrValueExpression; readonly limit?: JsIrNumberExpression }
+  | { readonly kind: "assignVariableValue"; readonly name: string; readonly value: JsIrValueExpression }
+  | { readonly kind: "propertyStoreValue"; readonly receiver: JsIrValueExpression; readonly key: JsIrStringExpression; readonly value: JsIrValueExpression }
+  | { readonly kind: "privateFieldStoreValue"; readonly receiver: JsIrValueExpression; readonly key: string; readonly message: string; readonly value: JsIrValueExpression }
   | {
       readonly kind: "taggedTemplateValue";
       readonly tag: string;
@@ -288,15 +294,11 @@ export type JsIrValueExpression =
       readonly constructorName: string;
       readonly newTargetName?: string;
       readonly arguments: readonly JsIrCallArgument[];
+      /** Set when the argument count is only known at runtime; replaces `arguments`. */
+      readonly spreadArguments?: readonly JsIrRuntimeArrayElement[];
     }
-  | {
-      readonly kind: "generatorCreate";
-      readonly step: JsIrValueExpression;
-    }
-  | {
-      readonly kind: "asyncStart";
-      readonly step: JsIrValueExpression;
-    }
+  | { readonly kind: "generatorCreate"; readonly step: JsIrValueExpression }
+  | { readonly kind: "asyncStart"; readonly step: JsIrValueExpression }
   | {
       readonly kind: "iteratorResult";
       readonly value: JsIrValueExpression;
@@ -307,14 +309,28 @@ export type JsIrValueExpression =
       readonly iterable: JsIrValueExpression;
       readonly notIterableMessage: string;
     }
+  | { readonly kind: "promiseNew"; readonly executor: JsIrValueExpression }
+  | { readonly kind: "promiseStatic"; readonly method: "resolve" | "reject" | "all" | "race" | "allSettled" | "any"; readonly argument?: JsIrValueExpression }
+  | { readonly kind: "collectionNewValue"; readonly collectionKind: "map" | "set" | "weakMap" | "weakSet"; readonly iterable?: JsIrValueExpression; readonly notIterableMessage?: string }
+  | { readonly kind: "classAdoptSuper"; readonly instance: JsIrValueExpression; readonly returned: JsIrValueExpression; readonly prototypeName: string }
+  | { readonly kind: "nodeGlobal"; readonly name: JsGlobalName }
+  | { readonly kind: "nodeBuiltinModule"; readonly moduleName: "fs" | "path" | "os" | "child_process" }
+  | { readonly kind: "uint8ArrayNew"; readonly argument?: JsIrValueExpression }
+  | { readonly kind: "propertyUpdateValue"; readonly receiver: JsIrValueExpression; readonly key: JsIrStringExpression; readonly operator: "increment" | "decrement"; readonly prefix: boolean }
+  | { readonly kind: "variableUpdateValue"; readonly name: string; readonly operator: "increment" | "decrement"; readonly prefix: boolean }
+  | { readonly kind: "bigIntLiteral"; readonly value: string }
   | {
-      readonly kind: "promiseNew";
-      readonly executor: JsIrValueExpression;
+      readonly kind: "valueBinaryOp";
+      readonly operator: "subtract" | "multiply" | "divide" | "modulo" | "exponent" | "bitAnd" | "bitOr" | "bitXor" | "shiftLeft" | "shiftRight" | "unsignedShiftRight";
+      readonly left: JsIrValueExpression;
+      readonly right: JsIrValueExpression;
     }
+  | { readonly kind: "valueUnaryOp"; readonly operator: "negate" | "bitNot"; readonly value: JsIrValueExpression }
   | {
-      readonly kind: "promiseStatic";
-      readonly method: "resolve" | "reject" | "all" | "race" | "allSettled" | "any";
-      readonly argument?: JsIrValueExpression;
+      readonly kind: "constructValue";
+      readonly callee: JsIrValueExpression;
+      readonly arguments: readonly JsIrCallArgument[];
+      readonly spreadArguments?: readonly JsIrRuntimeArrayElement[];
     };
 
 export type JsIrRuntimeArrayElement =
@@ -476,13 +492,9 @@ export type JsIrNumberExpression =
         | "sign";
       readonly arguments: readonly JsIrNumberExpression[];
     }
-  | {
-      readonly kind: "dateNow";
-    }
-  | {
-      readonly kind: "parseInt" | "parseFloat";
-      readonly value: JsIrStringExpression;
-    };
+  | { readonly kind: "dateNow" }
+  | { readonly kind: "parseInt"; readonly value: JsIrStringExpression; readonly radix?: JsIrNumberExpression }
+  | { readonly kind: "parseFloat"; readonly value: JsIrStringExpression };
 
 export type JsIrStringExpression =
   | {
@@ -556,22 +568,10 @@ export type JsIrStringExpression =
       readonly middleTexts: readonly string[];
       readonly expressions: readonly JsIrValueExpression[];
     }
-  | {
-      readonly kind: "numberFormat";
-      readonly method: "toFixed" | "toPrecision" | "toExponential" | "toString";
-      readonly receiver: JsIrNumberExpression;
-      readonly argument?: JsIrNumberExpression;
-    }
-  | {
-      readonly kind: "errorToString";
-      readonly objectName: string;
-    }
-  | {
-      readonly kind: "regexReplace";
-      readonly receiver: JsIrStringExpression;
-      readonly regex: JsIrValueExpression;
-      readonly replacement: JsIrStringExpression;
-    };
+  | { readonly kind: "numberFormat"; readonly method: "toFixed" | "toPrecision" | "toExponential" | "toString"; readonly receiver: JsIrNumberExpression; readonly argument?: JsIrNumberExpression }
+  | { readonly kind: "errorToString"; readonly objectName: string }
+  | { readonly kind: "regexReplace"; readonly receiver: JsIrStringExpression; readonly regex: JsIrValueExpression; readonly replacement: JsIrStringExpression }
+  | { readonly kind: "propertyKey"; readonly value: JsIrValueExpression };
 
 export type JsIrObjectFieldValue =
   | {
@@ -607,6 +607,10 @@ export type JsIrRuntimeObjectField =
   | {
       readonly kind: "spread";
       readonly sourceName: string;
+    }
+  | {
+      readonly kind: "valueSpread";
+      readonly value: JsIrValueExpression;
     };
 
 export interface JsIrRuntimeObjectValue {
@@ -651,6 +655,11 @@ export type JsIrCondition =
   /** `Object.prototype.hasOwnProperty.call(value, key)`: throws on a nullish value. */
   | {
       readonly kind: "valueHasOwnProperty";
+      readonly value: JsIrValueExpression;
+      readonly key: JsIrStringExpression;
+    }
+  | {
+      readonly kind: "valueHasProperty";
       readonly value: JsIrValueExpression;
       readonly key: JsIrStringExpression;
     }

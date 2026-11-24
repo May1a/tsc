@@ -4,7 +4,7 @@ import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { ObjectLiteralClassification } from "./literal-types.js";
 import type { JsIrObjectField, JsIrObjectValue, JsIrRuntimeObjectField, JsIrRuntimeObjectValue, JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
-import { lowerPropertyKeyExpression } from "./string-expressions.js";
+import { lowerValuePropertyKeyExpression } from "./string-expressions.js";
 
 export function classifyObjectLiteral(
   context: LoweringContext,
@@ -96,7 +96,7 @@ function lowerRuntimeObjectProperty(
     return lowerObjectAccessorField(context, property, bindings);
   }
   if (ts.isSpreadAssignment(property)) {
-    return lowerObjectSpreadField(property, bindings);
+    return lowerObjectSpreadField(context, property, bindings);
   }
   if (ts.isShorthandPropertyAssignment(property)) {
     const value = context.lowerValueExpression(context, property.name, bindings);
@@ -146,7 +146,7 @@ export function lowerRuntimeObjectFieldName(
   if (!ts.isComputedPropertyName(name)) {
     return notApplicable;
   }
-  return lowerPropertyKeyExpression(context, name.expression, bindings);
+  return lowerValuePropertyKeyExpression(context, name.expression, bindings);
 }
 
 function lowerObjectFieldName(name: ts.PropertyName): string | undefined {
@@ -181,16 +181,16 @@ function lowerObjectAccessorField(
 }
 
 function lowerObjectSpreadField(
+  context: LoweringContext,
   property: ts.SpreadAssignment,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrRuntimeObjectField> {
-  if (!ts.isIdentifier(property.expression)) {
-    return notApplicable;
+  if (ts.isIdentifier(property.expression)) {
+    const sourceBinding = bindings.get(property.expression.text);
+    if (sourceBinding?.kind === "runtimeObject" || sourceBinding?.kind === "object") {
+      return produced({ kind: "spread", sourceName: property.expression.text });
+    }
   }
-  const sourceBinding = bindings.get(property.expression.text);
-  if (sourceBinding?.kind !== "runtimeObject" && sourceBinding?.kind !== "object") {
-    return notApplicable;
-  }
-  return produced({ kind: "spread", sourceName: property.expression.text });
-
+  const value = context.lowerValueExpression(context, property.expression, bindings);
+  return value.kind === "lowered" ? produced({ kind: "valueSpread", value: value.operation }) : value;
 }

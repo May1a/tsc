@@ -10,6 +10,7 @@ import { unlowerableCallee } from "./builtins/index.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
 import { discardOptionalCall, optionalReceiverGuard, optionalStatementCallee } from "./optional-call.js";
 import { unsupportedUnboundValueMessage } from "./diagnostics.js";
+import { asJsGlobalName } from "./js-globals.js";
 
 export function lowerCallStatement(
   context: LoweringContext,
@@ -54,7 +55,12 @@ export function lowerCallStatement(
   if (unlowerableCallee(expression.expression, identifierBinding, bindings)) {
     return notApplicable;
   }
-  if (!ts.isIdentifier(expression.expression) || identifierBinding?.kind === "value" || identifierBinding?.kind === "valueVariable") {
+  if (
+    !ts.isIdentifier(expression.expression) ||
+    identifierBinding?.kind === "value" ||
+    identifierBinding?.kind === "valueVariable" ||
+    (identifierBinding === undefined && asJsGlobalName(expression.expression.text) !== undefined)
+  ) {
     return lowerDynamicCallStatement(context, expression, bindings);
   }
   return lowerNamedCallStatement(context, expression.expression, expression.arguments, identifierBinding === undefined, bindings);

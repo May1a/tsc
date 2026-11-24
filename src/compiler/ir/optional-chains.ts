@@ -6,31 +6,12 @@ import type { JsIrStringExpression, JsIrValueExpression } from "./expressions.js
 import { lowerCanonicalArrayIndexString } from "./predicates.js";
 import { lowerPropertyKeyExpression } from "./string-expressions.js";
 
-// reject the access instead of letting it evaluate to undefined.
-export function isFunctionPrototypeAccess(
-  expression: ts.PropertyAccessExpression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
-): boolean {
-  if (expression.name.text !== "prototype" || !ts.isIdentifier(expression.expression)) {
-    return false;
-  }
-  const binding = bindings.get(expression.expression.text);
-  return (
-    binding?.kind === "function" ||
-    binding?.kind === "functionReference" ||
-    (binding?.kind === "valueVariable" && binding.valueType === "function")
-  );
-}
-
 export function lowerOptionalChainValueExpression(
   context: LoweringContext,
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
   if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.name)) {
-    if (isFunctionPrototypeAccess(expression, bindings)) {
-      return notApplicable;
-    }
     const receiver = context.lowerValueExpression(context, expression.expression, bindings);
     if (receiver.kind !== "lowered") {
       return receiver;

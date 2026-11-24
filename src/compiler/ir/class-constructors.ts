@@ -1,10 +1,11 @@
 import type { LoweringContext } from "./context.js";
-import { type ClassFieldInfo, type ClassInfo, classPrivateFunctions } from "./class-info.js";
+import { type ClassFieldInfo, type ClassInfo, classPrivateFunctions, classPrototypeName, containsLexicalArguments, containsLexicalThis } from "./class-info.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionParameter } from "./bindings.js";
 import { type Lowered, type Produced, loweredPayload, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { JsIrOperation } from "./types.js";
-import { CLASS_THIS_NAME, classAbortReason, classConstructorName, classMemberKeyStringExpression, classPrivateFieldDefineMessage } from "./class-names.js";
+import { CLASS_THIS_NAME, classAbortReason, classConstructorName, classDynamicSuperName, classMemberKeyStringExpression, classPrivateFieldDefineMessage } from "./class-names.js";
+import { lowerValueCallArguments } from "./call-arguments.js";
 import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
 import { lowerFunctionParameters } from "./function-parameter-lowering.js";
 import { isNonExecutableDeclaration } from "./comparisons.js";
@@ -20,7 +21,8 @@ export function lowerClassConstructor(
   context: LoweringContext,
   info: ClassInfo,
   constructorDeclaration: ts.ConstructorDeclaration | undefined,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  isLocal = false
 ): Produced<JsIrOperation> {
   const receiverBindings = functionFrameBindings(bindings);
   receiverBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
@@ -40,9 +42,15 @@ export function lowerClassConstructor(
     }
     const { bindings: fnBindings } = lowered.operation;
     const parameters: JsIrFunctionParameter[] = [{ name: CLASS_THIS_NAME, valueKind: "value" }, ...lowered.operation.parameters];
+    const usesArguments = constructorDeclaration?.body !== undefined &&
+      !collectParameterBindingNames(constructorDeclaration.parameters, [CLASS_THIS_NAME]).has("arguments") &&
+      containsLexicalArguments(constructorDeclaration.body);
+    if (usesArguments) {
+      fnBindings.set("arguments", { kind: "valueVariable", name: "arguments" });
+    }
     const body: JsIrOperation[] = [];
     let remainingStatements: readonly ts.Statement[] = constructorDeclaration?.body?.statements ?? [];
-    if (info.baseName !== undefined || info.baseErrorName !== undefined) {
+    if (info.baseName !== undefined || info.baseErrorName !== undefined || info.hasDynamicBase === true) {
       const superResult = lowerDerivedSuperCall(context, info, constructorDeclaration, fnBindings);
       if (superResult.kind !== "lowered") {
         return superResult;
@@ -100,13 +108,24 @@ export function lowerClassConstructor(
       // binding resolution does not let them shadow outer bindings read by field initializers.
       body.push({ kind: "block", operations: loweredStatements.operation });
     }
+    if (info.hasDynamicBase === true) {
+      body.push({ kind: "returnValue", expression: { kind: "variable", name: CLASS_THIS_NAME } });
+    }
     const constructorCaptures = constructorDeclaration?.body === undefined ? [] :
       collectMethodEnclosingCaptureNames(context.typeChecker, constructorDeclaration, constructorDeclaration.body,
-        [...constructorDeclaration.parameters], bindings);
+        [...constructorDeclaration.parameters], bindings).filter((name) => !usesArguments || name !== "arguments");
     const fieldCaptures = collectFieldInitializerCaptureNames(info, bindings);
-    const captureNames = [...constructorCaptures, ...fieldCaptures.filter((name) => !constructorCaptures.includes(name))];
+    const localClassCaptures: string[] = isLocal
+      ? [
+          ...(info.hasDynamicBase === true ? [classPrototypeName(info.name), classDynamicSuperName(info.name)] : []),
+          ...classPrivateFunctions(info).map((fn) => fn.slotName),
+          ...info.fields.flatMap((field) => field.key.kind === "computed" ? [field.key.slotName] : [])
+        ]
+      : [];
+    const captureNames = [...new Set([...constructorCaptures, ...fieldCaptures, ...localClassCaptures])];
     return produced({ kind: "function", name: classConstructorName(info.name), parameters, body,
-      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }) });
+      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }),
+      ...(usesArguments ? { usesArguments: true, argumentsStartIndex: 1 } : {}) });
   } finally {
     context.classThisInScope = previousThis;
     context.inClassConstructor = previousCtor;
@@ -115,14 +134,64 @@ export function lowerClassConstructor(
   }
 }
 
+function isSuperCallStatement(statement: ts.Statement): statement is ts.ExpressionStatement & { readonly expression: ts.CallExpression } {
+  return ts.isExpressionStatement(statement) &&
+    ts.isCallExpression(statement.expression) &&
+    statement.expression.expression.kind === ts.SyntaxKind.SuperKeyword;
+}
+
+function splitSuperCallStatements(
+  context: LoweringContext,
+  statements: readonly ts.Statement[],
+  fnBindings: Map<string, JsIrBindingValue>
+): Produced<{
+  readonly preOps: readonly JsIrOperation[];
+  readonly superCall: ts.CallExpression;
+  readonly remainingStatements: readonly ts.Statement[];
+}> {
+  const superIndex = statements.findIndex(isSuperCallStatement);
+  if (superIndex === -1) {
+    return unsupportedIn("A derived constructor must call `super(...)` as its first statement");
+  }
+  const preOps: JsIrOperation[] = [];
+  for (const preStatement of statements.slice(0, superIndex)) {
+    if (isNonExecutableDeclaration(preStatement)) {
+      continue;
+    }
+    // `this` is uninitialized until `super(...)` returns; the instance already exists here, so reading
+    // it would not throw as it must.
+    if (containsLexicalThis(preStatement)) {
+      return unsupportedIn("A derived constructor must call `super(...)` before it reads `this`");
+    }
+    const lowered = context.lowerStatement(context, preStatement, fnBindings);
+    if (lowered.kind !== "lowered") {
+      return unsupportedIn(classAbortReason(lowered));
+    }
+    preOps.push(lowered.operation);
+    updateBindings(lowered.operation, fnBindings);
+  }
+  const superStmt = statements[superIndex];
+  if (!isSuperCallStatement(superStmt)) {
+    return unsupportedIn("A derived constructor must call `super(...)` as its first statement");
+  }
+  return produced({
+    preOps,
+    superCall: superStmt.expression,
+    remainingStatements: statements.slice(superIndex + 1)
+  });
+}
+
 function lowerDerivedSuperCall(
   context: LoweringContext,
   info: ClassInfo,
   constructorDeclaration: ts.ConstructorDeclaration | undefined,
-  fnBindings: ReadonlyMap<string, JsIrBindingValue>
+  fnBindings: Map<string, JsIrBindingValue>
 ): Produced<{ readonly operations: readonly JsIrOperation[]; readonly remainingStatements: readonly ts.Statement[] }> {
   if (info.baseErrorName !== undefined) {
     return lowerErrorSuperCall(context, info, constructorDeclaration, fnBindings);
+  }
+  if (info.hasDynamicBase === true) {
+    return lowerDynamicBaseSuperCall(context, info, constructorDeclaration, fnBindings);
   }
   const base = info.baseName === undefined ? undefined : context.classes.get(info.baseName);
   if (base === undefined) {
@@ -167,16 +236,11 @@ function lowerDerivedSuperCall(
     });
   }
   const statements = constructorDeclaration.body?.statements ?? ts.factory.createNodeArray<ts.Statement>();
-  const [first, ...rest] = statements as readonly (ts.Statement | undefined)[];
-  if (
-    first === undefined ||
-    !ts.isExpressionStatement(first) ||
-    !ts.isCallExpression(first.expression) ||
-    first.expression.expression.kind !== ts.SyntaxKind.SuperKeyword
-  ) {
-    return unsupportedIn("A derived constructor must call `super(...)` as its first statement");
+  const split = splitSuperCallStatements(context, statements, fnBindings);
+  if (split.kind !== "lowered") {
+    return split;
   }
-  const typedCallArgumentsResult = context.lowerTypedCallArguments(context, base.constructorParameters, first.expression.arguments, fnBindings);
+  const typedCallArgumentsResult = context.lowerTypedCallArguments(context, base.constructorParameters, split.operation.superCall.arguments, fnBindings);
   if (typedCallArgumentsResult.kind === "unsupported") {
     return typedCallArgumentsResult;
   }
@@ -185,12 +249,68 @@ function lowerDerivedSuperCall(
     return unsupportedIn("`super(...)` arguments must be expressions this build can evaluate");
   }
   return produced({
-    operations: [{
-      kind: "call",
-      name: classConstructorName(base.name),
-      arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...superArguments]
-    }],
-    remainingStatements: rest.filter((statement): statement is ts.Statement => statement !== undefined)
+    operations: [
+      ...split.operation.preOps,
+      {
+        kind: "call",
+        name: classConstructorName(base.name),
+        arguments: [{ valueKind: "value", value: { kind: "variable", name: CLASS_THIS_NAME } }, ...superArguments]
+      }
+    ],
+    remainingStatements: split.operation.remainingStatements
+  });
+}
+
+function lowerDynamicBaseSuperCall(
+  context: LoweringContext,
+  info: ClassInfo,
+  constructorDeclaration: ts.ConstructorDeclaration | undefined,
+  fnBindings: Map<string, JsIrBindingValue>
+): Produced<{ readonly operations: readonly JsIrOperation[]; readonly remainingStatements: readonly ts.Statement[] }> {
+  const superCallee: JsIrValueExpression = { kind: "variable", name: classDynamicSuperName(info.name) };
+  const thisVar: JsIrValueExpression = { kind: "variable", name: CLASS_THIS_NAME };
+  if (constructorDeclaration === undefined) {
+    const superCall: JsIrValueExpression = {
+      kind: "callValue",
+      callee: superCallee,
+      thisValue: thisVar,
+      arguments: [],
+      spreadArguments: [{ kind: "spread", arrayName: "__tscn_super_args", sourceKind: "runtime" }]
+    };
+    return produced({
+      operations: [{
+        kind: "assignValue",
+        name: CLASS_THIS_NAME,
+        value: { kind: "classAdoptSuper", instance: thisVar, returned: superCall, prototypeName: classPrototypeName(info.name) }
+      }],
+      remainingStatements: []
+    });
+  }
+  const statements = constructorDeclaration.body?.statements ?? ts.factory.createNodeArray<ts.Statement>();
+  const split = splitSuperCallStatements(context, statements, fnBindings);
+  if (split.kind !== "lowered") {
+    return split;
+  }
+  const args = lowerValueCallArguments(context, split.operation.superCall.arguments, fnBindings, "super");
+  if (args.kind !== "lowered") {
+    return withRefusal(args, unsupportedIn("`super(...)` arguments must be expressions this build can evaluate"));
+  }
+  const superCall: JsIrValueExpression = {
+    kind: "callValue",
+    callee: superCallee,
+    thisValue: thisVar,
+    arguments: args.operation
+  };
+  return produced({
+    operations: [
+      ...split.operation.preOps,
+      {
+        kind: "assignValue",
+        name: CLASS_THIS_NAME,
+        value: { kind: "classAdoptSuper", instance: thisVar, returned: superCall, prototypeName: classPrototypeName(info.name) }
+      }
+    ],
+    remainingStatements: split.operation.remainingStatements
   });
 }
 
@@ -198,7 +318,7 @@ function lowerErrorSuperCall(
   context: LoweringContext,
   info: ClassInfo,
   constructorDeclaration: ts.ConstructorDeclaration | undefined,
-  fnBindings: ReadonlyMap<string, JsIrBindingValue>
+  fnBindings: Map<string, JsIrBindingValue>
 ): Produced<{ readonly operations: readonly JsIrOperation[]; readonly remainingStatements: readonly ts.Statement[] }> {
   const operations: JsIrOperation[] = [
     {
@@ -223,19 +343,15 @@ function lowerErrorSuperCall(
     return produced({ operations, remainingStatements: [] });
   }
   const statements = constructorDeclaration.body?.statements ?? ts.factory.createNodeArray<ts.Statement>();
-  const [first, ...rest] = statements as readonly (ts.Statement | undefined)[];
-  if (
-    first === undefined ||
-    !ts.isExpressionStatement(first) ||
-    !ts.isCallExpression(first.expression) ||
-    first.expression.expression.kind !== ts.SyntaxKind.SuperKeyword
-  ) {
-    return unsupportedIn("A derived constructor must call `super(...)` as its first statement");
+  const split = splitSuperCallStatements(context, statements, fnBindings);
+  if (split.kind !== "lowered") {
+    return split;
   }
-  const messageArg: ts.Expression | undefined = first.expression.arguments.at(0);
-  const remainingStatements = rest.filter((statement): statement is ts.Statement => statement !== undefined);
+  const messageArg: ts.Expression | undefined = split.operation.superCall.arguments.at(0);
+  const { remainingStatements } = split.operation;
+  const allOps: JsIrOperation[] = [...split.operation.preOps, ...operations];
   if (messageArg === undefined) {
-    operations.push({
+    allOps.push({
       kind: "valueObjectStore",
       targetName: CLASS_THIS_NAME,
       key: { kind: "literal", value: "message" },
@@ -246,14 +362,14 @@ function lowerErrorSuperCall(
     if (loweredMsg.kind !== "lowered") {
       return withRefusal(loweredMsg, unsupportedIn("`super(...)` arguments must be expressions this build can evaluate"));
     }
-    operations.push({
+    allOps.push({
       kind: "valueObjectStore",
       targetName: CLASS_THIS_NAME,
       key: { kind: "literal", value: "message" },
       value: { kind: "string", value: { kind: "stringConversion", value: loweredMsg.operation } }
     });
   }
-  return produced({ operations, remainingStatements });
+  return produced({ operations: allOps, remainingStatements });
 }
 
 function forwardedClassValue(parameter: JsIrFunctionParameter): JsIrValueExpression {

@@ -13,21 +13,27 @@ const primitiveStorageKinds: ReadonlySet<BindingStorage["kind"]> = new Set([
   "numberSlot", "numberRegister", "stringSlot", "stringRegister", "booleanSlot", "booleanRegister"
 ]);
 
+/** What a frame reads from the module: its globals, rooted once for the program, and the lexical names. */
+interface ModuleStorage {
+  readonly lexicalCells: ReadonlyMap<BindingId, string>;
+  readonly global: (id: BindingId) => BindingStorage | undefined;
+}
+
 export class BindingAccess implements BindingReads {
-  readonly #storage: ReadonlyMap<BindingId, BindingStorage>;
+  readonly #storage: Map<BindingId, BindingStorage>;
   readonly #capabilities: FunctionCapabilities;
-  readonly #lexicalCells: ReadonlyMap<BindingId, string>;
+  readonly #module: ModuleStorage | undefined;
   readonly #constant: (text: string) => LlvmGlobalReference;
 
   public constructor(
     capabilities: FunctionCapabilities, storage: ReadonlyMap<BindingId, BindingStorage>,
     stringConstant: (text: string) => LlvmGlobalReference,
-    lexicalCells: ReadonlyMap<BindingId, string> = new Map()
+    module?: ModuleStorage
   ) {
     this.#capabilities = capabilities;
     this.#storage = new Map(storage);
     this.#constant = stringConstant;
-    this.#lexicalCells = lexicalCells;
+    this.#module = module;
     if (capabilities.cursor.currentBlock().label.name !== "entry") {
       throw new Error("Binding roots must be registered in the function entry block");
     }
@@ -35,7 +41,7 @@ export class BindingAccess implements BindingReads {
   }
 
   public checkInitialized(reference: BindingRef, exception: () => ExceptionTarget): void {
-    const name = this.#lexicalCells.get(reference.binding);
+    const name = this.#module?.lexicalCells.get(reference.binding);
     if (name === undefined) return;
     const storage = this.#require(reference);
     if (storage.kind !== "environment" && storage.kind !== "environmentSlot") return;
@@ -396,8 +402,11 @@ export class BindingAccess implements BindingReads {
   }
 
   #require(reference: BindingRef): BindingStorage {
-    const storage = this.#storage.get(reference.binding);
+    const known = this.#storage.get(reference.binding);
+    if (known !== undefined) return known;
+    const storage = this.#module?.global(reference.binding);
     if (storage === undefined) throw new Error(`No allocated storage for binding ${reference.binding.ordinal}`);
+    this.#storage.set(reference.binding, storage);
     return storage;
   }
 }

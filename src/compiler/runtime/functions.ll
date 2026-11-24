@@ -68,6 +68,8 @@ dispatch:
 }
 @.function.name.key = private unnamed_addr constant [5 x i8] c"name\00"
 @.function.length.key = private unnamed_addr constant [7 x i8] c"length\00"
+@.function.prototype.key = private unnamed_addr constant [10 x i8] c"prototype\00"
+@.function.constructor.key = private unnamed_addr constant [12 x i8] c"constructor\00"
 @.function.empty.name = private unnamed_addr constant [1 x i8] c"\00"
 define i64 @functionObjectGet(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
@@ -129,6 +131,24 @@ missing.named:
 missing.named.hit:
   ret i64 %missing.value
 missing.proto:
+  %is.proto.len = icmp eq i64 %key.len, 9
+  br i1 %is.proto.len, label %missing.proto.cmp, label %missing.fnproto
+missing.proto.cmp:
+  %proto.cmp = call i32 @memcmp(ptr %key.ptr, ptr @.function.prototype.key, i64 9)
+  %is.proto = icmp eq i32 %proto.cmp, 0
+  br i1 %is.proto, label %missing.create.proto, label %missing.fnproto
+missing.create.proto:
+  %pframe = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %value)
+  %new.proto = call ptr @objectNew(i64 1)
+  %new.proto.v = call i64 @valueBoxObject(ptr %new.proto)
+  call void @gcRootPush(i64 %new.proto.v)
+  call void @objectDefineDataProperty(ptr %new.proto, i64 11, ptr @.function.constructor.key, i64 %value, i64 5)
+  %fn.props = call ptr @functionObjectProperties(i64 %value)
+  call void @objectDefineDataProperty(ptr %fn.props, i64 9, ptr @.function.prototype.key, i64 %new.proto.v, i64 1)
+  call void @gcRootRestore(i64 %pframe)
+  ret i64 %new.proto.v
+missing.fnproto:
   %proto.value = call i64 @functionPrototypeMethod(i64 %key.len, ptr %key.ptr)
   ret i64 %proto.value
 }

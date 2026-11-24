@@ -8,6 +8,7 @@ import { lowerStringRuntimeExpression } from "./string-expressions.js";
 import { lowerConditionExpression } from "./conditions.js";
 import { lowerObjectDestructuringElements } from "./object-destructuring.js";
 import { lowerConstAggregateBinding, lowerConstVariableBinding } from "./variable-bindings.js";
+import { lowerFunctionParameters } from "./function-parameter-lowering.js";
 import type { LoweringContext, LoweringContextOptions } from "./context.js";
 import { emptyClassHierarchy } from "./class-hierarchy.js";
 import { emptyStoragePlan } from "./storage-plan.js";
@@ -26,9 +27,12 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     nextOptionalCallStatementValueId: 0,
     nextSyntheticTempId: 0,
     classes: new Map(),
+    allClasses: new Map(),
+    classOwnerFiles: new Map(),
     classHierarchy: emptyClassHierarchy,
     storagePlan: emptyStoragePlan,
     hoistedVars: new Set(),
+    moduleForwardBindings: new Set(),
     typeChecker: options.typeChecker,
     inlineCpp: options.inlineCpp,
     lowerStatement,
@@ -42,5 +46,6 @@ export function createLoweringContext(options: LoweringContextOptions): Lowering
     lowerObjectDestructuringElements,
     lowerConstVariableBinding,
     lowerConstAggregateBinding,
+    lowerFunctionParameters,
   };
 }

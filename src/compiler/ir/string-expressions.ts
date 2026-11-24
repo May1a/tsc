@@ -12,6 +12,8 @@ import { sourceNumericLiteralValue } from "./enums.js";
 import { lowerCallArguments } from "./call-arguments.js";
 import { lowerDateConstructorMilliseconds } from "./number-builtins.js";
 import { numericLiteralValue } from "./number-constants.js";
+import { unwrapTypeOnlyExpression } from "./predicates.js";
+import { plannedBuiltinMessageFor } from "./builtins/index.js";
 
 // eslint-disable-next-line complexity, max-statements -- Runtime string lowering is centralized during the JSValue transition.
 export function lowerStringRuntimeExpression(
@@ -48,6 +50,14 @@ export function lowerStringRuntimeExpression(
   if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
     return produced({ kind: "literal", value: expression.text });
   }
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isMetaProperty(expression.expression) &&
+    expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    expression.name.text === "url"
+  ) {
+    return produced({ kind: "literal", value: `file://${expression.getSourceFile().fileName}` });
+  }
 
   if (ts.isIdentifier(expression)) {
     const binding = bindings.get(expression.text);
@@ -70,7 +80,11 @@ export function lowerStringRuntimeExpression(
     return lowerTemplateExpression(context, expression, bindings);
   }
 
-  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text !== "print") {
+  if (ts.isTaggedTemplateExpression(expression)) {
+    return lowerTaggedTemplateExpression(context, expression, bindings);
+  }
+
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && !(expression.expression.text === "print" && !bindings.has("print"))) {
     if (expression.expression.text === "String" && expression.arguments.length === 1) {
       const value = context.lowerValueExpression(context, expression.arguments[0], bindings);
       if (value.kind === "unsupported") {
@@ -123,6 +137,13 @@ export function lowerStringRuntimeExpression(
 
   if (ts.isTypeOfExpression(expression)) {
     return lowerTypeOfExpression(context, expression, bindings);
+  }
+
+  if (ts.isPropertyAccessExpression(expression) && context.typeChecker !== undefined) {
+    const typedMember = lowerTypedStringMemberAccess(context, expression, bindings);
+    if (typedMember.kind !== "notApplicable") {
+      return typedMember;
+    }
   }
 
   if (!ts.isConditionalExpression(expression)) {
@@ -195,7 +216,7 @@ export function lowerValuePropertyKeyExpression(
   if (value.kind !== "lowered") {
     return value;
   }
-  return produced({ kind: "stringConversion", value: value.operation });
+  return produced({ kind: "propertyKey", value: value.operation });
 }
 
 function lowerStringConcatExpression(
@@ -268,11 +289,48 @@ function lowerTemplateExpression(
   return produced(result);
 }
 
+function lowerStringRawTemplate(
+  context: LoweringContext,
+  template: ts.TemplateLiteral,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrStringExpression> {
+  if (ts.isNoSubstitutionTemplateLiteral(template)) {
+    return produced({ kind: "literal", value: template.rawText ?? template.text });
+  }
+  let result: JsIrStringExpression = { kind: "literal", value: template.head.rawText ?? template.head.text };
+  for (const span of template.templateSpans) {
+    const exprValue = context.lowerValueExpression(context, span.expression, bindings);
+    if (exprValue.kind !== "lowered") {
+      return exprValue;
+    }
+    const middle = span.literal.rawText ?? span.literal.text;
+    result = {
+      kind: "concat",
+      left: result,
+      right: {
+        kind: "concat",
+        left: { kind: "stringConversion", value: exprValue.operation },
+        right: { kind: "literal", value: middle }
+      }
+    };
+  }
+  return produced(result);
+}
+
 function lowerTaggedTemplateExpression(
   context: LoweringContext,
   expression: ts.TaggedTemplateExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrStringExpression> {
+  if (
+    ts.isPropertyAccessExpression(expression.tag) &&
+    ts.isIdentifier(expression.tag.expression) &&
+    expression.tag.expression.text === "String" &&
+    expression.tag.name.text === "raw" &&
+    !bindings.has("String")
+  ) {
+    return lowerStringRawTemplate(context, expression.template, bindings);
+  }
   if (!ts.isIdentifier(expression.tag) || expression.tag.text === "String") {
     return notApplicable;
   }
@@ -304,6 +362,42 @@ function lowerTaggedTemplateExpression(
   });
 }
 
+function isStringType(type: ts.Type): boolean {
+  if ((type.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) !== 0) {
+    return true;
+  }
+  return type.isUnion() && type.types.length > 0 && type.types.every(isStringType);
+}
+
+/**
+ * A string-typed property read, through the declared property that gives it that type.
+ *
+ * An element access, or a property an index signature supplies, is typed `string` even when the
+ * read finds nothing, so only a declared property may convert; the value tier lowers the others.
+ */
+function lowerTypedStringMemberAccess(
+  context: LoweringContext,
+  expression: ts.PropertyAccessExpression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrStringExpression> {
+  const type = context.typeChecker?.getTypeAtLocation(expression);
+  if (type === undefined || !isStringType(type) || context.typeChecker?.getSymbolAtLocation(expression.name)?.valueDeclaration === undefined) {
+    return notApplicable;
+  }
+  const receiverExpr = unwrapTypeOnlyExpression(expression.expression);
+  if (ts.isPrivateIdentifier(expression.name) || plannedBuiltinMessageFor(receiverExpr, expression.name.text, bindings) !== undefined) {
+    return notApplicable;
+  }
+  const receiver = context.lowerValueExpression(context, receiverExpr, bindings);
+  if (receiver.kind !== "lowered") {
+    return receiver;
+  }
+  return produced({
+    kind: "stringConversion",
+    value: { kind: "valueObjectDynamicAccess", value: receiver.operation, key: { kind: "literal", value: expression.name.text } }
+  });
+}
+
 function lowerStringCallExpression(
   context: LoweringContext,
   expression: ts.CallExpression,
@@ -313,7 +407,7 @@ function lowerStringCallExpression(
     return notApplicable;
   }
   const callee = bindings.get(expression.expression.text);
-  if (callee?.kind !== "function" || callee.returnKind !== "string") {
+  if ((callee?.kind !== "function" && callee?.kind !== "functionReference") || callee.returnKind !== "string") {
     return notApplicable;
   }
   const args = lowerCallArguments(context, expression.expression.text, expression.arguments, bindings);

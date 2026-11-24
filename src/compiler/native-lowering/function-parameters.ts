@@ -70,4 +70,5 @@ export function initializeParameters(plan: FunctionPlan, fn: NativeFunctionBuild
     context.operations.operations(parameter.bindingOperations ?? []);
   }
   if (plan.thisBinding !== undefined) { context.writes.storeValue(plan.thisBinding, fn.boxedParameter(thisParameterIndex)); }
+  if (plan.argumentsBinding !== undefined) { context.writes.storeValue(plan.argumentsBinding, restArguments(plan.argumentsStartIndex ?? 0, count, pointer, context)); }
 }

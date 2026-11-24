@@ -44,7 +44,7 @@ describe("diagnostics block native emission", () => {
     const result = await expectSuccessfulCompile("hello.ts");
 
     try {
-      expect(await readFile(path.join(result.outDir, "main.ll"), "utf8")).toContain("define i32 @main()");
+      expect(await readFile(path.join(result.outDir, "main.ll"), "utf8")).toMatch(/define i32 @main\(/);
       await expect(access(path.join(result.outDir, "trace-map.json"))).resolves.toBeUndefined();
       expect(await readFile(path.join(result.outDir, "diagnostics.txt"), "utf8")).toBe("");
     } finally {

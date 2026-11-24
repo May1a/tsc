@@ -1,7 +1,5 @@
 declare function print(value: unknown): void;
 
-
-
-if (Date.now()) {
+if (eval("1")) {
   print("not lowered yet");
 }

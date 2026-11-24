@@ -290,6 +290,13 @@ export const objectsContracts = {
     name: "valueObjectAssign", parameters: [llvm.ptr, llvm.i64], returns: llvm.void, variadic: false,
     effects: { allocates: true, collects: true, completion: "none" }
   },
+  "objectEntryIsStringKey": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "objectEntryIsStringKey", parameters: [llvm.ptr], returns: llvm.i1, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
   "objectValues": {
     resultKind: "pointer",
     pointerResult: { kind: "heap" },
@@ -402,11 +409,67 @@ export const objectsContracts = {
     name: "objectPropertySetWithThis", parameters: [llvm.ptr, llvm.i64, llvm.i64, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
     effects: { allocates: true, collects: true, completion: "explicit" }
   },
+  "valueObjectFreeze": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueObjectFreeze", parameters: [llvm.i64], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "valueObjectSeal": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueObjectSeal", parameters: [llvm.i64], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "valueObjectPreventExtensions": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueObjectPreventExtensions", parameters: [llvm.i64], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "valueObjectAssignValue": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueObjectAssignValue", parameters: [llvm.i64, llvm.i64], returns: llvm.i64, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "valueHasProperty": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueHasProperty", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.i1, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "valueInOperator": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueInOperator", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
   "objectPropertySet": {
     resultKind: "completion",
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "objectPropertySet", parameters: [llvm.i64, llvm.i64, llvm.ptr, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
     effects: { allocates: true, collects: true, completion: "explicit" }
+  },
+  "classLinkDynamicBase": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "classLinkDynamicBase", parameters: [llvm.ptr, llvm.ptr, llvm.i64], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "classAdoptSuper": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "classAdoptSuper", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
   },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

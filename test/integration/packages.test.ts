@@ -1,8 +1,8 @@
 import { describe, test } from "vitest";
 import {
   expectNativeBehaviorIfAvailable,
-  expectSuccessfulCompile,
-  expectUnsupportedDiagnostic
+  expectNativeFixtures,
+  expectSuccessfulCompile
 } from "./helpers.js";
 
 describe("tscn operator expansion (package BZ)", () => {
@@ -16,8 +16,8 @@ describe("tscn operator expansion (package BZ)", () => {
     }
   });
 
-  test("rejects the `in` operator on non-runtime-object right-hand sides", async () => {
-    await expectUnsupportedDiagnostic("operator-in-non-object-unsupported.ts");
+  test("throws for the `in` operator on a primitive right-hand side", async () => {
+    await expectNativeFixtures([["operator-in-non-object.ts", "true\ntrue\ntrue\n"]]);
   });
 
   test("evaluates the `void` operator in value positions", async () => {

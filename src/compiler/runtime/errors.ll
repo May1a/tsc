@@ -201,10 +201,11 @@ entry:
 
 @.errorctor.key.constructor = private unnamed_addr constant [12 x i8] c"constructor\00"
 @.errorctor.key.tostring = private unnamed_addr constant [9 x i8] c"toString\00"
+@.errorctor.key.stack = private unnamed_addr constant [6 x i8] c"stack\00"
 @.errorctor.not.error = private unnamed_addr constant [48 x i8] c"Error.prototype.toString called on a non-object\00"
 ; What an error object inherits from its class's prototype that the runtime models: `constructor`,
-; the builtin constructor value, and `toString`. Undefined for any other key, and for an object of
-; no error class.
+; the builtin constructor value, `toString`, and `stack`. Undefined for any other key, and for an
+; object of no error class.
 define i64 @errorInheritedProperty(ptr %object, i64 %key.len, ptr %key.ptr) {
 entry:
   %class.slot = getelementptr i8, ptr %object, i64 48
@@ -225,7 +226,7 @@ constructor:
   ret i64 %value
 check.tostring:
   %is.tostring.length = icmp eq i64 %key.len, 8
-  br i1 %is.tostring.length, label %compare.tostring, label %absent
+  br i1 %is.tostring.length, label %compare.tostring, label %check.stack
 compare.tostring:
   %tostring.comparison = call i32 @memcmp(ptr %key.ptr, ptr @.errorctor.key.tostring, i64 8)
   %is.tostring = icmp eq i32 %tostring.comparison, 0
@@ -233,6 +234,19 @@ compare.tostring:
 tostring:
   %method = call i64 @functionObjectNew(ptr @errorToStringMethod, ptr null, i64 9222246136947933184, i64 9222246136947933184, i64 0)
   ret i64 %method
+check.stack:
+  %is.stack.length = icmp eq i64 %key.len, 5
+  br i1 %is.stack.length, label %compare.stack, label %absent
+compare.stack:
+  %stack.comparison = call i32 @memcmp(ptr %key.ptr, ptr @.errorctor.key.stack, i64 5)
+  %is.stack = icmp eq i32 %stack.comparison, 0
+  br i1 %is.stack, label %stack, label %absent
+stack:
+  %stack.str = call { ptr, i64 } @errorToString(ptr %object)
+  %stack.ptr = extractvalue { ptr, i64 } %stack.str, 0
+  %stack.len = extractvalue { ptr, i64 } %stack.str, 1
+  %stack.val = call i64 @valueCopyString(ptr %stack.ptr, i64 %stack.len)
+  ret i64 %stack.val
 absent:
   ret i64 9222246136947933184
 }
@@ -259,7 +273,7 @@ entry:
   %is.reference = call i1 @valueIsObjectLike(i64 %options)
   br i1 %is.reference, label %classify, label %done
 classify:
-  %is.object = call i1 @valueIsObject(i64 %options)
+  %is.object = call i1 @valueIsPlainObject(i64 %options)
   br i1 %is.object, label %check, label %other
 other:
   %has.own.result = call { i64, i1 } @valueHasOwnProperty(i64 %options, i64 5, ptr @.errorctor.key.cause)
@@ -292,7 +306,7 @@ done:
 ; prints as `print` does.
 define void @valuePrintUncaught(i64 %value) {
 entry:
-  %is.object = call i1 @valueIsObject(i64 %value)
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
   br i1 %is.object, label %check.error, label %plain
 check.error:
   %object = call ptr @valueObjectPtr(i64 %value)

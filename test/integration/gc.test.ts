@@ -20,7 +20,7 @@ describe("GC initialization", () => {
       expect(llvmIr).not.toContain("declare void @gcInit()");
       // gcInit must be the first call in @main's entry block, before any
       // user statement would land a runtime helper call.
-      const mainMatch = /define i32 @main\(\) \{\s*entry:\s*([\s\S]*?)\n\}/m.exec(llvmIr);
+      const mainMatch = /define i32 @main\([^)]*\) \{\s*entry:\s*([\s\S]*?)\n\}/m.exec(llvmIr);
       expect(mainMatch, "expected @main definition in emitted IR").not.toBeNull();
       const mainBody = mainMatch?.[1] ?? "";
       const firstCallIndex = mainBody.indexOf("call ");

@@ -214,6 +214,7 @@ inner:
   %out = call { ptr, i64, i64, i1 } @jsonStringifyInner(i64 %resolved, ptr %filter, i64 %indent, i64 %depth, ptr %stack)
   ret { ptr, i64, i64, i1 } %out
 }
+@.json.collection = private unnamed_addr constant [3 x i8] c"{}\00"
 @.json.null = private unnamed_addr constant [5 x i8] c"null\00"
 @.json.true = private unnamed_addr constant [5 x i8] c"true\00"
 @.json.false = private unnamed_addr constant [6 x i8] c"false\00"
@@ -258,7 +259,14 @@ string:
   %string.r = call { ptr, i64, i64, i1 } @jsonStrOk(ptr %quoted.ptr, i64 %quoted.len)
   ret { ptr, i64, i64, i1 } %string.r
 check.object:
-  %is.object = icmp eq i64 %tagged, 9221120237041090560
+  ; A collection keeps its entries in internal slots, so it has no properties to serialize.
+  %is.collection = call i1 @valueIsCollection(i64 %value)
+  br i1 %is.collection, label %collection, label %check.plain
+collection:
+  %collection.r = call { ptr, i64, i64, i1 } @jsonStrOk(ptr @.json.collection, i64 2)
+  ret { ptr, i64, i64, i1 } %collection.r
+check.plain:
+  %is.object = call i1 @valueIsObject(i64 %value)
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
@@ -1280,7 +1288,7 @@ got:
   %is.array = call i1 @valueIsArray(i64 %value)
   br i1 %is.array, label %walk.array, label %check.object
 check.object:
-  %is.object = call i1 @valueIsObject(i64 %value)
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
   br i1 %is.object, label %walk.object, label %call.reviver
 walk.array:
   %array = call ptr @valueArrayPtr(i64 %value)

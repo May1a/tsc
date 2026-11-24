@@ -78,7 +78,7 @@ export const objectBuiltinSupport: BuiltinSupport<"object", ObjectBuiltin> = {
   valueOf: { arity: 0, state: "supported", id: "object.valueOf" },
 
   // Members of the object API this build has not written.
-  getOwnPropertySymbols: { arity: 1, state: "planned", id: "object.getOwnPropertySymbols", placement: "static" },
+  getOwnPropertySymbols: { arity: 1, state: "supported", id: "object.getOwnPropertySymbols", placement: "static" },
   groupBy: { arity: 2, state: "planned", id: "object.groupBy", placement: "static" }
 };
 

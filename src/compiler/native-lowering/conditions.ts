@@ -135,6 +135,14 @@ const handlers: VariantHandlers<ConditionVariants, ExpressionContext, BooleanVal
       context.cursor.uniqueName("has.own.property"), context.exceptionTarget());
     return context.runtime.call("valueTruthy", [result], context.cursor.uniqueName("condition.has.own"));
   },
+  valueHasProperty: (condition, context) => {
+    const value = context.expressions.value(condition.value);
+    context.roots.push(value);
+    const key = context.expressions.string(condition.key);
+    const result = context.runtime.callWithCompletion("valueInOperator", [value, key.length, key.bytes],
+      context.cursor.uniqueName("has.property"), context.exceptionTarget());
+    return context.runtime.call("valueTruthy", [result], context.cursor.uniqueName("condition.in"));
+  },
   numberPredicate: (condition, context) => context.runtime.call(predicateHelpers[condition.predicate],
     [context.expressions.value(condition.value)], context.cursor.uniqueName("condition.number")),
   runtimeArrayIsArray: (condition, context) => typeof condition.value === "boolean"

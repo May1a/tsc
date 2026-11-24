@@ -74,8 +74,9 @@ describe("storage plan", () => {
     expect(boxed('let a = 1; a = "s";', "a")).toEqual([true]);
   });
 
-  test("an undecided write changes nothing", () => {
-    expect(boxed("let a = 1; a = f();", "a")).toEqual([false]);
+  test("a write nothing decides boxes the binding, because it may store any value", () => {
+    expect(boxed("let a = 1; a = f();", "a")).toEqual([true]);
+    expect(boxed("let a = 1; a = 1 + f();", "a")).toEqual([true]);
   });
 
   test("a write from a nested function counts", () => {

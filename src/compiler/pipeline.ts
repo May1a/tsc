@@ -58,7 +58,8 @@ export const compile = (
     diagnostics.push(...frontend.diagnostics);
     // Collect unsupported-form diagnostics alongside frontend errors.
     const jsIr = lowerToJsIr(path.resolve(options.entry), frontend.sourceFiles, frontend.program.getTypeChecker(), {
-      fcpp: options.fcpp
+      fcpp: options.fcpp,
+      packageGraph: frontend.packageGraph
     });
     diagnostics.push(...jsIr.diagnostics);
 

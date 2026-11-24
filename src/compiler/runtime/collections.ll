@@ -77,6 +77,9 @@ entry:
   %frame = call i64 @gcRootSave()
   call void @gcRootPush(i64 %iterator)
   %collection = call ptr @collectionNew()
+  %kind.byte = select i1 %map, i8 0, i8 1
+  %kind.slot = getelementptr i8, ptr %collection, i64 -4
+  store i8 %kind.byte, ptr %kind.slot
   %owner = call i64 @valueBoxObject(ptr %collection)
   call void @gcRootPush(i64 %owner)
   br label %next
@@ -142,6 +145,68 @@ define { i64, i1 } @setFromIterator(i64 %iterator) {
 entry:
   %result = call { i64, i1 } @collectionFromIterator(i64 %iterator, i1 false)
   ret { i64, i1 } %result
+}
+
+define ptr @collectionNewWithKind(i64 %kind) {
+entry:
+  %collection = call ptr @collectionNew()
+  %kind.byte = trunc i64 %kind to i8
+  %kind.slot = getelementptr i8, ptr %collection, i64 -4
+  store i8 %kind.byte, ptr %kind.slot
+  ret ptr %collection
+}
+
+define i64 @collectionKind(ptr %collection) {
+entry:
+  %kind.slot = getelementptr i8, ptr %collection, i64 -4
+  %kind.byte = load i8, ptr %kind.slot
+  %kind = zext i8 %kind.byte to i64
+  ret i64 %kind
+}
+
+define i1 @valueIsCollection(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  br i1 %is.object, label %check.header, label %no
+check.header:
+  %payload = call ptr @valueObjectPtr(i64 %value)
+  %cell = getelementptr i8, ptr %payload, i64 -8
+  %cell.tag = load i8, ptr %cell
+  %is.col = icmp eq i8 %cell.tag, 4
+  ret i1 %is.col
+no:
+  ret i1 false
+}
+
+define { i64, i1 } @collectionFromIterableWithKind(i64 %iterable, i64 %not.iterable.message, i64 %kind) {
+entry:
+  %is.undef = icmp eq i64 %iterable, 9222246136947933184
+  %is.null = icmp eq i64 %iterable, 9222246136947933187
+  %is.empty = or i1 %is.undef, %is.null
+  br i1 %is.empty, label %empty, label %from.iter
+empty:
+  %col = call ptr @collectionNewWithKind(i64 %kind)
+  %boxed = call i64 @valueBoxObject(ptr %col)
+  %e0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %e1 = insertvalue { i64, i1 } %e0, i1 false, 1
+  ret { i64, i1 } %e1
+from.iter:
+  %is.map.0 = icmp eq i64 %kind, 0
+  %is.map.2 = icmp eq i64 %kind, 2
+  %is.map = or i1 %is.map.0, %is.map.2
+  %res = call { i64, i1 } @collectionFromIterable(i64 %iterable, i64 %not.iterable.message, i1 %is.map)
+  %threw = extractvalue { i64, i1 } %res, 1
+  br i1 %threw, label %fail, label %stamp
+stamp:
+  %val = extractvalue { i64, i1 } %res, 0
+  %ptr = call ptr @valueObjectPtr(i64 %val)
+  %kind.byte = trunc i64 %kind to i8
+  %kind.slot = getelementptr i8, ptr %ptr, i64 -4
+  store i8 %kind.byte, ptr %kind.slot
+  ret { i64, i1 } %res
+fail:
+  ret { i64, i1 } %res
 }
 
 define ptr @collectionNew() {

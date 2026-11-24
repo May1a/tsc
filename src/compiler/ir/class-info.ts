@@ -40,6 +40,7 @@ export interface ClassInfo {
   readonly name: string;
   readonly baseName?: string;
   readonly baseErrorName?: string;
+  readonly hasDynamicBase?: boolean;
   readonly hasValueReturn: boolean;
   readonly fields: readonly ClassFieldInfo[];
   readonly constructorParameters: readonly JsIrFunctionParameter[];
@@ -160,11 +161,13 @@ interface ClassNames {
   readonly innerName: string | undefined;
   readonly baseName: string | undefined;
   readonly baseErrorName: string | undefined;
+  readonly dynamicBaseExpression: ts.Expression | undefined;
 }
 export function resolveClassNames(
   statement: ts.ClassDeclaration | ts.ClassExpression,
   expressionBindingName: string | undefined,
-  classes: ReadonlyMap<string, ClassInfo>
+  classes: ReadonlyMap<string, ClassInfo>,
+  bindings?: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<ClassNames> {
   let infoName: string | undefined = expressionBindingName;
   let innerName: string | undefined;
@@ -179,9 +182,13 @@ export function resolveClassNames(
   }
   const extended = resolveExtendedClassName(statement.heritageClauses, classes);
   if (extended === undefined) {
-    const baseErrorName = resolveExtendedErrorName(statement.heritageClauses, classes);
+    const baseErrorName = resolveExtendedErrorName(statement.heritageClauses, classes, bindings);
     if (baseErrorName !== undefined) {
-      return produced({ infoName, innerName, baseName: undefined, baseErrorName });
+      return produced({ infoName, innerName, baseName: undefined, baseErrorName, dynamicBaseExpression: undefined });
+    }
+    const dynamicBaseExpression = resolveDynamicBaseExpression(statement.heritageClauses, classes, bindings);
+    if (dynamicBaseExpression !== undefined) {
+      return produced({ infoName, innerName, baseName: undefined, baseErrorName: undefined, dynamicBaseExpression });
     }
     // No usable `extends` is not itself a failure: a class may extend nothing, and a class may
     // implement interfaces while extending nothing. Only an `extends` clause that is present and
@@ -190,14 +197,39 @@ export function resolveClassNames(
     if (extendsClauses.length > 0) {
       return unsupportedIn(classHeritageRefusal(extendsClauses));
     }
-    return produced({ infoName, innerName, baseName: undefined, baseErrorName: undefined });
+    return produced({ infoName, innerName, baseName: undefined, baseErrorName: undefined, dynamicBaseExpression: undefined });
   }
-  return produced({ infoName, innerName, baseName: extended, baseErrorName: undefined });
+  return produced({ infoName, innerName, baseName: extended, baseErrorName: undefined, dynamicBaseExpression: undefined });
+}
+
+function resolveDynamicBaseExpression(
+  heritageClauses: ts.NodeArray<ts.HeritageClause> | undefined,
+  classes: ReadonlyMap<string, ClassInfo>,
+  bindings: ReadonlyMap<string, JsIrBindingValue> | undefined
+): ts.Expression | undefined {
+  const extendsClauses = (heritageClauses ?? []).filter(isExtendsClause);
+  if (extendsClauses.length !== 1) {
+    return undefined;
+  }
+  const [clause] = extendsClauses;
+  if (clause.types.length !== 1) {
+    return undefined;
+  }
+  const expr = unwrapTypeOnlyExpression(clause.types[0].expression);
+  if (ts.isIdentifier(expr)) {
+    // An unbound identifier that is not a declared class or Error keeps its specific refusal message.
+    if (classes.has(expr.text) || bindings === undefined || !bindings.has(expr.text)) {
+      return undefined;
+    }
+    return expr;
+  }
+  return expr;
 }
 
 function resolveExtendedErrorName(
   heritageClauses: ts.NodeArray<ts.HeritageClause> | undefined,
-  classes: ReadonlyMap<string, ClassInfo>
+  classes: ReadonlyMap<string, ClassInfo>,
+  bindings: ReadonlyMap<string, JsIrBindingValue> | undefined
 ): string | undefined {
   const extendsClauses = (heritageClauses ?? []).filter(isExtendsClause);
   if (extendsClauses.length !== 1) {
@@ -209,7 +241,8 @@ function resolveExtendedErrorName(
   }
   const [type] = clause.types;
   const { expression } = type;
-  if (!ts.isIdentifier(expression) || classes.has(expression.text) || !errorConstructorNames.has(expression.text)) {
+  // A module may declare its own `Error`, which is then an ordinary base value.
+  if (!ts.isIdentifier(expression) || classes.has(expression.text) || bindings?.has(expression.text) === true || !errorConstructorNames.has(expression.text)) {
     return undefined;
   }
   return expression.text;
@@ -296,13 +329,16 @@ export function buildClassInfo(
       { name: "message", valueKind: "value", isOptional: true },
       { name: "options", valueKind: "value", isOptional: true }
     ];
+  } else if (names.dynamicBaseExpression !== undefined && members.constructorDeclaration === undefined) {
+    constructorParameters = [{ name: "__tscn_super_args", valueKind: "value", isRest: true }];
   }
   const constructorBody = members.constructorDeclaration?.body;
   return produced({
     name: names.infoName,
     baseName: names.baseName,
     baseErrorName: names.baseErrorName,
-    hasValueReturn: constructorBody !== undefined && constructorHasValueReturn(constructorBody),
+    ...(names.dynamicBaseExpression === undefined ? {} : { hasDynamicBase: true }),
+    hasValueReturn: names.dynamicBaseExpression !== undefined || (constructorBody !== undefined && constructorHasValueReturn(constructorBody)),
     fields: members.fields,
     constructorParameters,
     methods: ownMethods.operation,
@@ -579,7 +615,7 @@ export function findClassInChain(
     if (current.baseName === undefined) {
       return undefined;
     }
-    current = context.classes.get(current.baseName);
+    current = context.classes.get(current.baseName) ?? context.allClasses.get(current.baseName);
   }
   return undefined;
 }
@@ -714,11 +750,44 @@ export function parameterValueKind(parameter: ts.ParameterDeclaration): JsIrValu
   return parameter.type?.kind === ts.SyntaxKind.NumberKeyword ? "number" : "value";
 }
 export function containsLexicalThis(node: ts.Node): boolean {
+  if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) {
+    return false;
+  }
   let found = false;
   const visit = (child: ts.Node): void => {
     if (found || child.kind === ts.SyntaxKind.ThisKeyword) {
       found = true;
       return;
+    }
+    if (child !== node && ts.isFunctionLike(child) && !ts.isArrowFunction(child)) {
+      return;
+    }
+    ts.forEachChild(child, visit);
+  };
+  ts.forEachChild(node, visit);
+  return found;
+}
+export function containsLexicalArguments(node: ts.Node): boolean {
+  if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) {
+    return false;
+  }
+  let found = false;
+  const visit = (child: ts.Node): void => {
+    if (found) {
+      return;
+    }
+    if (ts.isIdentifier(child) && child.text === "arguments") {
+      const { parent } = child;
+      const isNonValueRef =
+        (ts.isPropertyAccessExpression(parent) && parent.name === child) ||
+        (ts.isPropertyAssignment(parent) && parent.name === child) ||
+        (ts.isMethodDeclaration(parent) && parent.name === child) ||
+        (ts.isGetAccessorDeclaration(parent) && parent.name === child) ||
+        (ts.isSetAccessorDeclaration(parent) && parent.name === child);
+      if (!isNonValueRef) {
+        found = true;
+        return;
+      }
     }
     if (child !== node && ts.isFunctionLike(child) && !ts.isArrowFunction(child)) {
       return;

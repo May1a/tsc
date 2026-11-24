@@ -64,8 +64,9 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
     const values = operation.arguments.map((argument) => keep(context.expressions.value(argument), context));
     const block = context.cursor.currentBlock();
     const count = block.int(llvm.i64, BigInt(values.length));
+    const runtimeFn = operation.isStderr === true ? "valueConsoleError" : "valueConsoleLog";
     if (values.length === 0) {
-      context.runtime.callVoid("valueConsoleLog", [count, block.nullPtr()]);
+      context.runtime.callVoid(runtimeFn, [count, block.nullPtr()]);
       return;
     }
     const pointer = context.cursor.entryAllocaArray(llvm.i64, BigInt(values.length), context.cursor.uniqueName("console.arguments"));
@@ -73,7 +74,7 @@ export const scalarOperationHandlers: VariantHandlers<ScalarVariants, OperationC
       const slot = block.getElementPtr(llvm.i64, pointer, [{ type: llvm.i64, value: BigInt(index) }], context.cursor.uniqueName("console.argument"));
       block.store(value, slot);
     }
-    context.runtime.callVoid("valueConsoleLog", [count, pointer]);
+    context.runtime.callVoid(runtimeFn, [count, pointer]);
   },
   throwValue: (operation, context) => context.throwValue(context.expressions.value(operation.value)),
   discardValue: (operation, context) => { context.expressions.value(operation.value); },

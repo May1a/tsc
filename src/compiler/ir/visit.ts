@@ -37,6 +37,7 @@ type JsIrContainerOperationKind =
   | "forOfProtocol"
   | "forInObject"
   | "forInArray"
+  | "forInValue"
   | "function"
   | "returnClosure"
   | "for";
@@ -59,7 +60,7 @@ export const jsIrLeafOperationKinds: Readonly<Record<Exclude<JsIrOperation["kind
   "runtimeMapSet": true, "runtimeCollectionSetIterator": true, "runtimeCollectionClear": true, "runtimeCollectionForEach": true, "runtimeSetAdd": true, "runtimeMapSetResult": true, "runtimeSetAddResult": true,
   "runtimeIteratorNew": true, "runtimeArrayCopyWithin": true, "runtimeArrayPop": true, "runtimeArrayShift": true, "objectStore": true,
   "runtimeObjectStore": true, "valueObjectStore": true, "defineAccessor": true, "attachFunctionProperties": true, "privateFieldStore": true, "valueArrayStore": true, "valueArraySetLength": true,
-  "runtimeObjectDelete": true, "valueObjectDelete": true, "valueArrayDelete": true, "runtimeObjectSetPrototype": true, "valueObjectSetPrototype": true,
+  "runtimeObjectDelete": true, "valueObjectDelete": true, "valueArrayDelete": true, "runtimeObjectSetPrototype": true, "valueObjectSetPrototype": true, "classLinkDynamicBase": true,
   "runtimeObjectPreventExtensions": true, "runtimeObjectSeal": true, "runtimeObjectFreeze": true, "runtimeObjectAssign": true, "runtimeObjectDefineDataProperty": true,
   "runtimeObjectDefineDataProperties": true, "print": true, "consoleLog": true, "throwValue": true, "discardValue": true, "break": true, "continue": true,
   "call": true, "callValue": true, "inlineCpp": true, "returnNumber": true, "returnString": true,
@@ -119,6 +120,7 @@ export function jsIrOperationChildren(operation: JsIrOperation): readonly JsIrOp
     case "forOfProtocol":
     case "forInObject":
     case "forInArray":
+    case "forInValue":
     case "returnClosure": {
       return operation.body;
     }

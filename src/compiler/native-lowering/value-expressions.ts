@@ -2,11 +2,11 @@ import type { ResolvedValueExpression } from "../binding-resolution/index.js";
 import { type VariantHandlers, dispatchKind } from "../dispatch.js";
 import { type ExpressionContext, boxBoolean, boxString } from "./expression-context.js";
 import type { BoxedValue } from "./value-boundary.js";
-import { arrayAccess, arrayAt, arrayIncludes, arrayRemove, boxedMethod, boxedPrimitive, freshArray, objectLiteral, privateField } from "./value-aggregates.js";
+import { arrayAccess, arrayAt, arrayIncludes, arrayRemove, boxedMethod, boxedPrimitive, freshRuntimeArray, objectLiteral, privateField } from "./value-aggregates.js";
 import { coalesce, lazyDefault, logical, optionalChain, ternary } from "./value-branches.js";
-import { jsonParse, jsonStringify, regexCompile, regexMatch, stringCodeUnit, stringIndex, stringLocaleCompare, stringPredicate } from "./value-builtins.js";
-import { callValue, newInstance } from "./value-invocations.js";
-import { type ValueNode, arrayPointer, keep, numericValue, property, stringValue, undefinedValue } from "./value-support.js";
+import { jsonParse, jsonStringify, objectAssignValue, objectEnumerateValue, objectStateValue, regexCompile, regexMatch, regexSplitValue, stringCodeUnit, stringIndex, stringLocaleCompare, stringPredicate, stringSplitValue } from "./value-builtins.js";
+import { callValue, constructValue, newInstance } from "./value-invocations.js";
+import { type ValueNode, arrayPointer, keep, literalString, numericValue, property, stringValue, undefinedValue } from "./value-support.js";
 import { errorClassId } from "./error-classes.js";
 import { llvm } from "../llvm-ir/index.js";
 
@@ -37,7 +37,37 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   objectRef: (expression, context) => context.bindings.value(expression.name),
   arrayRef: (expression, context) => context.bindings.value(expression.name),
   objectLiteralValue: (expression, context) => objectLiteral(expression.value, context),
-  runtimeArrayValue: (expression, context) => freshArray(expression.elements.map((element) => () => context.expressions.value(element)), context),
+  runtimeArrayValue: (expression, context) => freshRuntimeArray(expression.elements, context),
+  objectFreeze: objectStateValue,
+  objectSeal: objectStateValue,
+  objectPreventExtensions: objectStateValue,
+  objectAssignValue,
+  objectEnumerateValue,
+  stringSplitValue,
+  regexSplitValue,
+  assignVariableValue: (expression, context) => {
+    const value = keep(context.expressions.value(expression.value), context);
+    context.bindings.storeValue(expression.name, value);
+    return value;
+  },
+  propertyStoreValue: (expression, context) => {
+    const receiver = keep(context.expressions.value(expression.receiver), context);
+    const key = context.expressions.string(expression.key);
+    boxString(key, context);
+    const value = keep(context.expressions.value(expression.value), context);
+    context.runtime.callWithCompletion("valueObjectSet", [receiver, key.length, key.bytes, value],
+      context.cursor.uniqueName("property.store"), context.exceptionTarget());
+    return value;
+  },
+  privateFieldStoreValue: (expression, context) => {
+    const receiver = keep(context.expressions.value(expression.receiver), context);
+    const value = keep(context.expressions.value(expression.value), context);
+    const key = literalString(expression.key, context);
+    const message = stringValue(expression.message, context);
+    context.runtime.callWithCompletion("valuePrivateSet", [receiver, key.length, key.bytes, value, message],
+      context.cursor.uniqueName("private.store"), context.exceptionTarget());
+    return value;
+  },
   arrayAccess,
   arrayPop: arrayRemove,
   arrayShift: arrayRemove,
@@ -164,7 +194,130 @@ const handlers: VariantHandlers<ValueVariants, ExpressionContext, BoxedValue> = 
   stringCodePointAt: stringCodeUnit,
   stringLocaleCompare,
   stringIndexOf: stringIndex,
-  stringLastIndexOf: stringIndex
+  stringLastIndexOf: stringIndex,
+  collectionNewValue: (expression, context) => {
+    const kindCode = { map: 0n, set: 1n, weakMap: 2n, weakSet: 3n }[expression.collectionKind];
+    const kind = context.cursor.currentBlock().int(llvm.i64, kindCode);
+    if (expression.iterable === undefined) {
+      const pointer = context.runtime.callPointer("collectionNewWithKind", [kind], context.cursor.uniqueName("collection.new"));
+      return keep(context.values.forBlock(context.cursor.currentBlock()).boxReference("object", pointer), context);
+    }
+    const iterable = keep(context.expressions.value(expression.iterable), context);
+    const message = stringValue(expression.notIterableMessage ?? "Collection source is not iterable", context);
+    return keep(context.runtime.callWithCompletion("collectionFromIterableWithKind", [iterable, message, kind],
+      context.cursor.uniqueName("collection.from.iterable"), context.exceptionTarget()), context);
+  },
+  classAdoptSuper: (expression, context) => {
+    const instance = keep(context.expressions.value(expression.instance), context);
+    const returned = keep(context.expressions.value(expression.returned), context);
+    const prototype = keep(context.bindings.value(expression.prototypeName), context);
+    const protoPtr = context.runtime.callPointer("valueObjectPtr", [prototype], context.cursor.uniqueName("super.proto"));
+    return keep(context.runtime.callBoxed("classAdoptSuper", [instance, returned, protoPtr], context.cursor.uniqueName("super.adopt")), context);
+  },
+  nodeGlobal: (expression, context) => {
+    const helpers = {
+      process: "nodeProcessGet",
+      Buffer: "nodeBufferObject",
+      globalThis: "jsGlobalThisObject",
+      Symbol: "symbolConstructorObject",
+      Object: "jsObjectConstructor",
+      Reflect: "jsReflectObject",
+      Array: "jsArrayConstructor",
+      performance: "jsPerformanceObject",
+      setTimeout: "jsSetTimeoutFn",
+      clearTimeout: "jsClearTimeoutFn",
+      BigInt: "jsBigIntConstructor",
+      Proxy: "jsProxyConstructor",
+      Date: "jsDateConstructor",
+      RegExp: "jsRegExpConstructor",
+      Int32Array: "jsInt32ArrayConstructor",
+      Uint32Array: "jsUint32ArrayConstructor",
+      AbortController: "jsAbortControllerConstructor",
+      Intl: "jsIntlObject",
+      Math: "jsMathObject",
+      String: "jsStringConstructor",
+      Number: "jsNumberConstructor",
+      Boolean: "jsBooleanConstructor",
+      setInterval: "jsSetIntervalFn",
+      clearInterval: "jsClearIntervalFn",
+      Map: "jsMapConstructor",
+      Set: "jsSetConstructor",
+      WeakMap: "jsWeakMapConstructor",
+      WeakSet: "jsWeakSetConstructor",
+      Uint8Array: "jsUint8ArrayConstructor",
+      Float64Array: "jsFloat64ArrayConstructor",
+      URL: "jsURLConstructor",
+      console: "jsConsoleObject",
+      JSON: "jsJsonObject"
+    } as const;
+    return keep(context.runtime.callBoxed(helpers[expression.name], [], context.cursor.uniqueName("js.global")), context);
+  },
+  nodeBuiltinModule: (expression, context) => {
+    const helpers = {
+      fs: "nodeFsModule",
+      path: "nodePathModule",
+      os: "nodeOsModule",
+      child_process: "nodeChildProcessModule"
+    } as const;
+    return keep(context.runtime.callBoxed(helpers[expression.moduleName], [], context.cursor.uniqueName("node.module")), context);
+  },
+  uint8ArrayNew: (expression, context) => {
+    const arg = expression.argument === undefined ? undefinedValue(context) : keep(context.expressions.value(expression.argument), context);
+    return keep(context.runtime.callBoxed("nodeUint8ArrayNew", [arg], context.cursor.uniqueName("uint8array.new")), context);
+  },
+  propertyUpdateValue: (expression, context) => {
+    const receiver = keep(context.expressions.value(expression.receiver), context);
+    const key = context.expressions.string(expression.key);
+    boxString(key, context);
+    const previous = keep(property(receiver, key, context), context);
+    const currentNum = context.runtime.call("valueToNumber", [previous], context.cursor.uniqueName("prop.update.num"));
+    const block = context.cursor.currentBlock();
+    const delta = block.double(expression.operator === "increment" ? 1 : -1);
+    const updatedNum = block.fadd(currentNum, delta, context.cursor.uniqueName("prop.update.next"));
+    const updatedVal = keep(numericValue(updatedNum, context), context);
+    context.runtime.callWithCompletion("valueObjectSet", [receiver, key.length, key.bytes, updatedVal],
+      context.cursor.uniqueName("prop.update.store"), context.exceptionTarget());
+    return expression.prefix ? updatedVal : keep(numericValue(currentNum, context), context);
+  },
+  variableUpdateValue: (expression, context) => {
+    const previous = keep(context.bindings.value(expression.name), context);
+    const currentNum = context.runtime.call("valueToNumber", [previous], context.cursor.uniqueName("var.update.num"));
+    const block = context.cursor.currentBlock();
+    const delta = block.double(expression.operator === "increment" ? 1 : -1);
+    const updatedNum = block.fadd(currentNum, delta, context.cursor.uniqueName("var.update.next"));
+    const updatedVal = keep(numericValue(updatedNum, context), context);
+    context.bindings.storeValue(expression.name, updatedVal);
+    return expression.prefix ? updatedVal : keep(numericValue(currentNum, context), context);
+  },
+  bigIntLiteral: (expression, context) => {
+    const text = literalString(expression.value, context);
+    return keep(context.runtime.callBoxed("bigIntFromString", [text.bytes, text.length], context.cursor.uniqueName("bigint.lit")), context);
+  },
+  valueBinaryOp: (expression, context) => {
+    const left = keep(context.expressions.value(expression.left), context);
+    const right = keep(context.expressions.value(expression.right), context);
+    const opCodes = {
+      subtract: 0n,
+      multiply: 1n,
+      divide: 2n,
+      modulo: 3n,
+      exponent: 4n,
+      bitAnd: 5n,
+      bitOr: 6n,
+      bitXor: 7n,
+      shiftLeft: 8n,
+      shiftRight: 9n,
+      unsignedShiftRight: 10n
+    } as const;
+    const op = context.cursor.currentBlock().int(llvm.i64, opCodes[expression.operator]);
+    return keep(context.runtime.callBoxed("valueBinaryOp", [op, left, right], context.cursor.uniqueName("val.binop")), context);
+  },
+  valueUnaryOp: (expression, context) => {
+    const value = keep(context.expressions.value(expression.value), context);
+    const op = context.cursor.currentBlock().int(llvm.i64, expression.operator === "negate" ? 0n : 1n);
+    return keep(context.runtime.callBoxed("valueUnaryOp", [op, value], context.cursor.uniqueName("val.unop")), context);
+  },
+  constructValue
 };
 
 export function lowerValueExpression(expression: ResolvedValueExpression, context: ExpressionContext): BoxedValue {

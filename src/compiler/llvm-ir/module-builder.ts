@@ -53,7 +53,7 @@ class ModuleBuilder implements LlvmModuleBuilder {
   readonly #staticGlobals = new Map<string, LlvmValueType>();
   readonly #definitions = new Set<string>();
   readonly #pendingFunctions = new Set<string>();
-  readonly #functions: BuiltLlvmFunction[] = [];
+  readonly #functions = new Map<string, BuiltLlvmFunction>();
   readonly #staticRuntime: readonly StaticRuntimeFragment[];
   readonly #stringConstants = new Map<string, string>();
   readonly #callableSpecs = new WeakMap<object, LlvmOwnedCallable & { readonly owner: symbol }>();
@@ -146,7 +146,7 @@ class ModuleBuilder implements LlvmModuleBuilder {
     }
     this.#definitions.add(accepted.name);
     this.#callableSpecs.set(spec, { owner: this.#owner, name: accepted.name, signature: callSignatureOf(accepted) });
-    this.#functions.push(built);
+    this.#functions.set(accepted.name, built);
     return spec;
   }
 
@@ -155,7 +155,7 @@ class ModuleBuilder implements LlvmModuleBuilder {
     if (owned === undefined) {
       throw llvmError(`LLVM finished function references unowned function ${spec.name}`);
     }
-    const definition = this.#functions.find((function_) => function_.spec.name === owned.name);
+    const definition = this.#functions.get(owned.name);
     if (definition === undefined) {
       throw llvmError(`LLVM function ${owned.name} has no finished definition`);
     }
@@ -239,7 +239,7 @@ class ModuleBuilder implements LlvmModuleBuilder {
       types: Object.freeze([...this.#types]),
       globals: Object.freeze([...this.#globals.values()]),
       declarations: Object.freeze([...this.#declarations.values()].filter((declaration) => !this.#definitions.has(declaration.name))),
-      functions: Object.freeze([...this.#functions]),
+      functions: Object.freeze([...this.#functions.values()]),
       staticRuntime: this.#staticRuntime
     });
     return this.#built;

@@ -121,47 +121,60 @@ export function lowerPresenceConditionExpression(
   expression: ts.BinaryExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrCondition> {
-  if (expression.operatorToken.kind !== ts.SyntaxKind.InKeyword || !ts.isIdentifier(expression.right)) {
+  if (expression.operatorToken.kind !== ts.SyntaxKind.InKeyword) {
     return notApplicable;
   }
-  const binding = bindings.get(expression.right.text);
+  if (ts.isIdentifier(expression.right)) {
+    const named = lowerNamedPresenceCondition(context, expression.left, expression.right.text, bindings);
+    if (named.kind !== "notApplicable") {
+      return named;
+    }
+  }
+  const target = context.lowerValueExpression(context, expression.right, bindings);
+  if (target.kind !== "lowered") {
+    return target;
+  }
+  const key = lowerValuePropertyKeyExpression(context, expression.left, bindings);
+  if (key.kind !== "lowered") {
+    return key;
+  }
+  return produced({ kind: "valueHasProperty", value: target.operation, key: key.operation });
+}
+
+function lowerNamedPresenceCondition(
+  context: LoweringContext,
+  left: ts.Expression,
+  targetName: string,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrCondition> {
+  const binding = bindings.get(targetName);
   if (binding?.kind === "runtimeObject") {
-    const key = context.lowerStringRuntimeExpression(context, expression.left, bindings);
-    if (key.kind === "unsupported") {
-      return key;
-    }
-    if (key.kind === "lowered") {
-      return produced({ kind: "runtimeObjectHas", objectName: expression.right.text, key: key.operation, ownOnly: false });
-    }
+    const key = context.lowerStringRuntimeExpression(context, left, bindings);
+    return key.kind === "lowered"
+      ? produced({ kind: "runtimeObjectHas", objectName: targetName, key: key.operation, ownOnly: false })
+      : key;
   }
-  if (binding?.kind === "runtimeArray") {
-    const indexResult = context.lowerNumberExpression(context, expression.left, bindings);
-    if (indexResult.kind === "unsupported") {
-      return indexResult;
-    }
-    let index = loweredPayload(indexResult);
-    let key: JsIrStringExpression | undefined;
-    if (ts.isNumericLiteral(expression.left)) {
-      key = { kind: "literal", value: expression.left.text };
-    }
-    const stringIndex = lowerCanonicalArrayIndexString(expression.left);
-    if (stringIndex !== undefined) {
-      index = { kind: "literal", value: stringIndex };
-      key = { kind: "literal", value: String(stringIndex) };
-    }
-    if (index !== undefined) {
-      return produced({ kind: "runtimeArrayHas", arrayName: expression.right.text, index, key, ownOnly: false });
-    }
-    const propertyKeyExpressionResult = lowerPropertyKeyExpression(context, expression.left, bindings);
-    if (propertyKeyExpressionResult.kind === "unsupported") {
-      return propertyKeyExpressionResult;
-    }
-    key = loweredPayload(propertyKeyExpressionResult);
-    if (key !== undefined) {
-      return produced({ kind: "runtimeArrayHas", arrayName: expression.right.text, index: { kind: "literal", value: -1 }, key, ownOnly: false });
-    }
+  if (binding?.kind !== "runtimeArray") {
+    return notApplicable;
   }
-  return notApplicable;
+  const indexResult = context.lowerNumberExpression(context, left, bindings);
+  if (indexResult.kind === "unsupported") {
+    return indexResult;
+  }
+  let index = loweredPayload(indexResult);
+  let key: JsIrStringExpression | undefined = ts.isNumericLiteral(left) ? { kind: "literal", value: left.text } : undefined;
+  const stringIndex = lowerCanonicalArrayIndexString(left);
+  if (stringIndex !== undefined) {
+    index = { kind: "literal", value: stringIndex };
+    key = { kind: "literal", value: String(stringIndex) };
+  }
+  if (index !== undefined) {
+    return produced({ kind: "runtimeArrayHas", arrayName: targetName, index, key, ownOnly: false });
+  }
+  const propertyKey = lowerPropertyKeyExpression(context, left, bindings);
+  return propertyKey.kind === "lowered"
+    ? produced({ kind: "runtimeArrayHas", arrayName: targetName, index: { kind: "literal", value: -1 }, key: propertyKey.operation, ownOnly: false })
+    : propertyKey;
 }
 
 export function lowerHasOwnConditionExpression(

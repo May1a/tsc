@@ -20,22 +20,30 @@ export interface RootCapability {
 
 export class HeapFacts {
   readonly #references = new Map<LlvmValue, GcHeapReference>();
+  /** The first reference recorded under each operand text, which a borrowed pointer inherits its owner from. */
+  readonly #owners = new Map<string, GcHeapReference>();
   readonly #borrowed: GcProtection[] = [];
 
   public boxed(value: BoxedValue): void { this.reference(value, value); }
   public reference(value: LlvmValue, owner: LlvmValue): void {
-    this.#references.set(value, { value, protection: { kind: "value", value: owner } });
+    this.#record({ value, protection: { kind: "value", value: owner } });
   }
   public unownedPointer(value: LlvmValue<typeof llvm.ptr>): void {
-    this.#references.set(value, { value, protection: { kind: "value", value } });
+    this.#record({ value, protection: { kind: "value", value } });
   }
   public borrowedPointer(pointer: LlvmValue<typeof llvm.ptr>, source: LlvmValue): void {
-    const owner = [...this.#references.values()].find((reference) => llvmValueText(reference.value) === llvmValueText(source));
+    const owner = this.#owners.get(llvmValueText(source));
     this.reference(pointer, owner?.protection.value ?? source);
   }
   public parameter(value: BoxedValue, borrowed: boolean): void {
     this.boxed(value);
     if (borrowed) { this.#borrowed.push({ kind: "value", value }); }
+  }
+  #record(reference: GcHeapReference): void {
+    const text = llvmValueText(reference.value);
+    const first = this.#owners.get(text);
+    if (first === undefined || first.value === reference.value) { this.#owners.set(text, reference); }
+    this.#references.set(reference.value, reference);
   }
   public finish(): GcFunctionFacts {
     return Object.freeze({ heapReferences: Object.freeze([...this.#references.values()]), borrowedRoots: Object.freeze([...this.#borrowed]) });

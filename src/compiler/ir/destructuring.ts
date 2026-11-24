@@ -218,26 +218,35 @@ function resolveDestructuringSource(
   const unwrapped = unwrapTypeOnlyExpression(initializer);
   if (ts.isIdentifier(unwrapped)) {
     const binding = working.get(unwrapped.text);
-    if (binding?.kind === "runtimeArray" || binding?.kind === "array" || binding?.kind === "runtimeObject") {
+    if (binding?.kind === "runtimeArray" || binding?.kind === "array" || binding?.kind === "runtimeObject" || binding?.kind === "valueVariable") {
       return produced({ name: binding.name, binding });
     }
     if (binding?.kind === "object") {
       return produced({ name: unwrapped.text, binding });
     }
-    return notApplicable;
   }
   const temporaryName = `destructure.source.${position}`;
   const operation = context.lowerConstAggregateBinding(context, temporaryName, unwrapped, working);
-  if (operation.kind !== "lowered") {
+  if (operation.kind === "unsupported") {
     return operation;
   }
-  operations.push(operation.operation);
-  updateBindings(operation.operation, working);
-  const binding = working.get(temporaryName);
-  if (binding === undefined) {
-    return notApplicable;
+  if (operation.kind === "lowered") {
+    operations.push(operation.operation);
+    updateBindings(operation.operation, working);
+    const binding = working.get(temporaryName);
+    if (binding === undefined) {
+      return notApplicable;
+    }
+    return produced({ name: temporaryName, binding });
   }
-  return produced({ name: temporaryName, binding });
+  const value = context.lowerValueExpression(context, unwrapped, working);
+  if (value.kind !== "lowered") {
+    return value;
+  }
+  const temporary: JsIrOperation = { kind: "letValue", name: temporaryName, value: value.operation };
+  operations.push(temporary);
+  updateBindings(temporary, working);
+  return produced({ name: temporaryName, binding: { kind: "valueVariable", name: temporaryName } });
 }
 
 // eslint-disable-next-line complexity, max-statements -- Array destructuring routes fixed and runtime sources plus rest and default shapes.

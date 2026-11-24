@@ -1,15 +1,9 @@
 import { type Lowered, notApplicable, produced, unsupportedIn, withRefusal } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
-import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
-import { parameterValueKind, runtimeParameters } from "./class-info.js";
-import { bindFunctionParameter } from "./function-parameters.js";
-import { collectFunctionExpressionCaptureNames, lowerInlineFunctionCaptures } from "./captures.js";
-import { lowerInlineFunctionBody } from "./array-callbacks.js";
-import { CLASS_THIS_NAME } from "./class-names.js";
+import type { JsIrBindingValue } from "./bindings.js";
 import { expressionSnippet } from "./diagnostics.js";
-import { functionReturnKind } from "./binding-updates.js";
-import { lowerSuspendableBody, suspendableKindFor } from "./state-machine.js";
+import { lowerFunctionObjectValue } from "./closures.js";
 
 export function lowerReturnStatement(
   context: LoweringContext,
@@ -63,7 +57,6 @@ export function lowerReturnStatement(
   });
 }
 
-// eslint-disable-next-line complexity, max-statements -- Closure lowering validates syntax, captures, parameters, and body atomically.
 function lowerReturnedFunctionExpression(
   context: LoweringContext,
   expression: ts.Expression,
@@ -72,68 +65,9 @@ function lowerReturnedFunctionExpression(
   if (!ts.isFunctionExpression(expression) && !ts.isArrowFunction(expression)) {
     return notApplicable;
   }
-
-  const suspendKind = suspendableKindFor(expression);
-  const parameters: JsIrFunctionParameter[] = [];
-  const nestedBindings = new Map(bindings);
-  const localNames = new Set<string>();
-  for (const param of runtimeParameters(expression.parameters)) {
-    if (!ts.isIdentifier(param.name)) {
-      return notApplicable;
-    }
-    const valueKind = parameterValueKind(param);
-    parameters.push({ name: param.name.text, valueKind });
-    localNames.add(param.name.text);
-    bindFunctionParameter(param.name.text, valueKind, false, nestedBindings);
+  const fnValue = lowerFunctionObjectValue(context, expression, bindings);
+  if (fnValue.kind !== "lowered") {
+    return fnValue;
   }
-  if (ts.isFunctionExpression(expression)) {
-    // An ordinary function expression has its own dynamic `this`, like a function declaration and
-    // the ordinary branch of a closure value: it must not capture the enclosing frame's.
-    nestedBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-    localNames.add(CLASS_THIS_NAME);
-  }
-
-  const captureNames = collectFunctionExpressionCaptureNames(expression, localNames, bindings);
-  const displayName = ts.isFunctionExpression(expression) ? expression.name?.text ?? "anonymous" : "arrow";
-
-  const body = suspendKind === undefined
-    ? lowerInlineFunctionBody(context, expression.body, nestedBindings)
-    : lowerSuspendableBody(context, {
-        kind: suspendKind,
-        body: expression.body,
-        bindings: nestedBindings,
-        outerParameterNames: new Set([...parameters.map((parameter) => parameter.name), ...(ts.isFunctionExpression(expression) ? [CLASS_THIS_NAME] : [])]),
-        outerCaptureNames: captureNames,
-        nameHint: displayName
-      });
-  if (body.kind !== "lowered") {
-    return body;
-  }
-  const captures = lowerInlineFunctionCaptures(captureNames, bindings);
-  if (captures === undefined) {
-    return notApplicable;
-  }
-  const codeName = `__tscn_fnobj_${displayName}_${context.nextFunctionObjectId}`.replace(/[^A-Za-z0-9_]/g, "_");
-  context.nextFunctionObjectId += 1;
-  return produced({
-    kind: "returnValue",
-    expression: {
-      kind: "functionObject",
-      definition: {
-        codeName,
-        parameters,
-        functionKind: functionExpressionKind(expression),
-        returnKind: functionReturnKind(body.operation),
-        body: body.operation,
-        captures
-      }
-    }
-  });
-}
-
-export function functionExpressionKind(expression: ts.ArrowFunction | ts.FunctionExpression): "arrow" | "ordinary" {
-  if (ts.isArrowFunction(expression)) {
-    return "arrow";
-  }
-  return "ordinary";
+  return produced({ kind: "returnValue", expression: fnValue.operation });
 }

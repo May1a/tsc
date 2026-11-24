@@ -1,5 +1,6 @@
 import { BlockBuilder, type BlockContext, type LlvmBlockBuilder, type RecordedBlock } from "./block-builder.js";
 import type { BuiltLlvmFunction } from "./built.js";
+import { NameAllocator } from "./names.js";
 import { type LlvmControlFlowBlock, type LlvmDominatorTree, buildLlvmDominatorTree } from "./dominance.js";
 import { type LlvmBlockLabel, createLlvmBlockLabel } from "./labels.js";
 import type { LlvmGlobalReference } from "./module-items.js";
@@ -52,7 +53,7 @@ export class FunctionBuilder implements LlvmFunctionBuilder {
   readonly #labels = new Map<string, LlvmBlockLabel>();
   readonly #blockNames = new Set<string>();
   readonly #blockNamesByOwner = new Map<symbol, string>();
-  readonly #ssaNames = new Set<string>();
+  readonly #ssaNames = new NameAllocator();
   readonly #parameters: readonly LlvmValue[];
   /** Operation-level trace regions, open across every block they span; see `withTrace`. */
   readonly #traces = new TraceStack();
@@ -74,7 +75,7 @@ export class FunctionBuilder implements LlvmFunctionBuilder {
     this.#functionName = resolvers.functionName;
     this.#globalName = resolvers.globalName;
     this.#parameters = spec.parameters.map((parameter) => {
-      this.#ssaNames.add(parameter.name);
+      this.#ssaNames.claim(parameter.name);
       return createLlvmValue(parameter.type, this.#owner, `%${parameter.name}`);
     });
   }
@@ -203,14 +204,7 @@ export class FunctionBuilder implements LlvmFunctionBuilder {
 
   /** Allocate hint or its lowest unused numeric suffix. */
   #allocateName(hint: string): string {
-    let candidate = hint;
-    let suffix = 1;
-    while (this.#ssaNames.has(candidate)) {
-      candidate = `${hint}.${suffix}`;
-      suffix += 1;
-    }
-    this.#ssaNames.add(candidate);
-    return `%${candidate}`;
+    return `%${this.#ssaNames.allocate(hint)}`;
   }
 
   #assertTargetsExist(blocks: readonly RecordedBlock[]): void {

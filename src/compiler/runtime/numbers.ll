@@ -550,10 +550,114 @@ finish:
 }
 define double @parseInt(i64 %value.len, ptr %value.ptr) {
 entry:
-  %parsed = call double @strtod(ptr %value.ptr, ptr null)
-  %int = fptosi double %parsed to i64
-  %truncated = sitofp i64 %int to double
-  ret double %truncated
+  %result = call double @parseIntRadix(i64 %value.len, ptr %value.ptr, double 0.0)
+  ret double %result
+}
+define double @parseIntRadix(i64 %value.len, ptr %value.ptr, double %radix.value) {
+entry:
+  br label %skip.ws
+skip.ws:
+  %ws.i = phi i64 [ 0, %entry ], [ %ws.next, %skip.ws.step ]
+  %ws.done = icmp uge i64 %ws.i, %value.len
+  br i1 %ws.done, label %ret.nan, label %skip.ws.check
+skip.ws.check:
+  %ws.ptr = getelementptr i8, ptr %value.ptr, i64 %ws.i
+  %ws.ch = load i8, ptr %ws.ptr
+  %ws.space = icmp eq i8 %ws.ch, 32
+  %ws.ctl.off = sub i8 %ws.ch, 9
+  %ws.ctl = icmp ule i8 %ws.ctl.off, 4
+  %ws.is = or i1 %ws.space, %ws.ctl
+  br i1 %ws.is, label %skip.ws.step, label %check.sign
+skip.ws.step:
+  %ws.next = add i64 %ws.i, 1
+  br label %skip.ws
+check.sign:
+  %is.minus = icmp eq i8 %ws.ch, 45
+  %is.plus = icmp eq i8 %ws.ch, 43
+  %has.sign = or i1 %is.minus, %is.plus
+  %sign.step = zext i1 %has.sign to i64
+  %after.sign = add i64 %ws.i, %sign.step
+  %radix.i32 = call i32 @numberToInt32(double %radix.value)
+  %radix.i64 = sext i32 %radix.i32 to i64
+  %radix.zero = icmp eq i64 %radix.i64, 0
+  br i1 %radix.zero, label %radix.default, label %radix.check.range
+radix.default:
+  br label %check.hex.prefix
+radix.check.range:
+  %too.small = icmp slt i64 %radix.i64, 2
+  %too.large = icmp sgt i64 %radix.i64, 36
+  %invalid.radix = or i1 %too.small, %too.large
+  br i1 %invalid.radix, label %ret.nan, label %radix.valid
+radix.valid:
+  %is.hex.radix = icmp eq i64 %radix.i64, 16
+  br i1 %is.hex.radix, label %check.hex.prefix, label %digits.init
+check.hex.prefix:
+  %default.base = phi i64 [ 10, %radix.default ], [ 16, %radix.valid ]
+  %need.2 = add i64 %after.sign, 2
+  %has.2 = icmp ule i64 %need.2, %value.len
+  br i1 %has.2, label %check.hex.chars, label %digits.init
+check.hex.chars:
+  %p0.ptr = getelementptr i8, ptr %value.ptr, i64 %after.sign
+  %p0 = load i8, ptr %p0.ptr
+  %p1.idx = add i64 %after.sign, 1
+  %p1.ptr = getelementptr i8, ptr %value.ptr, i64 %p1.idx
+  %p1 = load i8, ptr %p1.ptr
+  %is.zero.ch = icmp eq i8 %p0, 48
+  %is.x.lo = icmp eq i8 %p1, 120
+  %is.x.hi = icmp eq i8 %p1, 88
+  %is.x = or i1 %is.x.lo, %is.x.hi
+  %is.0x = and i1 %is.zero.ch, %is.x
+  %hex.start = select i1 %is.0x, i64 %need.2, i64 %after.sign
+  %hex.base = select i1 %is.0x, i64 16, i64 %default.base
+  br label %digits.init
+digits.init:
+  %start.pos = phi i64 [ %after.sign, %radix.valid ], [ %after.sign, %check.hex.prefix ], [ %hex.start, %check.hex.chars ]
+  %base = phi i64 [ %radix.i64, %radix.valid ], [ %default.base, %check.hex.prefix ], [ %hex.base, %check.hex.chars ]
+  %base.d = sitofp i64 %base to double
+  br label %digits.loop
+digits.loop:
+  %pos = phi i64 [ %start.pos, %digits.init ], [ %pos.next, %digits.step ]
+  %acc = phi double [ 0.0, %digits.init ], [ %acc.next, %digits.step ]
+  %count = phi i64 [ 0, %digits.init ], [ %count.next, %digits.step ]
+  %eof = icmp uge i64 %pos, %value.len
+  br i1 %eof, label %digits.done, label %digits.read
+digits.read:
+  %ch.ptr = getelementptr i8, ptr %value.ptr, i64 %pos
+  %ch = load i8, ptr %ch.ptr
+  %dec = sub i8 %ch, 48
+  %is.dec = icmp ule i8 %dec, 9
+  br i1 %is.dec, label %digits.bound, label %digits.check.lower
+digits.check.lower:
+  %lo = sub i8 %ch, 97
+  %is.lo = icmp ule i8 %lo, 25
+  %lo.val = add i8 %lo, 10
+  br i1 %is.lo, label %digits.bound, label %digits.check.upper
+digits.check.upper:
+  %hi = sub i8 %ch, 65
+  %is.hi = icmp ule i8 %hi, 25
+  %hi.val = add i8 %hi, 10
+  br i1 %is.hi, label %digits.bound, label %digits.done
+digits.bound:
+  %digit.i8 = phi i8 [ %dec, %digits.read ], [ %lo.val, %digits.check.lower ], [ %hi.val, %digits.check.upper ]
+  %digit = zext i8 %digit.i8 to i64
+  %valid.digit = icmp slt i64 %digit, %base
+  br i1 %valid.digit, label %digits.step, label %digits.done
+digits.step:
+  %digit.d = sitofp i64 %digit to double
+  %scaled = fmul double %acc, %base.d
+  %acc.next = fadd double %scaled, %digit.d
+  %count.next = add i64 %count, 1
+  %pos.next = add i64 %pos, 1
+  br label %digits.loop
+digits.done:
+  %empty = icmp eq i64 %count, 0
+  br i1 %empty, label %ret.nan, label %ret.value
+ret.value:
+  %neg = fneg double %acc
+  %signed = select i1 %is.minus, double %neg, double %acc
+  ret double %signed
+ret.nan:
+  ret double 0x7FF8000000000000
 }
 define double @parseFloat(i64 %value.len, ptr %value.ptr) {
 entry:
@@ -817,7 +921,7 @@ entry:
 
 define { i64, i1 } @dateReadTimestamp(i64 %this.value) {
 entry:
-  %is.obj = call i1 @valueIsObject(i64 %this.value)
+  %is.obj = call i1 @valueIsPlainObject(i64 %this.value)
   br i1 %is.obj, label %check.priv, label %not.date
 check.priv:
   %obj = call ptr @valueObjectPtr(i64 %this.value)

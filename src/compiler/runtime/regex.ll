@@ -222,6 +222,8 @@ finish:
   call void @objectSet(ptr %object, i64 9, ptr @.regex.multiline, i64 %multiline.value)
   call void @objectSet(ptr %object, i64 6, ptr @.regex.sticky, i64 %sticky.value)
   call void @objectSet(ptr %object, i64 9, ptr @.regex.last.index, i64 %zero)
+  %prototype = call ptr @regexPrototype()
+  call void @objectSetPrototype(ptr %object, ptr %prototype)
   %boxed = call i64 @valueBoxObject(ptr %object)
   %result.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
   %result = insertvalue { i64, i1 } %result.0, i1 false, 1
@@ -1880,5 +1882,135 @@ restore.single:
 return:
   %result.0 = insertvalue { i64, i1 } undef, i64 %output, 0
   %result = insertvalue { i64, i1 } %result.0, i1 false, 1
+  ret { i64, i1 } %result
+}
+
+; RegExp.prototype, shared by every compiled expression. It is also the brand `valueIsRegex` checks.
+@regexPrototypeValue = private global i64 0
+@.regex.slash = private unnamed_addr constant [2 x i8] c"/\00"
+@.regex.not.regex = private unnamed_addr constant [56 x i8] c"RegExp.prototype method called on a value not a RegExp.\00"
+@.regex.method.test = private unnamed_addr constant [5 x i8] c"test\00"
+@.regex.method.exec = private unnamed_addr constant [5 x i8] c"exec\00"
+@.regex.method.toString = private unnamed_addr constant [9 x i8] c"toString\00"
+
+define ptr @regexPrototype() {
+entry:
+  %cached = load i64, ptr @regexPrototypeValue
+  %ready = icmp ne i64 %cached, 0
+  br i1 %ready, label %reuse, label %create
+reuse:
+  %ptr = call ptr @valueObjectPtr(i64 %cached)
+  ret ptr %ptr
+create:
+  %frame = call i64 @gcRootSave()
+  %proto = call ptr @objectNew(i64 4)
+  %boxed = call i64 @valueBoxObject(ptr %proto)
+  call void @gcRootPush(i64 %boxed)
+  %test.name = call i64 @valueBoxString(ptr @.regex.method.test, i64 4)
+  call void @gcRootPush(i64 %test.name)
+  %test.fn = call i64 @functionObjectNew(ptr @regexTestMethod, ptr null, i64 9222246136947933184, i64 %test.name, i64 1)
+  call void @gcRootPush(i64 %test.fn)
+  call void @objectDefineDataProperty(ptr %proto, i64 4, ptr @.regex.method.test, i64 %test.fn, i64 5)
+  %exec.name = call i64 @valueBoxString(ptr @.regex.method.exec, i64 4)
+  call void @gcRootPush(i64 %exec.name)
+  %exec.fn = call i64 @functionObjectNew(ptr @regexExecMethod, ptr null, i64 9222246136947933184, i64 %exec.name, i64 1)
+  call void @gcRootPush(i64 %exec.fn)
+  call void @objectDefineDataProperty(ptr %proto, i64 4, ptr @.regex.method.exec, i64 %exec.fn, i64 5)
+  %toString.name = call i64 @valueBoxString(ptr @.regex.method.toString, i64 8)
+  call void @gcRootPush(i64 %toString.name)
+  %toString.fn = call i64 @functionObjectNew(ptr @regexToStringMethod, ptr null, i64 9222246136947933184, i64 %toString.name, i64 0)
+  call void @gcRootPush(i64 %toString.fn)
+  call void @objectDefineDataProperty(ptr %proto, i64 8, ptr @.regex.method.toString, i64 %toString.fn, i64 5)
+  store i64 %boxed, ptr @regexPrototypeValue
+  call void @gcRegisterGlobalRoot(ptr @regexPrototypeValue)
+  call void @gcRootRestore(i64 %frame)
+  ret ptr %proto
+}
+
+define i1 @valueIsRegex(i64 %value) {
+entry:
+  %is.object = call i1 @valueIsObject(i64 %value)
+  %is.collection = call i1 @valueIsCollection(i64 %value)
+  %is.plain = xor i1 %is.collection, true
+  %candidate = and i1 %is.object, %is.plain
+  br i1 %candidate, label %compare, label %no
+compare:
+  %object = call ptr @valueObjectPtr(i64 %value)
+  %prototype = call ptr @objectGetPrototype(ptr %object)
+  %expected = call ptr @regexPrototype()
+  %same = icmp eq ptr %prototype, %expected
+  ret i1 %same
+no:
+  ret i1 false
+}
+
+define { i64, i1 } @regexMethodReceiverError() {
+entry:
+  %message = call i64 @valueBoxString(ptr @.regex.not.regex, i64 55)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+}
+
+define { i64, i1 } @regexTestMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.regex = call i1 @valueIsRegex(i64 %this.value)
+  br i1 %is.regex, label %convert, label %not.regex
+not.regex:
+  %error = call { i64, i1 } @regexMethodReceiverError()
+  ret { i64, i1 } %error
+convert:
+  %input = call { i64, i1 } @stringMethodText(i64 %argc, ptr %argv, i64 0)
+  %threw = extractvalue { i64, i1 } %input, 1
+  br i1 %threw, label %failed, label %run
+failed:
+  ret { i64, i1 } %input
+run:
+  %input.value = extractvalue { i64, i1 } %input, 0
+  %result = call { i64, i1 } @regexTest(i64 %this.value, i64 %input.value)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @regexExecMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.regex = call i1 @valueIsRegex(i64 %this.value)
+  br i1 %is.regex, label %convert, label %not.regex
+not.regex:
+  %error = call { i64, i1 } @regexMethodReceiverError()
+  ret { i64, i1 } %error
+convert:
+  %input = call { i64, i1 } @stringMethodText(i64 %argc, ptr %argv, i64 0)
+  %threw = extractvalue { i64, i1 } %input, 1
+  br i1 %threw, label %failed, label %run
+failed:
+  ret { i64, i1 } %input
+run:
+  %input.value = extractvalue { i64, i1 } %input, 0
+  %result = call { i64, i1 } @regexExec(i64 %this.value, i64 %input.value)
+  ret { i64, i1 } %result
+}
+
+define { i64, i1 } @regexToStringMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
+entry:
+  %is.regex = call i1 @valueIsRegex(i64 %this.value)
+  br i1 %is.regex, label %build, label %not.regex
+not.regex:
+  %error = call { i64, i1 } @regexMethodReceiverError()
+  ret { i64, i1 } %error
+build:
+  %object = call ptr @valueObjectPtr(i64 %this.value)
+  %source = call i64 @objectGet(ptr %object, i64 6, ptr @.regex.source)
+  %flags = call i64 @objectGet(ptr %object, i64 5, ptr @.regex.flags)
+  %source.ptr = call ptr @valueStringPtr(i64 %source)
+  %source.len = call i64 @valueStringLength(i64 %source)
+  %flags.ptr = call ptr @valueStringPtr(i64 %flags)
+  %flags.len = call i64 @valueStringLength(i64 %flags)
+  %opened.ptr = call ptr @strConcat(i64 1, ptr @.regex.slash, i64 %source.len, ptr %source.ptr)
+  %opened.len = add i64 %source.len, 1
+  %closed.ptr = call ptr @strConcat(i64 %opened.len, ptr %opened.ptr, i64 1, ptr @.regex.slash)
+  %closed.len = add i64 %opened.len, 1
+  %text.ptr = call ptr @strConcat(i64 %closed.len, ptr %closed.ptr, i64 %flags.len, ptr %flags.ptr)
+  %text.len = add i64 %closed.len, %flags.len
+  %text = call i64 @valueBoxString(ptr %text.ptr, i64 %text.len)
+  %result = call { i64, i1 } @arrayMethodResult(i64 %text)
   ret { i64, i1 } %result
 }

@@ -7,7 +7,7 @@ import type { OperationContext } from "./operation-context.js";
 import type { BoxedValue } from "./value-boundary.js";
 import { keep, literalString, stringValue, undefinedValue } from "./value-support.js";
 
-type ProtocolKind = "forOfArray" | "forOfString" | "forOfMap" | "forOfSet" | "forOfProtocol" | "forInObject" | "forInArray" | "arrayDestructureProtocol";
+type ProtocolKind = "forOfArray" | "forOfString" | "forOfMap" | "forOfSet" | "forOfProtocol" | "forInObject" | "forInArray" | "forInValue" | "arrayDestructureProtocol";
 type ProtocolNode<K extends ProtocolKind> = VariantOfKind<ResolvedOperation, K>;
 type ProtocolVariants = { readonly [K in ProtocolKind]: ProtocolNode<K> };
 type Pending = { readonly kind: "return" | "throw"; readonly value: BoxedValue } | { readonly kind: "jump" };
@@ -75,6 +75,13 @@ function forIn(operation: ProtocolNode<"forInArray" | "forInObject">, context: O
   const owner = keep(context.bindings.value(array ? operation.arrayName : operation.objectName), context);
   const pointer = context.values.forBlock(context.cursor.currentBlock()).unboxReference(owner);
   const keys = context.runtime.callPointer(array ? "arrayKeys" : "objectKeys", [pointer], context.cursor.uniqueName("enumeration.keys"));
+  const boxed = keep(context.values.forBlock(context.cursor.currentBlock()).boxReference("array", keys), context);
+  forIterator(arrayIterator(boxed, context), (value) => storeString(operation.itemName, value, context), operation.body, context);
+}
+
+function forInValue(operation: ProtocolNode<"forInValue">, context: OperationContext): void {
+  const source = keep(context.expressions.value(operation.source), context);
+  const keys = context.runtime.callPointer("valueObjectKeys", [source], context.cursor.uniqueName("enumeration.keys"));
   const boxed = keep(context.values.forBlock(context.cursor.currentBlock()).boxReference("array", keys), context);
   forIterator(arrayIterator(boxed, context), (value) => storeString(operation.itemName, value, context), operation.body, context);
 }
@@ -196,5 +203,6 @@ export const protocolOperationHandlers: VariantHandlers<ProtocolVariants, Operat
   },
   forInObject: forIn,
   forInArray: forIn,
+  forInValue,
   arrayDestructureProtocol: destructure
 };

@@ -87,6 +87,13 @@ export const numbersContracts = {
     name: "parseInt", parameters: [llvm.i64, llvm.ptr], returns: llvm.double, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "parseIntRadix": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "parseIntRadix", parameters: [llvm.i64, llvm.ptr, llvm.double], returns: llvm.double, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
   "parseFloat": {
     resultKind: "scalar",
     pointerResult: { kind: "none" },
@@ -211,7 +218,7 @@ export const numbersContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "mathRandom", parameters: [], returns: llvm.double, variadic: false,
-    effects: { allocates: true, collects: true, completion: "none" }
+    effects: { allocates: false, collects: false, completion: "none" }
   },
   "mathFround": {
     resultKind: "scalar",
@@ -288,7 +295,7 @@ export const numbersContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "dateNow", parameters: [], returns: llvm.double, variadic: false,
-    effects: { allocates: true, collects: true, completion: "none" }
+    effects: { allocates: false, collects: false, completion: "none" }
   },
   "dateReadTimestamp": {
     resultKind: "completion",

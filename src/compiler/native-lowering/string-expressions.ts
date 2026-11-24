@@ -157,6 +157,16 @@ const handlers: VariantHandlers<StringVariants, ExpressionContext, NativeString>
       length: context.runtime.call("valueStringLength", [converted], context.cursor.uniqueName("string.coerce.length"))
     };
   },
+  propertyKey: (expression, context) => {
+    const value = context.expressions.value(expression.value);
+    const key = context.runtime.callWithCompletion("valueToPropertyKeyObservable", [value],
+      context.cursor.uniqueName("property.key"), context.exceptionTarget());
+    context.roots.push(key);
+    return {
+      bytes: context.runtime.callPointer("valueStringPtr", [key], context.cursor.uniqueName("property.key.bytes")),
+      length: context.runtime.call("valueStringLength", [key], context.cursor.uniqueName("property.key.length"))
+    };
+  },
   stringMethod, stringFromCharCode: fromCharCode, regexReplace,
   numberFormat: (expression, context) => {
     const receiver = context.expressions.number(expression.receiver);

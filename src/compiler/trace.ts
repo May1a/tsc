@@ -1,4 +1,5 @@
 import type { SourceSpan } from "./diagnostics.js";
+import type { JsIrFunctionObjectDefinition } from "./ir/bindings.js";
 import type { JsIrLoweringMode, JsIrModule, JsIrTraceOrigin } from "./ir/module.js";
 import type { JsIrOperation } from "./ir/types.js";
 import { visitJsIrOperations } from "./ir/visit.js";
@@ -39,6 +40,11 @@ function traceOperationId(operation: JsIrOperation): string {
   return operation.trace.id;
 }
 
+/** A function object's own operations: what binds its parameters, then its body. */
+function functionObjectOperations(definition: JsIrFunctionObjectDefinition): readonly JsIrOperation[] {
+  return [...definition.parameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...definition.body ?? []];
+}
+
 export function buildTraceMap(
   module: JsIrModule,
   llvmRanges: ReadonlyMap<string, readonly LlvmLineRange[]>
@@ -51,7 +57,7 @@ export function buildTraceMap(
     const sourceModule = module.modules[moduleIndex];
     const moduleId = `m${moduleIndex}`;
     const operationIds: string[] = [];
-    visitJsIrOperations([...sourceModule.operations, ...sourceModule.functionObjects.flatMap((definition) => definition.body ?? [])], (operation) => {
+    visitJsIrOperations([...sourceModule.operations, ...sourceModule.functionObjects.flatMap(functionObjectOperations)], (operation) => {
       const id = traceOperationId(operation);
       if (seenIds.has(id)) {
         throw new Error(`Internal compiler error: duplicate trace ID ${id}`);

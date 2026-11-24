@@ -24,6 +24,11 @@ export function lowerFunctionParameters(
 ): Produced<LoweredParameters> {
   const parameters: JsIrFunctionParameter[] = [];
   const fnBindings = functionFrameBindings(bindings);
+  for (const forwardName of context.moduleForwardBindings) {
+    if (!fnBindings.has(forwardName)) {
+      fnBindings.set(forwardName, { kind: "valueVariable", name: forwardName });
+    }
+  }
   const declaredParameters = runtimeParameters(declarations);
   for (const [index, declaration] of declaredParameters.entries()) {
     if (declaration.dotDotDotToken !== undefined && index !== declaredParameters.length - 1) {

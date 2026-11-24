@@ -48,7 +48,7 @@ const fixturesDirectory = path.resolve(import.meta.dirname, "../fixtures");
  * rebuilds each container's children and a new one would otherwise be reached untested.
  */
 const containerKindsLowerableFromSource = [
-  "arrayDestructureProtocol", "bindingGroup", "block", "doWhile", "for", "forInArray", "forInObject",
+  "arrayDestructureProtocol", "bindingGroup", "block", "doWhile", "for", "forInArray", "forInObject", "forInValue",
   "forOfArray", "forOfMap", "forOfProtocol", "forOfSet", "forOfString", "function", "if",
   "labeledBlock", "runtimeArrayMapFunctionObject", "switch", "tryCatch", "while"
 ] as const;

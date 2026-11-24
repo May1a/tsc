@@ -13,7 +13,7 @@ export function lowerCallArguments(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<readonly JsIrCallArgument[]> {
   const callee = bindings.get(name);
-  if (callee?.kind === "function") {
+  if (callee?.kind === "function" || callee?.kind === "functionReference") {
     const typed = context.lowerTypedCallArguments(context, callee.parameters, args, bindings);
     if (typed.kind !== "lowered") {
       return withRefusal(typed, unsupportedIn(`Arguments to \`${name}\` must be expressions this build can evaluate`));
@@ -80,35 +80,34 @@ export function lowerTypedCallArguments(
   if (restParameter !== undefined) {
     return lowerTypedCallArgumentsWithRest(context, parameters, restParameter, args, bindings);
   }
-  if (args.length > parameters.length) {
-    return notApplicable;
-  }
   const lowered: JsIrCallArgument[] = [];
-  for (let i = 0; i < parameters.length; i++) {
-    const parameter = parameters[i];
-    if (i < args.length) {
-      const value = lowerTypedCallArgument(context, parameter, args[i], bindings);
-      if (value.kind !== "lowered") {
-        return value;
-      }
-      lowered.push(value.operation);
-      continue;
+  const fixedCount = Math.min(args.length, parameters.length);
+  for (let i = 0; i < fixedCount; i++) {
+    const value = lowerTypedCallArgument(context, parameters[i], args[i], bindings);
+    if (value.kind !== "lowered") {
+      return value;
     }
-    const omitted = omittedParameterArgument(parameter);
-    if (omitted === undefined) {
+    lowered.push(value.operation);
+  }
+  for (let i = fixedCount; i < parameters.length; i++) {
+    const parameter = parameters[i];
+    if (parameter.valueKind !== "value" && parameter.isOptional !== true && parameter.defaultValue === undefined) {
       return notApplicable;
     }
-    lowered.push(omitted);
+  }
+  for (let i = parameters.length; i < args.length; i++) {
+    const extra = context.lowerValueExpression(context, args[i], bindings);
+    if (extra.kind !== "lowered") {
+      return extra;
+    }
+    lowered.push({ valueKind: "value", value: extra.operation });
   }
   return produced(lowered);
 }
 
 // The callee applies defaults to undefined arguments. Optional parameters retain boxed storage.
 function omittedParameterArgument(parameter: JsIrFunctionParameter): JsIrCallArgument | undefined {
-  if (parameter.defaultValue !== undefined) {
-    return { valueKind: "undefined" };
-  }
-  if (parameter.isOptional === true) {
+  if (parameter.defaultValue !== undefined || parameter.isOptional === true || parameter.valueKind === "value") {
     return { valueKind: "undefined" };
   }
   return undefined;
@@ -214,10 +213,17 @@ export function lowerTypedCallArgument(
   }
   if (parameter.valueKind === "string") {
     const value = context.lowerStringRuntimeExpression(context, arg, bindings);
-    if (value.kind !== "lowered") {
-      return withRefusal(value, unsupportedIn(`The argument \`${expressionSnippet(arg)}\` is not an expression this build can evaluate`));
+    if (value.kind === "lowered") {
+      return produced({ valueKind: "string", value: value.operation });
     }
-    return produced({ valueKind: "string", value: value.operation });
+    if (value.kind === "unsupported") {
+      return value;
+    }
+    const boxed = context.lowerValueExpression(context, arg, bindings);
+    if (boxed.kind !== "lowered") {
+      return withRefusal(boxed, unsupportedIn(`The argument \`${expressionSnippet(arg)}\` is not an expression this build can evaluate`));
+    }
+    return produced({ valueKind: "value", value: boxed.operation });
   }
   if (parameter.valueKind === "value") {
     const value = context.lowerValueExpression(context, arg, bindings);
@@ -227,8 +233,15 @@ export function lowerTypedCallArgument(
     return produced({ valueKind: "value", value: value.operation });
   }
   const value = context.lowerNumberExpression(context, arg, bindings);
-  if (value.kind !== "lowered") {
-    return withRefusal(value, unsupportedIn(`The argument \`${expressionSnippet(arg)}\` is not an expression this build can evaluate`));
+  if (value.kind === "lowered") {
+    return produced({ valueKind: "number", value: value.operation });
   }
-  return produced({ valueKind: "number", value: value.operation });
+  if (value.kind === "unsupported") {
+    return value;
+  }
+  const boxed = context.lowerValueExpression(context, arg, bindings);
+  if (boxed.kind !== "lowered") {
+    return withRefusal(boxed, unsupportedIn(`The argument \`${expressionSnippet(arg)}\` is not an expression this build can evaluate`));
+  }
+  return produced({ valueKind: "value", value: boxed.operation });
 }

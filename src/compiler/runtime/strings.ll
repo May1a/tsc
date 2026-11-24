@@ -856,7 +856,8 @@ surrogate:
   %surrogate.value = call i64 @valueBoxString(ptr %out, i64 3)
   ret i64 %surrogate.value
 missing:
-  ret i64 9222246136947933184
+  %method = call i64 @stringPrototypeMethod(i64 %key.len, ptr %key.ptr)
+  ret i64 %method
 }
 
 define double @stringLocaleCompare(i64 %left.len, ptr %left.ptr, i64 %right.len, ptr %right.ptr) {

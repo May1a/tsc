@@ -1,4 +1,5 @@
 declare function print(value: unknown): void;
 
-const set = new WeakSet();
-print(set);
+if (Date.now()) {
+  print("x");
+}

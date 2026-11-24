@@ -1,5 +1,5 @@
 import type { LoweringContext } from "./context.js";
-import { type ClassInfo, type ClassMethodEntry, classCallableParameters } from "./class-info.js";
+import { type ClassInfo, type ClassMethodEntry, classCallableParameters, containsLexicalArguments } from "./class-info.js";
 import ts from "typescript";
 import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
 import { type Produced, loweredPayload, produced, unsupportedIn } from "./lowered.js";
@@ -130,7 +130,14 @@ export function lowerClassMethod(
       return parameters;
     }
     fnParameters.push(...parameters.operation.parameters);
-    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, declaration, declarationBody, [...declaration.parameters], bindings);
+    const paramNames = collectParameterBindingNames(declaration.parameters, [CLASS_THIS_NAME]);
+    const usesArguments = !paramNames.has("arguments") && containsLexicalArguments(declarationBody);
+    if (usesArguments) {
+      parameters.operation.bindings.set("arguments", { kind: "valueVariable", name: "arguments" });
+      paramNames.add("arguments");
+    }
+    const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, declaration, declarationBody, [...declaration.parameters], bindings)
+      .filter((name) => !usesArguments || name !== "arguments");
     const suspendKind = suspendableKindFor(declaration);
     const body = suspendKind === undefined
       ? lowerClassMethodBody(context, declarationBody, parameters.operation.bindings)
@@ -138,7 +145,7 @@ export function lowerClassMethod(
           kind: suspendKind,
           body: declarationBody,
           bindings: parameters.operation.bindings,
-          outerParameterNames: new Set(fnParameters.map((parameter) => parameter.name)),
+          outerParameterNames: paramNames,
           outerCaptureNames: captureNames,
           nameHint: `${info.name}_${methodName}`
         });
@@ -150,7 +157,8 @@ export function lowerClassMethod(
       name: classMethodFunctionName(info.name, methodName, isStatic),
       parameters: fnParameters,
       body: body.operation,
-      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] })
+      ...(captureNames.length === 0 ? {} : { enclosingCaptureNames: [...captureNames] }),
+      ...(usesArguments ? { usesArguments: true, argumentsStartIndex: 1 } : {})
     });
   });
 }

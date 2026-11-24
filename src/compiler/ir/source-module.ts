@@ -1,10 +1,10 @@
 import type { JsIrSwitchClause } from "./expressions.js";
 import type { JsIrOperation } from "./types.js";
 import { jsIrLeafOperationKinds } from "./visit.js";
-import type { JsIrLowerOptions, JsIrLoweringMode, JsIrOperationTrace, JsIrResult } from "./module.js";
+import type { JsIrLowerOptions, JsIrLoweringMode, JsIrModuleImport, JsIrOperationTrace, JsIrResult } from "./module.js";
 import type { CompilerDiagnostic } from "../diagnostics.js";
 import type { LoweringContext } from "./context.js";
-import type ts from "typescript";
+import ts from "typescript";
 import { createInlineCppCompilation, inlineCppDisabledDiagnostic } from "./inline-cpp.js";
 import type { JsIrBindingValue, JsIrFunctionObjectDefinition, JsIrFunctionParameter } from "./bindings.js";
 import { collectFunctionObjectDefinitions, collectPromotedAggregateNames } from "./captures.js";
@@ -13,9 +13,21 @@ import { collectClassHierarchy } from "./class-hierarchy.js";
 import { collectStoragePlan } from "./storage-plan.js";
 import { withHoistedVars } from "./var-hoisting.js";
 import { isNonExecutableDeclaration, unsupportedStatementDiagnostic } from "./comparisons.js";
-import { lowerClassStatement } from "./classes.js";
+import { lowerClassStatement, preregisterModuleClasses } from "./classes.js";
 import { markRuntimeObjectShadows, updateBindings } from "./binding-updates.js";
+import { collectForwardReferences } from "./forward-references.js";
+import { boundNames } from "./predicates.js";
 import { createLoweringContext } from "./lowering-context.js";
+import { functionReferenceBinding } from "./function-parameters.js";
+import {
+  DEFAULT_EXPORT_BINDING_NAME,
+  type ModuleExportIndex,
+  buildModuleExportIndex,
+  buildModuleNamespaceInitOperations,
+  buildModuleNamespacePopulateOperations,
+  orderSourceFiles,
+  wireModuleImports
+} from "./module-linking.js";
 
 const traceOperationIdWidth = 6;
 
@@ -133,6 +145,7 @@ function withTracedChildren(operation: JsIrOperation, nextTraceId: () => string)
     case "forOfProtocol":
     case "forInObject":
     case "forInArray":
+    case "forInValue":
     case "returnClosure": {
       return { ...operation, body: operation.body.map(tracedOperationChild(operation, nextTraceId)) };
     }
@@ -182,26 +195,103 @@ interface LoweredStatements {
   readonly operations: readonly JsIrOperation[];
   readonly diagnostics: readonly CompilerDiagnostic[];
   readonly loweringMode: JsIrLoweringMode;
+  readonly imports: readonly JsIrModuleImport[];
+}
+
+/** Module bindings a function or class mentions before the statement declaring them has run. */
+function collectForwardReferencedModuleBindings(statements: readonly ts.Statement[]): ReadonlySet<string> {
+  const order = new Map<string, number>();
+  for (const [index, statement] of statements.entries()) {
+    if (!ts.isVariableStatement(statement)) {
+      continue;
+    }
+    for (const name of statement.declarationList.declarations.flatMap((declaration) => boundNames(declaration.name))) {
+      if (!order.has(name)) {
+        order.set(name, index);
+      }
+    }
+  }
+  return collectForwardReferences(statements, order);
 }
 
 function lowerStatements(
   context: LoweringContext,
-  sourceFile: ts.SourceFile
+  sourceFile: ts.SourceFile,
+  exportIndex: ModuleExportIndex,
+  programChecker: ts.TypeChecker | undefined,
+  filesByName: ReadonlyMap<string, ts.SourceFile>,
+  moduleClassesByFile: Map<string, Map<string, ClassInfo>>
 ): LoweredStatements {
-  context.nextFunctionObjectId = 0;
-  context.nextJsonStatementValueId = 0;
-  context.nextOptionalCallStatementValueId = 0;
-  context.nextSyntheticTempId = 0;
-  // Class inheritance resolves against declarations in the current source file.
-  context.classes = new Map<string, ClassInfo>();
-  context.classHierarchy = collectClassHierarchy(sourceFile);
-  context.storagePlan = collectStoragePlan(sourceFile);
-  const inlineCppDiagnostic = inlineCppDisabledDiagnostic(context.inlineCpp, sourceFile);
+  const isPackageFile = exportIndex.packageGraph?.requestedExportsByFile.has(sourceFile.fileName) === true;
+  const moduleContext: LoweringContext = isPackageFile ? { ...context, typeChecker: undefined } : context;
+  moduleContext.nextFunctionObjectId = 0;
+  moduleContext.nextJsonStatementValueId = 0;
+  moduleContext.nextOptionalCallStatementValueId = 0;
+  moduleContext.nextSyntheticTempId = 0;
+  moduleContext.classes = new Map<string, ClassInfo>();
+  moduleContext.storagePlan = collectStoragePlan(sourceFile, context.typeChecker);
+  moduleContext.moduleForwardBindings = collectForwardReferencedModuleBindings(sourceFile.statements);
+  const inlineCppDiagnostic = inlineCppDisabledDiagnostic(moduleContext.inlineCpp, sourceFile);
   if (inlineCppDiagnostic !== undefined) {
-    return { operations: [], diagnostics: [inlineCppDiagnostic], loweringMode: "native" };
+    return { operations: [], diagnostics: [inlineCppDiagnostic], loweringMode: "native", imports: [] };
   }
 
-  return lowerTopLevelStatements(context, sourceFile);
+  return lowerTopLevelStatements(moduleContext, sourceFile, exportIndex, programChecker, filesByName, moduleClassesByFile);
+}
+
+function preregisterHoistedFunctions(
+  statements: readonly ts.Statement[],
+  bindings: Map<string, JsIrBindingValue>
+): void {
+  for (const statement of statements) {
+    if (!isNonExecutableDeclaration(statement) && ts.isFunctionDeclaration(statement) && statement.name !== undefined && statement.body !== undefined) {
+      bindings.set(statement.name.text, functionReferenceBinding(statement));
+    }
+  }
+}
+
+function lowerTopLevelStatement(
+  context: LoweringContext,
+  sourceFile: ts.SourceFile,
+  statement: ts.Statement,
+  bindings: Map<string, JsIrBindingValue>,
+  promotedAggregates: ReadonlySet<string>,
+  importedClassNames: ReadonlySet<string>,
+  localClasses: Map<string, ClassInfo>,
+  operations: JsIrOperation[],
+  diagnostics: CompilerDiagnostic[]
+): void {
+  if (isNonExecutableDeclaration(statement)) {
+    return;
+  }
+  if (ts.isExportAssignment(statement)) {
+    const value = context.lowerValueExpression(context, statement.expression, bindings);
+    if (value.kind === "lowered") {
+      const op: JsIrOperation = { kind: "letValue", name: DEFAULT_EXPORT_BINDING_NAME, value: value.operation };
+      operations.push(op);
+      updateBindings(op, bindings);
+    } else {
+      diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, value, bindings));
+    }
+    return;
+  }
+  const classResult = lowerClassStatement(context, statement, bindings, context.classes);
+  if (classResult !== undefined) {
+    if (classResult.kind === "unsupported") {
+      diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, classResult, bindings));
+    } else {
+      appendClassOperations(operations, classResult.operation, statement, bindings);
+      recordNewModuleClasses(context.classes, importedClassNames, localClasses, context, sourceFile.fileName);
+    }
+    return;
+  }
+  const result = context.lowerStatement(context, statement, bindings, promotedAggregates);
+  if (result.kind === "lowered") {
+    operations.push(result.operation);
+    updateBindings(result.operation, bindings);
+    return;
+  }
+  diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result, bindings));
 }
 
 /**
@@ -209,42 +299,64 @@ function lowerStatements(
  * recognizes. There is no second attempt: a statement that does not lower is reported where it
  * failed, and a class statement that does not lower is reported with the reason the class tier gave.
  */
-function lowerTopLevelStatements(context: LoweringContext,
-  sourceFile: ts.SourceFile): LoweredStatements {
+function lowerTopLevelStatements(
+  context: LoweringContext,
+  sourceFile: ts.SourceFile,
+  exportIndex: ModuleExportIndex,
+  programChecker: ts.TypeChecker | undefined,
+  filesByName: ReadonlyMap<string, ts.SourceFile>,
+  moduleClassesByFile: Map<string, Map<string, ClassInfo>>
+): LoweredStatements {
   const operations: JsIrOperation[] = [];
   const bindings = new Map<string, JsIrBindingValue>();
   const diagnostics: CompilerDiagnostic[] = [];
   const promotedAggregates = collectPromotedAggregateNames(sourceFile.statements);
   const { classes } = context;
+  const imported = wireModuleImports(context, sourceFile, exportIndex, programChecker, filesByName, moduleClassesByFile, bindings);
+  const importedClassNames = new Set(classes.keys());
+  const localClasses = new Map<string, ClassInfo>();
+  moduleClassesByFile.set(sourceFile.fileName, localClasses);
 
   return withHoistedVars(context, sourceFile.statements, bindings, new Set(), (preface) => {
-    operations.push(...preface);
+    operations.push(...imported.preamble, ...preface);
+    preregisterHoistedFunctions(sourceFile.statements, bindings);
+    operations.push(...buildModuleNamespaceInitOperations(sourceFile, exportIndex));
+    preregisterModuleClasses(sourceFile.statements, bindings, classes);
     for (const statement of sourceFile.statements) {
-      if (isNonExecutableDeclaration(statement)) {
-        continue;
-      }
-
-      const classResult = lowerClassStatement(context, statement, bindings, classes);
-      if (classResult !== undefined) {
-        if (classResult.kind === "unsupported") {
-          diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, classResult, bindings));
-        } else {
-          appendClassOperations(operations, classResult.operation, statement, bindings);
-        }
-        continue;
-      }
-
-      const result = context.lowerStatement(context, statement, bindings, promotedAggregates);
-      if (result.kind === "lowered") {
-        operations.push(result.operation);
-        updateBindings(result.operation, bindings);
-        continue;
-      }
-      diagnostics.push(unsupportedStatementDiagnostic(sourceFile, statement, result, bindings));
+      lowerTopLevelStatement(context, sourceFile, statement, bindings, promotedAggregates, importedClassNames, localClasses, operations, diagnostics);
     }
-
-    return { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native" };
+    operations.push(
+      ...buildModuleNamespacePopulateOperations(
+        context,
+        sourceFile,
+        exportIndex,
+        programChecker,
+        filesByName,
+        moduleClassesByFile,
+        localClasses,
+        bindings,
+        imported.addImport
+      )
+    );
+    return { operations: markRuntimeObjectShadows(operations), diagnostics, loweringMode: "native", imports: imported.imports };
   });
+}
+
+function recordNewModuleClasses(
+  classes: ReadonlyMap<string, ClassInfo>,
+  importedClassNames: ReadonlySet<string>,
+  localClasses: Map<string, ClassInfo>,
+  context: LoweringContext,
+  fileName: string
+): void {
+  for (const [name, info] of classes) {
+    if (importedClassNames.has(name) || localClasses.has(name)) {
+      continue;
+    }
+    localClasses.set(name, info);
+    context.allClasses.set(info.name, info);
+    context.classOwnerFiles.set(info.name, fileName);
+  }
 }
 
 /**
@@ -264,9 +376,14 @@ export function lowerToJsIr(
     typeChecker: checker,
     inlineCpp: createInlineCppCompilation(options.fcpp === true)
   });
+  const orderedSourceFiles = orderSourceFiles(entry, sourceFiles, checker, options.packageGraph);
+  const filesByName = new Map(orderedSourceFiles.map((file) => [file.fileName, file]));
+  const exportIndex = buildModuleExportIndex(orderedSourceFiles, options.packageGraph, checker, filesByName);
+  const moduleClassesByFile = new Map<string, Map<string, ClassInfo>>();
+  context.classHierarchy = collectClassHierarchy(orderedSourceFiles);
   const allDiagnostics: CompilerDiagnostic[] = [];
-  const modules = sourceFiles.map((sourceFile, moduleIndex) => {
-    const lowered = lowerStatements(context, sourceFile);
+  const modules = orderedSourceFiles.map((sourceFile, moduleIndex) => {
+    const lowered = lowerStatements(context, sourceFile, exportIndex, checker, filesByName, moduleClassesByFile);
     const nextTraceId = createTraceIdSource(moduleIndex);
     const operations = finalizeOperationTraces(lowered.operations, nextTraceId);
     const finalizeDefinition = (definition: JsIrFunctionObjectDefinition) => ({
@@ -281,7 +398,8 @@ export function lowerToJsIr(
       statementCount: sourceFile.statements.length,
       loweringMode: lowered.loweringMode,
       operations,
-      functionObjects
+      functionObjects,
+      imports: lowered.imports.length > 0 ? lowered.imports : undefined
     };
   });
   return {

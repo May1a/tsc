@@ -14,6 +14,8 @@ export interface FunctionPlan {
   readonly body: readonly ResolvedOperation[];
   readonly binding?: BindingRef;
   readonly thisBinding?: BindingRef;
+  readonly argumentsBinding?: BindingRef;
+  readonly argumentsStartIndex?: number;
   readonly name: string;
   readonly arrow: boolean;
 }
@@ -31,8 +33,9 @@ export function collectFunctionPlans(resolved: ResolvedModule): readonly Functio
         const captures = operation.enclosingCaptureNames ?? [];
         const symbol = `tscn.function.${operation.functionId.ordinal}`;
         plans.set(operation.functionId, { symbol, functionId: operation.functionId, parameters: operation.parameters, body: operation.body,
-          traceId: operation.trace?.id, binding: operation.name, thisBinding: operation.thisBinding, captures, sources: captures.map(bindingSource),
-          name: spelling(operation.name), arrow: false });
+          traceId: operation.trace?.id, binding: operation.name, thisBinding: operation.thisBinding,
+          argumentsBinding: operation.argumentsBinding, argumentsStartIndex: operation.argumentsStartIndex,
+          captures, sources: captures.map(bindingSource), name: spelling(operation.name), arrow: false });
         break;
       }
       case "returnClosure": {
@@ -62,17 +65,24 @@ export function collectFunctionPlans(resolved: ResolvedModule): readonly Functio
       collect([...plan.parameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...plan.body]);
     }
   }
-  return Object.freeze([...plans.values()].map((plan) => normalizeCaptures(plan, resolved)));
+  return Object.freeze([...plans.values()].map((plan) => normalizeCaptures(withFreeBindings(plan, resolved), resolved)));
 }
 
 function objectPlan(definition: Extract<ResolvedFunctionObject, { readonly functionId: FunctionId }>): FunctionPlan {
   const captures = definition.captures ?? [];
   return { symbol: `tscn.function.${definition.functionId.ordinal}`, functionId: definition.functionId, parameters: definition.parameters,
     body: definition.body, captures: captures.map((capture) => capture.name), sources: captures.map((capture) => bindingSource(capture.sourceBinding ?? capture.name)),
-    thisBinding: definition.thisBinding, name: definition.inferredName ?? "", arrow: definition.functionKind === "arrow" };
+    thisBinding: definition.thisBinding, argumentsBinding: definition.argumentsBinding, name: definition.inferredName ?? "", arrow: definition.functionKind === "arrow" };
 }
 
 function bindingSource(reference: BindingRef): CaptureSource { return { kind: "binding", reference }; }
+
+/** Adds the outer bindings the body reads that the operation does not already declare as captures. */
+function withFreeBindings(plan: FunctionPlan, resolved: ResolvedModule): FunctionPlan {
+  const declared = new Set(plan.captures.map((capture) => capture.binding));
+  const free = (resolved.bindings.freeBindings.get(plan.functionId) ?? []).filter((reference) => !declared.has(reference.binding));
+  return { ...plan, captures: [...plan.captures, ...free], sources: [...plan.sources, ...free.map(bindingSource)] };
+}
 
 function normalizeCaptures(plan: FunctionPlan, resolved: ResolvedModule): FunctionPlan {
     const retained: { readonly target: BindingRef; readonly source: CaptureSource }[] = [];

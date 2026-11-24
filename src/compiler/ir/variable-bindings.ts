@@ -9,11 +9,12 @@ import { isBoxedDeclaration, isRuntimeAggregateDeclaration } from "./storage-pla
 import { lowerDestructuringBinding } from "./destructuring.js";
 import { type DeclarationScope, declarationKindOf, declarationScope } from "./declaration-kind.js";
 import { lowerClosureFactoryCall, lowerFunctionObjectValue } from "./closures.js";
+import { functionExpressionSelfReferences } from "./captures.js";
 import { isUndefinedExpression, isUnsupportedSymbolExpression, unwrapTypeOnlyExpression } from "./predicates.js";
 import { expressionSnippet, unsupportedNewExpressionMessage } from "./diagnostics.js";
 import { classifyArrayLiteral } from "./array-literals.js";
 import { lowerStringExpression } from "./string-constants.js";
-import { lowerBooleanExpression } from "./conditions.js";
+import { lowerBooleanExpression, lowerBooleanValueCondition } from "./conditions.js";
 import { classifyObjectLiteral } from "./object-literals.js";
 import { fixedObjectToRuntimeObjectValue, lowerRuntimeObjectOwnPropertyDescriptorBinding } from "./object-descriptors.js";
 import { lowerRuntimeErrorLiteral } from "./errors.js";
@@ -44,6 +45,12 @@ export function lowerVariableBinding(
     updateBindings(result.operation, groupBindings);
   }
   return produced({ kind: "bindingGroup", operations });
+}
+
+function requiresBoxedConstStorage(context: LoweringContext, declaration: ts.VariableDeclaration, name: string): boolean {
+  return declaration.type?.kind === ts.SyntaxKind.UnknownKeyword ||
+    declaration.type?.kind === ts.SyntaxKind.AnyKeyword ||
+    context.moduleForwardBindings.has(name);
 }
 
 export function lowerVariableDeclarator(
@@ -84,7 +91,7 @@ export function lowerVariableDeclarator(
       context, name,
       initializer,
       bindings,
-      declaration.type?.kind === ts.SyntaxKind.UnknownKeyword || declaration.type?.kind === ts.SyntaxKind.AnyKeyword,
+      requiresBoxedConstStorage(context, declaration, name),
       isRuntimeArrayTypeHint(declaration.type) || forceRuntimeAggregate,
       forceRuntimeAggregate
     );
@@ -289,6 +296,37 @@ function lowerVarRedeclaration(
   return produced({ kind: "assignNumber", name, value: value.operation });
 }
 
+function lowerBoundFunctionInitializer(
+  context: LoweringContext,
+  name: string,
+  initializer: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>,
+  scope: DeclarationScope
+): Lowered {
+  const unwrapped = unwrapTypeOnlyExpression(initializer);
+  if ((ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) && !bindings.has(name) &&
+    functionExpressionSelfReferences(unwrapped.body, new Set([name]))) {
+    const selfBindings = new Map(bindings);
+    selfBindings.set(name, { kind: "valueVariable", name, valueType: "function" });
+    const recursiveFn = lowerFunctionObjectValue(context, unwrapped, selfBindings, name);
+    if (recursiveFn.kind !== "lowered") {
+      return recursiveFn;
+    }
+    return produced({
+      kind: "bindingGroup",
+      operations: [
+        { kind: "letValue", name, value: { kind: "undefined" }, ...scope },
+        { kind: "assignValue", name, value: recursiveFn.operation }
+      ]
+    });
+  }
+  const functionValue = lowerFunctionObjectValue(context, unwrapped, bindings, name);
+  if (functionValue.kind !== "lowered") {
+    return functionValue;
+  }
+  return produced({ kind: "letValue", name, value: functionValue.operation, ...scope });
+}
+
 function lowerLetVariableBinding(
   context: LoweringContext,
   name: string,
@@ -298,12 +336,9 @@ function lowerLetVariableBinding(
   forceRuntimeArray = false
 ): Lowered {
   const unwrapped = unwrapTypeOnlyExpression(initializer);
-  const functionValue = lowerFunctionObjectValue(context, unwrapped, bindings, name);
-  if (functionValue.kind === "unsupported") {
+  const functionValue = lowerBoundFunctionInitializer(context, name, unwrapped, bindings, scope);
+  if (functionValue.kind !== "notApplicable") {
     return functionValue;
-  }
-  if (functionValue.kind === "lowered") {
-    return produced({ kind: "letValue", name, value: functionValue.operation, ...scope });
   }
 
   const arrayBinding = lowerLetArrayLiteralBinding(context, name, initializer, bindings, scope, forceRuntimeArray);
@@ -323,11 +358,11 @@ function lowerLetVariableBinding(
     return produced({ kind: "letValue", name, value: nullishValue, ...scope });
   }
 
-  const booleanValue = context.lowerConditionExpression(context, initializer, bindings);
+  const booleanValue = lowerBooleanValueCondition(context, initializer, bindings);
   if (booleanValue.kind === "unsupported") {
     return booleanValue;
   }
-  if (booleanValue.kind === "lowered" && booleanValue.operation.kind !== "valueTruthy") {
+  if (booleanValue.kind === "lowered") {
     return produced({ kind: "letBoolean", ...scope, name, value: booleanValue.operation });
   }
 
@@ -397,10 +432,6 @@ function lowerLetNumberOrRefusal(
       return numberValue;
     }
     // Not a scalar: an object, a class instance or another value lives in a boxed slot.
-    const constOnly = constOnlyAggregateRefusal(unwrapTypeOnlyExpression(initializer));
-    if (constOnly !== undefined) {
-      return unsupported(constOnly);
-    }
     const value = context.lowerValueExpression(context, unwrapTypeOnlyExpression(initializer), bindings);
     if (value.kind !== "lowered") {
       return withRefusal(value, unsupportedIn(unsupportedLetInitializerMessage(initializer)));
@@ -417,35 +448,15 @@ function lowerLetNumberOrRefusal(
 }
 
 /**
- * Why a `let` or `var` initializer did not lower: a collection or error only a `const` can hold, a
- * constructor this build does not know, or an expression no tier evaluates. Each names the
- * initializer rather than the declaration.
+ * Why a `let` or `var` initializer did not lower: a constructor this build does not know, or an
+ * expression no tier evaluates. Each names the initializer rather than the declaration.
  */
 function unsupportedLetInitializerMessage(initializer: ts.Expression): string {
   const unwrapped = unwrapTypeOnlyExpression(initializer);
-  const constOnly = constOnlyAggregateRefusal(unwrapped);
-  if (constOnly !== undefined) {
-    return constOnly;
-  }
   if (ts.isNewExpression(unwrapped) && ts.isIdentifier(unwrapped.expression)) {
     return unsupportedNewExpressionMessage(unwrapped.expression.text);
   }
   return `\`${expressionSnippet(unwrapped)}\` is not a value a \`let\` or \`var\` binding can hold yet`;
-}
-
-/**
- * Why a boxed `let` or `var` cannot hold a collection: `Map` and `Set` live in collection storage
- * rather than boxed slots, so a reassigned or uninitialized `let` cannot hold them yet.
- */
-function constOnlyAggregateRefusal(initializer: ts.Expression): string | undefined {
-  if (!ts.isNewExpression(initializer) || !ts.isIdentifier(initializer.expression)) {
-    return undefined;
-  }
-  const constructorName = initializer.expression.text;
-  if (constructorName !== "Map" && constructorName !== "Set") {
-    return undefined;
-  }
-  return `\`new ${constructorName}()\` constructs a \`${constructorName}\`, which a \`let\` or \`var\` binding cannot hold yet`;
 }
 
 /** The value an `undefined` or `null` initializer denotes, or `undefined` for any other initializer. */
@@ -473,12 +484,9 @@ export function lowerConstVariableBinding(
     return aggregateValue;
   }
 
-  const functionValue = lowerFunctionObjectValue(context, unwrappedInitializer, bindings, name);
-  if (functionValue.kind === "unsupported") {
+  const functionValue = lowerBoundFunctionInitializer(context, name, unwrappedInitializer, bindings, {});
+  if (functionValue.kind !== "notApplicable") {
     return functionValue;
-  }
-  if (functionValue.kind === "lowered") {
-    return produced({ kind: "letValue", name, value: functionValue.operation });
   }
 
   if (forceValue) {
@@ -550,11 +558,11 @@ export function lowerConstVariableBinding(
     return produced({ kind: "constValue", name, value: nullishValue });
   }
 
-  const booleanCondition = context.lowerConditionExpression(context, unwrappedInitializer, bindings);
+  const booleanCondition = lowerBooleanValueCondition(context, unwrappedInitializer, bindings);
   if (booleanCondition.kind === "unsupported") {
     return booleanCondition;
   }
-  if (booleanCondition.kind === "lowered" && booleanCondition.operation.kind !== "valueTruthy") {
+  if (booleanCondition.kind === "lowered") {
     return produced({
       kind: "constBooleanExpression",
       name,

@@ -1,8 +1,8 @@
 /*---
-description: For-in enumerates the keys of an object
+description: Evaluating source text is a coverage gap
 flags: [generated]
 features: [for-in]
 ---*/
-for (const key in { a: 1 }) {
+for (const key in eval("({ a: 1 })")) {
   print(key);
 }

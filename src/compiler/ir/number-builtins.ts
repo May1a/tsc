@@ -3,8 +3,8 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import { isUndefinedExpression } from "./predicates.js";
 import type { JsIrBindingValue } from "./bindings.js";
-import type { JsIrNumberExpression } from "./expressions.js";
-import { coerceStringToNumber, decimalRadix, numberExpressionFromNumber, numericLiteralValue } from "./number-constants.js";
+import type { JsIrNumberExpression, JsIrStringExpression } from "./expressions.js";
+import { coerceStringToNumber, numberExpressionFromNumber } from "./number-constants.js";
 import { isMathMethod } from "./comparisons.js";
 import { lowerStringExpression } from "./string-constants.js";
 import { lowerArrayMethodValues } from "./array-arguments.js";
@@ -48,32 +48,10 @@ export function lowerNumericBuiltinCall(
       }
     }
     if (expression.expression.text === "parseInt" && (expression.arguments.length === 1 || expression.arguments.length === 2)) {
-      if (expression.arguments.length === 2) {
-        const radixResult = context.lowerNumberExpression(context, expression.arguments[1], bindings);
-        if (radixResult.kind === "unsupported") {
-          return radixResult;
-        }
-        const radix = loweredPayload(radixResult);
-        if (numericLiteralValue(radix ?? { kind: "nan" }) !== decimalRadix) {
-          return notApplicable;
-        }
-      }
-      const value = context.lowerStringRuntimeExpression(context, expression.arguments[0], bindings);
-      if (value.kind === "unsupported") {
-        return value;
-      }
-      if (value.kind === "lowered") {
-        return produced({ kind: "parseInt", value: value.operation });
-      }
+      return lowerParseIntCall(context, expression.arguments, bindings);
     }
     if (expression.expression.text === "parseFloat" && expression.arguments.length === 1) {
-      const value = context.lowerStringRuntimeExpression(context, expression.arguments[0], bindings);
-      if (value.kind === "unsupported") {
-        return value;
-      }
-      if (value.kind === "lowered") {
-        return produced({ kind: "parseFloat", value: value.operation });
-      }
+      return lowerParseFloatCall(context, expression.arguments[0], bindings);
     }
   }
   if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression) || expression.expression.expression.text !== "Math") {
@@ -83,32 +61,10 @@ export function lowerNumericBuiltinCall(
     }
     const method = expression.expression.name.text;
     if (method === "parseInt" && (expression.arguments.length === 1 || expression.arguments.length === 2)) {
-      if (expression.arguments.length === 2) {
-        const radixResult2 = context.lowerNumberExpression(context, expression.arguments[1], bindings);
-        if (radixResult2.kind === "unsupported") {
-          return radixResult2;
-        }
-        const radix = loweredPayload(radixResult2);
-        if (numericLiteralValue(radix ?? { kind: "nan" }) !== decimalRadix) {
-          return notApplicable;
-        }
-      }
-      const value = context.lowerStringRuntimeExpression(context, expression.arguments[0], bindings);
-      if (value.kind === "unsupported") {
-        return value;
-      }
-      if (value.kind === "lowered") {
-        return produced({ kind: "parseInt", value: value.operation });
-      }
+      return lowerParseIntCall(context, expression.arguments, bindings);
     }
     if (method === "parseFloat" && expression.arguments.length === 1) {
-      const value = context.lowerStringRuntimeExpression(context, expression.arguments[0], bindings);
-      if (value.kind === "unsupported") {
-        return value;
-      }
-      if (value.kind === "lowered") {
-        return produced({ kind: "parseFloat", value: value.operation });
-      }
+      return lowerParseFloatCall(context, expression.arguments[0], bindings);
     }
     return notApplicable;
   }
@@ -121,13 +77,67 @@ export function lowerNumericBuiltinCall(
   }
   const args: JsIrNumberExpression[] = [];
   for (const argument of expression.arguments) {
-    const lowered = context.lowerNumberExpression(context, argument, bindings);
+    const lowered = lowerNumberOrCoerced(context, argument, bindings);
     if (lowered.kind !== "lowered") {
       return lowered;
     }
     args.push(lowered.operation);
   }
   return produced({ kind: "mathCall", method, arguments: args });
+}
+
+function lowerNumberOrCoerced(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrNumberExpression> {
+  const direct = context.lowerNumberExpression(context, expression, bindings);
+  if (direct.kind !== "notApplicable") {
+    return direct;
+  }
+  const value = context.lowerValueExpression(context, expression, bindings);
+  return value.kind === "lowered" ? produced({ kind: "valueToNumber", value: value.operation }) : value;
+}
+
+function lowerStringOrCoerced(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrStringExpression> {
+  const direct = context.lowerStringRuntimeExpression(context, expression, bindings);
+  if (direct.kind !== "notApplicable") {
+    return direct;
+  }
+  const value = context.lowerValueExpression(context, expression, bindings);
+  return value.kind === "lowered" ? produced({ kind: "stringConversion", value: value.operation }) : value;
+}
+
+function lowerParseIntCall(
+  context: LoweringContext,
+  args: ts.NodeArray<ts.Expression>,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrNumberExpression> {
+  const value = lowerStringOrCoerced(context, args[0], bindings);
+  if (value.kind !== "lowered") {
+    return value;
+  }
+  if (args.length === 1) {
+    return produced({ kind: "parseInt", value: value.operation });
+  }
+  const radix = lowerNumberOrCoerced(context, args[1], bindings);
+  if (radix.kind !== "lowered") {
+    return radix;
+  }
+  return produced({ kind: "parseInt", value: value.operation, radix: radix.operation });
+}
+
+function lowerParseFloatCall(
+  context: LoweringContext,
+  argument: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrNumberExpression> {
+  const value = lowerStringOrCoerced(context, argument, bindings);
+  return value.kind === "lowered" ? produced({ kind: "parseFloat", value: value.operation }) : value;
 }
 
 function lowerDateNumberCall(

@@ -34,7 +34,7 @@ export const errorBuiltinSupport: BuiltinSupport<"error", ErrorBuiltin> = {
   },
   "message": { arity: 0, state: "supported", id: "error.message" },
   "name": { arity: 0, state: "supported", id: "error.name" },
-  "stack": { arity: 0, state: "planned", id: "error.stack" },
+  "stack": { arity: 0, state: "supported", id: "error.stack" },
   "toString": { arity: 0, state: "supported", id: "error.toString" },
 };
 

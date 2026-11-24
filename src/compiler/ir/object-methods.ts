@@ -1,11 +1,10 @@
 import { type Lowered, notApplicable, produced } from "./lowered.js";
 import type { LoweringContext } from "./context.js";
 import ts from "typescript";
-import type { JsIrBindingValue, JsIrFunctionParameter } from "./bindings.js";
+import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrValueExpression } from "./expressions.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
-import { parameterValueKind, runtimeParameters } from "./class-info.js";
-import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
+import { containsLexicalArguments } from "./class-info.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
 import { functionReturnKind } from "./binding-updates.js";
@@ -34,22 +33,29 @@ export function lowerObjectMethodFunctionValue(
     return notApplicable;
   }
   const suspendKind = suspendableKindFor(method);
-  const parameters: JsIrFunctionParameter[] = [];
-  const methodBindings = functionFrameBindings(bindings);
-  methodBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-  if (!bindObjectMethodParameters(method, parameters, methodBindings)) {
-    return notApplicable;
+  const loweredParams = context.lowerFunctionParameters(context, method.parameters, bindings);
+  if (loweredParams.kind === "unsupported") {
+    return loweredParams;
   }
+  const { parameters, bindings: methodBindings } = loweredParams.operation;
+  methodBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
   const { body: methodBody } = method;
-  const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, method, methodBody, [...method.parameters], bindings);
+  const parameterNames = collectParameterBindingNames(method.parameters, [CLASS_THIS_NAME]);
+  const usesArguments = !parameterNames.has("arguments") && containsLexicalArguments(methodBody);
+  if (usesArguments) {
+    methodBindings.set("arguments", { kind: "valueVariable", name: "arguments" });
+    parameterNames.add("arguments");
+  }
+  const captureNames = collectMethodEnclosingCaptureNames(context.typeChecker, method, methodBody, [...method.parameters], bindings)
+    .filter((name) => !usesArguments || name !== "arguments");
   const displayName = method.name !== undefined && ts.isIdentifier(method.name) ? method.name.text : "method";
   const bodyResult = suspendKind === undefined
-    ? lowerObjectMethodBody(context, methodBody, method.parameters, methodBindings)
+    ? lowerObjectMethodBody(context, methodBody, parameterNames, methodBindings)
     : lowerSuspendableBody(context, {
         kind: suspendKind,
         body: methodBody,
         bindings: methodBindings,
-        outerParameterNames: collectParameterBindingNames(method.parameters, [CLASS_THIS_NAME]),
+        outerParameterNames: parameterNames,
         outerCaptureNames: captureNames,
         nameHint: displayName
       });
@@ -64,34 +70,17 @@ export function lowerObjectMethodFunctionValue(
   context.nextFunctionObjectId += 1;
   const body = bodyResult.operation;
   return produced({ kind: "functionObject", definition: { codeName, parameters, functionKind: "ordinary", returnKind: functionReturnKind(body), body,
-    ...(captures.length === 0 ? {} : { captures }) } });
+    ...(captures.length === 0 ? {} : { captures }), ...(usesArguments ? { usesArguments: true } : {}) } });
 }
 
 function lowerObjectMethodBody(
   context: LoweringContext,
   methodBody: ts.Block,
-  parameters: readonly ts.ParameterDeclaration[],
+  parameterNames: ReadonlySet<string>,
   methodBindings: Map<string, JsIrBindingValue>
 ) {
-  const parameterNames = collectParameterBindingNames(parameters, [CLASS_THIS_NAME]);
   return withHoistedVars(context, methodBody.statements, methodBindings, parameterNames, (preface) => {
     const body = lowerBlockStatements(context, methodBody, methodBindings);
     return body.kind === "unsupported" ? body : { kind: "lowered" as const, operation: [...preface, ...body.operation] };
   });
-}
-
-function bindObjectMethodParameters(
-  method: ObjectMethodLike,
-  parameters: JsIrFunctionParameter[],
-  methodBindings: Map<string, JsIrBindingValue>
-): boolean {
-  for (const parameter of runtimeParameters(method.parameters)) {
-    if (!ts.isIdentifier(parameter.name) || parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined) {
-      return false;
-    }
-    const valueKind = parameterValueKind(parameter);
-    parameters.push({ name: parameter.name.text, valueKind });
-    bindFunctionParameter(parameter.name.text, valueKind, false, methodBindings);
-  }
-  return true;
 }

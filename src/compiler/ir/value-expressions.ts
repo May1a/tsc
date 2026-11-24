@@ -3,19 +3,21 @@ import type { LoweringContext } from "./context.js";
 import ts from "typescript";
 import { lowerValueCallArguments } from "./call-arguments.js";
 import type { JsIrBindingValue } from "./bindings.js";
-import type { JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
+import type { JsIrRuntimeArrayElement, JsIrStringExpression, JsIrValueExpression } from "./expressions.js";
+import { iteratorErrorSubject } from "./iterator-subject.js";
 import { errorConstructorNames, isUnsupportedSymbolExpression, lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
 import { callTargetMessage, isKnownGlobalCallee, isPlannedBuiltinCall, isRecognizedGlobalCallee, plannedBuiltinMessageFor } from "./builtins/index.js";
 import { expressionSnippet, unsupportedNewExpressionMessage, unsupportedSymbolMessage, unsupportedUnboundValueMessage } from "./diagnostics.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
 import { lowerInlineCppValueExpression } from "./inline-cpp.js";
 import { lowerClassValueExpression } from "./class-values.js";
+import { asJsGlobalName } from "./js-globals.js";
 import { lowerDirectValueExpression } from "./direct-values.js";
-import { lowerValueCallExpression } from "./value-calls.js";
+import { lowerSpreadElements, lowerValueCallExpression } from "./value-calls.js";
 import { lowerRuntimeObjectLiteralExpression } from "./object-literals.js";
-import { isFunctionPrototypeAccess } from "./optional-chains.js";
 import { isBoxedAggregateCandidateBinding, objectHasNestedFields } from "./builtins/object-producers.js";
-import { lowerPropertyKeyExpression } from "./string-expressions.js";
+import { lowerPropertyKeyExpression, lowerValuePropertyKeyExpression } from "./string-expressions.js";
+import { lowerBooleanValueCondition } from "./conditions.js";
 
 export function lowerValueExpression(
   context: LoweringContext,
@@ -78,7 +80,7 @@ function lowerValueCallAndSymbol(
   if (isUnsupportedSymbolExpression(expression, bindings)) {
     return unsupportedIn(unsupportedSymbolMessage);
   }
-  if (ts.isCallExpression(expression) && !(ts.isIdentifier(expression.expression) && expression.expression.text === "print")) {
+  if (ts.isCallExpression(expression) && !(ts.isIdentifier(expression.expression) && expression.expression.text === "print" && !bindings.has("print"))) {
     const plannedCall = plannedCallRefusal(expression.expression, bindings);
     if (plannedCall !== undefined) {
       return plannedCall;
@@ -114,8 +116,9 @@ function lowerBuiltinErrorConstruction(
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
   const refusal: Lowered<JsIrValueExpression> = unsupportedIn(newExpressionRefusal(expression));
+  const rawArgs = expression.arguments ?? ts.factory.createNodeArray();
   if (isErrorConstructorReference(expression.expression, bindings)) {
-    const args = lowerValueCallArguments(context, expression.arguments ?? ts.factory.createNodeArray(), bindings, expression.expression.text);
+    const args = lowerValueCallArguments(context, rawArgs, bindings, expression.expression.text);
     if (args.kind !== "lowered") {
       return withRefusal(args, refusal);
     }
@@ -124,7 +127,9 @@ function lowerBuiltinErrorConstruction(
   const target = unwrapTypeOnlyExpression(expression.expression);
   if (ts.isIdentifier(target)) {
     const binding = bindings.get(target.text);
-    if (binding?.kind !== "valueVariable" && binding?.kind !== "value") {
+    const isGlobal = binding === undefined && asJsGlobalName(target.text) !== undefined;
+    const isConstructibleBinding = binding?.kind === "valueVariable" || binding?.kind === "value" || binding?.kind === "function" || binding?.kind === "functionReference";
+    if (!isGlobal && !isConstructibleBinding) {
       return refusal;
     }
   }
@@ -132,11 +137,18 @@ function lowerBuiltinErrorConstruction(
   if (callee.kind !== "lowered") {
     return withRefusal(callee, refusal);
   }
-  const args = lowerValueCallArguments(context, expression.arguments ?? ts.factory.createNodeArray(), bindings, expression.expression.getText());
+  if (rawArgs.some(ts.isSpreadElement)) {
+    const spreadArguments = lowerSpreadElements(context, rawArgs, bindings);
+    if (spreadArguments.kind !== "lowered") {
+      return withRefusal(spreadArguments, refusal);
+    }
+    return produced({ kind: "constructValue", callee: callee.operation, arguments: [], spreadArguments: spreadArguments.operation });
+  }
+  const args = lowerValueCallArguments(context, rawArgs, bindings, expression.expression.getText());
   if (args.kind !== "lowered") {
     return withRefusal(args, refusal);
   }
-  return produced({ kind: "callValue", callee: callee.operation, arguments: args.operation });
+  return produced({ kind: "constructValue", callee: callee.operation, arguments: args.operation });
 }
 
 /** A builtin error constructor named as a value, which no binding of the same name shadows. */
@@ -276,15 +288,23 @@ function lowerAggregateValueExpression(
   }
 
   if (ts.isIdentifier(expression)) {
-    const binding = bindings.get(expression.text);
-    if (binding?.kind === "runtimeObject") {
-      return produced({ kind: "objectRef", name: binding.name });
-    }
-    if (binding?.kind === "runtimeArray") {
-      return produced({ kind: "arrayRef", name: binding.name });
-    }
+    return lowerIdentifierAggregateRef(expression, bindings);
   }
 
+  return notApplicable;
+}
+
+function lowerIdentifierAggregateRef(
+  expression: ts.Identifier,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrValueExpression> {
+  const binding = bindings.get(expression.text);
+  if (binding?.kind === "runtimeObject" || binding?.kind === "runtimeMap" || binding?.kind === "runtimeSet") {
+    return produced({ kind: "objectRef", name: binding.name });
+  }
+  if (binding?.kind === "runtimeArray") {
+    return produced({ kind: "arrayRef", name: binding.name });
+  }
   return notApplicable;
 }
 
@@ -293,19 +313,46 @@ function lowerValueTypedArrayLiteralExpression(
   expression: ts.ArrayLiteralExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  const valueElements: JsIrValueExpression[] = [];
+  const elements: JsIrRuntimeArrayElement[] = [];
   for (const element of expression.elements) {
-    if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) {
-      return notApplicable;
+    if (ts.isSpreadElement(element)) {
+      if (ts.isIdentifier(element.expression) && bindings.get(element.expression.text)?.kind === "array") {
+        elements.push({ kind: "spread", arrayName: element.expression.text, sourceKind: "fixed" });
+        continue;
+      }
+      const source = context.lowerValueExpression(context, element.expression, bindings);
+      if (source.kind !== "lowered") {
+        return source;
+      }
+      elements.push({
+        kind: "iterableSpread",
+        source: source.operation,
+        notIterableMessage: `${iteratorErrorSubject(element.expression)} is not iterable`
+      });
+      continue;
+    }
+    if (ts.isOmittedExpression(element)) {
+      elements.push({ kind: "hole" });
+      continue;
     }
     const value = context.lowerValueExpression(context, element, bindings);
     if (value.kind !== "lowered") {
       return value;
     }
-    valueElements.push(value.operation);
+    elements.push({ kind: "value", value: value.operation });
   }
-  return produced({ kind: "runtimeArrayValue", elements: valueElements });
+  return produced({ kind: "runtimeArrayValue", elements });
 }
+
+const dynamicGlobalReceivers: ReadonlySet<string> = new Set([
+  "process", "Buffer", "globalThis", "Symbol", "Object", "Reflect", "Array", "performance",
+  "BigInt", "Proxy", "Date", "RegExp", "Int32Array", "Uint32Array", "AbortController",
+  "Intl", "Math", "String", "Number", "Boolean", "setTimeout", "clearTimeout", "setInterval", "clearInterval",
+  "Map", "Set", "WeakMap", "WeakSet", "Uint8Array", "Float64Array", "URL", "console", "JSON"
+]);
+
+/** What the runtime's `Math` object holds. Any other member would read as `undefined`, so it is refused. */
+const mathObjectMembers: ReadonlySet<string> = new Set(["floor", "ceil", "round", "trunc", "abs", "sqrt", "PI", "E"]);
 
 function isDynamicPropertyReceiver(
   context: LoweringContext,
@@ -317,6 +364,12 @@ function isDynamicPropertyReceiver(
     return true;
   }
   if (binding?.kind === "function" || binding?.kind === "functionReference" || binding?.kind === "closure") {
+    return true;
+  }
+  if (binding?.kind === "runtimeMap" || binding?.kind === "runtimeSet") {
+    return true;
+  }
+  if (binding === undefined && (dynamicGlobalReceivers.has(receiverName) || errorConstructorNames.has(receiverName))) {
     return true;
   }
   return !bindings.has(receiverName) && context.classes.has(receiverName);
@@ -338,13 +391,10 @@ function lowerAggregatePropertyValueAccess(
     return lowerChainedPropertyValueAccess(context, receiver, expression.name, bindings);
   }
   const binding = bindings.get(receiver.text);
-  if (isFunctionPrototypeAccess(expression, bindings)) {
-    return notApplicable;
+  if (binding === undefined && receiver.text === "Math" && !mathObjectMembers.has(expression.name.text)) {
+    return unsupportedIn(`\`Math.${expression.name.text}\` cannot be read as a value yet`);
   }
   if (binding?.kind === "runtimeObject") {
-    if (binding.errorName !== undefined && expression.name.text === "stack") {
-      return notApplicable;
-    }
     return produced({ kind: "objectDynamicAccess", objectName: binding.name, key: { kind: "literal", value: expression.name.text } });
   }
   if (binding?.kind === "runtimeArray" && plannedBuiltinMessageFor(receiver, expression.name.text, bindings) === undefined) {
@@ -360,19 +410,7 @@ function lowerAggregatePropertyValueAccess(
 }
 
 const staticBuiltinRootNames: ReadonlySet<string> = new Set([
-  "Array",
-  "Date",
-  "JSON",
-  "Map",
-  "Math",
-  "Number",
-  "Object",
-  "Promise",
-  "RegExp",
-  "Set",
-  "String",
-  "Symbol",
-  "console"
+  "Promise"
 ]);
 
 function isStaticBuiltinRoot(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean {
@@ -424,7 +462,7 @@ function lowerValueElementAccess(
     const keyValue = index.kind === "literal" ? String(index.value) : "0";
     return produced({ kind: "valueArrayAccess", value: value.operation, index, key: { kind: "literal", value: keyValue } });
   }
-  const key = lowerPropertyKeyExpression(context, expression.argumentExpression, bindings);
+  const key = lowerValuePropertyKeyExpression(context, expression.argumentExpression, bindings);
   if (key.kind === "unsupported") {
     return key;
   }
@@ -443,7 +481,9 @@ function lowerValueElementReceiver(
   if (ts.isIdentifier(unwrapped)) {
     const binding = bindings.get(unwrapped.text);
     const isClass = !bindings.has(unwrapped.text) && context.classes.has(unwrapped.text);
-    if (!isBoxedAggregateCandidateBinding(binding) && binding?.kind !== "runtimeObject" && binding?.kind !== "runtimeArray" && !isClass) {
+    const isGlobal = binding === undefined && (dynamicGlobalReceivers.has(unwrapped.text) || errorConstructorNames.has(unwrapped.text));
+    const isString = binding?.kind === "string" || binding?.kind === "stringExpression" || binding?.kind === "stringVariable";
+    if (!isBoxedAggregateCandidateBinding(binding) && binding?.kind !== "runtimeObject" && binding?.kind !== "runtimeArray" && !isString && !isClass && !isGlobal) {
       return notApplicable;
     }
     return context.lowerValueExpression(context, unwrapped, bindings);
@@ -508,7 +548,7 @@ function lowerRuntimeObjectElementValueAccess(
   if (binding.kind === "object" && objectHasNestedFields(binding.value)) {
     return notApplicable;
   }
-  const key = lowerPropertyKeyExpression(context, expression.argumentExpression, bindings);
+  const key = lowerValuePropertyKeyExpression(context, expression.argumentExpression, bindings);
   if (key.kind !== "lowered") {
     return key;
   }
@@ -536,13 +576,6 @@ function lowerScalarValueExpression(
     return produced({ kind: "number", value: numberValue.operation });
   }
 
-  const booleanValue = context.lowerConditionExpression(context, expression, bindings);
-  if (booleanValue.kind === "unsupported") {
-    return booleanValue;
-  }
-  if (booleanValue.kind === "lowered") {
-    return produced({ kind: "boolean", value: booleanValue.operation });
-  }
-
-  return notApplicable;
+  const booleanValue = lowerBooleanValueCondition(context, expression, bindings);
+  return booleanValue.kind === "lowered" ? produced({ kind: "boolean", value: booleanValue.operation }) : booleanValue;
 }

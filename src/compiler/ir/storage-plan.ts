@@ -43,8 +43,11 @@ export function isRuntimeAggregateDeclaration(plan: StoragePlan, declaration: ts
  */
 export type StorageWriteKind = "number" | "string" | "boolean" | "nullish" | "nonScalar" | "dynamic" | "unknown";
 
-/** The kind of value one write stores, or `unknown` when the syntax does not decide it. */
-export function classifyStorageWrite(expression: ts.Expression): StorageWriteKind {
+/** The static types a plan may consult, absent for a source whose types are only inferred. */
+type StorageTypes = ts.TypeChecker | undefined;
+
+/** The kind of value one write stores, or `unknown` when neither its syntax nor its type decides it. */
+export function classifyStorageWrite(expression: ts.Expression, types?: StorageTypes): StorageWriteKind {
   const unwrapped = unwrapTypeOnlyExpression(expression);
   if (unwrapped.kind === ts.SyntaxKind.NullKeyword || isUndefinedExpression(unwrapped) || ts.isVoidExpression(unwrapped)) {
     return "nullish";
@@ -53,8 +56,14 @@ export function classifyStorageWrite(expression: ts.Expression): StorageWriteKin
     ts.isDeleteExpression(unwrapped)) {
     return "boolean";
   }
-  if (ts.isNumericLiteral(unwrapped) || isSignedNumericLiteral(unwrapped)) {
+  if (ts.isNumericLiteral(unwrapped) || isSignedNumericLiteral(unwrapped) || isNumericOperatorExpression(unwrapped, types)) {
     return "number";
+  }
+  if (isStringConcatenation(unwrapped, types)) {
+    return "string";
+  }
+  if (isBooleanOperatorExpression(unwrapped)) {
+    return "boolean";
   }
   if (ts.isStringLiteral(unwrapped) || ts.isNoSubstitutionTemplateLiteral(unwrapped) || ts.isTemplateExpression(unwrapped) ||
     ts.isTypeOfExpression(unwrapped)) {
@@ -63,7 +72,98 @@ export function classifyStorageWrite(expression: ts.Expression): StorageWriteKin
   if (isNonScalarLiteral(unwrapped)) {
     return "nonScalar";
   }
-  return "unknown";
+  return types === undefined ? "unknown" : declaredScalarKind(unwrapped, types);
+}
+
+/**
+ * The scalar kind a name, call or declared property has by its type. An element access is left
+ * undecided: its type does not account for a read that finds nothing.
+ */
+function declaredScalarKind(expression: ts.Expression, types: ts.TypeChecker): StorageWriteKind {
+  const declared = ts.isIdentifier(expression) || ts.isCallExpression(expression) ||
+    (ts.isPropertyAccessExpression(expression) && types.getSymbolAtLocation(expression.name)?.valueDeclaration !== undefined);
+  if (!declared) {
+    return "unknown";
+  }
+  const { flags } = types.getBaseTypeOfLiteralType(types.getTypeAtLocation(expression));
+  if ((flags & ts.TypeFlags.Number) !== 0) {
+    return "number";
+  }
+  return (flags & ts.TypeFlags.String) === 0 ? "unknown" : "string";
+}
+
+const numericBinaryOperators: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.AsteriskToken,
+  ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.AsteriskAsteriskToken,
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.CaretToken,
+  ts.SyntaxKind.LessThanLessThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken
+]);
+
+const numericPrefixOperators: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.PlusToken,
+  ts.SyntaxKind.TildeToken,
+  ts.SyntaxKind.PlusPlusToken,
+  ts.SyntaxKind.MinusMinusToken
+]);
+
+function isNumericOperatorExpression(expression: ts.Expression, types: StorageTypes): boolean {
+  if (ts.isPrefixUnaryExpression(expression)) {
+    return numericPrefixOperators.has(expression.operator);
+  }
+  if (ts.isPostfixUnaryExpression(expression)) {
+    return true;
+  }
+  if (!ts.isBinaryExpression(expression)) {
+    return false;
+  }
+  if (numericBinaryOperators.has(expression.operatorToken.kind)) {
+    return true;
+  }
+  if (expression.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    // `+` with an undecided operand may concatenate, so both operands must be numbers.
+    return classifyStorageWrite(expression.left, types) === "number" && classifyStorageWrite(expression.right, types) === "number";
+  }
+  return false;
+}
+
+/** `+` with a string operand concatenates, whatever the other operand is. */
+function isStringConcatenation(expression: ts.Expression, types: StorageTypes): boolean {
+  return ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+    (classifyStorageWrite(expression.left, types) === "string" || classifyStorageWrite(expression.right, types) === "string");
+}
+
+function isBooleanOperatorExpression(expression: ts.Expression): boolean {
+  if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken) {
+    return true;
+  }
+  if (!ts.isBinaryExpression(expression)) {
+    return false;
+  }
+  switch (expression.operatorToken.kind) {
+    case ts.SyntaxKind.EqualsEqualsToken:
+    case ts.SyntaxKind.ExclamationEqualsToken:
+    case ts.SyntaxKind.EqualsEqualsEqualsToken:
+    case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+    case ts.SyntaxKind.LessThanToken:
+    case ts.SyntaxKind.LessThanEqualsToken:
+    case ts.SyntaxKind.GreaterThanToken:
+    case ts.SyntaxKind.GreaterThanEqualsToken:
+    case ts.SyntaxKind.InstanceOfKeyword:
+    case ts.SyntaxKind.InKeyword: {
+      return true;
+    }
+    default: {
+      return false;
+    }
+  }
 }
 
 function isSignedNumericLiteral(expression: ts.Expression): boolean {
@@ -80,18 +180,20 @@ function isNonScalarLiteral(expression: ts.Expression): boolean {
 
 /**
  * The kind a compound assignment stores. Arithmetic and bitwise operators always produce a number;
- * `+=` produces a string when its right side is one and is otherwise undecided; the logical
- * assignments store their right side or keep the current value.
+ * `+=` produces a string when its right side is one, keeps the binding's own kind when its right side
+ * is a number, and is otherwise undecided; the logical assignments store their right side or keep the
+ * current value. `undefined` means the write introduces no kind of its own.
  */
-function compoundWriteKind(operator: ts.SyntaxKind, right: ts.Expression): StorageWriteKind {
+function compoundWriteKind(operator: ts.SyntaxKind, right: ts.Expression, types: StorageTypes): StorageWriteKind | undefined {
   switch (operator) {
     case ts.SyntaxKind.PlusEqualsToken: {
-      return classifyStorageWrite(right) === "string" ? "string" : "unknown";
+      const kind = classifyStorageWrite(right, types);
+      return kind === "number" ? undefined : kind;
     }
     case ts.SyntaxKind.BarBarEqualsToken:
     case ts.SyntaxKind.AmpersandAmpersandEqualsToken:
     case ts.SyntaxKind.QuestionQuestionEqualsToken: {
-      return classifyStorageWrite(right);
+      return classifyStorageWrite(right, types);
     }
     default: {
       return "number";
@@ -123,6 +225,9 @@ class StoragePlanWalk {
   readonly #bindings: PlannedBinding[] = [];
   readonly #aggregates: PlannedAggregate[] = [];
   readonly #declarations = new WeakSet<ts.VariableDeclarationList>();
+  readonly #types: StorageTypes;
+
+  public constructor(types: StorageTypes) { this.#types = types; }
 
   public plan(): StoragePlan {
     return {
@@ -158,7 +263,7 @@ class StoragePlanWalk {
   #recordAggregateUse(identifier: ts.Identifier, scope: PlanScope): void {
     const aggregate = resolveAggregate(scope, identifier.text);
     if (aggregate !== undefined && !aggregate.promoted &&
-      useRequiresRuntimeAggregate(identifier, aggregate, scope.ownerFunction, classifyStorageWrite)) {
+      useRequiresRuntimeAggregate(identifier, aggregate, scope.ownerFunction, (write) => classifyStorageWrite(write, this.#types))) {
       aggregate.promoted = true;
     }
   }
@@ -355,13 +460,13 @@ class StoragePlanWalk {
     if (declaration.initializer === undefined) {
       return;
     }
-    binding.writes.push(classifyStorageWrite(declaration.initializer));
+    binding.writes.push(classifyStorageWrite(declaration.initializer, this.#types));
     binding.hasInitializer = true;
   }
 
   #assignment(target: ts.Identifier, operator: ts.SyntaxKind, right: ts.Expression, scope: PlanScope): void {
-    const kind = operator === ts.SyntaxKind.EqualsToken ? classifyStorageWrite(right) : compoundWriteKind(operator, right);
-    if (isRuntimeIdentifierReference(target)) resolve(scope, target.text)?.writes.push(kind);
+    const kind = operator === ts.SyntaxKind.EqualsToken ? classifyStorageWrite(right, this.#types) : compoundWriteKind(operator, right, this.#types);
+    if (kind !== undefined && isRuntimeIdentifierReference(target)) resolve(scope, target.text)?.writes.push(kind);
     this.#node(right, scope);
   }
 
@@ -391,7 +496,7 @@ function needsBoxedStorage(binding: PlannedBinding): boolean {
   if (binding.writes.length === 1) {
     return false;
   }
-  if (binding.writes.some((kind) => kind === "nullish" || kind === "nonScalar" || kind === "dynamic")) {
+  if (binding.writes.some((kind) => kind === "nullish" || kind === "nonScalar" || kind === "dynamic" || kind === "unknown")) {
     return true;
   }
   const scalarKinds = new Set(binding.writes.filter((kind) => kind === "number" || kind === "string" || kind === "boolean"));
@@ -440,8 +545,10 @@ function isAssignmentOperator(operator: ts.SyntaxKind): boolean {
 }
 
 /** Plans every `let` and `var` declaration in a source file, before any of it lowers. */
-export function collectStoragePlan(sourceFile: ts.SourceFile): StoragePlan {
-  const walk = new StoragePlanWalk();
+export function collectStoragePlan(sourceFile: ts.SourceFile, types?: StorageTypes): StoragePlan {
+  // JavaScript has no declared types, only inferences its own writes may contradict.
+  const declared = (sourceFile.flags & ts.NodeFlags.JavaScriptFile) === 0;
+  const walk = new StoragePlanWalk(declared ? types : undefined);
   walk.statements(sourceFile.statements, { parent: undefined, isFunction: true, ownerFunction: undefined, names: new Map(), aggregates: new Map() });
   return walk.plan();
 }

@@ -1,4 +1,4 @@
-import type { ResolvedCallArgument, ResolvedRuntimeArrayElement } from "../binding-resolution/index.js";
+import type { BindingRef, ResolvedCallArgument, ResolvedRuntimeArrayElement } from "../binding-resolution/index.js";
 import { type LlvmValue, llvm } from "../llvm-ir/index.js";
 import { branchValue } from "./expression-branches.js";
 import type { ExpressionContext } from "./expression-context.js";
@@ -56,9 +56,10 @@ function appendElement(element: ResolvedRuntimeArrayElement, array: LlvmValue<ty
   }
 }
 
-function spreadArguments(elements: readonly ResolvedRuntimeArrayElement[], context: ExpressionContext): Arguments {
+function spreadArguments(elements: readonly ResolvedRuntimeArrayElement[], context: ExpressionContext, leading: readonly BoxedValue[] = []): Arguments {
   const array = context.runtime.callPointer("arrayNew", [context.cursor.currentBlock().int(llvm.i64, 0n)], context.cursor.uniqueName("call.argument.array"));
   keep(context.values.forBlock(context.cursor.currentBlock()).boxReference("array", array), context);
+  for (const value of leading) { context.runtime.call("arrayPush", [array, value], context.cursor.uniqueName("call.leading")); }
   for (const element of elements) { appendElement(element, array, context); }
   const count = context.runtime.call("arrayLength", [array], context.cursor.uniqueName("call.argument.count"));
   const block = context.cursor.currentBlock();
@@ -115,8 +116,28 @@ export function callValue(expression: ValueNode<"callValue">, context: Expressio
   return context.values.forBlock(context.cursor.currentBlock()).fromBoundary(value);
 }
 
+export function constructValue(expression: ValueNode<"constructValue">, context: ExpressionContext): BoxedValue {
+  const callee = keep(context.expressions.value(expression.callee), context);
+  const args = expression.spreadArguments === undefined
+    ? fixedArguments(expression.arguments, context)
+    : spreadArguments(expression.spreadArguments, context);
+  return context.runtime.callWithCompletion("jsConstruct", [callee, args.count, args.pointer],
+    context.cursor.uniqueName("construct.value"), context.exceptionTarget());
+}
+
+function spreadConstruct(
+  constructorName: BindingRef, args: Arguments, newTarget: BoxedValue | undefined, context: ExpressionContext
+): BoxedValue {
+  const callee = keep(context.bindings.value(constructorName), context);
+  const name = context.cursor.uniqueName("instance.construct");
+  return keep(newTarget === undefined
+    ? context.runtime.callWithCompletion("jsCall", [callee, args.count, args.pointer, undefinedValue(context)], name, context.exceptionTarget())
+    : context.runtime.callWithCompletion("jsCallWithNewTarget", [callee, args.count, args.pointer, undefinedValue(context), newTarget],
+      name, context.exceptionTarget()), context);
+}
+
 export function newInstance(expression: ValueNode<"newInstance">, context: ExpressionContext): BoxedValue {
-  const args = evaluateArguments(expression.arguments, context);
+  const args = expression.spreadArguments === undefined ? evaluateArguments(expression.arguments, context) : [];
   const object = context.runtime.callPointer("objectNew", [context.cursor.currentBlock().int(llvm.i64, BigInt(expression.fieldCount))],
     context.cursor.uniqueName("instance.object"));
   const instance = keep(context.values.forBlock(context.cursor.currentBlock()).boxReference("object", object), context);
@@ -124,6 +145,8 @@ export function newInstance(expression: ValueNode<"newInstance">, context: Expre
   const pointer = context.runtime.callPointer("valueObjectPtr", [prototype], context.cursor.uniqueName("instance.prototype"));
   context.runtime.callVoid("objectSetPrototype", [object, pointer]);
   const newTarget = expression.newTargetName === undefined ? undefined : keep(context.bindings.value(expression.newTargetName), context);
-  const returned = keep(context.calls.generated(expression.constructorName, [instance, ...args], newTarget), context);
+  const returned = expression.spreadArguments === undefined
+    ? keep(context.calls.generated(expression.constructorName, [instance, ...args], newTarget), context)
+    : spreadConstruct(expression.constructorName, spreadArguments(expression.spreadArguments, context, [instance]), newTarget, context);
   return keep(context.runtime.callBoxed("newInstanceResult", [instance, returned], context.cursor.uniqueName("instance.result")), context);
 }

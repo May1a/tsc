@@ -4,11 +4,10 @@ import ts from "typescript";
 import type { JsIrBindingValue, JsIrCallArgument, JsIrFunctionParameter } from "./bindings.js";
 import type { JsIrClosureValue, JsIrNumberExpression, JsIrValueExpression } from "./expressions.js";
 import { lowerTypedCallArgument } from "./call-arguments.js";
-import { unwrapTypeOnlyExpression } from "./predicates.js";
-import { functionExpressionKind } from "./returns.js";
-import { containsLexicalThis, parameterValueKind, runtimeParameters } from "./class-info.js";
-import { bindFunctionParameter, functionFrameBindings } from "./function-parameters.js";
+import { functionExpressionKind, unwrapTypeOnlyExpression } from "./predicates.js";
+import { containsLexicalArguments, containsLexicalThis } from "./class-info.js";
 import { CLASS_THIS_NAME } from "./class-names.js";
+import { collectParameterBindingNames } from "./var-hoisting.js";
 import { collectFunctionExpressionCaptureNames, functionExpressionSelfReferences, lowerInlineFunctionCaptures } from "./captures.js";
 import { lowerInlineFunctionBody } from "./array-callbacks.js";
 import { functionReturnKind } from "./binding-updates.js";
@@ -121,21 +120,17 @@ export function lowerFunctionObjectValue(
   const suspendKind = suspendableKindFor(expression);
 
   const functionKind = functionExpressionKind(expression);
-  if (functionKind === "arrow" && containsLexicalThis(expression.body)) {
+  const arrowCapturesThis = functionKind === "arrow" && containsLexicalThis(expression.body);
+  if (arrowCapturesThis && bindings.get(CLASS_THIS_NAME)?.kind !== "valueVariable") {
     return notApplicable;
   }
-  const parameters: JsIrFunctionParameter[] = [];
-  const functionBindings = functionFrameBindings(bindings);
+  const loweredParams = context.lowerFunctionParameters(context, expression.parameters, bindings);
+  if (loweredParams.kind === "unsupported") {
+    return loweredParams;
+  }
+  const { parameters, bindings: functionBindings } = loweredParams.operation;
   if (functionKind === "ordinary") {
     functionBindings.set(CLASS_THIS_NAME, { kind: "valueVariable", name: CLASS_THIS_NAME });
-  }
-  for (const parameter of runtimeParameters(expression.parameters)) {
-    if (!ts.isIdentifier(parameter.name) || parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined) {
-      return notApplicable;
-    }
-    const valueKind = parameterValueKind(parameter);
-    parameters.push({ name: parameter.name.text, valueKind });
-    bindFunctionParameter(parameter.name.text, valueKind, false, functionBindings);
   }
   const selfNames = new Set<string>();
   if (ts.isFunctionExpression(expression) && expression.name !== undefined && bindings.get(expression.name.text) === undefined) {
@@ -152,14 +147,20 @@ export function lowerFunctionObjectValue(
   if (selfNames.size > 0 && functionExpressionSelfReferences(expression.body, selfNames)) {
     return notApplicable;
   }
-  const localNames = new Set<string>(parameters.map((parameter) => parameter.name));
-  for (const name of selfNames) {
-    localNames.add(name);
-  }
+  const extraLocals: string[] = [...selfNames];
   if (functionKind === "ordinary") {
-    localNames.add(CLASS_THIS_NAME);
+    extraLocals.push(CLASS_THIS_NAME);
   }
-  const captureNames = collectFunctionExpressionCaptureNames(expression, localNames, bindings);
+  const localNames = collectParameterBindingNames(expression.parameters, extraLocals);
+  const usesArguments = functionKind === "ordinary" && !localNames.has("arguments") && containsLexicalArguments(expression.body);
+  if (usesArguments) {
+    functionBindings.set("arguments", { kind: "valueVariable", name: "arguments" });
+    localNames.add("arguments");
+  }
+  const rawCaptureNames = collectFunctionExpressionCaptureNames(expression, localNames, bindings);
+  const captureNames = arrowCapturesThis && !rawCaptureNames.includes(CLASS_THIS_NAME)
+    ? [CLASS_THIS_NAME, ...rawCaptureNames]
+    : rawCaptureNames;
   const runtimeName = expression.name?.text ?? inferredName;
   const displayName = runtimeName ?? "anonymous";
   const body = suspendKind === undefined
@@ -168,7 +169,7 @@ export function lowerFunctionObjectValue(
         kind: suspendKind,
         body: expression.body,
         bindings: functionBindings,
-        outerParameterNames: new Set([...parameters.map((parameter) => parameter.name), ...(functionKind === "ordinary" ? [CLASS_THIS_NAME] : [])]),
+        outerParameterNames: localNames,
         outerCaptureNames: captureNames,
         nameHint: displayName
       });
@@ -190,7 +191,8 @@ export function lowerFunctionObjectValue(
       returnKind: functionReturnKind(body.operation),
       body: body.operation,
       inferredName: runtimeName,
-      ...(captures.length === 0 ? {} : { captures })
+      ...(captures.length === 0 ? {} : { captures }),
+      ...(usesArguments ? { usesArguments: true } : {})
     }
   });
 }

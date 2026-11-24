@@ -35,6 +35,7 @@ export interface JsIrFunctionObjectDefinition {
   readonly directTarget?: string;
   readonly inferredName?: string;
   readonly captures?: readonly JsIrFunctionObjectCapture[];
+  readonly usesArguments?: boolean;
 }
 
 /**

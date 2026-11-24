@@ -33,7 +33,7 @@ import type { operationRoles } from "./operation-roles.js";
 export type ResolvedOperation = WithTrace<ResolveTier<JsIrOperationNode, typeof operationRoles>>;
 
 type WithTrace<M> = M extends { readonly kind: "runtimeArrayMapFunctionObject" | "function" }
-  ? M & { readonly functionId: FunctionId; readonly thisBinding?: BindingRef; readonly trace?: JsIrOperationTrace }
+  ? M & { readonly functionId: FunctionId; readonly thisBinding?: BindingRef; readonly argumentsBinding?: BindingRef; readonly trace?: JsIrOperationTrace }
   : M extends { readonly kind: "returnClosure" }
   ? M & { readonly functionId: FunctionId; readonly trace?: JsIrOperationTrace }
   : M extends unknown ? M & { readonly trace?: JsIrOperationTrace } : never;
@@ -104,7 +104,8 @@ export interface ResolvedObjectValue {
 export type ResolvedRuntimeObjectField =
   | { readonly kind: "field"; readonly key: ResolvedStringExpression; readonly value: ResolvedValueExpression }
   | { readonly kind: "accessor"; readonly key: ResolvedStringExpression; readonly getter?: ResolvedValueExpression; readonly setter?: ResolvedValueExpression }
-  | { readonly kind: "spread"; readonly sourceName: BindingRef };
+  | { readonly kind: "spread"; readonly sourceName: BindingRef }
+  | { readonly kind: "valueSpread"; readonly value: ResolvedValueExpression };
 
 /** A runtime object literal, resolved. */
 export interface ResolvedRuntimeObjectValue {
@@ -157,6 +158,7 @@ export type ResolvedFunctionObject = ResolvedFunctionObjectBase & (
       readonly functionId: FunctionId;
       readonly body: readonly ResolvedOperation[];
       readonly thisBinding?: BindingRef;
+      readonly argumentsBinding?: BindingRef;
       readonly captures?: readonly ResolvedFunctionObjectCapture[];
       readonly directTarget?: never;
     }
@@ -165,6 +167,7 @@ export type ResolvedFunctionObject = ResolvedFunctionObjectBase & (
       readonly functionId?: never;
       readonly body?: never;
       readonly thisBinding?: never;
+      readonly argumentsBinding?: never;
       readonly captures?: never;
     }
 );

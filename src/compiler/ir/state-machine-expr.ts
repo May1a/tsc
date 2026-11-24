@@ -481,7 +481,7 @@ function lowerSuspendingBuiltinCall(
     const arg = lowerStateMachineExpression(host, expression.arguments[0], bindings);
     return arg.kind === "lowered" ? produced({ kind: "promiseStatic", method, argument: arg.operation }) : arg;
   }
-  if (owner === "console" && method === "log" && !bindings.has("console")) {
+  if (owner === "console" && (method === "log" || method === "error" || method === "warn") && !bindings.has("console")) {
     const values: JsIrValueExpression[] = [];
     for (const arg of expression.arguments) {
       const lowered = lowerStateMachineExpression(host, arg, bindings);
@@ -490,7 +490,7 @@ function lowerSuspendingBuiltinCall(
       }
       values.push(spillToTemp(host, lowered.operation));
     }
-    host.emit({ kind: "consoleLog", arguments: values });
+    host.emit({ kind: "consoleLog", arguments: values, ...(method === "log" ? {} : { isStderr: true }) });
     return produced({ kind: "undefined" });
   }
   return undefined;
@@ -520,7 +520,7 @@ function lowerSuspendingArray(
   expression: ts.ArrayLiteralExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Produced<JsIrValueExpression> {
-  const elements: JsIrValueExpression[] = [];
+  const elements: { readonly kind: "value"; readonly value: JsIrValueExpression }[] = [];
   for (const element of expression.elements) {
     if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) {
       return unsupportedIn("Spread or elision in array literal with `yield` or `await` is not supported yet");
@@ -529,7 +529,7 @@ function lowerSuspendingArray(
     if (lowered.kind !== "lowered") {
       return lowered;
     }
-    elements.push(spillToTemp(host, lowered.operation));
+    elements.push({ kind: "value", value: spillToTemp(host, lowered.operation) });
   }
   return produced({ kind: "runtimeArrayValue", elements });
 }

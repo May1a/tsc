@@ -4,7 +4,7 @@ import type { JsIrBindingValue } from "./bindings.js";
 import { type Lowered, loweredOperation, unsupported } from "./lowered.js";
 import { declaredFunctionReturnKind } from "./function-parameters.js";
 import { lowerFunctionParameters } from "./function-parameter-lowering.js";
-import { isPlainObjectReturningConstructor } from "./class-info.js";
+import { containsLexicalArguments, isPlainObjectReturningConstructor } from "./class-info.js";
 import { lowerBlockStatements } from "./statement-lists.js";
 import { collectParameterBindingNames, withHoistedVars } from "./var-hoisting.js";
 import { collectFunctionDeclarationEnclosingCaptureNames } from "./captures.js";
@@ -37,7 +37,13 @@ export function lowerFunctionDeclaration(
 
   const { body: statementBody } = statement;
   const parameterNames = collectParameterBindingNames(statement.parameters, [CLASS_THIS_NAME]);
-  const enclosingCaptureNames = collectFunctionDeclarationEnclosingCaptureNames(context.typeChecker, statement, bindings);
+  const usesArguments = !parameterNames.has("arguments") && containsLexicalArguments(statementBody);
+  if (usesArguments) {
+    fnBindings.set("arguments", { kind: "valueVariable", name: "arguments" });
+    parameterNames.add("arguments");
+  }
+  const enclosingCaptureNames = collectFunctionDeclarationEnclosingCaptureNames(context.typeChecker, statement, bindings)
+    .filter((name) => !usesArguments || name !== "arguments");
   const loweredBody = suspendKind === undefined
     ? withHoistedVars(context, statementBody.statements, fnBindings, parameterNames, (preface) => {
         const body = lowerBlockStatements(context, statementBody, fnBindings);
@@ -62,6 +68,7 @@ export function lowerFunctionDeclaration(
     parameters,
     body: bodyStatements,
     enclosingCaptureNames,
-    constructibleByObjectReturn: suspendKind === undefined && isPlainObjectReturningConstructor(statement)
+    constructibleByObjectReturn: suspendKind === undefined && isPlainObjectReturningConstructor(statement),
+    ...(usesArguments ? { usesArguments: true } : {})
   });
 }
