@@ -1,96 +1,121 @@
 import {
   type BuiltLlvmBlock,
   type BuiltLlvmFunction,
+  type LlvmInstruction,
+  type LlvmValue,
   llvmInstructionOperands,
   llvmInstructionResult,
   llvmValueText
 } from "../llvm-ir/index.js";
-import { sameSet, successors } from "./graph.js";
+import { predecessorMap, sameSet, successors } from "./graph.js";
 
-interface GcLiveness {
-  readonly after: ReadonlyMap<string, readonly ReadonlySet<string>[]>;
+/** The names an operand keeps live; values the verifier does not track keep none. */
+export type LiveNames = (operand: LlvmValue) => readonly string[];
+
+/** One block's contribution to liveness, independent of what is live after it. */
+interface BlockEffects {
+  readonly block: BuiltLlvmBlock;
+  /** Names read before any definition in the block, phi results included. */
+  readonly upward: ReadonlySet<string>;
+  readonly definitions: ReadonlySet<string>;
+  readonly phiResults: ReadonlySet<string>;
 }
 
-function edgeUses(
-  block: BuiltLlvmBlock,
-  predecessor: string,
-  liveIn: ReadonlySet<string>,
-  livePhis: ReadonlySet<string>
-): ReadonlySet<string> {
-  const phiInputs = block.instructions.flatMap((instruction) => instruction.kind === "phi" && livePhis.has(llvmValueText(instruction.result))
-    ? instruction.incoming.filter((entry) => entry.block.name === predecessor).map((entry) => llvmValueText(entry.value))
-    : []);
-  return new Set([...liveIn, ...phiInputs]);
-}
-
-function backward(block: BuiltLlvmBlock, liveOut: ReadonlySet<string>): {
-  readonly before: ReadonlySet<string>;
-  readonly after: readonly ReadonlySet<string>[];
-  readonly livePhis: ReadonlySet<string>;
-} {
-  const live = new Set(liveOut);
-  const livePhis = new Set<string>();
-  const after: ReadonlySet<string>[] = Array.from({ length: block.instructions.length }, () => new Set<string>());
-  for (let index = block.instructions.length - 1; index >= 0; index -= 1) {
-    const instruction = block.instructions[index];
-    after[index] = new Set(live);
+function blockEffects(block: BuiltLlvmBlock, names: LiveNames): BlockEffects {
+  const upward = new Set<string>();
+  const definitions = new Set<string>();
+  const phiResults = new Set<string>();
+  for (const instruction of block.instructions) {
     const result = llvmInstructionResult(instruction);
-    if (result !== undefined) {
-      if (instruction.kind === "phi" && live.has(llvmValueText(result))) {
-        livePhis.add(llvmValueText(result));
-      }
-      live.delete(llvmValueText(result));
+    if (instruction.kind === "phi") {
+      phiResults.add(llvmValueText(instruction.result));
+      continue;
     }
-    if (instruction.kind !== "phi") {
-      for (const operand of llvmInstructionOperands(instruction)) {
-        live.add(llvmValueText(operand));
-      }
+    for (const name of operandNames(instruction, names)) {
+      if (!definitions.has(name)) { upward.add(name); }
     }
+    if (result !== undefined) { definitions.add(llvmValueText(result)); }
   }
-  return { before: live, after, livePhis };
+  return { block, upward, definitions, phiResults };
 }
 
-export function analyzeGcLiveness(fn: BuiltLlvmFunction): GcLiveness {
-  const blocks = new Map(fn.blocks.map((block) => [block.label.name, block]));
-  const liveIn = new Map(fn.blocks.map((block) => [block.label.name, new Set<string>()]));
-  const livePhis = new Map(fn.blocks.map((block) => [block.label.name, new Set<string>()]));
-  const after = new Map<string, readonly ReadonlySet<string>[]>();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const block of fn.blocks.toReversed()) {
-      const liveOut = outgoingValues(block, blocks, liveIn, livePhis);
-      const result = backward(block, liveOut);
-      const previous = liveIn.get(block.label.name);
-      const previousPhis = livePhis.get(block.label.name);
-      if (previous === undefined || previousPhis === undefined || !sameSet(previous, result.before) || !sameSet(previousPhis, result.livePhis)) {
-        liveIn.set(block.label.name, new Set(result.before));
-        livePhis.set(block.label.name, new Set(result.livePhis));
-        changed = true;
-      }
-      after.set(block.label.name, result.after);
-    }
-  }
-  return { after };
+function operandNames(instruction: LlvmInstruction, names: LiveNames): readonly string[] {
+  return llvmInstructionOperands(instruction).flatMap(names);
 }
 
-function outgoingValues(
+function liveBefore(effects: BlockEffects, liveOut: ReadonlySet<string>): Set<string> {
+  const live = new Set(effects.upward);
+  for (const name of liveOut) {
+    if (!effects.definitions.has(name)) { live.add(name); }
+  }
+  return live;
+}
+
+/** What is live on the edge from `predecessor`: a live phi reads its input there, not in its block. */
+function liveOnEdge(effects: BlockEffects, before: ReadonlySet<string>, predecessor: string, names: LiveNames): readonly string[] {
+  const inputs = effects.block.instructions.flatMap((instruction) =>
+    instruction.kind === "phi" && before.has(llvmValueText(instruction.result))
+      ? instruction.incoming.filter((entry) => entry.block.name === predecessor).flatMap((entry) => names(entry.value))
+      : []);
+  return [...[...before].filter((name) => !effects.phiResults.has(name)), ...inputs];
+}
+
+/** What the successors analyzed so far read, as seen from the end of `block`. */
+function liveIntoSuccessors(
   block: BuiltLlvmBlock,
-  blocks: ReadonlyMap<string, BuiltLlvmBlock>,
-  liveIn: ReadonlyMap<string, ReadonlySet<string>>,
-  livePhis: ReadonlyMap<string, ReadonlySet<string>>
+  effects: ReadonlyMap<string, BlockEffects>,
+  before: ReadonlyMap<string, ReadonlySet<string>>,
+  names: LiveNames
 ): ReadonlySet<string> {
-  const values = new Set<string>();
-  for (const name of successors(block)) {
-    const successor = blocks.get(name);
-    const inputs = liveIn.get(name);
-    const phis = livePhis.get(name);
-    if (successor === undefined || inputs === undefined || phis === undefined) {
-      throw new Error(`GC verification found an unknown successor: ${name}`);
-    }
-    for (const value of edgeUses(successor, block.label.name, inputs, phis)) {
-      values.add(value);
+  return new Set(successors(block).flatMap((successor) => {
+    const next = effects.get(successor);
+    if (next === undefined) { throw new Error(`GC verification found an unknown successor: ${successor}`); }
+    const nextBefore = before.get(successor);
+    return nextBefore === undefined ? [] : liveOnEdge(next, nextBefore, block.label.name, names);
+  }));
+}
+
+/** The names live on exit from each block. */
+export function liveOutOf(fn: BuiltLlvmFunction, names: LiveNames): ReadonlyMap<string, ReadonlySet<string>> {
+  const effects = new Map(fn.blocks.map((block) => [block.label.name, blockEffects(block, names)]));
+  const predecessors = predecessorMap(fn);
+  const before = new Map<string, ReadonlySet<string>>();
+  const liveOut = new Map<string, ReadonlySet<string>>(fn.blocks.map((block) => [block.label.name, new Set<string>()]));
+  const pending = new Set(fn.blocks.map((block) => block.label.name));
+  const work = [...pending];
+  for (let name = work.pop(); name !== undefined; name = work.pop()) {
+    pending.delete(name);
+    const own = effects.get(name);
+    if (own === undefined) { throw new Error(`GC verification found an unknown block: ${name}`); }
+    const outgoing = liveIntoSuccessors(own.block, effects, before, names);
+    liveOut.set(name, outgoing);
+    const incoming = liveBefore(own, outgoing);
+    const previous = before.get(name);
+    if (previous !== undefined && sameSet(previous, incoming)) { continue; }
+    before.set(name, incoming);
+    for (const predecessor of predecessors.get(name) ?? []) {
+      if (!pending.has(predecessor)) { pending.add(predecessor); work.push(predecessor); }
     }
   }
-  return values;
+  return liveOut;
+}
+
+/** The names live across each selected instruction: what it reads, and what is read after it. */
+export function liveAcross(
+  block: BuiltLlvmBlock,
+  liveOut: ReadonlySet<string>,
+  names: LiveNames,
+  selected: (instruction: LlvmInstruction) => boolean
+): ReadonlyMap<LlvmInstruction, ReadonlySet<string>> {
+  const live = new Set(liveOut);
+  const across = new Map<LlvmInstruction, ReadonlySet<string>>();
+  for (const instruction of block.instructions.toReversed()) {
+    const result = llvmInstructionResult(instruction);
+    if (result !== undefined) { live.delete(llvmValueText(result)); }
+    if (instruction.kind !== "phi") {
+      for (const name of operandNames(instruction, names)) { live.add(name); }
+    }
+    if (selected(instruction)) { across.set(instruction, new Set(live)); }
+  }
+  return across;
 }

@@ -8,10 +8,11 @@ import {
   captureCommand,
   commandExecutorLayer,
   compileFixture,
+  expectCheckerRejection,
   expectLlvmAsVerificationIfAvailable,
   expectNativeBehaviorIfAvailable,
+  expectNativeFixtures,
   expectSuccessfulCompile,
-  expectUnsupportedDiagnostic,
   expectUnsupportedMessage,
   repoRoot,
   roadmapIntegrationTimeoutMs,
@@ -34,20 +35,12 @@ describe("tscn CLI", () => {
     }
   });
 
-  test("a class refusal reports its own reason and lowering continues", async () => {
+  test("a class that extends a later class is rejected by the checker", async () => {
     const result = await compileFixture("class-refusal-reason-survives.ts");
 
     try {
       expect(result.status).not.toBe(0);
-      // The reason names the class, not the syntax: it is the class tier's own words.
-      expect(result.stderr).toContain("error TSCN1002");
-      expect(result.stderr).toContain("`extends B` does not name a class declared in this module");
-      // Continuing past it means the consequence is reported too. That is the plan's stated alternative
-      // to aborting the file — one diagnostic per refused statement — and it is the behaviour a
-      // statement-tier refusal already had.
-      expect(result.stderr).toContain("`new A(...)` constructs `A`, which is not a class declared in this module");
-      // Reported against the statement that caused it, not at position 0 as the file-level catch did.
-      expect(result.stderr).toMatch(/class-refusal-reason-survives\.ts:6:1: error TSCN1002/);
+      expect(result.stderr).toContain("error TS2449");
     } finally {
       await result.cleanup();
     }
@@ -118,7 +111,7 @@ describe("tscn CLI", () => {
       }
       expect(run.stdout).toContain(`Wrote ${llvmIr}`);
       expect(run.stdout).toContain(`Wrote ${traceMap}`);
-      expect(await readArtifact("main.ll")).toContain("define i32 @main()");
+      expect(await readArtifact("main.ll")).toMatch(/define i32 @main\(/);
       await expectNativeBehaviorIfAvailable(cliResult, { status: 0, stdout: `${Array.from({ length: 100 }, (_, i) => i).join("\n")}\n`, stderr: "" });
     } finally {
       await rm(outDir, { recursive: true, force: true });
@@ -403,12 +396,11 @@ describe("tscn CLI", () => {
     }
   });
 
-  test("rejects unsupported if conditions with a slice diagnostic", async () => {
-    const result = await compileFixture("if-unsupported-condition.ts");
+  test("reads the truthiness of any value an if condition computes", async () => {
+    const result = await expectSuccessfulCompile("if-computed-condition.ts", { link: true });
 
     try {
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("error TSCN1002");
+      await expectNativeBehaviorIfAvailable(result, { status: 0, stdout: "x\n", stderr: "" });
     } finally {
       await result.cleanup();
     }
@@ -462,24 +454,22 @@ describe("tscn CLI", () => {
   test("names the refused shape instead of reporting a generic slice diagnostic", async () => {
     const expectations = new Map([
       ["call-argument-unsupported.ts", "`eval` cannot be used as a value yet"],
-      ["new-unknown-constructor-unsupported.ts", "`new Test262Error(...)` constructs `Test262Error`, which is not a class declared in this module"],
       ["eval-source-unsupported.ts", "Calling `eval` with source text is not supported yet"],
-      ["member-read-argument-unsupported.ts", "The argument `Math.max` is not an expression this build can evaluate"],
+      ["member-read-argument-unsupported.ts", "`Math.max` cannot be read as a value yet"],
       ["for-update-clause-unsupported.ts", "A `for` statement update clause must be an assignment or update expression"],
-      ["unary-plus-unsupported.ts", "Unary `+` expressions are not supported yet"],
-      ["nested-class-unsupported.ts", "Class declarations inside function and block bodies are not supported yet"]
+      ["unary-plus-unsupported.ts", "Unary `+` expressions are not supported yet"]
     ]);
 
     await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
   });
 
-  test("rejects package imports during the native CLI subset milestone", async () => {
+  test("rejects unresolved package imports with TSCN1001", async () => {
     const result = await compileFixture("package-import.ts");
 
     try {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("error TSCN1001");
-      expect(result.stderr).toContain("NPM package imports are not supported yet: effect");
+      expect(result.stderr).toContain("Cannot resolve package import: nonexistent-package-for-tscn-test");
     } finally {
       await result.cleanup();
     }
@@ -505,29 +495,20 @@ describe("tscn CLI", () => {
     }
   });
 
-  test("explains unsupported new runtime built-in boundaries precisely", async () => {
-    const expectations = new Map([
-      ["object-define-property-accessor.ts", "Object.defineProperty accessor descriptors are not supported yet"]
+  test("defines accessor properties through descriptors", async () => {
+    await expectNativeFixtures([
+      ["object-define-property-accessor.ts", "1\n"],
+      ["object-define-properties-accessor.ts", "x\n"]
     ]);
-
-    await Promise.all([...expectations].map(async ([fixture, message]) => expectUnsupportedMessage(fixture, message)));
   });
 
-  test("rejects unsupported expanded runtime roadmap boundaries", async () => {
-    const fixtures = [
-      "object-define-properties-accessor.ts",
-      "object-define-properties-method.ts"
-    ];
-
-    await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
+  test("leaves ill-typed descriptors and constructors to the checker", async () => {
+    await expectCheckerRejection("object-define-properties-method.ts", "error TS2559");
+    await expectCheckerRejection("new-untyped-constructor-rejected.ts", "error TS7009");
   });
 
-  test("rejects unsupported aggregate expansion boundaries", async () => {
-    const fixtures = [
-      "object-from-entries-non-array.ts",
-      "object-from-entries-entry-non-array.ts"
-    ];
-
-    await Promise.all(fixtures.map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
+  test("leaves ill-typed Object.fromEntries sources to the checker", async () => {
+    await expectCheckerRejection("object-from-entries-non-array.ts", "error TS2769");
+    await expectCheckerRejection("object-from-entries-entry-non-array.ts", "error TS2769");
   });
 });

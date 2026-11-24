@@ -38,6 +38,7 @@ export function checkedBindingReads(writes: BindingAccess, exception: () => Exce
     fixedArrayLength: (reference) => writes.fixedArrayLength(reference),
     arrayElement: (reference, index) => writes.arrayElement(reference, index),
     objectField: (reference, path) => writes.objectField(reference, path),
-    storeNumber: (reference, value) => { writes.checkInitialized(reference, exception); writes.storeNumber(reference, value); }
+    storeNumber: (reference, value) => { writes.checkInitialized(reference, exception); writes.storeNumber(reference, value); },
+    storeValue: (reference, value) => { writes.checkInitialized(reference, exception); writes.storeValue(reference, value); }
   };
 }

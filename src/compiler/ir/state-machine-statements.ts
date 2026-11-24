@@ -76,6 +76,9 @@ function lowerStateMachineControlStatement(
   if (ts.isForOfStatement(statement)) {
     return lowerStateMachineForOf(builder, statement, bindings);
   }
+  if (ts.isForInStatement(statement)) {
+    return lowerStateMachineForIn(builder, statement, bindings);
+  }
   if (ts.isSwitchStatement(statement)) {
     return lowerStateMachineSwitch(builder, statement, bindings);
   }
@@ -447,6 +450,61 @@ function assignForOfInitializer(
     return bindPatternValue(builder, decl.name, value, isVar, bindings);
   }
   return builder.emitAssignToTarget(initializer, value, bindings);
+}
+
+/** Enumerates a `for…in` target's keys once and points a lifted index at the first of them. */
+function openKeyCursor(builder: StateMachineBuilder, target: JsIrValueExpression) {
+  const keysSlot = builder.allocateTemp("forin_keys");
+  const idxSlot = builder.allocateTemp("forin_idx");
+  builder.emit({ kind: "assignValue", name: keysSlot, value: { kind: "objectEnumerateValue", method: "keys", target } });
+  builder.emit({ kind: "assignValue", name: idxSlot, value: { kind: "number", value: { kind: "literal", value: 0 } } });
+  const keysRef: JsIrValueExpression = { kind: "variable", name: keysSlot };
+  const idxNum = { kind: "valueToNumber" as const, value: { kind: "variable" as const, name: idxSlot } };
+  return { keysRef, idxSlot, idxNum };
+}
+
+function lowerStateMachineForIn(
+  builder: StateMachineBuilder,
+  statement: ts.ForInStatement,
+  bindings: Map<string, JsIrBindingValue>
+): Produced<undefined> {
+  const label = consumePendingLabel(builder);
+  const target = lowerStateMachineExpression(builder, statement.expression, bindings);
+  if (target.kind !== "lowered") {
+    return target;
+  }
+  const { keysRef, idxSlot, idxNum } = openKeyCursor(builder, target.operation);
+  const loopState = builder.allocateState();
+  const bodyState = builder.allocateState();
+  const stepState = builder.allocateState();
+  const afterState = builder.allocateState();
+  builder.emitGoto(loopState);
+  builder.switchToState(loopState);
+  const lenNum = { kind: "valueArrayLength" as const, value: keysRef };
+  emitStateBranch(builder, { kind: "numberComparison", operator: "<", left: idxNum, right: lenNum }, bodyState, afterState);
+  const iterBindings = new Map(bindings);
+  builder.switchToState(bodyState);
+  const keyExpr: JsIrValueExpression = { kind: "valueArrayAccess", value: keysRef, index: idxNum, key: { kind: "literal", value: "0" } };
+  const assignInit = assignForOfInitializer(builder, statement.initializer, keyExpr, iterBindings);
+  if (assignInit.kind !== "lowered") {
+    return assignInit;
+  }
+  builder.loopStack.push({ label, breakState: afterState, continueState: stepState, finallyDepth: builder.finallyStack.length });
+  const bodyResult = lowerStateMachineStatement(builder, statement.statement, iterBindings);
+  builder.loopStack.pop();
+  if (bodyResult.kind !== "lowered") {
+    return bodyResult;
+  }
+  builder.emitGoto(stepState);
+  builder.switchToState(stepState);
+  builder.emit({
+    kind: "assignValue",
+    name: idxSlot,
+    value: { kind: "number", value: { kind: "binary", operator: "add", left: idxNum, right: { kind: "literal", value: 1 } } }
+  });
+  builder.emitGoto(loopState);
+  builder.switchToState(afterState);
+  return produced(undefined);
 }
 
 function lowerStateMachineSwitch(

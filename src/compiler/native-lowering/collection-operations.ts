@@ -10,7 +10,8 @@ function collectionPointer(reference: BindingRef, context: OperationContext): Re
 }
 
 function create(operation: OperationNode<"runtimeMapNew" | "runtimeSetNew">, context: OperationContext): void {
-  const pointer = context.runtime.callPointer("collectionNew", [], context.cursor.uniqueName("collection.new"));
+  const kind = integer(operation.kind === "runtimeMapNew" ? 0n : 1n, context);
+  const pointer = context.runtime.callPointer("collectionNewWithKind", [kind], context.cursor.uniqueName("collection.new"));
   context.writes.storeValue(operation.name, ownAggregate(pointer, "object", context).value);
 }
 

@@ -4,6 +4,8 @@
 @.typeof.number = private unnamed_addr constant [7 x i8] c"number\00"
 @.typeof.string = private unnamed_addr constant [7 x i8] c"string\00"
 @.typeof.function = private unnamed_addr constant [9 x i8] c"function\00"
+@.typeof.symbol = private unnamed_addr constant [7 x i8] c"symbol\00"
+@.typeof.bigint = private unnamed_addr constant [7 x i8] c"bigint\00"
 
 ; The type of a boxed value after its binding read has checked lexical initialization.
 define { ptr, i64 } @valueTypeOf(i64 %value) {
@@ -12,11 +14,15 @@ entry:
   %true = icmp eq i64 %value, 9222246136947933186
   %false = icmp eq i64 %value, 9222246136947933185
   %boolean = or i1 %true, %false
+  %symbol = call i1 @valueIsSymbol(i64 %value)
+  %bigint = call i1 @valueIsBigInt(i64 %value)
   %number = call i1 @valueIsNumberForSameValueZero(i64 %value)
   %string = call i1 @valueIsString(i64 %value)
   %function = call i1 @valueIsFunction(i64 %value)
   %number.ptr = select i1 %number, ptr @.typeof.number, ptr @.typeof.object
-  %function.ptr = select i1 %function, ptr @.typeof.function, ptr %number.ptr
+  %bigint.ptr = select i1 %bigint, ptr @.typeof.bigint, ptr %number.ptr
+  %symbol.ptr = select i1 %symbol, ptr @.typeof.symbol, ptr %bigint.ptr
+  %function.ptr = select i1 %function, ptr @.typeof.function, ptr %symbol.ptr
   %function.len = select i1 %function, i64 8, i64 6
   %string.ptr = select i1 %string, ptr @.typeof.string, ptr %function.ptr
   %string.len = select i1 %string, i64 6, i64 %function.len
@@ -49,7 +55,17 @@ check.strings:
   %left.string = icmp eq i64 %left.tag, 9221683186994511872
   %right.string = icmp eq i64 %right.tag, 9221683186994511872
   %both.strings = and i1 %left.string, %right.string
-  br i1 %both.strings, label %string.compare, label %not.equal
+  br i1 %both.strings, label %string.compare, label %check.bigints
+check.bigints:
+  %left.bi = icmp eq i64 %left.tag, 9222809086901354496
+  %right.bi = icmp eq i64 %right.tag, 9222809086901354496
+  %both.bi = and i1 %left.bi, %right.bi
+  br i1 %both.bi, label %bigint.compare, label %not.equal
+bigint.compare:
+  %left.bi.v = call i64 @bigIntToI64(i64 %left)
+  %right.bi.v = call i64 @bigIntToI64(i64 %right)
+  %bi.eq = icmp eq i64 %left.bi.v, %right.bi.v
+  br i1 %bi.eq, label %equal, label %not.equal
 string.compare:
   %left.len = call i64 @valueStringLength(i64 %left)
   %right.len = call i64 @valueStringLength(i64 %right)
@@ -88,9 +104,13 @@ check.tag:
   %is.array = icmp eq i64 %tag, 9221401712017801216
   %is.string = icmp eq i64 %tag, 9221683186994511872
   %is.function = icmp eq i64 %tag, 9221964661971222528
+  %is.symbol = icmp eq i64 %tag, 9222527611924643840
+  %is.bigint = icmp eq i64 %tag, 9222809086901354496
   %is.object.or.array = or i1 %is.object, %is.array
   %is.aggregate.or.string = or i1 %is.object.or.array, %is.string
-  %is.boxed = or i1 %is.aggregate.or.string, %is.function
+  %is.fn.or.sym = or i1 %is.function, %is.symbol
+  %is.fn.sym.bi = or i1 %is.fn.or.sym, %is.bigint
+  %is.boxed = or i1 %is.aggregate.or.string, %is.fn.sym.bi
   br i1 %is.boxed, label %false, label %true
 true:
   ret i1 true
@@ -144,8 +164,17 @@ check.string:
 check.aggregate:
   %is.object = icmp eq i64 %tag, 9221120237041090560
   %is.array = icmp eq i64 %tag, 9221401712017801216
-  %is.aggregate = or i1 %is.object, %is.array
-  br i1 %is.aggregate, label %nan, label %as.number
+  %is.symbol = icmp eq i64 %tag, 9222527611924643840
+  %is.obj.arr = or i1 %is.object, %is.array
+  %is.aggregate = or i1 %is.obj.arr, %is.symbol
+  br i1 %is.aggregate, label %nan, label %check.bigint.num
+check.bigint.num:
+  %is.bi.num = icmp eq i64 %tag, 9222809086901354496
+  br i1 %is.bi.num, label %as.bigint, label %as.number
+as.bigint:
+  %bi.raw = call i64 @bigIntToI64(i64 %value)
+  %bi.f = sitofp i64 %bi.raw to double
+  ret double %bi.f
 string:
   %ptr = call ptr @valueStringPtr(i64 %value)
   br label %string.skip.ws
@@ -362,7 +391,18 @@ entry:
   %left.string = icmp eq i64 %left.tag, 9221683186994511872
   %right.string = icmp eq i64 %right.tag, 9221683186994511872
   %both.strings = and i1 %left.string, %right.string
-  br i1 %both.strings, label %strings, label %numbers
+  br i1 %both.strings, label %strings, label %check.bi.rel
+check.bi.rel:
+  %left.bi.rel = icmp eq i64 %left.tag, 9222809086901354496
+  %right.bi.rel = icmp eq i64 %right.tag, 9222809086901354496
+  %both.bi.rel = and i1 %left.bi.rel, %right.bi.rel
+  br i1 %both.bi.rel, label %bigints, label %numbers
+bigints:
+  %lbi = call i64 @bigIntToI64(i64 %left)
+  %rbi = call i64 @bigIntToI64(i64 %right)
+  %bi.lt = icmp slt i64 %lbi, %rbi
+  %bi.gt = icmp sgt i64 %lbi, %rbi
+  br label %select
 strings:
   %left.ptr = call ptr @valueStringPtr(i64 %left)
   %right.ptr = call ptr @valueStringPtr(i64 %right)
@@ -390,8 +430,8 @@ numbers:
   %num.gt = fcmp ogt double %left.num, %right.num
   br label %select
 select:
-  %lt = phi i1 [ %str.lt, %strings ], [ %num.lt, %numbers ]
-  %gt = phi i1 [ %str.gt, %strings ], [ %num.gt, %numbers ]
+  %lt = phi i1 [ %str.lt, %strings ], [ %bi.lt, %bigints ], [ %num.lt, %numbers ]
+  %gt = phi i1 [ %str.gt, %strings ], [ %bi.gt, %bigints ], [ %num.gt, %numbers ]
   %not.lt = xor i1 %lt, true
   %not.gt = xor i1 %gt, true
   %eq = and i1 %not.lt, %not.gt
@@ -435,7 +475,18 @@ add:
   %left.primitive.string = icmp eq i64 %left.primitive.tag, 9221683186994511872
   %right.primitive.string = icmp eq i64 %right.primitive.tag, 9221683186994511872
   %concat = or i1 %left.primitive.string, %right.primitive.string
-  br i1 %concat, label %strings, label %numbers
+  br i1 %concat, label %strings, label %check.bi.add
+check.bi.add:
+  %left.bi.add = icmp eq i64 %left.primitive.tag, 9222809086901354496
+  %right.bi.add = icmp eq i64 %right.primitive.tag, 9222809086901354496
+  %both.bi.add = and i1 %left.bi.add, %right.bi.add
+  br i1 %both.bi.add, label %bigints.add, label %numbers
+bigints.add:
+  %lba = call i64 @bigIntToI64(i64 %left.primitive)
+  %rba = call i64 @bigIntToI64(i64 %right.primitive)
+  %sum.bi = add i64 %lba, %rba
+  %boxed.bi = call i64 @bigIntFromI64(i64 %sum.bi)
+  br label %done
 strings:
   %left.primitive.str = call { ptr, i64 } @valueToString(i64 %left.primitive)
   %left.primitive.ptr = extractvalue { ptr, i64 } %left.primitive.str, 0
@@ -456,7 +507,7 @@ numbers:
   %boxed.num = call i64 @valueBoxNumber(double %safe.sum)
   br label %done
 done:
-  %result = phi i64 [ %boxed, %strings ], [ %boxed.num, %numbers ]
+  %result = phi i64 [ %boxed, %strings ], [ %boxed.bi, %bigints.add ], [ %boxed.num, %numbers ]
   %ok.0 = insertvalue { i64, i1 } undef, i64 %result, 0
   %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
   call void @gcRootRestore(i64 %frame)
@@ -530,6 +581,19 @@ entry:
   %is.object = icmp eq i64 %tag, 9221120237041090560
   ret i1 %is.object
 }
+; Maps, sets and their weak forms carry the object tag over a different layout, so code about to read
+; properties out of an object must ask for this rather than for the tag.
+define i1 @valueIsPlainObject(i64 %value) {
+entry:
+  %is.object = call i1 @valueIsObject(i64 %value)
+  br i1 %is.object, label %check.layout, label %no
+check.layout:
+  %is.collection = call i1 @valueIsCollection(i64 %value)
+  %is.plain = xor i1 %is.collection, true
+  ret i1 %is.plain
+no:
+  ret i1 false
+}
 define i1 @valueIsArray(i64 %value) {
 entry:
   %tag = and i64 %value, -281474976710656
@@ -557,7 +621,20 @@ function:
   ret i64 %function.result
 check.object:
   %is.object = call i1 @valueIsObject(i64 %value)
-  br i1 %is.object, label %object, label %check.array
+  br i1 %is.object, label %object.kind, label %check.array
+object.kind:
+  %is.col = call i1 @valueIsCollection(i64 %value)
+  br i1 %is.col, label %collection, label %check.proxy.get
+check.proxy.get:
+  %is.px.get = call i1 @valueIsProxy(i64 %value)
+  br i1 %is.px.get, label %proxy.get, label %object
+proxy.get:
+  %px.get.c = call { i64, i1 } @jsProxyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  %px.get.v = extractvalue { i64, i1 } %px.get.c, 0
+  ret i64 %px.get.v
+collection:
+  %col.result = call i64 @collectionPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  ret i64 %col.result
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.result = call i64 @objectGet(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
@@ -596,7 +673,22 @@ array.builtin:
   ret i64 %array.method
 check.string:
   %is.string = call i1 @valueIsString(i64 %value)
-  br i1 %is.string, label %string.builtin, label %missing
+  br i1 %is.string, label %string.builtin, label %check.symbol
+check.symbol:
+  %is.sym = call i1 @valueIsSymbol(i64 %value)
+  br i1 %is.sym, label %symbol.prop, label %check.bigint.prop
+symbol.prop:
+  %sym.prop = call i64 @symbolPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  ret i64 %sym.prop
+check.bigint.prop:
+  %is.bi.prop = call i1 @valueIsBigInt(i64 %value)
+  br i1 %is.bi.prop, label %bigint.prop, label %scalar.prop
+bigint.prop:
+  %bi.prop = call i64 @bigIntPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  ret i64 %bi.prop
+scalar.prop:
+  %scalar.method = call i64 @scalarPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  ret i64 %scalar.method
 string.builtin:
   %string.is.iter = icmp eq i64 %key.len, 18
   br i1 %string.is.iter, label %string.iter.cmp, label %string.property
@@ -610,8 +702,6 @@ string.iter:
 string.property:
   %string.property.value = call i64 @stringPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
   ret i64 %string.property.value
-missing:
-  ret i64 9222246136947933184
 }
 @.valuelength.key = private unnamed_addr constant [7 x i8] c"length\00"
 
@@ -642,6 +732,9 @@ function:
   %function.length = fptosi double %function.length.number to i64
   ret i64 %function.length
 object:
+  %is.col = call i1 @valueIsCollection(i64 %value)
+  br i1 %is.col, label %zero, label %object.read.len
+object.read.len:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %raw = call i64 @objectGet(ptr %object.ptr, i64 6, ptr @.valuelength.key)
   %raw.tagged = and i64 %raw, -281474976710656
@@ -696,7 +789,16 @@ check.aggregate:
   br i1 %is.aggregate, label %true, label %check.function
 check.function:
   %is.function = icmp eq i64 %tagged, 9221964661971222528
-  br i1 %is.function, label %true, label %number.block
+  %is.symbol = icmp eq i64 %tagged, 9222527611924643840
+  %is.fn.or.sym = or i1 %is.function, %is.symbol
+  br i1 %is.fn.or.sym, label %true, label %check.bigint.truth
+check.bigint.truth:
+  %is.bi.truth = icmp eq i64 %tagged, 9222809086901354496
+  br i1 %is.bi.truth, label %bigint.truth, label %number.block
+bigint.truth:
+  %bi.tv = call i64 @bigIntToI64(i64 %value)
+  %bi.nz = icmp ne i64 %bi.tv, 0
+  ret i1 %bi.nz
 number.block:
   %number.value = call double @valueNumber(i64 %value)
   %nonzero = fcmp one double %number.value, 0.0
@@ -731,6 +833,15 @@ check.object:
   %is.object = icmp eq i64 %tagged.object, 9221120237041090560
   br i1 %is.object, label %check.error, label %check.array
 check.error:
+  %vp.is.col = call i1 @valueIsCollection(i64 %value)
+  br i1 %vp.is.col, label %print.collection, label %check.error.obj
+print.collection:
+  %vp.col = call ptr @valueObjectPtr(i64 %value)
+  %vp.tag = call { ptr, i64 } @collectionToStringTag(ptr %vp.col)
+  %vp.tag.ptr = extractvalue { ptr, i64 } %vp.tag, 0
+  call i32 @puts(ptr %vp.tag.ptr)
+  ret void
+check.error.obj:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.class.slot = getelementptr i8, ptr %object.ptr, i64 48
   %object.class = load i64, ptr %object.class.slot
@@ -743,7 +854,23 @@ check.array:
 check.string:
   %tagged = and i64 %value, -281474976710656
   %is.string = icmp eq i64 %tagged, 9221683186994511872
-  br i1 %is.string, label %print.string, label %print.number
+  br i1 %is.string, label %print.string, label %check.print.symbol
+check.print.symbol:
+  %is.sym = icmp eq i64 %tagged, 9222527611924643840
+  br i1 %is.sym, label %print.symbol, label %check.print.bigint
+print.symbol:
+  %sym.str = call { ptr, i64 } @symbolToString(i64 %value)
+  %sym.ptr = extractvalue { ptr, i64 } %sym.str, 0
+  call i32 @puts(ptr %sym.ptr)
+  ret void
+check.print.bigint:
+  %is.pbi = icmp eq i64 %tagged, 9222809086901354496
+  br i1 %is.pbi, label %print.bigint, label %print.number
+print.bigint:
+  %pbi.str = call { ptr, i64 } @bigIntToString(i64 %value)
+  %pbi.ptr = extractvalue { ptr, i64 } %pbi.str, 0
+  call i32 @puts(ptr %pbi.ptr)
+  ret void
 print.undefined:
   call i32 @puts(ptr @.value.undefined)
   ret void
@@ -786,6 +913,32 @@ print.number:
 @.tostring.array = private unnamed_addr constant [15 x i8] c"[object Array]\00"
 @.tostring.comma = private unnamed_addr constant [2 x i8] c",\00"
 
+@.tostring.map = private unnamed_addr constant [13 x i8] c"[object Map]\00"
+@.tostring.set = private unnamed_addr constant [13 x i8] c"[object Set]\00"
+@.tostring.weakmap = private unnamed_addr constant [17 x i8] c"[object WeakMap]\00"
+@.tostring.weakset = private unnamed_addr constant [17 x i8] c"[object WeakSet]\00"
+
+define { ptr, i64 } @collectionToStringTag(ptr %col) {
+entry:
+  %kind = call i64 @collectionKind(ptr %col)
+  %is.map = icmp eq i64 %kind, 0
+  br i1 %is.map, label %map, label %check.set
+map:
+  ret { ptr, i64 } { ptr @.tostring.map, i64 12 }
+check.set:
+  %is.set = icmp eq i64 %kind, 1
+  br i1 %is.set, label %set, label %check.wm
+set:
+  ret { ptr, i64 } { ptr @.tostring.set, i64 12 }
+check.wm:
+  %is.wm = icmp eq i64 %kind, 2
+  br i1 %is.wm, label %wm, label %ws
+wm:
+  ret { ptr, i64 } { ptr @.tostring.weakmap, i64 16 }
+ws:
+  ret { ptr, i64 } { ptr @.tostring.weakset, i64 16 }
+}
+
 define { ptr, i64 } @valueToString(i64 %value) {
 entry:
   %is.undefined = icmp eq i64 %value, 9222246136947933184
@@ -810,7 +963,19 @@ check.array:
 check.string:
   %tagged.string = and i64 %value, -281474976710656
   %is.string = icmp eq i64 %tagged.string, 9221683186994511872
-  br i1 %is.string, label %string, label %number
+  br i1 %is.string, label %string, label %check.tostring.symbol
+check.tostring.symbol:
+  %is.sym = icmp eq i64 %tagged.string, 9222527611924643840
+  br i1 %is.sym, label %symbol.str, label %check.tostring.bigint
+symbol.str:
+  %sym.s = call { ptr, i64 } @symbolToString(i64 %value)
+  ret { ptr, i64 } %sym.s
+check.tostring.bigint:
+  %is.tsbi = icmp eq i64 %tagged.string, 9222809086901354496
+  br i1 %is.tsbi, label %bigint.str, label %number
+bigint.str:
+  %bi.s = call { ptr, i64 } @bigIntToString(i64 %value)
+  ret { ptr, i64 } %bi.s
 undefined:
   %undefined.0 = insertvalue { ptr, i64 } undef, ptr @.tostring.undefined, 0
   %undefined.1 = insertvalue { ptr, i64 } %undefined.0, i64 9, 1
@@ -829,6 +994,12 @@ null:
   ret { ptr, i64 } %null.1
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %object.is.col = call i1 @valueIsCollection(i64 %value)
+  br i1 %object.is.col, label %object.collection, label %object.noncol
+object.collection:
+  %col.str = call { ptr, i64 } @collectionToStringTag(ptr %object.ptr)
+  ret { ptr, i64 } %col.str
+object.noncol:
   %object.class.slot = getelementptr i8, ptr %object.ptr, i64 48
   %object.class = load i64, ptr %object.class.slot
   %object.is.error = icmp ne i64 %object.class, 0
@@ -1027,11 +1198,14 @@ entry:
   %is.object = call i1 @valueIsObject(i64 %value)
   br i1 %is.object, label %start, label %missing
 start:
+  %is.col = call i1 @valueIsCollection(i64 %value)
+  br i1 %is.col, label %missing, label %start.object
+start.object:
   %object = call ptr @valueObjectPtr(i64 %value)
   %first = call ptr @objectGetPrototype(ptr %object)
   br label %lookup
 lookup:
-  %current = phi ptr [ %first, %start ], [ %next, %advance ]
+  %current = phi ptr [ %first, %start.object ], [ %next, %advance ]
   %is.null = icmp eq ptr %current, null
   br i1 %is.null, label %missing, label %compare
 compare:
@@ -1106,6 +1280,22 @@ read:
   %object = call i1 @valueIsObject(i64 %value)
   br i1 %object, label %object.read, label %check.function
 object.read:
+  %read.is.col = call i1 @valueIsCollection(i64 %value)
+  br i1 %read.is.col, label %collection.read, label %check.proxy.read
+check.proxy.read:
+  %read.is.px = call i1 @valueIsProxy(i64 %value)
+  br i1 %read.is.px, label %proxy.read, label %plain.object.read
+proxy.read:
+  %px.read.res = call { i64, i1 } @jsProxyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %px.read.res
+collection.read:
+  %col.prop = call i64 @collectionPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  %col.ok.0 = insertvalue { i64, i1 } undef, i64 %col.prop, 0
+  %col.ok = insertvalue { i64, i1 } %col.ok.0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %col.ok
+plain.object.read:
   %object.result = call { i64, i1 } @objectPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
   call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %object.result
@@ -1241,6 +1431,15 @@ check.object:
   br i1 %is.object, label %check.error, label %tag.number
 check.error:
   %object = call ptr @valueObjectPtr(i64 %this.value)
+  %this.is.col = call i1 @valueIsCollection(i64 %this.value)
+  br i1 %this.is.col, label %tag.collection, label %check.error.obj
+tag.collection:
+  %col.tag = call { ptr, i64 } @collectionToStringTag(ptr %object)
+  %col.tag.ptr = extractvalue { ptr, i64 } %col.tag, 0
+  %col.tag.len = extractvalue { ptr, i64 } %col.tag, 1
+  %s.col = call i64 @valueBoxString(ptr %col.tag.ptr, i64 %col.tag.len)
+  br label %done
+check.error.obj:
   %class.slot = getelementptr i8, ptr %object, i64 48
   %class.id = load i64, ptr %class.slot
   %is.error = icmp ne i64 %class.id, 0
@@ -1273,7 +1472,7 @@ tag.object:
   %s.obj = call i64 @valueBoxString(ptr @.tostring.object, i64 15)
   br label %done
 done:
-  %boxed = phi i64 [ %s.undef, %tag.undefined ], [ %s.null, %tag.null ], [ %s.bool, %tag.bool ], [ %s.num, %tag.number ], [ %s.str, %tag.string ], [ %s.arr, %tag.array ], [ %s.fn, %tag.function ], [ %s.err, %tag.error ], [ %s.obj, %tag.object ]
+  %boxed = phi i64 [ %s.undef, %tag.undefined ], [ %s.null, %tag.null ], [ %s.bool, %tag.bool ], [ %s.num, %tag.number ], [ %s.str, %tag.string ], [ %s.arr, %tag.array ], [ %s.fn, %tag.function ], [ %s.err, %tag.error ], [ %s.obj, %tag.object ], [ %s.col, %tag.collection ]
   %ok.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
   %ok = insertvalue { i64, i1 } %ok.0, i1 false, 1
   ret { i64, i1 } %ok
@@ -1341,7 +1540,7 @@ coercible.error:
 dispatch:
   %key.ptr = call ptr @valueStringPtr(i64 %key.boxed)
   %key.len = call i64 @valueStringLength(i64 %key.boxed)
-  %is.object = call i1 @valueIsObject(i64 %this.value)
+  %is.object = call i1 @valueIsPlainObject(i64 %this.value)
   br i1 %is.object, label %object.check, label %check.array
 object.check:
   %obj.ptr = call ptr @valueObjectPtr(i64 %this.value)
@@ -1388,7 +1587,7 @@ entry:
   br i1 %has.arg, label %load.arg, label %return.false
 load.arg:
   %candidate = load i64, ptr %argv
-  %cand.is.obj = call i1 @valueIsObject(i64 %candidate)
+  %cand.is.obj = call i1 @valueIsPlainObject(i64 %candidate)
   %cand.is.arr = call i1 @valueIsArray(i64 %candidate)
   %cand.is.fn = call i1 @valueIsFunction(i64 %candidate)
   %cand.obj.0 = or i1 %cand.is.obj, %cand.is.arr
@@ -1401,7 +1600,7 @@ check.this:
 error:
   ret { i64, i1 } %checked
 check.this.obj:
-  %this.is.obj = call i1 @valueIsObject(i64 %this.value)
+  %this.is.obj = call i1 @valueIsPlainObject(i64 %this.value)
   br i1 %this.is.obj, label %target.ready, label %return.false
 target.ready:
   %target.ptr = call ptr @valueObjectPtr(i64 %this.value)
@@ -1672,13 +1871,37 @@ check.object:
   br i1 %is.object, label %check.error, label %check.function
 check.error:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %c.is.col = call i1 @valueIsCollection(i64 %value)
+  br i1 %c.is.col, label %print.collection, label %check.error.obj
+print.collection:
+  %c.tag = call { ptr, i64 } @collectionToStringTag(ptr %object.ptr)
+  %c.tag.ptr = extractvalue { ptr, i64 } %c.tag, 0
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %c.tag.ptr)
+  ret void
+check.error.obj:
   %class.slot = getelementptr i8, ptr %object.ptr, i64 48
   %class.id = load i64, ptr %class.slot
   %is.error = icmp ne i64 %class.id, 0
   br i1 %is.error, label %print.error, label %print.object
 check.function:
   %is.function = icmp eq i64 %tag, 9221964661971222528
-  br i1 %is.function, label %print.function, label %print.number
+  br i1 %is.function, label %print.function, label %check.console.sym
+check.console.sym:
+  %is.csym = icmp eq i64 %tag, 9222527611924643840
+  br i1 %is.csym, label %print.csym, label %check.console.bi
+print.csym:
+  %csym.s = call { ptr, i64 } @symbolToString(i64 %value)
+  %csym.p = extractvalue { ptr, i64 } %csym.s, 0
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %csym.p)
+  ret void
+check.console.bi:
+  %is.cbi = icmp eq i64 %tag, 9222809086901354496
+  br i1 %is.cbi, label %print.cbi, label %print.number
+print.cbi:
+  %cbi.s = call { ptr, i64 } @bigIntToString(i64 %value)
+  %cbi.p = extractvalue { ptr, i64 } %cbi.s, 0
+  call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr %cbi.p)
+  ret void
 print.undefined:
   call i32 (ptr, ...) @printf(ptr @.console.fmt.s, ptr @.value.undefined)
   ret void
@@ -1904,6 +2127,40 @@ finish:
 
 ; Arrays and functions have intrinsic conversion methods even without object-layout prototypes.
 ; An own property, including undefined, shadows the intrinsic method.
+@.console.err.fmt.sn = private unnamed_addr constant [5 x i8] c"%.*s\00"
+@.console.err.fmt.space = private unnamed_addr constant [2 x i8] c" \00"
+@.console.err.fmt.newline = private unnamed_addr constant [2 x i8] c"\0A\00"
+
+define void @valueConsoleError(i64 %argc, ptr %argv) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %step ]
+  %done = icmp uge i64 %i, %argc
+  br i1 %done, label %finish, label %body
+body:
+  %need.space = icmp ugt i64 %i, 0
+  br i1 %need.space, label %space, label %print.arg
+space:
+  call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @.console.err.fmt.space)
+  br label %print.arg
+print.arg:
+  %slot = getelementptr i64, ptr %argv, i64 %i
+  %val = load i64, ptr %slot
+  %str = call { ptr, i64 } @valueToString(i64 %val)
+  %bytes = extractvalue { ptr, i64 } %str, 0
+  %len = extractvalue { ptr, i64 } %str, 1
+  %len32 = trunc i64 %len to i32
+  call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @.console.err.fmt.sn, i32 %len32, ptr %bytes)
+  br label %step
+step:
+  %next = add i64 %i, 1
+  br label %loop
+finish:
+  call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @.console.err.fmt.newline)
+  ret void
+}
+
 define { i64, i1 } @valueConversionPropertyGet(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
   %lookup = call { i64, i1 } @checkedValuePropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
@@ -1978,7 +2235,7 @@ install:
 
 define { i64, i1 } @boxedValueOfMethod(i64 %argc, ptr %argv, ptr %env, i64 %this.value) {
 entry:
-  %is.object = call i1 @valueIsObject(i64 %this.value)
+  %is.object = call i1 @valueIsPlainObject(i64 %this.value)
   br i1 %is.object, label %check.brand, label %refused
 check.brand:
   %object = call ptr @valueObjectPtr(i64 %this.value)
@@ -2071,13 +2328,50 @@ entry:
   call void @gcRootPush(i64 %left)
   call void @gcRootPush(i64 %right)
   %is.fn = call i1 @valueIsFunction(i64 %right)
-  br i1 %is.fn, label %read.proto, label %not.callable
+  br i1 %is.fn, label %check.special, label %not.callable
+check.special:
+  %left.is.col = call i1 @valueIsCollection(i64 %left)
+  br i1 %left.is.col, label %col.inst, label %check.err.ctor
+col.inst:
+  %col.matched = call i1 @jsCollectionInstanceOf(i64 %left, i64 %right)
+  %col.boxed = select i1 %col.matched, i64 9222246136947933186, i64 9222246136947933185
+  %col.ok0 = insertvalue { i64, i1 } undef, i64 %col.boxed, 0
+  %col.ok1 = insertvalue { i64, i1 } %col.ok0, i1 false, 1
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %col.ok1
+check.err.ctor:
+  %err.ctor = call i64 @errorConstructorValue(i64 1)
+  %is.err.ctor = icmp eq i64 %right, %err.ctor
+  br i1 %is.err.ctor, label %err.inst, label %read.proto
+err.inst:
+  %left.is.obj = call i1 @valueIsObject(i64 %left)
+  br i1 %left.is.obj, label %err.check.cls, label %err.false
+err.check.cls:
+  %left.obj = call ptr @valueObjectPtr(i64 %left)
+  %left.cls.slot = getelementptr i8, ptr %left.obj, i64 48
+  %left.cls = load i64, ptr %left.cls.slot
+  %left.is.err = icmp ne i64 %left.cls, 0
+  br i1 %left.is.err, label %err.true, label %read.proto
+err.true:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } { i64 9222246136947933186, i1 false }
+err.false:
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } { i64 9222246136947933185, i1 false }
 not.callable:
   %nc.msg = call i64 @valueBoxString(ptr @.instanceof.not.callable, i64 45)
   %nc.err = call { i64, i1 } @iteratorTypeError(i64 %nc.msg)
   call void @gcRootRestore(i64 %frame)
   ret { i64, i1 } %nc.err
 read.proto:
+  ; A primitive is an instance of nothing, whatever the constructor's prototype is.
+  %left.object = call i1 @valueIsObject(i64 %left)
+  %left.array = call i1 @valueIsArray(i64 %left)
+  %left.function = call i1 @valueIsFunction(i64 %left)
+  %left.heap = or i1 %left.object, %left.array
+  %left.reference = or i1 %left.heap, %left.function
+  br i1 %left.reference, label %load.proto, label %err.false
+load.proto:
   %proto.res = call { i64, i1 } @checkedValuePropertyGet(i64 %right, i64 9, ptr @.instanceof.key.prototype)
   %proto.threw = extractvalue { i64, i1 } %proto.res, 1
   br i1 %proto.threw, label %propagate, label %check.proto

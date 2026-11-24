@@ -22,6 +22,13 @@ export function resolveBindings(module: JsIrModule): ResolvedBindingsResult {
 
   for (const sourceModule of module.modules) {
     resolution.openModule(sourceModule.fileName, sourceModule.functionObjects);
+    for (const bindingImport of sourceModule.imports ?? []) {
+      resolution.importBinding(bindingImport.localName, bindingImport.sourceFileName, bindingImport.targetName);
+    }
+  }
+
+  for (const sourceModule of module.modules) {
+    resolution.openModule(sourceModule.fileName, sourceModule.functionObjects);
     try {
       modules.push({
         fileName: sourceModule.fileName,

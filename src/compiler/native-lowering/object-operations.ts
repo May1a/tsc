@@ -117,6 +117,13 @@ function valuePrototype(operation: OperationNode<"valueObjectSetPrototype">, con
   context.runtime.callVoid("objectSetPrototype", [target, prototype]);
 }
 
+function classLinkDynamicBase(operation: OperationNode<"classLinkDynamicBase">, context: OperationContext): void {
+  const proto = objectPointer(operation.prototypeName, context);
+  const statics = objectPointer(operation.staticsName, context);
+  const superValue = keep(context.bindings.value(operation.superName), context);
+  context.runtime.callVoid("classLinkDynamicBase", [proto, statics, superValue]);
+}
+
 function numberStore(operation: OperationNode<"objectStore">, context: OperationContext): void {
   context.writes.storeObjectNumber(operation.objectName, operation.path, context.expressions.number(operation.value));
 }
@@ -242,7 +249,7 @@ export const objectOperationHandlers = {
   runtimeObjectKeys: enumerate, runtimeObjectValues: enumerate, runtimeObjectEntries: enumerate,
   runtimeObjectOwnPropertyNames: enumerate, runtimeObjectOwnPropertyDescriptors: enumerate, runtimeObjectFromEntries: fromEntries,
   runtimeObjectOwnPropertyDescriptor: ownDescriptor, runtimeObjectGetPrototype: getPrototype, runtimeObjectSetPrototype: setPrototype,
-  defineAccessor, attachFunctionProperties, valueObjectSetPrototype: valuePrototype, objectStore: numberStore, runtimeObjectStore: store, valueObjectStore: store,
+  defineAccessor, attachFunctionProperties, valueObjectSetPrototype: valuePrototype, classLinkDynamicBase, objectStore: numberStore, runtimeObjectStore: store, valueObjectStore: store,
   privateFieldStore: privateStore, runtimeObjectDelete: deleteProperty, valueObjectDelete: deleteProperty,
   runtimeObjectPreventExtensions: state, runtimeObjectSeal: state, runtimeObjectFreeze: state,
   runtimeObjectAssign: assign, runtimeObjectDefineDataProperty: defineProperty, runtimeObjectDefineDataProperties: defineProperties

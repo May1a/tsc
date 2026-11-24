@@ -1,3 +1,1 @@
-import "effect";
-
-
+import "nonexistent-package-for-tscn-test";

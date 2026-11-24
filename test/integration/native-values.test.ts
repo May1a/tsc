@@ -17,7 +17,9 @@ import { captureCommand, commandExecutorLayer, toolExecutable } from "./helpers.
 
 function number(value: number): ResolvedValueExpression { return { kind: "number", value: { kind: "literal", value } }; }
 function string(value: string): ResolvedValueExpression { return { kind: "string", value: { kind: "literal", value } }; }
-function array(values: readonly number[]): ResolvedValueExpression { return { kind: "runtimeArrayValue", elements: values.map(number) }; }
+function array(values: readonly number[]): ResolvedValueExpression {
+  return { kind: "runtimeArrayValue", elements: values.map((v) => ({ kind: "value" as const, value: number(v) })) };
+}
 function forbiddenCall(): never { throw new Error("Value fixture did not declare this callable"); }
 
 function samples(counter: BindingRef, numbers: BindingRef, object: BindingRef, collection: BindingRef, callback: BindingRef, fixed: BindingRef): readonly ResolvedValueExpression[] {
@@ -67,9 +69,10 @@ function samples(counter: BindingRef, numbers: BindingRef, object: BindingRef, c
     { kind: "callValue", callee: { kind: "variable", name: callback }, arguments: [{ valueKind: "value", value: array([11, 12]) }] },
     { kind: "callValue", callee: { kind: "variable", name: callback }, arguments: [], spreadArguments: [{ kind: "iterableSpread", source: array([13, 14]), notIterableMessage: "not iterable" }] },
     { kind: "valuePlus", left: string("before"), right: { kind: "callValue", callee: { kind: "variable", name: callback }, arguments: [{ valueKind: "value", value: number(2) }] } },
-    { kind: "jsonStringify", indent: 0, value: { kind: "runtimeArrayValue", elements: [number(12), {
-      kind: "callValue", callee: { kind: "variable", name: callback }, arguments: [{ valueKind: "value", value: number(7) }]
-    }] } },
+    { kind: "jsonStringify", indent: 0, value: { kind: "runtimeArrayValue", elements: [
+      { kind: "value", value: number(12) },
+      { kind: "value", value: { kind: "callValue", callee: { kind: "variable", name: callback }, arguments: [{ valueKind: "value", value: number(7) }] } }
+    ] } },
     { kind: "valueArrayAccess", value: { kind: "callValue", callee: { kind: "variable", name: callback },
       arguments: [{ valueKind: "value", value: array([11, 12]) }] }, index: { kind: "literal", value: 1 }, key: { kind: "literal", value: "1" } },
     { kind: "arrayAccess", arrayName: fixed, index: { kind: "literal", value: 1 } },

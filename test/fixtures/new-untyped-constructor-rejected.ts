@@ -4,7 +4,6 @@ function Test262Error(message: any): any {
   return message;
 }
 
-// `Test262Error` is a plain function, not a lowered class: the refusal names the constructor rather
-// than the initializer around it.
+// A function that does not type `this` constructs an implicit `any`, which TypeScript rejects.
 const e = new Test262Error("boom");
 print(e);

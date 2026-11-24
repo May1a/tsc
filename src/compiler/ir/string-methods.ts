@@ -4,6 +4,7 @@ import ts from "typescript";
 import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrNumberExpression, JsIrValueExpression } from "./expressions.js";
 import { numericLiteralValue } from "./number-constants.js";
+import { isRegexExpression } from "./regex-predicates.js";
 
 export function lowerStringValueMethodCall(
   context: LoweringContext,
@@ -38,21 +39,50 @@ function lowerRuntimeStringMethodCall(
   expression: ts.CallExpression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrValueExpression> {
-  if (!ts.isPropertyAccessExpression(expression.expression) || !ts.isIdentifier(expression.expression.expression)) {
+  if (!ts.isPropertyAccessExpression(expression.expression)) {
     return notApplicable;
   }
-  const receiverName = expression.expression.expression.text;
-  const receiverBinding = bindings.get(receiverName);
-  if (receiverBinding === undefined) {
+  const receiverExpression = expression.expression.expression;
+  if (ts.isIdentifier(receiverExpression) && bindings.get(receiverExpression.text) === undefined) {
     return notApplicable;
   }
-  const receiver = context.lowerStringRuntimeExpression(context, expression.expression.expression, bindings);
+  const receiver = context.lowerStringRuntimeExpression(context, receiverExpression, bindings);
   if (receiver.kind !== "lowered") {
     return receiver;
   }
   const method = expression.expression.name.text;
   const args = [...expression.arguments];
   const first = args.at(0);
+  if (method === "split" && args.length <= 2) {
+    if (first === undefined) {
+      return produced({ kind: "runtimeArrayValue", elements: [{ kind: "value", value: { kind: "string", value: receiver.operation } }] });
+    }
+    let limit: JsIrNumberExpression | undefined;
+    if (args.length === 2) {
+      const loweredLimit = context.lowerNumberExpression(context, args[1], bindings);
+      if (loweredLimit.kind !== "lowered") {
+        return loweredLimit;
+      }
+      limit = loweredLimit.operation;
+    }
+    if (isRegexExpression(first, bindings)) {
+      const regex = context.lowerValueExpression(context, first, bindings);
+      return regex.kind === "lowered"
+        ? produced({ kind: "regexSplitValue", receiver: receiver.operation, regex: regex.operation, limit })
+        : regex;
+    }
+    const separator = context.lowerStringRuntimeExpression(context, first, bindings);
+    if (separator.kind === "lowered") {
+      return produced({ kind: "stringSplitValue", receiver: receiver.operation, separator: separator.operation, limit });
+    }
+    if (separator.kind === "unsupported") {
+      return separator;
+    }
+    const separatorValue = context.lowerValueExpression(context, first, bindings);
+    return separatorValue.kind === "lowered"
+      ? produced({ kind: "stringSplitValue", receiver: receiver.operation, separator: { kind: "stringConversion", value: separatorValue.operation }, limit })
+      : separatorValue;
+  }
   if ((method === "startsWith" || method === "endsWith") && (args.length === 1 || args.length === 2)) {
     if (first === undefined) {
       return notApplicable;

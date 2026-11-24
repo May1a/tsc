@@ -1,4 +1,4 @@
-/** Compute dominance after all terminators exist, using an iterative predecessor-set intersection. */
+/** Compute dominance after all terminators exist, as an immediate-dominator tree over reverse postorder. */
 
 /** One basic block's outgoing edges, which is all dominance needs from the CFG. */
 export interface LlvmControlFlowBlock {
@@ -13,138 +13,129 @@ export interface LlvmDominatorTree {
   dominates(definition: string, block: string): boolean;
 }
 
-function internalError(message: string): Error {
-  return new Error(`Internal compiler error: ${message}`);
-}
-
 /** Compute dominators for blocks reachable from entry. Unreachable blocks are exempt from SSA dominance checks. */
 export function buildLlvmDominatorTree(blocks: readonly LlvmControlFlowBlock[], entry: string): LlvmDominatorTree {
-  const indexOf = new Map<string, number>();
-  for (const [index, block] of blocks.entries()) {
-    indexOf.set(block.name, index);
-  }
+  const indexOf = new Map(blocks.map((block, index) => [block.name, index]));
   const entryIndex = indexOf.get(entry);
   if (entryIndex === undefined) {
     throw internalError(`LLVM entry block ${entry} is not one of the function's blocks`);
   }
-  const reachable = reachableIndices(blocks, indexOf, entryIndex);
-  const dominators = dominatorSets(blocks, indexOf, reachable, entryIndex);
+  const successors = blocks.map((block) => block.successors.flatMap((name) => indexOf.get(name) ?? []));
+  const order = reversePostorder(successors, entryIndex);
+  const rank = new Map(order.map((index, position) => [index, position]));
+  const immediate = immediateDominators(order, predecessorRanks(order, rank, successors));
+  const intervals = treeIntervals(immediate);
+  const intervalOf = (name: string): TreeInterval | undefined => {
+    const index = indexOf.get(name);
+    const position = index === undefined ? undefined : rank.get(index);
+    return position === undefined ? undefined : intervals[position];
+  };
 
   return {
-    isReachable: (block) => indexOf.get(block) !== undefined && reachable.has(indexOf.get(block) ?? -1),
+    isReachable: (block) => intervalOf(block) !== undefined,
     dominates: (definition, block) => {
-      const definitionIndex = indexOf.get(definition);
-      const blockIndex = indexOf.get(block);
-      if (definitionIndex === undefined || blockIndex === undefined || !reachable.has(blockIndex)) {
-        return false;
-      }
-      return dominators.get(blockIndex)?.has(definitionIndex) ?? false;
+      const outer = intervalOf(definition);
+      const inner = intervalOf(block);
+      return outer !== undefined && inner !== undefined && outer.first <= inner.first && inner.last <= outer.last;
     }
   };
 }
 
-/** Every block the entry can reach, by breadth-first search over the edge set. */
-function reachableIndices(
-  blocks: readonly LlvmControlFlowBlock[],
-  indexOf: ReadonlyMap<string, number>,
-  entryIndex: number
-): Set<number> {
-  const reached = new Set<number>([entryIndex]);
-  const queue = [entryIndex];
-  while (queue.length > 0) {
-    const current = queue.pop();
-    if (current === undefined) {
-      break;
-    }
-    for (const successor of blocks[current].successors) {
-      const successorIndex = indexOf.get(successor);
-      if (successorIndex !== undefined && !reached.has(successorIndex)) {
-        reached.add(successorIndex);
-        queue.push(successorIndex);
-      }
-    }
-  }
-  return reached;
+/** The range of tree positions a block's dominated subtree covers. */
+interface TreeInterval {
+  readonly first: number;
+  readonly last: number;
 }
 
-/** Each block is dominated by itself and the intersection of its reachable predecessors' dominators. */
-function dominatorSets(
-  blocks: readonly LlvmControlFlowBlock[],
-  indexOf: ReadonlyMap<string, number>,
-  reachable: ReadonlySet<number>,
-  entryIndex: number
-): Map<number, Set<number>> {
-  const predecessors = predecessorIndices(blocks, indexOf, reachable);
-  const dominators = new Map<number, Set<number>>();
-  const allReachable = new Set(reachable);
-  for (const index of reachable) {
-    dominators.set(index, index === entryIndex ? new Set([index]) : new Set(allReachable));
-  }
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const index of reachable) {
-      if (index === entryIndex) {
-        continue;
-      }
-      const incoming = predecessors.get(index) ?? [];
-      const current = dominators.get(index) ?? new Set<number>();
-      const narrowed = narrow(index, incoming, dominators);
-      if (!sameMembers(current, narrowed)) {
-        dominators.set(index, narrowed);
-        changed = true;
-      }
+/** Reachable blocks with every block before its successors, except along back edges. */
+function reversePostorder(successors: readonly (readonly number[])[], entry: number): readonly number[] {
+  const postorder: number[] = [];
+  const visited = new Set([entry]);
+  const stack = [{ block: entry, next: 0 }];
+  for (let frame = stack.at(-1); frame !== undefined; frame = stack.at(-1)) {
+    const successor = successors[frame.block].at(frame.next);
+    frame.next += 1;
+    if (frame.next > successors[frame.block].length || successor === undefined) {
+      postorder.push(frame.block);
+      stack.pop();
+    } else if (!visited.has(successor)) {
+      visited.add(successor);
+      stack.push({ block: successor, next: 0 });
     }
   }
-  return dominators;
+  return postorder.toReversed();
 }
 
-/** `{b} ∪ (⋂ dom[p])`, or just `{b}` when nothing has a dominator set yet. */
-function narrow(block: number, predecessors: readonly number[], dominators: ReadonlyMap<number, ReadonlySet<number>>): Set<number> {
-  const [first, ...rest] = predecessors.filter((index) => dominators.has(index)).map((index) => dominators.get(index));
-  const narrowed = first === undefined ? new Set<number>() : new Set(first);
-  for (const other of rest) {
-    if (other === undefined) {
-      continue;
-    }
-    for (const candidate of narrowed) {
-      if (!other.has(candidate)) {
-        narrowed.delete(candidate);
-      }
-    }
-  }
-  narrowed.add(block);
-  return narrowed;
-}
-
-function predecessorIndices(
-  blocks: readonly LlvmControlFlowBlock[],
-  indexOf: ReadonlyMap<string, number>,
-  reachable: ReadonlySet<number>
-): Map<number, number[]> {
-  const predecessors = new Map<number, number[]>();
-  for (const [index, block] of blocks.entries()) {
-    if (!reachable.has(index)) {
-      continue;
-    }
-    for (const successor of block.successors) {
-      const successorIndex = indexOf.get(successor);
-      if (successorIndex !== undefined && reachable.has(successorIndex)) {
-        predecessors.set(successorIndex, [...(predecessors.get(successorIndex) ?? []), index]);
+function predecessorRanks(
+  order: readonly number[], rank: ReadonlyMap<number, number>, successors: readonly (readonly number[])[]
+): readonly (readonly number[])[] {
+  const predecessors: number[][] = order.map(() => []);
+  for (const [position, block] of order.entries()) {
+    for (const successor of successors[block]) {
+      const target = rank.get(successor);
+      if (target !== undefined) {
+        predecessors[target].push(position);
       }
     }
   }
   return predecessors;
 }
 
-function sameMembers(left: ReadonlySet<number>, right: ReadonlySet<number>): boolean {
-  if (left.size !== right.size) {
-    return false;
-  }
-  for (const member of left) {
-    if (!right.has(member)) {
-      return false;
+/** Each block's immediate dominator by reverse-postorder rank; the entry, at rank 0, is its own. */
+function immediateDominators(
+  order: readonly number[], predecessors: readonly (readonly number[])[]
+): readonly number[] {
+  const immediate = order.map((_block, position): number => position === 0 ? 0 : -1);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let position = 1; position < order.length; position += 1) {
+      let common = -1;
+      for (const predecessor of predecessors[position]) {
+        if (immediate[predecessor] !== -1) {
+          common = common === -1 ? predecessor : commonAncestor(immediate, common, predecessor);
+        }
+      }
+      if (immediate[position] !== common) {
+        immediate[position] = common;
+        changed = true;
+      }
     }
   }
-  return true;
+  return immediate;
+}
+
+/** Dominators precede the blocks they dominate, so the later of two ranks is the one to walk up. */
+function commonAncestor(immediate: readonly number[], left: number, right: number): number {
+  let [first, second] = [left, right];
+  while (first !== second) {
+    if (first > second) {
+      first = immediate[first];
+    } else {
+      second = immediate[second];
+    }
+  }
+  return first;
+}
+
+function treeIntervals(immediate: readonly number[]): readonly TreeInterval[] {
+  const sizes = immediate.map(() => 1);
+  for (let position = immediate.length - 1; position > 0; position -= 1) {
+    sizes[immediate[position]] += sizes[position];
+  }
+  const next = immediate.map(() => 0);
+  const intervals: TreeInterval[] = [];
+  for (const [position, parent] of immediate.entries()) {
+    const first = position === 0 ? 0 : next[parent];
+    if (position !== 0) {
+      next[parent] += sizes[position];
+    }
+    next[position] = first + 1;
+    intervals.push({ first, last: first + sizes[position] - 1 });
+  }
+  return intervals;
+}
+
+function internalError(message: string): Error {
+  return new Error(`Internal compiler error: ${message}`);
 }

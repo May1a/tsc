@@ -118,15 +118,52 @@ function errorInstanceMatches(errorName: string | undefined, constructorName: st
   return errorName === constructorName;
 }
 
-// eslint-disable-next-line complexity, max-statements -- Condition lowering is still centralized while runtime predicates are introduced.
+/** The condition `expression` tests, reading the truthiness of any value no recognizer claims. */
 export function lowerConditionExpression(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrCondition> {
+  const recognized = lowerRecognizedCondition(context, expression, bindings);
+  if (recognized.kind !== "notApplicable" || isComparisonExpression(expression)) {
+    return recognized;
+  }
+  const value = context.lowerValueExpression(context, expression, bindings);
+  return value.kind === "lowered" ? produced({ kind: "valueTruthy", value: value.operation }) : notApplicable;
+}
+
+/**
+ * The condition that produces `expression`'s own value, for an expression that is always a boolean.
+ *
+ * The value tier asks this, so it never reads truthiness: that would lower the same expression as a
+ * value again at every level of a chain.
+ */
+export function lowerBooleanValueCondition(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrCondition> {
+  const recognized = lowerRecognizedCondition(context, expression, bindings);
+  if (recognized.kind !== "lowered" || isBooleanConversionCall(expression, bindings) || isInherentlyBooleanCondition(recognized.operation)) {
+    return recognized;
+  }
+  return notApplicable;
+}
+
+function isBooleanConversionCall(expression: ts.Expression, bindings: ReadonlyMap<string, JsIrBindingValue>): boolean {
+  return ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) &&
+    expression.expression.text === "Boolean" && !bindings.has("Boolean");
+}
+
+// eslint-disable-next-line complexity, max-statements -- Condition lowering is still centralized while runtime predicates are introduced.
+function lowerRecognizedCondition(
   context: LoweringContext,
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrCondition> {
   const unwrappedExpression = unwrapTypeOnlyExpression(expression);
   if (unwrappedExpression !== expression) {
-    return context.lowerConditionExpression(context, unwrappedExpression, bindings);
+    return lowerRecognizedCondition(context, unwrappedExpression, bindings);
   }
 
   const regexTest = lowerRegexTestCondition(context, expression, bindings);
@@ -235,15 +272,37 @@ export function lowerConditionExpression(
     return produced(truthy);
   }
 
-  if (!ts.isBinaryExpression(expression)) {
-    return notApplicable;
-  }
+  return ts.isBinaryExpression(expression) ? lowerComparisonConditionExpression(context, expression, bindings) : notApplicable;
+}
 
-  const comparison = lowerComparisonConditionExpression(context, expression, bindings);
-  if (comparison.kind !== "lowered") {
-    return comparison;
+/** Whether a lowered condition already produces a JavaScript boolean rather than coercing a value's truthiness. */
+function isInherentlyBooleanCondition(condition: JsIrCondition): boolean {
+  if (condition.kind === "valueTruthy") {
+    return false;
   }
-  return produced(comparison.operation);
+  if (condition.kind === "and" || condition.kind === "or") {
+    return isInherentlyBooleanCondition(condition.left) && isInherentlyBooleanCondition(condition.right);
+  }
+  return true;
+}
+
+/** A comparison no recognizer lowered is refused as a comparison, not read for its truthiness. */
+function isComparisonExpression(expression: ts.Expression): boolean {
+  const unwrapped = unwrapTypeOnlyExpression(expression);
+  return ts.isBinaryExpression(unwrapped) && isComparisonOperatorToken(unwrapped.operatorToken.kind);
+}
+
+function isComparisonOperatorToken(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.EqualsEqualsToken ||
+    kind === ts.SyntaxKind.ExclamationEqualsToken ||
+    kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+    kind === ts.SyntaxKind.LessThanToken ||
+    kind === ts.SyntaxKind.LessThanEqualsToken ||
+    kind === ts.SyntaxKind.GreaterThanToken ||
+    kind === ts.SyntaxKind.GreaterThanEqualsToken
+  );
 }
 
 function lowerLogicalConditionExpression(

@@ -1,7 +1,5 @@
 import type { JsIrNumberExpression } from "./expressions.js";
 
-export const decimalRadix = 10;
-
 export function numericLiteralValue(expression: JsIrNumberExpression): number | undefined {
   if (expression.kind === "literal") {
     return expression.value;

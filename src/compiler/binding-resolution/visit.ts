@@ -11,7 +11,7 @@ export function resolvedOperationChildren(operation: ResolvedOperation): readonl
       return [...operation.parameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...operation.body];
     }
     case "returnClosure": case "while": case "doWhile": case "forOfArray": case "forOfString":
-    case "forOfMap": case "forOfSet": case "forOfProtocol": case "forInObject": case "forInArray": { return operation.body;}
+    case "forOfMap": case "forOfSet": case "forOfProtocol": case "forInObject": case "forInArray": case "forInValue": { return operation.body;}
     case "runtimeArrayMapFunctionObject": {
       return [...operation.callbackParameters.flatMap((parameter) => parameter.bindingOperations ?? []), ...operation.callbackBody];
     }

@@ -3,11 +3,14 @@ import type { PlatformError } from "@effect/platform/Error";
 import { Effect } from "effect";
 import ts from "typescript";
 import type { CompilerDiagnostic } from "./diagnostics.js";
+import type { PackageModuleGraph } from "./ir/module.js";
 import { inlineCppTag, rewriteInlineCppSyntax } from "./inline-cpp-rewriter.js";
+import { resolvePackageModules } from "./package-resolver.js";
 
 interface FrontendResult {
   readonly program: ts.Program;
   readonly sourceFiles: readonly ts.SourceFile[];
+  readonly packageGraph: PackageModuleGraph;
   /**
    * Diagnostics accumulated while building the program.
    *
@@ -182,7 +185,13 @@ const parseConfigFromContent = (
 
 const compilerOptionsForEntry = (options: ts.CompilerOptions): ts.CompilerOptions => ({
   ...options,
-  rootDir: undefined
+  rootDir: undefined,
+  composite: undefined,
+  incremental: undefined,
+  declaration: undefined,
+  declarationMap: undefined,
+  emitDeclarationOnly: undefined,
+  tsBuildInfoFile: undefined
 });
 
 const declarationSourceFileCache = new Map<string, ts.SourceFile>();
@@ -248,27 +257,12 @@ const createCompilerHostWithCachedDeclarations = (options: ts.CompilerOptions): 
   return host;
 };
 
-const rejectPackageImports = (sourceFiles: readonly ts.SourceFile[]): readonly CompilerDiagnostic[] => {
-  const packageImportDiagnostics: CompilerDiagnostic[] = [];
-  for (const sourceFile of sourceFiles) {
-    for (const statement of sourceFile.statements) {
-      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
-        continue;
-      }
-      const specifier = statement.moduleSpecifier.text;
-      if (specifier.startsWith(".") || specifier.startsWith("/")) {
-        continue;
-      }
-      packageImportDiagnostics.push({
-        code: "TSCN1001",
-        category: "error",
-        message: `NPM package imports are not supported yet: ${specifier}`,
-        span: sourceSpan(sourceFile, statement.moduleSpecifier.getStart(sourceFile))
-      });
-    }
-  }
-  return packageImportDiagnostics;
-};
+const supportedNodeBuiltins: ReadonlySet<string> = new Set([
+  "node:fs", "fs",
+  "node:path", "path",
+  "node:os", "os",
+  "node:child_process", "child_process"
+]);
 
 const iterationStatementKeyword = (statement: ts.IterationStatement): string => {
   if (ts.isWhileStatement(statement)) {
@@ -396,7 +390,7 @@ export const loadProgram = (
       compilerOptions,
       createCompilerHostWithCachedDeclarations(compilerOptions)
     );
-    const sourceFiles = program
+    const userSourceFiles = program
       .getSourceFiles()
       .filter((sourceFile) => !sourceFile.isDeclarationFile && !sourceFile.fileName.includes("/node_modules/"));
 
@@ -411,8 +405,14 @@ export const loadProgram = (
       ...semanticDiagnostics
     ].filter((diagnostic) => !isSyntheticInlineCppDiagnostic(diagnostic) && diagnostic.code !== spreadArgumentDiagnosticCode));
     diagnostics.push(...tsDiagnostics);
-    diagnostics.push(...rejectPackageImports(sourceFiles));
-    diagnostics.push(...rejectInvalidFunctionDeclarations(sourceFiles));
+    const packageResolution = resolvePackageModules(userSourceFiles, supportedNodeBuiltins);
+    diagnostics.push(...packageResolution.diagnostics);
+    diagnostics.push(...rejectInvalidFunctionDeclarations(userSourceFiles));
 
-    return { program, sourceFiles, diagnostics };
+    return {
+      program,
+      sourceFiles: [...userSourceFiles, ...packageResolution.packageSourceFiles],
+      packageGraph: packageResolution.packageGraph,
+      diagnostics
+    };
   });

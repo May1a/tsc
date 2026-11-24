@@ -3,6 +3,7 @@
 export { type BlockContext, type LlvmBlockBuilder, BlockBuilder } from "./block-builder.js";
 export { type LlvmCastOpcode, isBitcastCompatible, isCastAllowed } from "./casts.js";
 export { type LlvmConstant, type LlvmGlobalSpec, assertLlvmConstantFitsType, encodeLlvmByteString, renderLlvmConstant } from "./constants.js";
+export { NameAllocator } from "./names.js";
 export { type LlvmControlFlowBlock, type LlvmDominatorTree, buildLlvmDominatorTree } from "./dominance.js";
 export type { BuiltLlvmBlock, BuiltLlvmFunction, BuiltLlvmModule } from "./built.js";
 export { type LlvmFunctionBuilder, FunctionBuilder } from "./function-builder.js";

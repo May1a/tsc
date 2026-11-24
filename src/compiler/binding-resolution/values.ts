@@ -232,7 +232,50 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
 
   runtimeArrayValue: (node, resolver) => ({
     kind: "runtimeArrayValue",
-    elements: node.elements.map((element) => resolver.value(element))
+    elements: node.elements.map((element) => resolveRuntimeArrayElement(element, resolver))
+  }),
+  objectFreeze: (node, resolver) => ({ kind: "objectFreeze", value: resolver.value(node.value) }),
+  objectSeal: (node, resolver) => ({ kind: "objectSeal", value: resolver.value(node.value) }),
+  objectPreventExtensions: (node, resolver) => ({ kind: "objectPreventExtensions", value: resolver.value(node.value) }),
+  objectAssignValue: (node, resolver) => ({
+    kind: "objectAssignValue",
+    target: resolver.value(node.target),
+    sources: node.sources.map((source) => resolver.value(source))
+  }),
+  objectEnumerateValue: (node, resolver) => ({
+    kind: "objectEnumerateValue",
+    method: node.method,
+    target: resolver.value(node.target)
+  }),
+  stringSplitValue: (node, resolver) => ({
+    kind: "stringSplitValue",
+    receiver: resolver.string(node.receiver),
+    separator: resolver.string(node.separator),
+    limit: optional(node.limit, resolver.number)
+  }),
+  regexSplitValue: (node, resolver) => ({
+    kind: "regexSplitValue",
+    receiver: resolver.string(node.receiver),
+    regex: resolver.value(node.regex),
+    limit: optional(node.limit, resolver.number)
+  }),
+  assignVariableValue: (node, resolver) => ({
+    kind: "assignVariableValue",
+    name: resolver.reference(node.name),
+    value: resolver.value(node.value)
+  }),
+  propertyStoreValue: (node, resolver) => ({
+    kind: "propertyStoreValue",
+    receiver: resolver.value(node.receiver),
+    key: resolver.string(node.key),
+    value: resolver.value(node.value)
+  }),
+  privateFieldStoreValue: (node, resolver) => ({
+    kind: "privateFieldStoreValue",
+    receiver: resolver.value(node.receiver),
+    key: node.key,
+    message: node.message,
+    value: resolver.value(node.value)
   }),
   taggedTemplateValue: (node, resolver) => ({
     kind: "taggedTemplateValue",
@@ -261,7 +304,8 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     fieldCount: node.fieldCount,
     prototypeName: resolver.reference(node.prototypeName),
     newTargetName: optional(node.newTargetName, (name) => resolver.reference(name)),
-    arguments: resolveCallArguments(node.arguments, resolver)
+    arguments: resolveCallArguments(node.arguments, resolver),
+    spreadArguments: optional(node.spreadArguments, (elements) => elements.map((element) => resolveRuntimeArrayElement(element, resolver)))
   }),
   generatorCreate: (node, resolver) => ({
     kind: "generatorCreate",
@@ -289,5 +333,53 @@ export const valueHandlers = tierHandlers<JsIrValueExpression, ResolvedValueExpr
     kind: "promiseStatic",
     method: node.method,
     argument: optional(node.argument, resolver.value)
+  }),
+  collectionNewValue: (node, resolver) => ({
+    kind: "collectionNewValue",
+    collectionKind: node.collectionKind,
+    iterable: optional(node.iterable, resolver.value),
+    notIterableMessage: node.notIterableMessage
+  }),
+  classAdoptSuper: (node, resolver) => ({
+    kind: "classAdoptSuper",
+    instance: resolver.value(node.instance),
+    returned: resolver.value(node.returned),
+    prototypeName: resolver.reference(node.prototypeName)
+  }),
+  nodeGlobal: (node) => ({ kind: "nodeGlobal", name: node.name }),
+  nodeBuiltinModule: (node) => ({ kind: "nodeBuiltinModule", moduleName: node.moduleName }),
+  uint8ArrayNew: (node, resolver) => ({ kind: "uint8ArrayNew", argument: optional(node.argument, resolver.value) }),
+  propertyUpdateValue: (node, resolver) => ({
+    kind: "propertyUpdateValue",
+    receiver: resolver.value(node.receiver),
+    key: resolver.string(node.key),
+    operator: node.operator,
+    prefix: node.prefix
+  }),
+  variableUpdateValue: (node, resolver) => ({
+    kind: "variableUpdateValue",
+    name: resolver.reference(node.name),
+    operator: node.operator,
+    prefix: node.prefix
+  }),
+  bigIntLiteral: (node) => ({ kind: "bigIntLiteral", value: node.value }),
+  valueBinaryOp: (node, resolver) => ({
+    kind: "valueBinaryOp",
+    operator: node.operator,
+    left: resolver.value(node.left),
+    right: resolver.value(node.right)
+  }),
+  valueUnaryOp: (node, resolver) => ({
+    kind: "valueUnaryOp",
+    operator: node.operator,
+    value: resolver.value(node.value)
+  }),
+  constructValue: (node, resolver) => ({
+    kind: "constructValue",
+    callee: resolver.value(node.callee),
+    arguments: resolveCallArguments(node.arguments, resolver),
+    ...(node.spreadArguments === undefined
+      ? {}
+      : { spreadArguments: node.spreadArguments.map((element) => resolveRuntimeArrayElement(element, resolver)) })
   })
 });

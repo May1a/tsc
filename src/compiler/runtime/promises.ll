@@ -76,7 +76,7 @@ done:
 
 define ptr @promisePrivateTable(i64 %value) {
 entry:
-  %is.obj = call i1 @valueIsObject(i64 %value)
+  %is.obj = call i1 @valueIsPlainObject(i64 %value)
   br i1 %is.obj, label %check.priv, label %not.promise
 check.priv:
   %obj = call ptr @valueObjectPtr(i64 %value)

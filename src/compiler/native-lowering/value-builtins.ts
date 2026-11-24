@@ -75,3 +75,58 @@ export function stringIndex(expression: ValueNode<"stringIndexOf">, context: Exp
   const position = numberIndex(expression.position ?? { kind: "literal", value: 0 }, context);
   return numericValue(context.runtime.call("stringIndexOf", [...prefix, position], context.cursor.uniqueName("string.index")), context);
 }
+
+export function stringSplitValue(expression: ValueNode<"stringSplitValue">, context: ExpressionContext): BoxedValue {
+  const receiver = context.expressions.string(expression.receiver);
+  boxString(receiver, context);
+  const separator = context.expressions.string(expression.separator);
+  boxString(separator, context);
+  const limit = expression.limit === undefined ? context.cursor.currentBlock().int(llvm.i64, -1n) : numberIndex(expression.limit, context);
+  const array = context.runtime.callPointer("stringSplit", [receiver.length, receiver.bytes, separator.length, separator.bytes, limit],
+    context.cursor.uniqueName("string.split"));
+  return keep(context.values.forBlock(context.cursor.currentBlock()).boxReference("array", array), context);
+}
+
+export function regexSplitValue(expression: ValueNode<"regexSplitValue">, context: ExpressionContext): BoxedValue {
+  const receiver = boxString(context.expressions.string(expression.receiver), context);
+  const regex = keep(context.expressions.value(expression.regex), context);
+  const limit = expression.limit === undefined ? context.cursor.currentBlock().int(llvm.i64, -1n) : numberIndex(expression.limit, context);
+  const array = context.runtime.callPointer("regexSplit", [regex, receiver, limit], context.cursor.uniqueName("regex.split"));
+  return keep(context.values.forBlock(context.cursor.currentBlock()).boxReference("array", array), context);
+}
+
+const objectStateHelpers = {
+  objectFreeze: "valueObjectFreeze",
+  objectSeal: "valueObjectSeal",
+  objectPreventExtensions: "valueObjectPreventExtensions"
+} as const;
+
+export function objectStateValue(
+  expression: ValueNode<"objectFreeze">,
+  context: ExpressionContext
+): BoxedValue {
+  const value = keep(context.expressions.value(expression.value), context);
+  return context.runtime.callBoxed(objectStateHelpers[expression.kind], [value], context.cursor.uniqueName("object.state"));
+}
+
+export function objectAssignValue(expression: ValueNode<"objectAssignValue">, context: ExpressionContext): BoxedValue {
+  let target = keep(context.expressions.value(expression.target), context);
+  for (const sourceExpression of expression.sources) {
+    const source = keep(context.expressions.value(sourceExpression), context);
+    target = keep(context.runtime.callBoxed("valueObjectAssignValue", [target, source], context.cursor.uniqueName("object.assign")), context);
+  }
+  return target;
+}
+
+const objectEnumerateHelpers = {
+  keys: "valueObjectKeys",
+  values: "valueObjectValues",
+  entries: "valueObjectEntries",
+  getOwnPropertyNames: "valueObjectOwnPropertyNames"
+} as const;
+
+export function objectEnumerateValue(expression: ValueNode<"objectEnumerateValue">, context: ExpressionContext): BoxedValue {
+  const target = keep(context.expressions.value(expression.target), context);
+  const array = context.runtime.callPointer(objectEnumerateHelpers[expression.method], [target], context.cursor.uniqueName("object.enum"));
+  return keep(context.values.forBlock(context.cursor.currentBlock()).boxReference("array", array), context);
+}

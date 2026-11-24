@@ -15,10 +15,9 @@ test("refuses forward loop captures until cells can be allocated at scope entry"
     "Forward lexical capture inside a loop requires scope-entry cell allocation");
 });
 
-test("refuses forward const captures that could bypass lexical reads through constant folding", async () => {
-  await expectUnsupportedMessage("forward-capture-const-unsupported.ts",
-    "Forward const capture requires a non-folded lexical read");
-});
+test("forward const captures throw before initialization and read the value after it", async () => {
+  await expectNativeFixtures([["forward-capture-const.ts", "true\n1\n"]]);
+}, roadmapIntegrationTimeoutMs);
 
 test("refuses forward pattern captures until resolution predeclares pattern destinations", async () => {
   await expectUnsupportedMessage("forward-capture-pattern-unsupported.ts",

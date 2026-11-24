@@ -2,11 +2,10 @@ import {
   type BuiltLlvmBlock,
   type BuiltLlvmFunction,
   type LlvmInstruction,
-  type LlvmValue,
   llvmValueText
 } from "../llvm-ir/index.js";
-import { intersection, predecessorMap, sameSet } from "./graph.js";
-import type { GcFunctionFacts, GcHeapReference, GcProtection } from "./types.js";
+import { intersection, predecessorMap, sameSet, successors } from "./graph.js";
+import type { GcFunctionFacts, GcHeapReference } from "./types.js";
 
 interface RootSnapshot {
   readonly roots: ReadonlySet<string>;
@@ -19,21 +18,8 @@ interface GcRootState {
   readonly snapshots: ReadonlyMap<string, RootSnapshot>;
 }
 
-interface GcRootAnalysis {
-  readonly before: ReadonlyMap<string, readonly GcRootState[]>;
-  readonly frameErrors: ReadonlyMap<LlvmInstruction, string>;
-}
-
-function protectionKey(protection: GcProtection): string {
-  return valueKey(protection.value);
-}
-
-function valueKey(value: LlvmValue): string {
-  return `value:${llvmValueText(value)}`;
-}
-
 export function isProtected(reference: GcHeapReference, state: GcRootState): boolean {
-  return state.roots.has(valueKey(reference.value)) || state.roots.has(protectionKey(reference.protection));
+  return state.roots.has(llvmValueText(reference.value)) || state.roots.has(llvmValueText(reference.protection.value));
 }
 
 function emptyState(roots: ReadonlySet<string> = new Set()): GcRootState {
@@ -62,35 +48,78 @@ function sameState(left: GcRootState, right: GcRootState): boolean {
     });
 }
 
-function transfer(state: GcRootState, instruction: LlvmInstruction, errors: Map<LlvmInstruction, string>): GcRootState {
-  if (instruction.kind !== "call" || instruction.callee.kind !== "symbol") {
-    return state;
+/** The root stack while walking one block. Each step replaces only what its instruction changes. */
+export class RootWalk {
+  #roots: Set<string>;
+  #availableFrames: ReadonlySet<string>;
+  #snapshots: ReadonlyMap<string, RootSnapshot>;
+
+  public constructor(state: GcRootState) {
+    this.#roots = new Set(state.roots);
+    this.#availableFrames = state.availableFrames;
+    this.#snapshots = state.snapshots;
   }
-  const { name } = instruction.callee;
-  const operand = instruction.arguments.at(0);
-  if (name === "gcRootSave" && instruction.result !== undefined) {
-    const frame = llvmValueText(instruction.result);
-    const snapshots = new Map(state.snapshots);
-    snapshots.set(frame, { roots: state.roots, ancestors: state.availableFrames });
-    return { ...state, availableFrames: new Set([...state.availableFrames, frame]), snapshots };
+
+  public state(): GcRootState {
+    return { roots: this.#roots, availableFrames: this.#availableFrames, snapshots: this.#snapshots };
   }
-  if (name === "gcRootPush" && operand !== undefined) {
-    return { ...state, roots: new Set([...state.roots, valueKey(operand)]) };
-  }
-  if (name === "gcRootRestore" && operand !== undefined) {
-    const frame = llvmValueText(operand);
-    const snapshot = state.snapshots.get(frame);
-    if (!state.availableFrames.has(frame) || snapshot === undefined) {
-      errors.set(instruction, `Root frame ${frame} is unavailable or has already been unwound`);
-      return emptyState();
+
+  /** Applies one instruction, returning why it misuses a root frame when it does. */
+  public step(instruction: LlvmInstruction): string | undefined {
+    if (instruction.kind !== "call" || instruction.callee.kind !== "symbol") {
+      return undefined;
     }
-    return { roots: snapshot.roots, availableFrames: new Set([...snapshot.ancestors, frame]), snapshots: state.snapshots };
+    const { name } = instruction.callee;
+    const operand = instruction.arguments.at(0);
+    if (name === "gcRootSave" && instruction.result !== undefined) {
+      this.#save(llvmValueText(instruction.result));
+    } else if (name === "gcRootPush" && operand !== undefined) {
+      this.#roots.add(llvmValueText(operand));
+    } else if (name === "gcRootRestore" && operand !== undefined) {
+      return this.#restore(llvmValueText(operand));
+    } else if (name === "gcRootPop") {
+      this.#reset();
+      return "Use an owned root frame and gcRootRestore instead of gcRootPop";
+    }
+    return undefined;
   }
-  if (name === "gcRootPop") {
-    errors.set(instruction, "Use an owned root frame and gcRootRestore instead of gcRootPop");
-    return emptyState();
+
+  #save(frame: string): void {
+    this.#snapshots = new Map([...this.#snapshots, [frame, { roots: new Set(this.#roots), ancestors: this.#availableFrames }]]);
+    this.#availableFrames = new Set([...this.#availableFrames, frame]);
   }
-  return state;
+
+  #restore(frame: string): string | undefined {
+    const snapshot = this.#snapshots.get(frame);
+    if (!this.#availableFrames.has(frame) || snapshot === undefined) {
+      this.#reset();
+      return `Root frame ${frame} is unavailable or has already been unwound`;
+    }
+    this.#roots = new Set(snapshot.roots);
+    this.#availableFrames = new Set([...snapshot.ancestors, frame]);
+    return undefined;
+  }
+
+  #reset(): void {
+    this.#roots = new Set();
+    this.#availableFrames = new Set();
+    this.#snapshots = new Map();
+  }
+}
+
+/** Forgets roots and frames nothing after this point can consult, so states stay proportional to what is live. */
+function restrict(state: GcRootState, needed: ReadonlySet<string>): GcRootState {
+  const availableFrames = intersection(state.availableFrames, needed);
+  return {
+    roots: intersection(needed, state.roots),
+    availableFrames,
+    snapshots: new Map([...availableFrames].flatMap((frame) => {
+      const snapshot = state.snapshots.get(frame);
+      return snapshot === undefined ? [] : [[frame, {
+        roots: intersection(snapshot.roots, needed), ancestors: intersection(snapshot.ancestors, needed)
+      }] as const];
+    }))
+  };
 }
 
 function phiAliases(state: GcRootState, block: BuiltLlvmBlock, predecessor: string): GcRootState {
@@ -99,8 +128,11 @@ function phiAliases(state: GcRootState, block: BuiltLlvmBlock, predecessor: stri
       return [];
     }
     const incoming = instruction.incoming.find((entry) => entry.block.name === predecessor);
-    return incoming === undefined ? [] : [{ from: valueKey(incoming.value), to: valueKey(instruction.result) }];
+    return incoming === undefined ? [] : [{ from: llvmValueText(incoming.value), to: llvmValueText(instruction.result) }];
   });
+  if (aliases.length === 0) {
+    return state;
+  }
   const results = new Set(aliases.map((alias) => alias.to));
   const addAliases = (roots: ReadonlySet<string>): ReadonlySet<string> => new Set([
     ...[...roots].filter((root) => !results.has(root)),
@@ -132,34 +164,36 @@ function blockInput(
   return result;
 }
 
-export function analyzeGcRoots(fn: BuiltLlvmFunction, facts: GcFunctionFacts): GcRootAnalysis {
+/** The root state entering each reachable block. `needed` is what each block's exit may still consult. */
+export function rootsEntering(
+  fn: BuiltLlvmFunction, facts: GcFunctionFacts, needed: ReadonlyMap<string, ReadonlySet<string>>
+): ReadonlyMap<string, GcRootState> {
   const predecessors = predecessorMap(fn);
-  const initial = emptyState(new Set(facts.borrowedRoots.map(protectionKey)));
+  const blocks = new Map(fn.blocks.map((block) => [block.label.name, block]));
+  const initial = emptyState(new Set(facts.borrowedRoots.map((protection) => llvmValueText(protection.value))));
+  const inputs = new Map<string, GcRootState>();
   const outputs = new Map<string, GcRootState>();
-  const before = new Map<string, readonly GcRootState[]>();
-  const frameErrors = new Map<LlvmInstruction, string>();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    frameErrors.clear();
-    for (const block of fn.blocks) {
-      const input = blockInput(block, fn.entry.label.name, initial, predecessors, outputs);
-      if (input === undefined) {
-        continue;
-      }
-      const states: GcRootState[] = [];
-      let output = input;
-      for (const instruction of block.instructions) {
-        states.push(output);
-        output = transfer(output, instruction, frameErrors);
-      }
-      before.set(block.label.name, states);
-      const previous = outputs.get(block.label.name);
-      if (previous === undefined || !sameState(previous, output)) {
-        outputs.set(block.label.name, output);
-        changed = true;
+  const pending = new Set([fn.entry.label.name]);
+  for (const name of pending) {
+    pending.delete(name);
+    const block = blocks.get(name);
+    const input = block === undefined ? undefined : blockInput(block, fn.entry.label.name, initial, predecessors, outputs);
+    if (block === undefined || input === undefined) {
+      continue;
+    }
+    inputs.set(name, input);
+    const walk = new RootWalk(input);
+    for (const instruction of block.instructions) {
+      walk.step(instruction);
+    }
+    const output = restrict(walk.state(), needed.get(name) ?? new Set());
+    const previous = outputs.get(name);
+    if (previous === undefined || !sameState(previous, output)) {
+      outputs.set(name, output);
+      for (const successor of successors(block)) {
+        pending.add(successor);
       }
     }
   }
-  return { before, frameErrors };
+  return inputs;
 }

@@ -15,7 +15,7 @@ export const errorsContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "errorToString", parameters: [llvm.ptr], returns: llvm.struct([llvm.ptr, llvm.i64]), variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: false, completion: "none" }
   },
   "errorConstructorValue": {
     resultKind: "boxed",
@@ -113,7 +113,7 @@ export const errorsContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "valuePrintUncaught", parameters: [llvm.i64], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: false, completion: "none" }
   },
   "errorThrowReference": {
     resultKind: "completion",

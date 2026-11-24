@@ -1,14 +1,12 @@
 import {
   type BuiltLlvmFunction,
   type LlvmInstruction,
-  llvmInstructionOperands,
-  llvmInstructionResult,
   llvmValueText
 } from "../llvm-ir/index.js";
 import { runtimeContracts } from "../runtime-contracts/index.js";
 import type { RuntimeCallContract } from "../runtime-contracts/types.js";
-import { analyzeGcLiveness } from "./liveness.js";
-import { analyzeGcRoots, isProtected } from "./roots.js";
+import { type LiveNames, liveAcross, liveOutOf } from "./liveness.js";
+import { RootWalk, isProtected, rootsEntering } from "./roots.js";
 import type { GcFunctionFacts, GcViolation } from "./types.js";
 
 export type { GcFunctionFacts, GcHeapReference, GcProtection, GcViolation } from "./types.js";
@@ -22,34 +20,43 @@ function canCollect(instruction: LlvmInstruction): boolean {
 }
 
 export function verifyGcLiveness(fn: BuiltLlvmFunction, facts: GcFunctionFacts): readonly GcViolation[] {
-  const liveness = analyzeGcLiveness(fn);
-  const roots = analyzeGcRoots(fn, facts);
   const references = new Map(facts.heapReferences.map((reference) => [llvmValueText(reference.value), reference]));
-  return fn.blocks.flatMap((block) => block.instructions.flatMap((instruction, index) => {
-    const state = roots.before.get(block.label.name)?.at(index);
-    if (state === undefined) {
-      return [];
-    }
-    const frameError = roots.frameErrors.get(instruction);
-    const errors = frameError === undefined ? [] : [violation(fn, block.label.name, index, "", frameError)];
-    if (!canCollect(instruction)) {
-      return errors;
-    }
-    const live = new Set(liveness.after.get(block.label.name)?.at(index));
-    const result = llvmInstructionResult(instruction);
-    if (result !== undefined) {
-      live.delete(llvmValueText(result));
-    }
-    for (const operand of llvmInstructionOperands(instruction)) {
-      live.add(llvmValueText(operand));
-    }
-    return [...errors, ...[...live].flatMap((value) => {
-      const reference = references.get(value);
-      return reference === undefined || isProtected(reference, state) ? [] : [violation(
-        fn, block.label.name, index, value, `Heap reference ${value} is live across collection without a root on every path`
-      )];
-    })];
-  }));
+  const frames = rootFrameNames(fn);
+  const heapNames: LiveNames = (operand) => references.has(llvmValueText(operand)) ? [llvmValueText(operand)] : [];
+  // The root states must also keep what protects a live reference, and the frames still to be restored.
+  const consultedNames: LiveNames = (operand) => {
+    const name = llvmValueText(operand);
+    const reference = references.get(name);
+    if (reference !== undefined) { return [name, llvmValueText(reference.protection.value)]; }
+    return frames.has(name) ? [name] : [];
+  };
+  const liveOut = liveOutOf(fn, heapNames);
+  const entering = rootsEntering(fn, facts, liveOutOf(fn, consultedNames));
+  return fn.blocks.flatMap((block) => {
+    const input = entering.get(block.label.name);
+    if (input === undefined) { return []; }
+    const across = liveAcross(block, liveOut.get(block.label.name) ?? new Set(), heapNames, canCollect);
+    const walk = new RootWalk(input);
+    return block.instructions.flatMap((instruction, index) => {
+      const unprotected = [...across.get(instruction) ?? []].filter((name) => {
+        const reference = references.get(name);
+        return reference !== undefined && !isProtected(reference, walk.state());
+      });
+      const frameError = walk.step(instruction);
+      return [
+        ...frameError === undefined ? [] : [violation(fn, block.label.name, index, "", frameError)],
+        ...unprotected.map((name) => violation(
+          fn, block.label.name, index, name, `Heap reference ${name} is live across collection without a root on every path`
+        ))
+      ];
+    });
+  });
+}
+
+function rootFrameNames(fn: BuiltLlvmFunction): ReadonlySet<string> {
+  return new Set(fn.blocks.flatMap((block) => block.instructions.flatMap((instruction) =>
+    instruction.kind === "call" && instruction.callee.kind === "symbol" && instruction.callee.name === "gcRootSave" &&
+    instruction.result !== undefined ? [llvmValueText(instruction.result)] : [])));
 }
 
 function violation(fn: BuiltLlvmFunction, blockName: string, instructionIndex: number, value: string, message: string): GcViolation {

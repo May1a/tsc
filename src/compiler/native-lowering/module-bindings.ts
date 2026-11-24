@@ -31,6 +31,9 @@ export class ModuleBindings {
   readonly #layouts = new Map<BindingId, ObjectLayout>();
   readonly #globals = new Map<BindingId, GlobalBlueprint>();
   readonly #roots: LlvmGlobalReference[] = [];
+  readonly #frames = new Map<FunctionId, BindingDeclaration[]>();
+  /** The spelling of every captured lexical binding, whose cell must be checked before a read. */
+  readonly #lexicalCells = new Map<BindingId, string>();
 
   public constructor(module: NativeModule, resolved: ResolvedModule) {
     this.#module = module;
@@ -43,6 +46,7 @@ export class ModuleBindings {
       if (declaration.storage.location.kind === "moduleScope") {
         this.#globals.set(declaration.id, this.#global(declaration));
       }
+      if (declaration.owner.kind === "function") { this.#recordFrameBinding(declaration, declaration.owner.function); }
     }
   }
 
@@ -55,9 +59,7 @@ export class ModuleBindings {
   public allocate(capabilities: FunctionCapabilities, owner: FunctionId | "module", captures?: IncomingCaptures): BindingAccess {
     if (capabilities.cursor.currentBlock().label.name !== "entry") throw new Error("Binding storage must be allocated in the entry block");
     const storage = new Map<BindingId, BindingStorage>();
-    for (const [id, global] of this.#globals) storage.set(id, materializeGlobal(global, capabilities));
-    for (const declaration of this.#declarations) {
-      if (owner === "module" || declaration.owner.kind !== "function" || declaration.owner.function !== owner) continue;
+    for (const declaration of owner === "module" ? [] : this.#frames.get(owner) ?? []) {
       storage.set(declaration.id, allocateBinding(declaration, this.#layouts.get(declaration.id), capabilities));
     }
     for (const [index, reference] of (captures?.bindings ?? []).entries()) {
@@ -72,17 +74,28 @@ export class ModuleBindings {
       storage.set(reference.binding, { kind: "environment", owner: cellValue, cell: values.forBlock(cursor.currentBlock()).unboxReference(cellValue) });
     }
     for (const alias of captures?.globalAliases ?? []) {
-      const global = storage.get(alias.source.binding);
-      if (global === undefined || !this.#globals.has(alias.source.binding)) {
+      const global = this.#globals.get(alias.source.binding);
+      if (global === undefined) {
         throw new Error("Capture alias must reference an allocated module binding");
       }
-      storage.set(alias.target.binding, global);
+      storage.set(alias.target.binding, materializeGlobal(global, capabilities));
     }
-    const lexicalCells = new Map(this.#declarations
-      .filter((declaration) => declaration.captured && declaration.owner.kind === "function" &&
-        (declaration.kind === "let" || declaration.kind === "const" || declaration.kind === "destination"))
-      .map((declaration) => [declaration.id, declaration.spelling]));
-    return new BindingAccess(capabilities, storage, (text) => this.#module.stringConstant(text), lexicalCells);
+    return new BindingAccess(capabilities, storage, (text) => this.#module.stringConstant(text), {
+      lexicalCells: this.#lexicalCells, global: (id) => this.#materialize(id, capabilities)
+    });
+  }
+
+  #materialize(id: BindingId, capabilities: FunctionCapabilities): BindingStorage | undefined {
+    const global = this.#globals.get(id);
+    return global === undefined ? undefined : materializeGlobal(global, capabilities);
+  }
+
+  #recordFrameBinding(declaration: BindingDeclaration, owner: FunctionId): void {
+    const frame = this.#frames.get(owner);
+    if (frame === undefined) { this.#frames.set(owner, [declaration]); } else { frame.push(declaration); }
+    if (declaration.captured && (declaration.kind === "let" || declaration.kind === "const" || declaration.kind === "destination")) {
+      this.#lexicalCells.set(declaration.id, declaration.spelling);
+    }
   }
 
   #collectLayouts(operations: readonly ResolvedOperation[]): void {

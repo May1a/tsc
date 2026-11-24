@@ -118,7 +118,7 @@ function lowerForIncrement(
   if (assignment.kind === "lowered") {
     return produced<JsIrOperation | undefined>(assignment.operation);
   }
-  const update = lowerUpdateExpressionStatement(incrementor, bindings);
+  const update = lowerUpdateExpressionStatement(context, incrementor, bindings);
   if (update.kind !== "lowered") {
     return withRefusal(update, unsupportedIn("A `for` statement update clause must be an assignment or update expression"));
   }
@@ -358,32 +358,32 @@ export function lowerForInStatement(
     return declared;
   }
   const scope = declarationScope(declared.operation);
-  if (!ts.isIdentifier(statement.expression)) {
-    return unsupported("A `for...in` statement must iterate over a runtime dictionary object or a runtime array");
-  }
-  const sourceName = statement.expression.text;
-  const sourceBinding = bindings.get(sourceName);
-  if (sourceBinding?.kind !== "runtimeObject" && sourceBinding?.kind !== "runtimeArray") {
-    return unsupported("A `for...in` statement must iterate over a runtime dictionary object or a runtime array");
-  }
   const hoisted = declared.operation === "var" && context.hoistedVars.has(declaration.name.text);
   const itemName = hoisted ? `for.in.item.${declaration.pos}` : declaration.name.text;
   const bodyBindings = new Map(bindings);
   if (!hoisted) {
     bodyBindings.set(itemName, { kind: "stringVariable", name: itemName });
   }
+  const sourceBinding = ts.isIdentifier(statement.expression) ? bindings.get(statement.expression.text) : undefined;
   const bodyResult = lowerLoopBody(context, statement.statement, bodyBindings);
   if (bodyResult.kind === "unsupported") {
     return bodyResult;
   }
-  const assignPrefix: readonly JsIrOperation[] = hoisted
-    ? [{ kind: "assignValue", name: declaration.name.text, value: { kind: "string", value: { kind: "variable", name: itemName } } }]
-    : [];
-  const body = [...assignPrefix, ...bodyResult.operation];
-  if (sourceBinding.kind === "runtimeObject") {
-    return produced({ kind: "forInObject", itemName, objectName: sourceBinding.name, body, ...(hoisted ? {} : scope) });
+  const body: readonly JsIrOperation[] = hoisted
+    ? [{ kind: "assignValue", name: declaration.name.text, value: { kind: "string", value: { kind: "variable", name: itemName } } }, ...bodyResult.operation]
+    : bodyResult.operation;
+  const itemScope = hoisted ? {} : scope;
+  if (sourceBinding?.kind === "runtimeObject") {
+    return produced({ kind: "forInObject", itemName, objectName: sourceBinding.name, body, ...itemScope });
   }
-  return produced({ kind: "forInArray", itemName, arrayName: sourceBinding.name, body, ...(hoisted ? {} : scope) });
+  if (sourceBinding?.kind === "runtimeArray") {
+    return produced({ kind: "forInArray", itemName, arrayName: sourceBinding.name, body, ...itemScope });
+  }
+  const sourceValue = context.lowerValueExpression(context, statement.expression, bindings);
+  if (sourceValue.kind !== "lowered") {
+    return withRefusal(sourceValue, unsupported("A `for...in` statement must iterate over an expression this build can evaluate"));
+  }
+  return produced({ kind: "forInValue", itemName, source: sourceValue.operation, body, ...itemScope });
 }
 
 /**

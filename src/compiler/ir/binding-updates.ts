@@ -282,6 +282,8 @@ function collectOperationValueExpressions(operation: JsIrOperation, names: Set<s
     for (const field of operation.value.fields) {
       if (field.kind === "spread") {
         names.add(field.sourceName);
+      } else if (field.kind === "valueSpread") {
+        collectValueExpressionObjectNames(field.value, names);
       } else if (field.kind === "accessor") {
         if (field.getter !== undefined) {
           collectValueExpressionObjectNames(field.getter, names);
@@ -384,7 +386,47 @@ function collectValueExpressionObjectNames(expression: JsIrValueExpression, name
       collectValueExpressionObjectNames(expression.reviver, names);
     }
   }
+  collectAggregateValueObjectNames(expression, names);
   collectSuspendableExpressionObjectNames(expression, names);
+}
+
+function collectObjectLiteralFieldObjectNames(
+  fields: readonly Extract<JsIrValueExpression, { readonly kind: "objectLiteralValue" }>["value"]["fields"][number][],
+  names: Set<string>
+): void {
+  for (const field of fields) {
+    if (field.kind === "spread") names.add(field.sourceName);
+    else if (field.kind === "valueSpread") collectValueExpressionObjectNames(field.value, names);
+    else if (field.kind === "accessor") {
+      if (field.getter !== undefined) collectValueExpressionObjectNames(field.getter, names);
+      if (field.setter !== undefined) collectValueExpressionObjectNames(field.setter, names);
+    } else collectValueExpressionObjectNames(field.value, names);
+  }
+}
+
+function collectAggregateValueObjectNames(expression: JsIrValueExpression, names: Set<string>): void {
+  if (expression.kind === "runtimeArrayValue") {
+    for (const element of expression.elements) {
+      if (element.kind === "value") collectValueExpressionObjectNames(element.value, names);
+      else if (element.kind === "iterableSpread") collectValueExpressionObjectNames(element.source, names);
+    }
+    return;
+  }
+  if (expression.kind === "objectLiteralValue") {
+    collectObjectLiteralFieldObjectNames(expression.value.fields, names);
+    return;
+  }
+  if (expression.kind === "objectFreeze" || expression.kind === "objectSeal" || expression.kind === "objectPreventExtensions" || expression.kind === "assignVariableValue") {
+    collectValueExpressionObjectNames(expression.value, names);
+  } else if (expression.kind === "objectAssignValue") {
+    collectValueExpressionObjectNames(expression.target, names);
+    for (const source of expression.sources) collectValueExpressionObjectNames(source, names);
+  } else if (expression.kind === "objectEnumerateValue") {
+    collectValueExpressionObjectNames(expression.target, names);
+  } else if (expression.kind === "propertyStoreValue" || expression.kind === "privateFieldStoreValue") {
+    collectValueExpressionObjectNames(expression.receiver, names);
+    collectValueExpressionObjectNames(expression.value, names);
+  }
 }
 
 function collectSuspendableExpressionObjectNames(expression: JsIrValueExpression, names: Set<string>): void {
@@ -398,6 +440,15 @@ function collectSuspendableExpressionObjectNames(expression: JsIrValueExpression
     collectValueExpressionObjectNames(expression.executor, names);
   } else if (expression.kind === "promiseStatic" && expression.argument !== undefined) {
     collectValueExpressionObjectNames(expression.argument, names);
+  } else if (expression.kind === "collectionNewValue" && expression.iterable !== undefined) {
+    collectValueExpressionObjectNames(expression.iterable, names);
+  } else if (expression.kind === "classAdoptSuper") {
+    collectValueExpressionObjectNames(expression.instance, names);
+    collectValueExpressionObjectNames(expression.returned, names);
+  } else if (expression.kind === "uint8ArrayNew" && expression.argument !== undefined) {
+    collectValueExpressionObjectNames(expression.argument, names);
+  } else if (expression.kind === "propertyUpdateValue") {
+    collectValueExpressionObjectNames(expression.receiver, names);
   }
 }
 function collectCallValueExpressionObjectNames(

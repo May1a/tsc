@@ -189,7 +189,7 @@ describe("operation trace maps", () => {
       // The reason the class tier now gives, rather than the blanket string it used to: the
       // recognizer that refused knows it was the missing `super(...)` call, and a diagnostic that
       // says so is the point of threading a reason through.
-      expect(result.stderr).toContain("A derived constructor must call `super(...)` as its first statement");
+      expect(result.stderr).toContain("A derived constructor must call `super(...)` before it reads `this`");
     } finally {
       await result.cleanup();
     }

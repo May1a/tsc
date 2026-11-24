@@ -10,20 +10,22 @@ const scalarWordFunctions = new Set([
   "collectionSize", "collectionFind", "strtol", "strlen", "gcRootSave", "gcStatsLiveBytes", "gcStatsCollections",
   "jsonHex4", "regexAtomEnd", "regexDecodeUtf8", "regexAtomStep", "regexCaptureIndex", "regexGroupEnd",
   "regexMatchHere", "regexMatchAlternatives", "regexByteOffset", "regexFind", "stringTrimStartIndex", "stringTrimEndIndex",
-  "stringUtf16Length", "valueStringLength", "valueLength", "propertyKeyIndex", "numberToIndex", "arrayMethodPosition"
+  "stringUtf16Length", "valueStringLength", "valueLength", "propertyKeyIndex", "numberToIndex", "arrayMethodPosition",
+  "write", "read", "bigIntToI64", "dateReadArgInt"
 ]);
-const externalPointerFunctions = new Set(["malloc", "memcpy", "getenv", "indexToString", "strConcat", "arrayJoin", "arrayPrototypeMethod"]);
+const externalPointerFunctions = new Set(["malloc", "memcpy", "realloc", "getenv", "mkdtemp", "getcwd", "indexToString", "strConcat", "arrayJoin", "arrayPrototypeMethod", "nodeToCString"]);
 const borrowedPointerFunctions = new Set([
   "valueArrayPtr", "valueObjectPtr", "valueFunctionPtr", "valueStringPtr", "objectGetPrototype", "arrayGetPrototype", "objectPrivateTable",
-  "objectFindProperty"
+  "objectFindProperty", "objectBackingPtr"
 ]);
 // These foreign functions cannot enter the compiler's collector. Unknown declarations may.
 const nonGcForeignFunctions = new Set([
-  "malloc", "memcpy", "memcmp", "sprintf", "getenv", "strtol", "free", "strtod", "strlen",
+  "malloc", "memcpy", "memcmp", "realloc", "sprintf", "getenv", "strtol", "free", "strtod", "strlen",
   "llvm.fabs.f64", "llvm.floor.f64", "llvm.ceil.f64", "llvm.trunc.f64", "llvm.round.f64",
   "llvm.sqrt.f64", "llvm.pow.f64", "llvm.exp.f64", "llvm.log.f64", "llvm.log2.f64",
   "llvm.log10.f64", "llvm.sin.f64", "llvm.cos.f64", "llvm.ctlz.i32",
-  "valueBoxNumber", "valueBoxObject", "valueNumber", "puts", "printf", "exit"
+  "valueBoxNumber", "valueBoxObject", "valueNumber", "puts", "printf", "dprintf", "exit", "fflush",
+  "write", "read", "open", "close", "mkdir", "mkdtemp", "access", "getcwd", "pipe", "fork", "dup2", "execvp", "waitpid", "fcntl", "gettimeofday"
 ]);
 
 /** @typedef {{ file: string, name: string, returns: string, parameters: string[], variadic: boolean, callees: string[], allocates: boolean, collects: boolean }} RuntimeFunction */

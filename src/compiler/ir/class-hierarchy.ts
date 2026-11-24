@@ -28,8 +28,8 @@ export interface ClassHierarchy {
 
 export const emptyClassHierarchy: ClassHierarchy = { entries: new Map() };
 
-/** Collects every named class declaration and `const`-bound class expression in a source file. */
-export function collectClassHierarchy(sourceFile: ts.SourceFile): ClassHierarchy {
+/** Collects every named class declaration and `const`-bound class expression across one or more source files. */
+export function collectClassHierarchy(sourceFile: ts.SourceFile | readonly ts.SourceFile[]): ClassHierarchy {
   const entries = new Map<string, ClassHierarchyEntry>();
   const record = (name: string, node: ts.ClassLikeDeclaration): void => {
     entries.set(name, mergeEntries(entries.get(name), hierarchyEntry(node)));
@@ -45,7 +45,10 @@ export function collectClassHierarchy(sourceFile: ts.SourceFile): ClassHierarchy
     }
     ts.forEachChild(node, visit);
   };
-  visit(sourceFile);
+  const files: readonly ts.SourceFile[] = "kind" in sourceFile ? [sourceFile] : sourceFile;
+  for (const file of files) {
+    visit(file);
+  }
   return { entries };
 }
 

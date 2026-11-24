@@ -31,7 +31,7 @@ Operations that contain other operations are classified in `ir/visit.ts`.
 `jsIrOperationChildren` and `visitJsIrOperations` traverse that classification.
 Adding an operation requires both its classification and a native handler.
 
-The **IR model** consists of `ir/{bindings,expressions,types,module,lowered,visit,
+The **IR model** consists of `ir/{bindings,expressions,js-globals,types,module,lowered,visit,
 operation-bindings}.ts`. It depends on no TypeScript AST logic or compiler pass.
 `aggregateBindingForOperation` classifies aggregate Binding Values in this model.
 

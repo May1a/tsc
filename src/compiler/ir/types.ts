@@ -608,6 +608,12 @@ export type JsIrOperationNode =
       readonly prototypeName: string;
     }
   | {
+      readonly kind: "classLinkDynamicBase";
+      readonly prototypeName: string;
+      readonly staticsName: string;
+      readonly superName: string;
+    }
+  | {
       readonly kind: "runtimeObjectPreventExtensions" | "runtimeObjectSeal" | "runtimeObjectFreeze";
       readonly objectName: string;
     }
@@ -633,6 +639,7 @@ export type JsIrOperationNode =
   | {
       readonly kind: "consoleLog";
       readonly arguments: readonly JsIrValueExpression[];
+      readonly isStderr?: boolean;
     }
   | {
       readonly kind: "throwValue";
@@ -777,6 +784,14 @@ export type JsIrOperationNode =
       readonly functionScoped?: true;
     }
   | {
+      readonly kind: "forInValue";
+      readonly itemName: string;
+      readonly source: JsIrValueExpression;
+      readonly body: readonly JsIrOperation[];
+      /** Set by a `var` item, which is one binding per function frame. */
+      readonly functionScoped?: true;
+    }
+  | {
       readonly kind: "break";
       /**
        * How many enclosing break targets (loops, switches, and labeled blocks) to leave, counted from the
@@ -798,6 +813,8 @@ export type JsIrOperationNode =
       readonly body: readonly JsIrOperation[];
       readonly enclosingCaptureNames?: readonly string[];
       readonly constructibleByObjectReturn?: boolean;
+      readonly usesArguments?: boolean;
+      readonly argumentsStartIndex?: number;
     }
   | {
       readonly kind: "call";

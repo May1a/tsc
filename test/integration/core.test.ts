@@ -3,6 +3,7 @@ import {
   countOccurrences,
   expectLlvmAsVerificationIfAvailable,
   expectNativeBehaviorIfAvailable,
+  expectNativeFixtures,
   expectSuccessfulCompile,
   expectUnsupportedDiagnostic
 } from "./helpers.js";
@@ -385,7 +386,7 @@ describe("tscn function declarations and calls", () => {
     await expectNativeMatchesNodeIfAvailable("function-value-identity.ts");
   });
 
-  test("constructs plain functions only when they unconditionally return an object", async () => {
+  test("constructs plain functions, keeping the new object unless they return one", async () => {
     const result = await expectSuccessfulCompile("function-constructor-object-return.ts", { link: true });
 
     try {
@@ -393,8 +394,10 @@ describe("tscn function declarations and calls", () => {
     } finally {
       await result.cleanup();
     }
-    await expectUnsupportedDiagnostic("function-constructor-this-unsupported.ts");
-    await expectUnsupportedDiagnostic("function-constructor-mutable-return-unsupported.ts");
+    await expectNativeFixtures([
+      ["function-constructor-this.ts", "7\n"],
+      ["function-constructor-mutable-return.ts", "object\n"]
+    ]);
   });
 
   test("rejects unsupported catch binding patterns", async () => {
@@ -452,11 +455,11 @@ describe("tscn function declarations and calls", () => {
     }
   });
 
-  test("pads default numeric parameters at the call site", async () => {
+  test("leaves default numeric parameters to the callee", async () => {
     const { module } = await buildTypedFixture("param-default-basic.ts");
 
-    // `add(1)` and `add(3, 4)` both supply two arguments: the default is evaluated at the call site.
-    expect(argumentCounts(mainFunction(module), "jsCall")).toEqual(["2", "2"]);
+    // `add(1)` supplies one argument: the callee evaluates its own default, as a dynamic call requires.
+    expect(argumentCounts(mainFunction(module), "jsCall")).toEqual(["1", "2"]);
 
     const result = await expectSuccessfulCompile("param-default-basic.ts", { link: true });
 

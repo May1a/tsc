@@ -23,6 +23,7 @@ export interface BindingReads {
   arrayElement(reference: BindingRef, index: LlvmValue<typeof llvm.i64>): LlvmValue<typeof llvm.ptr>;
   objectField(reference: BindingRef, path: readonly string[]): LlvmValue<typeof llvm.ptr>;
   storeNumber(reference: BindingRef, value: LlvmValue<typeof llvm.double>): void;
+  storeValue(reference: BindingRef, value: BoxedValue): void;
 }
 
 interface ExpressionEntries {

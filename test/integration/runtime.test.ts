@@ -796,8 +796,10 @@ describe("tscn expanded runtime roadmap", () => {
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
-    await expectUnsupportedDiagnostic("weak-map-unsupported.ts");
-    await expectUnsupportedDiagnostic("weak-set-unsupported.ts");
+    await expectNativeFixtures([
+      ["weak-map-value.ts", "[object WeakMap]\n4\nfalse\n"],
+      ["weak-set-value.ts", "[object WeakSet]\ntrue\nfalse\n"]
+    ]);
   });
 
   test("supports package BR iteration and for...of", async () => {
@@ -1099,8 +1101,7 @@ describe("tscn expanded runtime roadmap", () => {
   test("preserves unsupported roadmap diagnostics", async () => {
     await Promise.all([
       "number-to-fixed-range-error-unsupported.ts",
-      "number-to-locale-string-unsupported.ts",
-      "parse-int-radix-unsupported.ts"
+      "number-to-locale-string-unsupported.ts"
     ].map(async (fixture) => expectUnsupportedDiagnostic(fixture)));
   });
 
@@ -1305,8 +1306,7 @@ describe("tscn expanded runtime roadmap", () => {
     ] as const;
 
     await expectNativeFixtures(cases, { verifyLlvm: true });
-
-    await expectUnsupportedDiagnostic("error-stack-unsupported.ts");
+    await expectNativeFixtures([["error-runtime-stack.ts", "string\ntrue\n"]]);
   }, roadmapIntegrationTimeoutMs);
 
   test("supports JSON.stringify for primitives, arrays, and objects", async () => {

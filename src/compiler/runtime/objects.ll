@@ -63,6 +63,28 @@ check.object:
   %is.object = icmp eq i64 %tag, 9221120237041090560
   br i1 %is.object, label %object, label %check.function
 object:
+  %is.col = call i1 @valueIsCollection(i64 %value)
+  br i1 %is.col, label %collection.set, label %check.proxy.set
+check.proxy.set:
+  %is.px = call i1 @valueIsProxy(i64 %value)
+  br i1 %is.px, label %proxy.set, label %plain.object.set
+proxy.set:
+  %px.set.res = call { i64, i1 } @jsProxySet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored)
+  call void @gcRootRestore(i64 %frame)
+  ret { i64, i1 } %px.set.res
+collection.set:
+  %col.is.iter.len = icmp eq i64 %key.len, 18
+  br i1 %col.is.iter.len, label %col.iter.cmp, label %success
+col.iter.cmp:
+  %col.icmp = call i32 @memcmp(ptr %key.ptr, ptr @.symbol.iterator.key, i64 18)
+  %col.is.iter = icmp eq i32 %col.icmp, 0
+  br i1 %col.is.iter, label %col.set.iter, label %success
+col.set.iter:
+  %col.ptr = call ptr @valueObjectPtr(i64 %value)
+  %col.iter.slot = getelementptr i8, ptr %col.ptr, i64 32
+  store i64 %stored, ptr %col.iter.slot
+  br label %success
+plain.object.set:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.result = call { i64, i1 } @objectPropertySet(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored)
   call void @gcRootRestore(i64 %frame)
@@ -128,7 +150,7 @@ nullish:
   ret { i64, i1 } %nullish.error
 check.object:
   %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
   br i1 %is.object, label %object, label %check.function
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
@@ -162,7 +184,7 @@ success:
 define i1 @valueObjectHasOwn(i64 %value, i64 %key.len, ptr %key.ptr) {
 entry:
   %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
   br i1 %is.object, label %object, label %check.function
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
@@ -267,10 +289,10 @@ answer:
 define ptr @valueObjectKeys(i64 %value) {
 entry:
   %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %object.ptr = call ptr @objectBackingPtr(i64 %value)
+  %is.object = icmp ne ptr %object.ptr, null
   br i1 %is.object, label %object, label %check.array
 object:
-  %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.keys = call ptr @objectKeys(ptr %object.ptr)
   ret ptr %object.keys
 check.array:
@@ -287,10 +309,10 @@ primitive:
 define ptr @valueObjectValues(i64 %value) {
 entry:
   %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %object.ptr = call ptr @objectBackingPtr(i64 %value)
+  %is.object = icmp ne ptr %object.ptr, null
   br i1 %is.object, label %object, label %check.array
 object:
-  %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.values = call ptr @objectValues(ptr %object.ptr)
   ret ptr %object.values
 check.array:
@@ -307,10 +329,10 @@ primitive:
 define ptr @valueObjectEntries(i64 %value) {
 entry:
   %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %object.ptr = call ptr @objectBackingPtr(i64 %value)
+  %is.object = icmp ne ptr %object.ptr, null
   br i1 %is.object, label %object, label %check.array
 object:
-  %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.entries = call ptr @objectEntries(ptr %object.ptr)
   ret ptr %object.entries
 check.array:
@@ -329,7 +351,7 @@ primitive:
 define i64 @valueObjectOwnPropertyDescriptor(i64 %value, i64 %key.len, ptr %key.ptr, i64 %index, i1 %is.length) {
 entry:
   %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
   br i1 %is.object, label %object, label %check.function
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
@@ -359,10 +381,10 @@ primitive:
 define ptr @valueObjectOwnPropertyNames(i64 %value) {
 entry:
   %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %object.ptr = call ptr @objectBackingPtr(i64 %value)
+  %is.object = icmp ne ptr %object.ptr, null
   br i1 %is.object, label %object, label %check.array
 object:
-  %object.ptr = call ptr @valueObjectPtr(i64 %value)
   %object.names = call ptr @objectOwnPropertyNames(ptr %object.ptr)
   ret ptr %object.names
 check.array:
@@ -379,7 +401,7 @@ primitive:
 define ptr @valueObjectOwnPropertyDescriptors(i64 %value) {
 entry:
   %tag = and i64 %value, -281474976710656
-  %is.object = icmp eq i64 %tag, 9221120237041090560
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
   br i1 %is.object, label %object, label %check.array
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
@@ -433,7 +455,7 @@ entry:
 ; add one that does not yet. A failed check throws a TypeError with the compiler's message.
 define ptr @objectPrivateTable(i64 %value) {
 entry:
-  %is.object = call i1 @valueIsObject(i64 %value)
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
   br i1 %is.object, label %object, label %check.function
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %value)
@@ -497,7 +519,7 @@ unbranded:
 }
 define { i64, i1 } @valuePrivateAdd(i64 %value, i64 %key.len, ptr %key.ptr, i64 %stored, i64 %message) {
 entry:
-  %is.object = call i1 @valueIsObject(i64 %value)
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
   br i1 %is.object, label %check, label %check.function
 check.function:
   %is.function = call i1 @valueIsFunction(i64 %value)
@@ -1103,14 +1125,24 @@ define void @valueObjectAssign(ptr %target, i64 %source) {
 entry:
   %tag = and i64 %source, -281474976710656
   %is.object = icmp eq i64 %tag, 9221120237041090560
-  br i1 %is.object, label %object, label %check.array
+  br i1 %is.object, label %check.collection, label %check.array
+check.collection:
+  %is.collection = call i1 @valueIsCollection(i64 %source)
+  br i1 %is.collection, label %exit, label %object
 object:
   %object.ptr = call ptr @valueObjectPtr(i64 %source)
   call void @objectAssign(ptr %target, ptr %object.ptr)
   ret void
 check.array:
   %is.array = icmp eq i64 %tag, 9221401712017801216
-  br i1 %is.array, label %array, label %exit
+  br i1 %is.array, label %array, label %check.function
+check.function:
+  %is.function = call i1 @valueIsFunction(i64 %source)
+  br i1 %is.function, label %function, label %exit
+function:
+  %properties = call ptr @functionObjectProperties(i64 %source)
+  call void @objectAssign(ptr %target, ptr %properties)
+  ret void
 array:
   %array.ptr = call ptr @valueArrayPtr(i64 %source)
   call void @objectAssignArray(ptr %target, ptr %array.ptr)
@@ -1118,6 +1150,21 @@ array:
 exit:
   ret void
 }
+define i1 @objectEntryIsStringKey(ptr %entry.ptr) {
+entry:
+  %len = load i64, ptr %entry.ptr
+  %active = icmp sge i64 %len, 0
+  br i1 %active, label %check.sym, label %no
+check.sym:
+  %kp.slot = getelementptr i8, ptr %entry.ptr, i64 8
+  %kp = load ptr, ptr %kp.slot
+  %is.sym = call i1 @isSymbolPropertyKey(ptr %kp, i64 %len)
+  %not.sym = xor i1 %is.sym, true
+  ret i1 %not.sym
+no:
+  ret i1 false
+}
+
 define ptr @objectValues(ptr %object) {
 entry:
   %count = load i64, ptr %object
@@ -1132,8 +1179,7 @@ count.scan:
 count.check:
   %count.entry.bytes = mul i64 %count.i, 32
   %count.entry.ptr = getelementptr i8, ptr %entries, i64 %count.entry.bytes
-  %count.stored.len = load i64, ptr %count.entry.ptr
-  %count.active = icmp sge i64 %count.stored.len, 0
+  %count.active = call i1 @objectEntryIsStringKey(ptr %count.entry.ptr)
   br i1 %count.active, label %count.descriptor.block, label %count.skip
 count.descriptor.block:
   %count.descriptor.slot = getelementptr i8, ptr %count.entry.ptr, i64 24
@@ -1162,7 +1208,7 @@ fill.check:
   %fill.entry.bytes = mul i64 %fill.i, 32
   %fill.entry.ptr = getelementptr i8, ptr %entries, i64 %fill.entry.bytes
   %fill.stored.len = load i64, ptr %fill.entry.ptr
-  %fill.active = icmp sge i64 %fill.stored.len, 0
+  %fill.active = call i1 @objectEntryIsStringKey(ptr %fill.entry.ptr)
   br i1 %fill.active, label %fill.descriptor.block, label %fill.skip
 fill.descriptor.block:
   %fill.descriptor.slot = getelementptr i8, ptr %fill.entry.ptr, i64 24
@@ -1265,8 +1311,7 @@ count.scan:
 count.check:
   %count.entry.bytes = mul i64 %count.i, 32
   %count.entry.ptr = getelementptr i8, ptr %entries, i64 %count.entry.bytes
-  %count.stored.len = load i64, ptr %count.entry.ptr
-  %count.active = icmp sge i64 %count.stored.len, 0
+  %count.active = call i1 @objectEntryIsStringKey(ptr %count.entry.ptr)
   br i1 %count.active, label %count.descriptor.block, label %count.skip
 count.descriptor.block:
   %count.descriptor.slot = getelementptr i8, ptr %count.entry.ptr, i64 24
@@ -1295,7 +1340,7 @@ fill.check:
   %fill.entry.bytes = mul i64 %fill.i, 32
   %fill.entry.ptr = getelementptr i8, ptr %entries, i64 %fill.entry.bytes
   %fill.stored.len = load i64, ptr %fill.entry.ptr
-  %fill.active = icmp sge i64 %fill.stored.len, 0
+  %fill.active = call i1 @objectEntryIsStringKey(ptr %fill.entry.ptr)
   br i1 %fill.active, label %fill.descriptor.block, label %fill.skip
 fill.descriptor.block:
   %fill.descriptor.slot = getelementptr i8, ptr %fill.entry.ptr, i64 24
@@ -1411,8 +1456,7 @@ count.scan:
 count.check:
   %count.entry.bytes = mul i64 %count.i, 32
   %count.entry.ptr = getelementptr i8, ptr %entries, i64 %count.entry.bytes
-  %count.stored.len = load i64, ptr %count.entry.ptr
-  %count.active = icmp sge i64 %count.stored.len, 0
+  %count.active = call i1 @objectEntryIsStringKey(ptr %count.entry.ptr)
   %included.count = add i64 %key.count, 1
   br label %count.advance
 count.advance:
@@ -1431,7 +1475,7 @@ fill.check:
   %fill.entry.bytes = mul i64 %fill.i, 32
   %fill.entry.ptr = getelementptr i8, ptr %entries, i64 %fill.entry.bytes
   %fill.stored.len = load i64, ptr %fill.entry.ptr
-  %fill.active = icmp sge i64 %fill.stored.len, 0
+  %fill.active = call i1 @objectEntryIsStringKey(ptr %fill.entry.ptr)
   br i1 %fill.active, label %fill.include, label %fill.skip
 fill.include:
   %key.slot = getelementptr i8, ptr %fill.entry.ptr, i64 8
@@ -1566,8 +1610,7 @@ count.scan:
 count.check:
   %count.entry.bytes = mul i64 %count.i, 32
   %count.entry.ptr = getelementptr i8, ptr %entries, i64 %count.entry.bytes
-  %count.stored.len = load i64, ptr %count.entry.ptr
-  %count.active = icmp sge i64 %count.stored.len, 0
+  %count.active = call i1 @objectEntryIsStringKey(ptr %count.entry.ptr)
   br i1 %count.active, label %count.descriptor.block, label %count.skip
 count.descriptor.block:
   %count.descriptor.slot = getelementptr i8, ptr %count.entry.ptr, i64 24
@@ -1596,7 +1639,7 @@ fill.check:
   %fill.entry.bytes = mul i64 %fill.i, 32
   %fill.entry.ptr = getelementptr i8, ptr %entries, i64 %fill.entry.bytes
   %fill.stored.len = load i64, ptr %fill.entry.ptr
-  %fill.active = icmp sge i64 %fill.stored.len, 0
+  %fill.active = call i1 @objectEntryIsStringKey(ptr %fill.entry.ptr)
   br i1 %fill.active, label %fill.descriptor.block, label %fill.skip
 fill.descriptor.block:
   %fill.descriptor.slot = getelementptr i8, ptr %fill.entry.ptr, i64 24
@@ -1818,9 +1861,196 @@ data:
   ret { i64, i1 } %ok
 }
 
+define i64 @valueObjectFreeze(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
+  br i1 %is.object, label %freeze, label %done
+freeze:
+  %ptr = call ptr @valueObjectPtr(i64 %value)
+  call void @objectFreeze(ptr %ptr)
+  br label %done
+done:
+  ret i64 %value
+}
+
+define i64 @valueObjectSeal(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
+  br i1 %is.object, label %seal, label %done
+seal:
+  %ptr = call ptr @valueObjectPtr(i64 %value)
+  call void @objectSeal(ptr %ptr)
+  br label %done
+done:
+  ret i64 %value
+}
+
+define i64 @valueObjectPreventExtensions(i64 %value) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %is.object = call i1 @valueIsPlainObject(i64 %value)
+  br i1 %is.object, label %prevent, label %done
+prevent:
+  %ptr = call ptr @valueObjectPtr(i64 %value)
+  call void @objectPreventExtensions(ptr %ptr)
+  br label %done
+done:
+  ret i64 %value
+}
+
+define i64 @valueObjectAssignValue(i64 %target, i64 %source) {
+entry:
+  ; A function keeps its own properties in a separate object, which is what it is assigned into.
+  %is.function = call i1 @valueIsFunction(i64 %target)
+  br i1 %is.function, label %function, label %check.object
+function:
+  %properties = call ptr @functionObjectProperties(i64 %target)
+  call void @valueObjectAssign(ptr %properties, i64 %source)
+  ret i64 %target
+check.object:
+  %is.object = call i1 @valueIsPlainObject(i64 %target)
+  br i1 %is.object, label %assign, label %done
+assign:
+  %ptr = call ptr @valueObjectPtr(i64 %target)
+  call void @valueObjectAssign(ptr %ptr, i64 %source)
+  br label %done
+done:
+  ret i64 %target
+}
+
+define i1 @valueHasProperty(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %tag = and i64 %value, -281474976710656
+  %is.object = icmp eq i64 %tag, 9221120237041090560
+  br i1 %is.object, label %object, label %check.function
+object:
+  %is.collection = call i1 @valueIsCollection(i64 %value)
+  br i1 %is.collection, label %inherited, label %check.proxy
+check.proxy:
+  %has.is.px = call i1 @valueIsProxy(i64 %value)
+  br i1 %has.is.px, label %proxy.has, label %plain.object.has
+proxy.has:
+  %px.has = call i1 @jsProxyHas(i64 %value, i64 %key.len, ptr %key.ptr)
+  ret i1 %px.has
+plain.object.has:
+  %object.ptr = call ptr @valueObjectPtr(i64 %value)
+  %object.has = call i1 @objectHas(ptr %object.ptr, i64 %key.len, ptr %key.ptr)
+  ret i1 %object.has
+check.function:
+  %is.function = icmp eq i64 %tag, 9221964661971222528
+  br i1 %is.function, label %function, label %check.array
+function:
+  %function.has = call i1 @functionObjectHasOwn(i64 %value, i64 %key.len, ptr %key.ptr)
+  br i1 %function.has, label %present, label %inherited
+check.array:
+  %is.array = icmp eq i64 %tag, 9221401712017801216
+  br i1 %is.array, label %array, label %missing
+array:
+  %array.ptr = call ptr @valueArrayPtr(i64 %value)
+  %array.index = call i64 @propertyKeyIndex(i64 %key.len, ptr %key.ptr)
+  %array.has = call i1 @arrayHas(ptr %array.ptr, i64 %array.index, i64 %key.len, ptr %key.ptr)
+  br i1 %array.has, label %present, label %inherited
+present:
+  ret i1 true
+inherited:
+  ; Builtin members are never undefined, so reading one answers whether the prototype has it.
+  %inherited.value = call i64 @valuePropertyGet(i64 %value, i64 %key.len, ptr %key.ptr)
+  %inherited.has = icmp ne i64 %inherited.value, 9222246136947933184
+  ret i1 %inherited.has
+missing:
+  ret i1 false
+}
+
+@.in.message = private unnamed_addr constant [59 x i8] c"The right-hand side of the 'in' operator must be an object\00"
+
+; The `in` operator: a TypeError unless the right operand is an object.
+define { i64, i1 } @valueInOperator(i64 %value, i64 %key.len, ptr %key.ptr) {
+entry:
+  %is.object = call i1 @valueIsObject(i64 %value)
+  %is.array = call i1 @valueIsArray(i64 %value)
+  %is.function = call i1 @valueIsFunction(i64 %value)
+  %object.or.array = or i1 %is.object, %is.array
+  %is.reference = or i1 %object.or.array, %is.function
+  br i1 %is.reference, label %search, label %refuse
+search:
+  %has = call i1 @valueHasProperty(i64 %value, i64 %key.len, ptr %key.ptr)
+  %boxed = select i1 %has, i64 9222246136947933186, i64 9222246136947933185
+  %result.0 = insertvalue { i64, i1 } undef, i64 %boxed, 0
+  %result = insertvalue { i64, i1 } %result.0, i1 false, 1
+  ret { i64, i1 } %result
+refuse:
+  %message = call i64 @valueBoxString(ptr @.in.message, i64 58)
+  %error = call { i64, i1 } @iteratorTypeError(i64 %message)
+  ret { i64, i1 } %error
+}
+
 define { i64, i1 } @objectPropertySet(i64 %receiver, i64 %key.len, ptr %key.ptr, i64 %stored) {
 entry:
   %object = call ptr @valueObjectPtr(i64 %receiver)
   %result = call { i64, i1 } @objectPropertySetWithThis(ptr %object, i64 %receiver, i64 %key.len, ptr %key.ptr, i64 %stored)
   ret { i64, i1 } %result
+}
+
+@.class.key.prototype = private unnamed_addr constant [10 x i8] c"prototype\00"
+
+define void @classLinkDynamicBase(ptr %proto, ptr %statics, i64 %super.val) {
+entry:
+  %frame = call i64 @gcRootSave()
+  call void @gcRootPush(i64 %super.val)
+  %super.proto.val = call i64 @valuePropertyGet(i64 %super.val, i64 9, ptr @.class.key.prototype)
+  %super.proto.is.obj = call i1 @valueIsObject(i64 %super.proto.val)
+  br i1 %super.proto.is.obj, label %check.not.col, label %link.statics
+check.not.col:
+  %super.proto.is.col = call i1 @valueIsCollection(i64 %super.proto.val)
+  br i1 %super.proto.is.col, label %link.statics, label %set.proto
+set.proto:
+  %super.proto.ptr = call ptr @valueObjectPtr(i64 %super.proto.val)
+  call void @objectSetPrototype(ptr %proto, ptr %super.proto.ptr)
+  br label %link.statics
+link.statics:
+  %super.is.obj = call i1 @valueIsObject(i64 %super.val)
+  br i1 %super.is.obj, label %statics.from.obj, label %check.super.fn
+statics.from.obj:
+  %super.is.col = call i1 @valueIsCollection(i64 %super.val)
+  br i1 %super.is.col, label %done, label %set.statics.obj
+set.statics.obj:
+  %super.obj.ptr = call ptr @valueObjectPtr(i64 %super.val)
+  call void @objectSetPrototype(ptr %statics, ptr %super.obj.ptr)
+  br label %done
+check.super.fn:
+  %super.is.fn = call i1 @valueIsFunction(i64 %super.val)
+  br i1 %super.is.fn, label %statics.from.fn, label %done
+statics.from.fn:
+  %super.fn.ptr = call ptr @valueObjectPtr(i64 %super.val)
+  %super.props.slot = getelementptr i8, ptr %super.fn.ptr, i64 56
+  %super.props = load ptr, ptr %super.props.slot
+  %has.props = icmp ne ptr %super.props, null
+  br i1 %has.props, label %set.statics.fn, label %done
+set.statics.fn:
+  call void @objectSetPrototype(ptr %statics, ptr %super.props)
+  br label %done
+done:
+  call void @gcRootRestore(i64 %frame)
+  ret void
+}
+
+define i64 @classAdoptSuper(i64 %instance, i64 %returned, ptr %proto) {
+entry:
+  %adopted = call i64 @newInstanceResult(i64 %instance, i64 %returned)
+  %changed = icmp ne i64 %adopted, %instance
+  br i1 %changed, label %check.obj, label %done
+check.obj:
+  %is.obj = call i1 @valueIsObject(i64 %adopted)
+  br i1 %is.obj, label %check.not.col, label %done
+check.not.col:
+  %is.col = call i1 @valueIsCollection(i64 %adopted)
+  br i1 %is.col, label %done, label %reproto
+reproto:
+  %obj = call ptr @valueObjectPtr(i64 %adopted)
+  call void @objectSetPrototype(ptr %obj, ptr %proto)
+  br label %done
+done:
+  ret i64 %adopted
 }

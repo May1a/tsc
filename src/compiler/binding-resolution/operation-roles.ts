@@ -128,6 +128,7 @@ export const operationRoles = {
   valueArrayDelete: { targetName: reference },
   runtimeObjectSetPrototype: { targetName: reference, prototypeName: classStorageReference },
   valueObjectSetPrototype: { targetName: reference, prototypeName: classStorageReference },
+  classLinkDynamicBase: { prototypeName: reference, staticsName: reference, superName: reference },
   runtimeObjectPreventExtensions: { objectName: reference },
   runtimeObjectSeal: { objectName: reference },
   runtimeObjectFreeze: { objectName: reference },
@@ -160,6 +161,7 @@ export const operationRoles = {
   arrayDestructureProtocol: { notIterableMessage: preserved("message") },
   forInObject: { itemName: declaration, objectName: reference },
   forInArray: { itemName: declaration, arrayName: reference },
+  forInValue: { itemName: declaration },
   break: {},
   continue: {},
 

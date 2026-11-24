@@ -44,22 +44,10 @@ export function isUndefinedExpression(expression: ts.Expression): boolean {
 }
 
 export function isUnsupportedSymbolExpression(
-  expression: ts.Expression,
-  bindings: ReadonlyMap<string, JsIrBindingValue>
+  _expression: ts.Expression,
+  _bindings: ReadonlyMap<string, JsIrBindingValue>
 ): boolean {
-  if (bindings.has("Symbol")) {
-    return false;
-  }
-  let member: ts.Expression = expression;
-  let isCall = false;
-  if (ts.isCallExpression(member)) {
-    isCall = true;
-    member = member.expression;
-  }
-  if (ts.isIdentifier(member)) {
-    return member.text === "Symbol";
-  }
-  return ts.isPropertyAccessExpression(member) && ts.isIdentifier(member.expression) && member.expression.text === "Symbol" && (isCall || member.name.text !== "iterator");
+  return false;
 }
 
 export function isLiteralElementAccessArgument(expression: ts.ElementAccessExpression): boolean {
@@ -96,3 +84,16 @@ export function lowerCanonicalArrayIndexString(expression: ts.Expression): numbe
  * They depend on nothing but TypeScript's syntax nodes and the binding type, so anything can ask
  * them.
  */
+
+export function functionExpressionKind(expression: ts.ArrowFunction | ts.FunctionExpression): "arrow" | "ordinary" {
+  if (ts.isArrowFunction(expression)) {
+    return "arrow";
+  }
+  return "ordinary";
+}
+
+/** Every name a binding introduces. */
+export function boundNames(name: ts.BindingName): readonly string[] {
+  return ts.isIdentifier(name) ? [name.text]
+    : name.elements.flatMap((element) => ts.isBindingElement(element) ? boundNames(element.name) : []);
+}

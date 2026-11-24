@@ -46,6 +46,7 @@ export function createObjectsCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "objectAssign": registerRuntimeContract(module, objectsContracts.objectAssign),
     "objectAssignArray": registerRuntimeContract(module, objectsContracts.objectAssignArray),
     "valueObjectAssign": registerRuntimeContract(module, objectsContracts.valueObjectAssign),
+    "objectEntryIsStringKey": registerRuntimeContract(module, objectsContracts.objectEntryIsStringKey),
     "objectValues": registerRuntimeContract(module, objectsContracts.objectValues),
     "objectOwnPropertyDescriptor": registerRuntimeContract(module, objectsContracts.objectOwnPropertyDescriptor),
     "objectEntries": registerRuntimeContract(module, objectsContracts.objectEntries),
@@ -62,6 +63,14 @@ export function createObjectsCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "objectPropertyGetWithThis": registerRuntimeContract(module, objectsContracts.objectPropertyGetWithThis),
     "objectPropertyGet": registerRuntimeContract(module, objectsContracts.objectPropertyGet),
     "objectPropertySetWithThis": registerRuntimeContract(module, objectsContracts.objectPropertySetWithThis),
+    "valueObjectFreeze": registerRuntimeContract(module, objectsContracts.valueObjectFreeze),
+    "valueObjectSeal": registerRuntimeContract(module, objectsContracts.valueObjectSeal),
+    "valueObjectPreventExtensions": registerRuntimeContract(module, objectsContracts.valueObjectPreventExtensions),
+    "valueObjectAssignValue": registerRuntimeContract(module, objectsContracts.valueObjectAssignValue),
+    "valueHasProperty": registerRuntimeContract(module, objectsContracts.valueHasProperty),
+    "valueInOperator": registerRuntimeContract(module, objectsContracts.valueInOperator),
     "objectPropertySet": registerRuntimeContract(module, objectsContracts.objectPropertySet),
+    "classLinkDynamicBase": registerRuntimeContract(module, objectsContracts.classLinkDynamicBase),
+    "classAdoptSuper": registerRuntimeContract(module, objectsContracts.classAdoptSuper),
   };
 }

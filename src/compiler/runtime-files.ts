@@ -16,10 +16,14 @@ const runtimeIrFiles = [
   "functions.ll",
   "callbacks.ll",
   "prototypes.ll",
+  "stringprototypes.ll",
   "json.ll",
   "errors.ll",
   "iterators.ll",
-  "promises.ll"
+  "promises.ll",
+  "node.ll",
+  "symbols.ll",
+  "builtins.ll"
 ] as const;
 
 let cachedRuntimeIr: string | undefined;

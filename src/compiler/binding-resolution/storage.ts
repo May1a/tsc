@@ -70,6 +70,7 @@ const fixedRepresentationByKind: Readonly<Partial<Record<JsIrOperationNode["kind
   forOfString: { kind: "string" },
   forInObject: { kind: "string" },
   forInArray: { kind: "string" },
+  forInValue: { kind: "string" },
   tryCatch: { kind: "value" }
 };
 

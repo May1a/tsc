@@ -99,6 +99,7 @@ export const stringBuiltinSupport: BuiltinSupport<"string", StringBuiltin> = {
 
   // Statics.
   fromCharCode: { arity: { from: 1, to: 8 }, state: "supported", id: "string.fromCharCode", placement: "static" },
+  raw: { arity: { from: 1, to: 8 }, state: "supported", id: "string.raw", placement: "static" },
 
   localeCompare: { arity: { from: 1, to: 2 }, state: "supported", id: "string.localeCompare" },
 
@@ -109,8 +110,7 @@ export const stringBuiltinSupport: BuiltinSupport<"string", StringBuiltin> = {
   toString: { arity: 0, state: "planned", id: "string.toString" },
   isWellFormed: { arity: 0, state: "planned", id: "string.isWellFormed" },
   toWellFormed: { arity: 0, state: "planned", id: "string.toWellFormed" },
-  fromCodePoint: { arity: { from: 1, to: 8 }, state: "planned", id: "string.fromCodePoint", placement: "static" },
-  raw: { arity: { from: 1, to: 8 }, state: "planned", id: "string.raw", placement: "static" }
+  fromCodePoint: { arity: { from: 1, to: 8 }, state: "planned", id: "string.fromCodePoint", placement: "static" }
 };
 
 

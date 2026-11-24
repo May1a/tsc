@@ -23,6 +23,11 @@ export function classConstructorValueName(className: string): string {
   return `${className}$ctor`;
 }
 
+/** The module slot holding the runtime base constructor value when `className` uses a dynamic `extends` expression. */
+export function classDynamicSuperName(className: string): string {
+  return `${className}$super`;
+}
+
 /** The generated function name for a static initialization block on `className`. */
 export function classStaticBlockFunctionName(className: string, index: number): string {
   return `${className}$staticBlock$${index}`;

@@ -93,6 +93,9 @@ export function resolveFunctionObject(definition: JsIrFunctionObjectDefinition, 
     const thisBinding = definition.functionKind === "ordinary"
       ? state.declare("this", "parameter", { kind: "value" })
       : undefined;
+    const argumentsBinding = definition.usesArguments === true
+      ? state.declare("arguments", "parameter", { kind: "value" })
+      : undefined;
     for (const capture of captures ?? []) {
       state.capture(capture.name);
     }
@@ -100,6 +103,7 @@ export function resolveFunctionObject(definition: JsIrFunctionObjectDefinition, 
       codeName: definition.codeName,
       functionId,
       thisBinding,
+      argumentsBinding,
       functionKind: definition.functionKind,
       returnKind: definition.returnKind,
       inferredName: definition.inferredName,
@@ -255,6 +259,9 @@ export function resolveObjectValue(value: JsIrObjectValue, resolver: Resolver): 
 function resolveRuntimeObjectField(field: JsIrRuntimeObjectField, resolver: Resolver): ResolvedRuntimeObjectField {
   if (field.kind === "spread") {
     return { kind: "spread", sourceName: resolver.reference(field.sourceName) };
+  }
+  if (field.kind === "valueSpread") {
+    return { kind: "valueSpread", value: resolver.value(field.value) };
   }
   if (field.kind === "accessor") {
     return {

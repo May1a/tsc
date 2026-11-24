@@ -8,10 +8,11 @@ import { unwrapTypeOnlyExpression } from "./predicates.js";
 import { lowerRegexSearchNumberExpression } from "./regex.js";
 import { lowerArrayNumberMethodCall, lowerNumberCoercionExpression, lowerNumericBuiltinCall, lowerStringNumberMethodCall } from "./number-builtins.js";
 import { numberConstantValue, numberExpressionFromNumber } from "./number-constants.js";
-import { lowerClassNumberAccess, lowerNumberAccessExpression } from "./number-access.js";
+import { isNumericType, lowerClassNumberAccess, lowerNumberAccessExpression } from "./number-access.js";
 import { lowerNumberOperator } from "./number-operators.js";
 import { isPlannedBuiltinCall } from "./builtins/index.js";
 import { lowerCallThisValue, lowerSpreadCallValue, resolveCallValueTarget } from "./value-calls.js";
+import { asJsGlobalName } from "./js-globals.js";
 import { lowerCallArguments, lowerValueCallArguments } from "./call-arguments.js";
 
 // eslint-disable-next-line complexity, max-statements -- Numeric literal/identifier/NaN/prefix-unary recognition centralizes the canonical JSValue conversion paths.
@@ -154,6 +155,18 @@ export function lowerNumberExpression(
   const update = lowerUpdateNumberExpression(expression, bindings);
   if (update !== undefined) {
     return produced(update);
+  }
+  const isPropUpdate =
+    (ts.isPrefixUnaryExpression(expression) &&
+      (expression.operator === ts.SyntaxKind.PlusPlusToken || expression.operator === ts.SyntaxKind.MinusMinusToken) &&
+      (ts.isPropertyAccessExpression(expression.operand) || ts.isElementAccessExpression(expression.operand))) ||
+    (ts.isPostfixUnaryExpression(expression) &&
+      (ts.isPropertyAccessExpression(expression.operand) || ts.isElementAccessExpression(expression.operand)));
+  if (isPropUpdate) {
+    const val = context.lowerValueExpression(context, expression, bindings);
+    if (val.kind !== "notApplicable") {
+      return val.kind === "lowered" ? produced({ kind: "valueToNumber", value: val.operation }) : val;
+    }
   }
 
   if (ts.isConditionalExpression(expression)) {
@@ -316,7 +329,7 @@ function lowerNumberCallExpression(
   // NaN in number-first contexts like `print`, so the value tier keeps it. A call to a declared
   // function is still claimed under `any`: its return kind is known, and the checker reports a
   // recursive call inside an unannotated function as `any`.
-  const boxedResultIsNumber = callType === undefined || (callType.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0;
+  const boxedResultIsNumber = callType !== undefined && (callType.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0;
   if (!boxedResultIsNumber && isBoxedCallee(expression, bindings)) {
     return notApplicable;
   }
@@ -387,7 +400,7 @@ function lowerNumberCallExpression(
   if (callee?.kind === "closure") {
     args.push(...callee.value.captures);
     name = callee.value.functionName;
-  } else if (callee?.kind === "function" && (callee.returnKind === "string" || callee.returnKind === "value")) {
+  } else if ((callee?.kind === "function" || callee?.kind === "functionReference") && (callee.returnKind === "string" || callee.returnKind === "value")) {
     return notApplicable;
   }
 
@@ -414,11 +427,14 @@ function isBoxedCallee(expression: ts.CallExpression, bindings: ReadonlyMap<stri
     return true;
   }
   const callee = bindings.get(expression.expression.text);
+  if (callee === undefined && expression.expression.text !== "Number" && asJsGlobalName(expression.expression.text) !== undefined) {
+    return true;
+  }
   return callee?.kind === "value" || callee?.kind === "valueVariable";
 }
 
 /** Whether the checker gives an expression a number type at its location, after narrowing. */
 function isNumberTyped(context: LoweringContext, expression: ts.Expression): boolean {
   const type = context.typeChecker?.getTypeAtLocation(expression);
-  return type !== undefined && (type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0;
+  return type !== undefined && isNumericType(type);
 }

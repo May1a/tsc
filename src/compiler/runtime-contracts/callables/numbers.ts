@@ -17,6 +17,7 @@ export function createNumbersCallees(module: LlvmModuleBuilder): RuntimeCalleeTa
     "numberToShortestString": registerRuntimeContract(module, numbersContracts.numberToShortestString),
     "numberToStringRadix": registerRuntimeContract(module, numbersContracts.numberToStringRadix),
     "parseInt": registerRuntimeContract(module, numbersContracts.parseInt),
+    "parseIntRadix": registerRuntimeContract(module, numbersContracts.parseIntRadix),
     "parseFloat": registerRuntimeContract(module, numbersContracts.parseFloat),
     "mathAbs": registerRuntimeContract(module, numbersContracts.mathAbs),
     "mathFloor": registerRuntimeContract(module, numbersContracts.mathFloor),

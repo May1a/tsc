@@ -1,4 +1,4 @@
-import type { ResolvedRuntimeObjectValue } from "../binding-resolution/index.js";
+import type { ResolvedRuntimeArrayElement, ResolvedRuntimeObjectValue } from "../binding-resolution/index.js";
 import { llvm } from "../llvm-ir/index.js";
 import { branchValue } from "./expression-branches.js";
 import { numberIndex } from "./numbers.js";
@@ -6,13 +6,41 @@ import { type ExpressionContext, boxString } from "./expression-context.js";
 import type { BoxedValue } from "./value-boundary.js";
 import { type ValueNode, arrayPointer, keep, literalString, numericValue, property, stringValue, undefinedValue } from "./value-support.js";
 
-export function freshArray(values: readonly (() => BoxedValue)[], context: ExpressionContext): BoxedValue {
+export function freshRuntimeArray(elements: readonly ResolvedRuntimeArrayElement[], context: ExpressionContext): BoxedValue {
   const block = context.cursor.currentBlock();
-  const array = context.runtime.callPointer("arrayNew", [block.int(llvm.i64, BigInt(values.length))], context.cursor.uniqueName("array.literal"));
+  const array = context.runtime.callPointer("arrayNew", [block.int(llvm.i64, 0n)], context.cursor.uniqueName("array.literal"));
   const boxed = keep(context.values.forBlock(context.cursor.currentBlock()).boxReference("array", array), context);
-  for (const [index, evaluate] of values.entries()) {
-    const value = keep(evaluate(), context);
-    context.runtime.callVoid("arraySet", [array, context.cursor.currentBlock().int(llvm.i64, BigInt(index)), value]);
+  for (const element of elements) {
+    switch (element.kind) {
+      case "hole": {
+        context.runtime.call("arrayPush", [array, context.values.forBlock(context.cursor.currentBlock()).arrayHole()],
+          context.cursor.uniqueName("array.hole"));
+        break;
+      }
+      case "value": {
+        const value = keep(context.expressions.value(element.value), context);
+        context.runtime.call("arrayPush", [array, value], context.cursor.uniqueName("array.push"));
+        break;
+      }
+      case "spread": {
+        const source = keep(context.bindings.value(element.arrayName), context);
+        const message = stringValue("Spread source is not iterable", context);
+        context.runtime.callWithCompletion("iterableAppend", [array, source, message],
+          context.cursor.uniqueName("array.spread"), context.exceptionTarget());
+        break;
+      }
+      case "iterableSpread": {
+        const source = keep(context.expressions.value(element.source), context);
+        const message = stringValue(element.notIterableMessage, context);
+        context.runtime.callWithCompletion("iterableAppend", [array, source, message],
+          context.cursor.uniqueName("array.spread"), context.exceptionTarget());
+        break;
+      }
+      default: {
+        const exhaustive: never = element;
+        throw new Error(`Unknown array literal element ${String(exhaustive)}`);
+      }
+    }
   }
   return boxed;
 }
@@ -25,6 +53,9 @@ export function objectLiteral(value: ResolvedRuntimeObjectValue, context: Expres
   for (const field of value.fields) {
     if (field.kind === "spread") {
       const source = keep(context.bindings.value(field.sourceName), context);
+      context.runtime.callVoid("valueObjectAssign", [object, source]);
+    } else if (field.kind === "valueSpread") {
+      const source = keep(context.expressions.value(field.value), context);
       context.runtime.callVoid("valueObjectAssign", [object, source]);
     } else if (field.kind === "accessor") {
       const key = context.expressions.string(field.key);

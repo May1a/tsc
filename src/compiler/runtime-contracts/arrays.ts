@@ -316,14 +316,14 @@ export const arraysContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "arraySortDefault", parameters: [llvm.ptr], returns: llvm.void, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: false, completion: "none" }
   },
   "arrayJoin": {
     resultKind: "pointer",
     pointerResult: { kind: "external" },
     origin: "staticRuntime",
     name: "arrayJoin", parameters: [llvm.ptr, llvm.i64, llvm.ptr], returns: llvm.ptr, variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: false, completion: "none" }
   },
   "arrayPush": {
     resultKind: "scalar",

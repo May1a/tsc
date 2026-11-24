@@ -115,6 +115,13 @@ export const valuesContracts = {
     name: "valueIsObject", parameters: [llvm.i64], returns: llvm.i1, variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
+  "valueIsPlainObject": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueIsPlainObject", parameters: [llvm.i64], returns: llvm.i1, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
   "valueIsArray": {
     resultKind: "scalar",
     pointerResult: { kind: "none" },
@@ -141,7 +148,7 @@ export const valuesContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "valuePropertyGet", parameters: [llvm.i64, llvm.i64, llvm.ptr], returns: llvm.i64, variadic: false,
-    effects: { allocates: true, collects: false, completion: "none" }
+    effects: { allocates: true, collects: true, completion: "none" }
   },
   "valueLength": {
     resultKind: "scalar",
@@ -162,6 +169,13 @@ export const valuesContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "valuePrint", parameters: [llvm.i64], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "collectionToStringTag": {
+    resultKind: "string",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "collectionToStringTag", parameters: [llvm.ptr], returns: llvm.struct([llvm.ptr, llvm.i64]), variadic: false,
     effects: { allocates: false, collects: false, completion: "none" }
   },
   "valueToString": {
@@ -169,7 +183,7 @@ export const valuesContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "valueToString", parameters: [llvm.i64], returns: llvm.struct([llvm.ptr, llvm.i64]), variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: false, completion: "none" }
   },
   "valueIsObjectLike": {
     resultKind: "scalar",
@@ -225,7 +239,7 @@ export const valuesContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "boxedToString", parameters: [llvm.ptr], returns: llvm.struct([llvm.ptr, llvm.i64]), variadic: false,
-    effects: { allocates: false, collects: false, completion: "none" }
+    effects: { allocates: true, collects: false, completion: "none" }
   },
   "requireObjectCoercible": {
     resultKind: "completion",
@@ -331,6 +345,13 @@ export const valuesContracts = {
     origin: "staticRuntime",
     name: "valueConsoleLog", parameters: [llvm.i64, llvm.ptr], returns: llvm.void, variadic: false,
     effects: { allocates: true, collects: true, completion: "none" }
+  },
+  "valueConsoleError": {
+    resultKind: "void",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueConsoleError", parameters: [llvm.i64, llvm.ptr], returns: llvm.void, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
   },
   "valueConversionPropertyGet": {
     resultKind: "completion",

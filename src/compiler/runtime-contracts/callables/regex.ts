@@ -27,5 +27,11 @@ export function createRegexCallees(module: LlvmModuleBuilder): RuntimeCalleeTabl
     "regexSplit": registerRuntimeContract(module, regexContracts.regexSplit),
     "regexExpandReplacement": registerRuntimeContract(module, regexContracts.regexExpandReplacement),
     "regexReplace": registerRuntimeContract(module, regexContracts.regexReplace),
+    "regexPrototype": registerRuntimeContract(module, regexContracts.regexPrototype),
+    "valueIsRegex": registerRuntimeContract(module, regexContracts.valueIsRegex),
+    "regexMethodReceiverError": registerRuntimeContract(module, regexContracts.regexMethodReceiverError),
+    "regexTestMethod": registerRuntimeContract(module, regexContracts.regexTestMethod),
+    "regexExecMethod": registerRuntimeContract(module, regexContracts.regexExecMethod),
+    "regexToStringMethod": registerRuntimeContract(module, regexContracts.regexToStringMethod),
   };
 }

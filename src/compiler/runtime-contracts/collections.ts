@@ -52,6 +52,34 @@ export const collectionsContracts = {
     name: "setFromIterator", parameters: [llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
     effects: { allocates: true, collects: true, completion: "explicit" }
   },
+  "collectionNewWithKind": {
+    resultKind: "pointer",
+    pointerResult: { kind: "heap" },
+    origin: "staticRuntime",
+    name: "collectionNewWithKind", parameters: [llvm.i64], returns: llvm.ptr, variadic: false,
+    effects: { allocates: true, collects: false, completion: "none" }
+  },
+  "collectionKind": {
+    resultKind: "boxed",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "collectionKind", parameters: [llvm.ptr], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "valueIsCollection": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "valueIsCollection", parameters: [llvm.i64], returns: llvm.i1, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "collectionFromIterableWithKind": {
+    resultKind: "completion",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "collectionFromIterableWithKind", parameters: [llvm.i64, llvm.i64, llvm.i64], returns: llvm.struct([llvm.i64, llvm.i1]), variadic: false,
+    effects: { allocates: true, collects: true, completion: "explicit" }
+  },
   "collectionNew": {
     resultKind: "pointer",
     pointerResult: { kind: "heap" },

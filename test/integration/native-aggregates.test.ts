@@ -29,7 +29,7 @@ function arrayOperations(): readonly JsIrOperation[] {
     { kind: "runtimeArrayLiteral", name: "spread", elements: [{ kind: "spread", arrayName: "array" }, { kind: "spread", arrayName: "fixed" }] },
     json("spread"),
     { kind: "runtimeArrayConcat", name: "concat", leftName: "array", values: [{ kind: "fixedArraySpread", arrayName: "fixed", length: 2 },
-      { kind: "value", value: { kind: "runtimeArrayValue", elements: [numeric(7), numeric(8)] } }] }, json("concat"),
+      { kind: "value", value: { kind: "runtimeArrayValue", elements: [{ kind: "value", value: numeric(7) }, { kind: "value", value: numeric(8) }] } }] }, json("concat"),
     { kind: "runtimeArraySlice", name: "slice", arrayName: "concat", start: { kind: "literal", value: 1 }, end: { kind: "literal", value: 5 } }, json("slice"),
     { kind: "runtimeArraySplice", name: "removed", arrayName: "concat", start: { kind: "literal", value: 1 }, deleteCount: { kind: "literal", value: 2 }, items: [numeric(9)] },
     json("removed"), json("concat"),
@@ -41,7 +41,7 @@ function arrayOperations(): readonly JsIrOperation[] {
     { kind: "runtimeArrayDelete", arrayName: "concat", index: { kind: "literal", value: 0 } },
     { kind: "runtimeArraySetLength", arrayName: "concat", length: { kind: "literal", value: 4 } }, json("concat"),
     { kind: "runtimeStringSplit", name: "split", receiver: { kind: "literal", value: "a,b,c" }, separator: { kind: "literal", value: "," }, limit: { kind: "literal", value: 2 } }, json("split"),
-    { kind: "runtimeArrayLiteral", name: "nested", elements: [{ kind: "value", value: { kind: "runtimeArrayValue", elements: [numeric(1), numeric(2)] } }, { kind: "value", value: numeric(3) }] },
+    { kind: "runtimeArrayLiteral", name: "nested", elements: [{ kind: "value", value: { kind: "runtimeArrayValue", elements: [{ kind: "value", value: numeric(1) }, { kind: "value", value: numeric(2) }] } }, { kind: "value", value: numeric(3) }] },
     { kind: "runtimeArrayFlat", name: "flat", arrayName: "nested", depth: { kind: "literal", value: 1 } }, json("flat")
   ];
 }
@@ -90,7 +90,7 @@ function collectionOperations(): readonly JsIrOperation[] {
     { kind: "runtimeSetAddResult", name: "setAlias", setName: "set", value: text("b") },
     { kind: "runtimeSetFromCollection", name: "setCopy", sourceName: "setAlias", sourceKind: "set" },
     print({ kind: "boolean", value: { kind: "runtimeCollectionHas", collectionName: "setCopy", key: text("b") } }),
-    { kind: "runtimeArrayLiteral", name: "entries", elements: [{ kind: "value", value: { kind: "runtimeArrayValue", elements: [text("k"), numeric(42)] } }] },
+    { kind: "runtimeArrayLiteral", name: "entries", elements: [{ kind: "value", value: { kind: "runtimeArrayValue", elements: [{ kind: "value", value: text("k") }, { kind: "value", value: numeric(42) }] } }] },
     { kind: "runtimeMapFromArray", name: "fromArray", sourceName: "entries" },
     print({ kind: "runtimeMapGet", mapName: "fromArray", key: text("k") }),
     { kind: "runtimeSetFromIterable", name: "letters", iterable: text("aba"), notIterableMessage: "not iterable" },

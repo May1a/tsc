@@ -197,6 +197,125 @@ export const declaresContracts = {
     pointerResult: { kind: "none" },
     origin: "staticRuntime",
     name: "gettimeofday", parameters: [llvm.ptr, llvm.ptr], returns: llvm.i32, variadic: false,
-    effects: { allocates: true, collects: true, completion: "none" }
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "dprintf": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "dprintf", parameters: [llvm.i32, llvm.ptr], returns: llvm.i32, variadic: true,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "write": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "write", parameters: [llvm.i32, llvm.ptr, llvm.i64], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "read": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "read", parameters: [llvm.i32, llvm.ptr, llvm.i64], returns: llvm.i64, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "open": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "open", parameters: [llvm.ptr, llvm.i32], returns: llvm.i32, variadic: true,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "close": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "close", parameters: [llvm.i32], returns: llvm.i32, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "mkdir": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "mkdir", parameters: [llvm.ptr, llvm.i32], returns: llvm.i32, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "mkdtemp": {
+    resultKind: "pointer",
+    pointerResult: { kind: "external" },
+    origin: "staticRuntime",
+    name: "mkdtemp", parameters: [llvm.ptr], returns: llvm.ptr, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "access": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "access", parameters: [llvm.ptr, llvm.i32], returns: llvm.i32, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "getcwd": {
+    resultKind: "pointer",
+    pointerResult: { kind: "external" },
+    origin: "staticRuntime",
+    name: "getcwd", parameters: [llvm.ptr, llvm.i64], returns: llvm.ptr, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "pipe": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "pipe", parameters: [llvm.ptr], returns: llvm.i32, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "fork": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "fork", parameters: [], returns: llvm.i32, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "dup2": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "dup2", parameters: [llvm.i32, llvm.i32], returns: llvm.i32, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "execvp": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "execvp", parameters: [llvm.ptr, llvm.ptr], returns: llvm.i32, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "waitpid": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "waitpid", parameters: [llvm.i32, llvm.ptr, llvm.i32], returns: llvm.i32, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "fflush": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "fflush", parameters: [llvm.ptr], returns: llvm.i32, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "realloc": {
+    resultKind: "pointer",
+    pointerResult: { kind: "external" },
+    origin: "staticRuntime",
+    name: "realloc", parameters: [llvm.ptr, llvm.i64], returns: llvm.ptr, variadic: false,
+    effects: { allocates: false, collects: false, completion: "none" }
+  },
+  "fcntl": {
+    resultKind: "scalar",
+    pointerResult: { kind: "none" },
+    origin: "staticRuntime",
+    name: "fcntl", parameters: [llvm.i32, llvm.i32], returns: llvm.i32, variadic: true,
+    effects: { allocates: false, collects: false, completion: "none" }
   },
 } as const satisfies Readonly<Record<string, RuntimeCallContract>>;

@@ -232,6 +232,12 @@ export const aggregateHandlers = {
     targetName: resolver.reference(node.targetName),
     prototypeName: resolver.reference(node.prototypeName)
   }),
+  classLinkDynamicBase: (node, resolver) => ({
+    ...node,
+    prototypeName: resolver.reference(node.prototypeName),
+    staticsName: resolver.reference(node.staticsName),
+    superName: resolver.reference(node.superName)
+  }),
   runtimeObjectPreventExtensions: (node, resolver) => ({
     ...node,
     objectName: resolver.reference(node.objectName)

@@ -8,7 +8,7 @@ import ts from "typescript";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const irModelFiles = new Set([
-  "operation-bindings.ts", "bindings.ts", "expressions.ts", "lowered.ts", "module.ts", "types.ts", "visit.ts",
+  "operation-bindings.ts", "bindings.ts", "expressions.ts", "js-globals.ts", "lowered.ts", "module.ts", "types.ts", "visit.ts",
 ]);
 const compilerModelFiles = new Set(["diagnostics.ts", "dispatch.ts", "symbols.ts", "target.ts", "types.ts"]);
 const permittedLayers = {
@@ -24,7 +24,7 @@ const permittedLayers = {
   "LLVM builder": new Set(["LLVM builder"]),
   "JsValue ABI": new Set(["JsValue ABI", "LLVM builder"]),
 };
-const boundaryModules = new Set(["entry.ts", "frontend.ts", "pipeline.ts", "linker.ts", "toolchain.ts", "runtime-files.ts", "live-layer.ts", "errors.ts"]);
+const boundaryModules = new Set(["entry.ts", "frontend.ts", "package-resolver.ts", "pipeline.ts", "linker.ts", "toolchain.ts", "runtime-files.ts", "live-layer.ts", "errors.ts"]);
 
 function layerOf(file) {
   const relative = file.replaceAll(path.sep, "/");

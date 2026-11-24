@@ -5,7 +5,15 @@ import type { JsIrBindingValue } from "./bindings.js";
 import type { JsIrNumberExpression } from "./expressions.js";
 import { lowerClassValueExpression } from "./class-values.js";
 import { isBoxedAggregateCandidateBinding, lowerObjectAccessPath } from "./builtins/object-producers.js";
+import { plannedBuiltinMessageFor } from "./builtins/index.js";
 import { lowerCanonicalArrayIndexString, unwrapTypeOnlyExpression } from "./predicates.js";
+
+export function isNumericType(type: ts.Type): boolean {
+  if ((type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0) {
+    return true;
+  }
+  return type.isUnion() && type.types.length > 0 && type.types.every(isNumericType);
+}
 
 // Reads a class instance member (field or getter) as a number by unboxing the
 // JSValue it lowers to, so numeric instance members participate in arithmetic.
@@ -25,7 +33,7 @@ export function lowerClassNumberAccess(
     return notApplicable;
   }
   const type = typeChecker.getTypeAtLocation(expression);
-  if ((type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) === 0) {
+  if (!isNumericType(type)) {
     return notApplicable;
   }
   const value = lowerClassValueExpression(context, expression, bindings);
@@ -40,7 +48,7 @@ export function lowerNumberAccessExpression(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, JsIrBindingValue>
 ): Lowered<JsIrNumberExpression> {
-  if (context.typeChecker?.getTypeAtLocation(expression).getCallSignatures().length !== 0) {
+  if ((context.typeChecker?.getTypeAtLocation(expression).getCallSignatures().length ?? 0) > 0) {
     return notApplicable;
   }
   if (ts.isElementAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
@@ -76,7 +84,45 @@ export function lowerNumberAccessExpression(
     }
   }
 
-  return notApplicable;
+  return lowerTypedNumericMemberAccess(context, expression, bindings);
+}
+
+/**
+ * A number-typed property read, through the declared property that gives it that type.
+ *
+ * An element access, or a property an index signature supplies, is typed `number` even when the
+ * read finds nothing. Converting it here would turn `undefined` into NaN, so the value tier lowers it.
+ */
+function lowerTypedNumericMemberAccess(
+  context: LoweringContext,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, JsIrBindingValue>
+): Lowered<JsIrNumberExpression> {
+  if (context.typeChecker === undefined || !ts.isPropertyAccessExpression(expression) || ts.isPrivateIdentifier(expression.name)) {
+    return notApplicable;
+  }
+  if (!isNumericType(context.typeChecker.getTypeAtLocation(expression)) ||
+    context.typeChecker.getSymbolAtLocation(expression.name)?.valueDeclaration === undefined) {
+    return notApplicable;
+  }
+  const receiverExpr = unwrapTypeOnlyExpression(expression.expression);
+  if (ts.isIdentifier(receiverExpr)) {
+    const binding = bindings.get(receiverExpr.text);
+    if (binding?.kind === "runtimeMap" || binding?.kind === "runtimeSet") {
+      return notApplicable;
+    }
+  }
+  if (plannedBuiltinMessageFor(receiverExpr, expression.name.text, bindings) !== undefined) {
+    return notApplicable;
+  }
+  const receiver = context.lowerValueExpression(context, receiverExpr, bindings);
+  if (receiver.kind !== "lowered") {
+    return receiver;
+  }
+  return produced({
+    kind: "valueToNumber",
+    value: { kind: "valueObjectDynamicAccess", value: receiver.operation, key: { kind: "literal", value: expression.name.text } }
+  });
 }
 
 function lowerLengthPropertyAccessExpression(
@@ -101,7 +147,8 @@ function lowerLengthPropertyAccessExpression(
   if (binding?.kind === "array" || binding?.kind === "runtimeArray") {
     return produced({ kind: "arrayLength", arrayName: receiver.text });
   }
-  if (!isBoxedAggregateCandidateBinding(binding)) {
+  const isStringBinding = binding?.kind === "string" || binding?.kind === "stringExpression" || binding?.kind === "stringVariable";
+  if (!isBoxedAggregateCandidateBinding(binding) && !isStringBinding) {
     return notApplicable;
   }
   const value = context.lowerValueExpression(context, receiver, bindings);
